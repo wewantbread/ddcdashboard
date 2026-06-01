@@ -3,6 +3,7 @@
  * bounded context files.
  */
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
 import { readRecentSessionTranscriptActiveEvents } from "../config/sessions/session-accessor.js";
@@ -301,6 +302,10 @@ export async function resolveBootstrapFilesForRun(params: {
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
   readOnlyState?: boolean;
+  onBootstrapSubstageTiming?: (
+    name: "workspace-file-load" | "hook-overrides",
+    durationMs: number,
+  ) => void;
 }): Promise<WorkspaceBootstrapFile[]> {
   const sessionKey = params.sessionKey ?? params.sessionId;
   const session = {
@@ -312,12 +317,14 @@ export async function resolveBootstrapFilesForRun(params: {
     params.workspaceDir,
     params.readOnlyState,
   );
+  const fileLoadStartedAt = performance.now();
   const rawFiles = params.sessionKey
     ? await getOrLoadBootstrapFiles({
         workspaceDir: params.workspaceDir,
         sessionKey: params.sessionKey,
       })
     : await loadWorkspaceBootstrapFiles(params.workspaceDir);
+  params.onBootstrapSubstageTiming?.("workspace-file-load", performance.now() - fileLoadStartedAt);
   const ineligibleAutomaticMemoryFiles = await resolveIneligibleAutomaticMemoryFiles({
     files: rawFiles,
     workspaceDir: params.workspaceDir,
@@ -351,6 +358,7 @@ export async function resolveBootstrapFilesForRun(params: {
     runKind: params.runKind,
   });
 
+  const hookOverridesStartedAt = performance.now();
   const updated = await applyBootstrapHookOverrides({
     files: bootstrapFiles,
     workspaceDir: params.workspaceDir,
@@ -359,6 +367,7 @@ export async function resolveBootstrapFilesForRun(params: {
     sessionId: params.sessionId,
     agentId: params.agentId,
   });
+  params.onBootstrapSubstageTiming?.("hook-overrides", performance.now() - hookOverridesStartedAt);
   const filteredUpdated = filterCompletedWorkspaceBootstrapFile(
     filterBootstrapFilesAfterHooks({
       files: updated,
