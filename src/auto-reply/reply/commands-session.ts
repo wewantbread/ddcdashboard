@@ -475,6 +475,8 @@ export const handleFastCommand: CommandHandler = defineAuthorizedTextCommand(
   },
 );
 
+export { handleStreamCommand } from "./commands-session-stream.js";
+
 export const handleSessionCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
     return null;

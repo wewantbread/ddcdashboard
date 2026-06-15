@@ -902,7 +902,12 @@ export function resolveChannelStreamingSuppressDefaultToolProgressMessages(
 export function resolveChannelPreviewStreamMode(
   entry: StreamingCompatEntry | null | undefined,
   defaultMode: StreamingMode,
+  options?: { sessionMode?: unknown },
 ): StreamingMode {
+  const sessionMode = parsePreviewStreamingMode(options?.sessionMode);
+  if (sessionMode) {
+    return sessionMode;
+  }
   return parsePreviewStreamingMode(getChannelStreamingConfigObject(entry)?.mode) ?? defaultMode;
 }
 

@@ -47,6 +47,7 @@ import {
   buildTelegramNativeQuoteCandidate,
   type TelegramNativeQuoteCandidateByMessageId,
 } from "./bot/native-quote.js";
+import { resolveTelegramPreviewStreamMode } from "./preview-streaming.js";
 import { cacheSticker, describeStickerImage } from "./sticker-cache.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
@@ -301,6 +302,20 @@ export const dispatchTelegramMessage = async (
   const telegramDeps =
     injectedTelegramDeps ?? (await import("./bot-deps.js")).defaultTelegramBotDeps;
   const loadFreshSessionEntry = createFreshTelegramSessionEntryLoader({ cfg, telegramDeps });
+  let sessionStreamingMode: unknown;
+  const streamSessionKey = dispatchContext.ctxPayload.SessionKey;
+  if (streamSessionKey) {
+    try {
+      sessionStreamingMode = loadFreshSessionEntry(dispatchContext.route.agentId, streamSessionKey)
+        .entry?.streamingMode;
+    } catch (err) {
+      logVerbose(`telegram stream mode session lookup failed: ${String(err)}`);
+    }
+  }
+  const effectiveStreamMode = resolveTelegramPreviewStreamMode({
+    streaming: { mode: streamMode },
+    sessionStreamingMode,
+  });
   const isRoomEvent = dispatchContext.ctxPayload.InboundEventKind === "room_event";
   const status = createTelegramDispatchStatus({ context: dispatchContext });
   const tableMode = resolveMarkdownTableMode({
@@ -341,6 +356,7 @@ export const dispatchTelegramMessage = async (
     replyQuoteText: quote.replyQuoteText,
     resolvedReasoningLevel,
     statusReactionController: status.controller,
+    streamMode: effectiveStreamMode,
     tableMode,
     telegramDeps,
   };
@@ -408,7 +424,7 @@ export const dispatchTelegramMessage = async (
       }
       await cleanupDrafts(turn, isDispatchSuperseded());
       if (
-        streamMode === "progress" &&
+        effectiveStreamMode === "progress" &&
         turn.sawProgressFinal &&
         !turn.dispatchError &&
         !turn.hadErrorReplyFailureOrSkip &&

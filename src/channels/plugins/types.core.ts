@@ -11,7 +11,7 @@ import type {
 import type { AgentTool, AgentToolResult } from "../../agents/runtime/index.js";
 import type { ReplyDeliveryContext, ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
-import type { MarkdownTableMode } from "../../config/types.base.js";
+import type { MarkdownTableMode, StreamingMode } from "../../config/types.base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MessagePresentation } from "../../interactive/payload.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
@@ -337,6 +337,12 @@ export type ChannelStreamingAdapter = {
     minChars: number;
     idleMs: number;
   };
+  /**
+   * Opts the channel into `/stream` and declares the inherited mode used when
+   * neither account config nor a session override selects one. The channel's
+   * delivery path must honor `SessionEntry.streamingMode` when this is set.
+   */
+  sessionModeDefault?: StreamingMode;
 };
 
 // Keep core transport-agnostic. Plugins can carry richer component types on

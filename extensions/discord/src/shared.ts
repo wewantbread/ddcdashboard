@@ -140,6 +140,7 @@ export function createDiscordPluginBase(params: {
     doctor: discordDoctor,
     streaming: {
       blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
+      sessionModeDefault: "off",
     },
     reload: { configPrefixes: ["channels.discord"] },
     configSchema: DiscordChannelConfigSchema,

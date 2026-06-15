@@ -39,6 +39,12 @@ describe("createDiscordPluginBase", () => {
     expect(plugin.security?.collectAuditFindings).toBeTypeOf("function");
   });
 
+  it("declares the inherited preview-streaming mode so /stream is supported", () => {
+    const plugin = createDiscordPluginBase({ setupContract: {} as never });
+
+    expect(plugin.streaming?.sessionModeDefault).toBe("off");
+  });
+
   it("hydrates announce delivery targets from stored session routing", () => {
     const plugin = createDiscordPluginBase({ setupContract: {} as never });
 
