@@ -2,7 +2,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { normalizeWindowsPosixDrivePath, resolveReadPath } from "./path-utils.js";
+import { resolveReadPath } from "./path-utils.js";
+import { normalizeWindowsPosixDrivePath } from "./windows-posix-path.js";
 
 describe("resolveReadPath", () => {
   const cwd = path.resolve("workspace");
@@ -35,6 +36,8 @@ describe("resolveReadPath", () => {
       expect(resolveReadPath("~\\notes.txt", cwd)).toBe(path.resolve(cwd, "~\\notes.txt"));
     },
   );
+});
+
 describe("normalizeWindowsPosixDrivePath", () => {
   it.each([
     ["/c/Users/Test/file.txt", "C:\\Users\\Test\\file.txt"],
