@@ -35,6 +35,7 @@ import {
 } from "./openai-responses-contracts.js";
 import type { createResponsesPromptEgressObserver } from "./openai-responses-prompt-observer-internal.js";
 import { resolveReplayableResponsesMessageId } from "./openai-responses-replay.js";
+import { usesNativeOpenAICodexResponsesBackend } from "./openai-transport-params.js";
 import { log } from "./openai-transport-shared.js";
 import {
   sanitizeNonEmptyTransportPayloadText,
@@ -42,6 +43,36 @@ import {
 } from "./transport-stream-shared.js";
 
 type ResponsesClientLike = ReturnType<typeof createOpenAIResponsesClient>;
+
+export function isTransientOpenAICodexReasoningItem(item: unknown, model: Model): boolean {
+  if (!usesNativeOpenAICodexResponsesBackend(model) || !item || typeof item !== "object") {
+    return false;
+  }
+  const record = item as { type?: unknown; id?: unknown };
+  // Limit the observed prefix convention to the native Codex backend. Compatible
+  // Responses endpoints own their opaque ID namespaces and may use it durably.
+  return (
+    record.type === "reasoning" && typeof record.id === "string" && record.id.startsWith("rs_tmp_")
+  );
+}
+
+export function persistOpenAIResponsesReasoningReplayState(
+  block: {
+    thinkingSignature?: string;
+    [OPENAI_RESPONSES_REASONING_REPLAY_BLOCK_META_KEY]?: OpenAIResponsesReasoningReplayMetadata;
+  },
+  item: ReplayableResponseReasoningItem,
+  model: Model,
+  metadata?: OpenAIResponsesReasoningReplayMetadata,
+): void {
+  if (isTransientOpenAICodexReasoningItem(item, model)) {
+    return;
+  }
+  block.thinkingSignature = JSON.stringify(item);
+  if (item.encrypted_content && metadata) {
+    block[OPENAI_RESPONSES_REASONING_REPLAY_BLOCK_META_KEY] = metadata;
+  }
+}
 
 export function isInvalidEncryptedContentError(error: unknown): boolean {
   if (!error || typeof error !== "object") {
@@ -529,6 +560,9 @@ export function convertResponsesMessages(
             const reasoningItem = JSON.parse(
               block.thinkingSignature,
             ) as ReplayableResponseReasoningItem;
+            if (isTransientOpenAICodexReasoningItem(reasoningItem, model)) {
+              continue;
+            }
             const replayableReasoningItem = prepareOpenAIResponsesReasoningItemForReplay(
               reasoningItem,
               replayContext,
