@@ -1008,6 +1008,58 @@ describe("Slack native command argument menus", () => {
     },
   );
 
+  it("renders /model choices from the routed agent policy", async () => {
+    const { resolveAgentRouteMock } = getSlackSlashMocks();
+    resolveAgentRouteMock.mockReturnValue({
+      agentId: "research",
+      sessionKey: "agent:research:slack:direct:U1",
+      accountId: "acct",
+    });
+    const testHarness = createArgMenusHarness({
+      commands: { native: true, nativeSkills: false },
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.5" },
+          models: { "openai/gpt-5.5": {} },
+          modelPolicy: { allow: ["openai/gpt-5.5"] },
+        },
+        list: [
+          {
+            id: "research",
+            model: { primary: "anthropic/claude-sonnet-4.6" },
+            models: { "anthropic/claude-sonnet-4.6": {} },
+            modelPolicy: { allow: ["anthropic/claude-sonnet-4.6"] },
+          },
+        ],
+      },
+      models: {
+        providers: {
+          openai: { models: [{ id: "gpt-5.5", name: "GPT-5.5" }] },
+          anthropic: {
+            models: [{ id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }],
+          },
+        },
+      },
+    });
+    await registerCommands(testHarness.ctx, testHarness.account);
+    const handler = requireHandler(testHarness.commands, "/model", "/model");
+    const routedArgMenuHandler = requireHandler(
+      testHarness.actions,
+      /^openclaw_cmdarg/,
+      "routed /model arg-menu action",
+    );
+
+    const element = (await getFirstActionElementFromCommand(handler)) as {
+      value?: string;
+    };
+    const encodedValue = element.value;
+    expect(encodedValue?.split("|")[3]).toBe(encodeURIComponent("anthropic/claude-sonnet-4.6"));
+
+    await runArgMenuAction(routedArgMenuHandler, { action: { value: encodedValue } });
+
+    expectSingleDispatchedSlashBody("/model anthropic/claude-sonnet-4.6");
+  });
+
   it("falls back to static menus when app.options() throws during registration", async () => {
     const testHarness = createArgMenusHarness();
     const runtimeLog = vi.fn();

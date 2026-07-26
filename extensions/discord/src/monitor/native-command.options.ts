@@ -105,8 +105,8 @@ export function buildDiscordCommandOptions(params: {
     const resolvedChoices = resolveCommandArgChoices({ command, arg, cfg });
     const shouldAutocomplete =
       arg.preferAutocomplete === true ||
-      (resolvedChoices.length > 0 &&
-        (typeof arg.choices === "function" || resolvedChoices.length > 25));
+      typeof arg.choices === "function" ||
+      resolvedChoices.length > 25;
     const autocomplete = shouldAutocomplete
       ? async (interaction: AutocompleteInteraction) => {
           if (
@@ -141,6 +141,7 @@ export function buildDiscordCommandOptions(params: {
             command,
             arg,
             cfg: currentCfg,
+            agentId: context?.agentId,
             provider: context?.provider,
             model: context?.model,
             agentRuntime: context?.agentRuntime,

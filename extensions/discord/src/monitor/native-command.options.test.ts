@@ -351,6 +351,60 @@ describe("createDiscordNativeCommand option wiring", () => {
     ]);
   });
 
+  it("registers dynamic autocomplete when choices exist only in the routed context", async () => {
+    const command: ChatCommandDefinition = {
+      key: "model",
+      nativeName: "model",
+      description: "Set model",
+      textAliases: ["/model"],
+      acceptsArgs: true,
+      args: [
+        {
+          name: "model",
+          description: "Model id",
+          type: "string",
+          choices: ({ provider }) =>
+            provider === "anthropic"
+              ? [{ label: "anthropic/Claude Sonnet", value: "anthropic/claude-sonnet" }]
+              : [],
+        },
+      ],
+      argsParsing: "positional",
+      argsMenu: "auto",
+      scope: "both",
+    };
+    const options = buildDiscordCommandOptions({
+      command,
+      cfg: {},
+      authorizeChoiceContext: async () => true,
+      resolveChoiceContext: async () => ({
+        provider: "anthropic",
+        model: "claude-sonnet",
+        agentId: "research",
+      }),
+    });
+    const model = options?.find((option) => option.name === "model");
+    if (!model) {
+      throw new Error("missing route-aware model option");
+    }
+    const autocomplete = requireAutocomplete(
+      model,
+      "model option did not wire route-aware autocomplete",
+    );
+
+    const respond = await runAutocomplete(autocomplete, {
+      userId: "owner",
+      channelType: ChannelType.DM,
+      channelId: "dm-1",
+      channelName: "dm-1",
+      focusedValue: "sonnet",
+    });
+
+    expect(respond).toHaveBeenCalledWith([
+      { name: "anthropic/Claude Sonnet", value: "anthropic/claude-sonnet" },
+    ]);
+  });
+
   it("keeps static choices for non-acp string action arguments", () => {
     const command = createNativeCommand("config");
     const action = requireOption(command, "action");

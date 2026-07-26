@@ -33,7 +33,8 @@ import {
   type TelegramCommandExecutorParams,
 } from "./bot-native-command-dispatch.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
-import { buildTelegramNativeCommandCallbackData } from "./native-command-callback-data.js";
+import { buildBrowseProvidersButton } from "./model-buttons.js";
+import { sanitizeTelegramNativeCommandCallbackData } from "./native-command-callback-data.js";
 
 const loadTelegramLoginCommandExecutor = createLazyRuntimeModule(
   () => import("./bot-native-command-login.js"),
@@ -317,6 +318,7 @@ export async function executeTelegramBuiltinCommand(
         command: commandDefinition,
         args: commandArgs,
         cfg: dispatch.runtimeCfg,
+        agentId: dispatch.route.agentId,
         ...menuModelContext,
         ...(menuModelCatalog?.length ? { catalog: menuModelCatalog } : {}),
       })
@@ -347,29 +349,42 @@ export async function executeTelegramBuiltinCommand(
           : undefined,
     });
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+    let allChoicesFitCallbackData = true;
     for (let index = 0; index < menu.choices.length; index += 2) {
-      rows.push(
-        menu.choices.slice(index, index + 2).map((choice) => ({
-          text: choice.label,
-          callback_data: buildTelegramNativeCommandCallbackData(
-            buildCommandTextFromArgs(commandDefinition, {
-              values: { [menu.arg.name]: choice.value },
-            }),
-          ),
-        })),
-      );
+      const row = menu.choices.slice(index, index + 2).flatMap((choice) => {
+        const callbackData = sanitizeTelegramNativeCommandCallbackData(
+          buildCommandTextFromArgs(commandDefinition, {
+            values: { [menu.arg.name]: choice.value },
+          }),
+        );
+        if (!callbackData) {
+          allChoicesFitCallbackData = false;
+          return [];
+        }
+        return { text: choice.label, callback_data: callbackData };
+      });
+      if (row.length > 0) {
+        rows.push(row);
+      }
     }
-    const replyMarkup = buildInlineKeyboard(rows);
-    await withTelegramApiErrorLogging({
-      operation: "sendMessage",
-      runtime: dispatch.runtime,
-      fn: () =>
-        dispatch.bot.api.sendMessage(dispatch.chatId, title, {
-          ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-          ...dispatch.threadParams,
-        }),
-    });
-    return false;
+    const menuRows = allChoicesFitCallbackData
+      ? rows
+      : commandDefinition.key === "model"
+        ? buildBrowseProvidersButton()
+        : [];
+    const replyMarkup = buildInlineKeyboard(menuRows);
+    if (replyMarkup) {
+      await withTelegramApiErrorLogging({
+        operation: "sendMessage",
+        runtime: dispatch.runtime,
+        fn: () =>
+          dispatch.bot.api.sendMessage(dispatch.chatId, title, {
+            reply_markup: replyMarkup,
+            ...dispatch.threadParams,
+          }),
+      });
+      return false;
+    }
   }
   return await dispatchTelegramBuiltinTurn({ dispatch, prompt, commandArgs });
 }
