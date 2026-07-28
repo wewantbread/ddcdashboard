@@ -55,6 +55,14 @@ export type McpLoopbackRequestContext = {
    */
   toolsAllow?: string[];
   skillWorkshop?: SkillWorkshopRunOptions;
+  /**
+   * Attempt-local authority to start or redirect delegated work, stamped into
+   * the grant so a fallback completion-report turn running on a CLI backend
+   * gets the same gate as an embedded attempt. The loopback surface enforces
+   * it on both tools/list and tools/call, so CLI-side advisory flags cannot
+   * reopen it. Unset keeps the full delegation surface.
+   */
+  delegationCapability?: DelegationCapability;
   scheduledToolPolicy?: ScheduledToolPolicyContext;
   /** Host-owned creator origin; child MCP request fields cannot widen it. */
   cronCreatorCallerOrigin?: CronScheduledToolCallerOrigin;
