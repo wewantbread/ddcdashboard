@@ -537,6 +537,33 @@ type WebFetchRuntimeParams = {
   resolveProviderFallback: () => Promise<WebFetchProviderFallback>;
 };
 
+function createWebFetchCacheKey(params: {
+  parsedUrl: URL;
+  runtime: WebFetchRuntimeParams;
+  ssrfPolicy?: SsrFPolicy;
+  providerCacheKey?: string;
+}): string {
+  const headersCacheKey = resolveFetchHeadersCacheKey(params.runtime.headers);
+  const cacheDiscriminators = [
+    `user-agent:${sha256Hex(params.runtime.userAgent)}`,
+    params.providerCacheKey ? `provider:${params.providerCacheKey}` : "",
+    params.ssrfPolicy?.dangerouslyAllowPrivateNetwork === true ? "allow-private-network" : "",
+    params.ssrfPolicy?.allowRfc2544BenchmarkRange === true ? "allow-rfc2544" : "",
+    params.ssrfPolicy?.allowIpv6UniqueLocalRange === true ? "allow-ipv6-ula" : "",
+    params.ssrfPolicy?.allowedHostnames?.length
+      ? `allowed-hostnames:${sha256Hex(params.ssrfPolicy.allowedHostnames.join("\n"))}`
+      : "",
+    params.runtime.useTrustedEnvProxy ? "trusted-env-proxy" : "",
+    headersCacheKey ? `headers:${headersCacheKey}` : "",
+  ].filter(Boolean);
+  return normalizeCacheKey(
+    [
+      `fetch:${params.parsedUrl.href}:${params.runtime.extractMode}:${params.runtime.maxChars}`,
+      ...cacheDiscriminators,
+    ].join(":"),
+  );
+}
+
 function normalizeProviderFinalUrl(value: unknown): string | undefined {
   const trimmed = normalizeOptionalString(value);
   if (!trimmed) {
@@ -663,12 +690,23 @@ async function maybeFetchProviderWebFetchPayload(
   params: WebFetchRuntimeParams & {
     urlToFetch: string;
     cacheKey: string;
+    createCacheKeyForProvider: (providerCacheKey?: string) => string;
     tookMs: number;
   },
 ): Promise<Record<string, unknown> | null> {
   const providerFallback = await params.resolveProviderFallback();
   if (!providerFallback) {
     return null;
+  }
+  // Provider discovery stays lazy, so repair the cache identity only after the
+  // actual fallback is known. Otherwise stale runtime metadata can alias results.
+  const providerCacheKey = normalizeOptionalLowercaseString(providerFallback.provider.id);
+  const cacheKey = params.createCacheKeyForProvider(providerCacheKey);
+  if (cacheKey !== params.cacheKey) {
+    const cached = readCache(FETCH_CACHE, cacheKey);
+    if (cached) {
+      return { ...cached.value, cached: true };
+    }
   }
   const rawPayload = await providerFallback.definition.execute({
     url: params.urlToFetch,
@@ -683,15 +721,12 @@ async function maybeFetchProviderWebFetchPayload(
     maxChars: params.maxChars,
     tookMs: params.tookMs,
   });
-  writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
+  writeCache(FETCH_CACHE, cacheKey, payload, params.cacheTtlMs);
   return payload;
 }
 
 async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string, unknown>> {
   const ssrfPolicy = mergeSsrFPolicies(params.ssrfPolicy);
-  const dangerouslyAllowPrivateNetwork = ssrfPolicy?.dangerouslyAllowPrivateNetwork === true;
-  const allowRfc2544BenchmarkRange = ssrfPolicy?.allowRfc2544BenchmarkRange === true;
-  const allowIpv6UniqueLocalRange = ssrfPolicy?.allowIpv6UniqueLocalRange === true;
   const useTrustedEnvProxy = params.useTrustedEnvProxy;
   let parsedUrl: URL;
   try {
@@ -702,27 +737,14 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
   if (!["http:", "https:"].includes(parsedUrl.protocol)) {
     throw new Error("Invalid URL: must be http or https");
   }
-  const headersCacheKey = resolveFetchHeadersCacheKey(params.headers);
-  // Append the operator header set after the existing cache discriminators so
-  // requests without custom headers keep their current cache key.
-  const cacheDiscriminators = [
-    `user-agent:${sha256Hex(params.userAgent)}`,
-    params.providerCacheKey ? `provider:${params.providerCacheKey}` : "",
-    dangerouslyAllowPrivateNetwork ? "allow-private-network" : "",
-    allowRfc2544BenchmarkRange ? "allow-rfc2544" : "",
-    allowIpv6UniqueLocalRange ? "allow-ipv6-ula" : "",
-    ssrfPolicy?.allowedHostnames?.length
-      ? `allowed-hostnames:${sha256Hex(ssrfPolicy.allowedHostnames.join("\n"))}`
-      : "",
-    useTrustedEnvProxy ? "trusted-env-proxy" : "",
-    headersCacheKey ? `headers:${headersCacheKey}` : "",
-  ].filter(Boolean);
-  const cacheKey = normalizeCacheKey(
-    [
-      `fetch:${parsedUrl.href}:${params.extractMode}:${params.maxChars}`,
-      ...cacheDiscriminators,
-    ].join(":"),
-  );
+  const createCacheKeyForProvider = (providerCacheKey?: string) =>
+    createWebFetchCacheKey({
+      parsedUrl,
+      runtime: params,
+      ssrfPolicy,
+      providerCacheKey,
+    });
+  const cacheKey = createCacheKeyForProvider(params.providerCacheKey);
   const cached = readCache(FETCH_CACHE, cacheKey);
   if (cached) {
     return { ...cached.value, cached: true };
@@ -774,6 +796,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       ...params,
       urlToFetch: finalUrl,
       cacheKey,
+      createCacheKeyForProvider,
       tookMs: Date.now() - start,
     });
     if (payload) {
@@ -791,6 +814,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
         ...params,
         urlToFetch: params.url,
         cacheKey,
+        createCacheKeyForProvider,
         tookMs: Date.now() - start,
       });
       if (payload) {
@@ -845,6 +869,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
               ...params,
               urlToFetch: finalUrl,
               cacheKey,
+              createCacheKeyForProvider,
               tookMs: Date.now() - start,
             });
           } catch {
@@ -874,6 +899,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
           ...params,
           urlToFetch: finalUrl,
           cacheKey,
+          createCacheKeyForProvider,
           tookMs: Date.now() - start,
         });
         if (payload) {
