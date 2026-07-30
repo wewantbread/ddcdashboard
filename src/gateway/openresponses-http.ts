@@ -35,6 +35,10 @@ import {
   type InputImageSource,
 } from "../media/input-files.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
+import {
+  DOCUMENT_EXTRACTOR_CAPACITY_ERROR_CODE,
+  isDocumentExtractorCapacityError,
+} from "../plugins/document-extractor-types.js";
 import { defaultRuntime } from "../runtime.js";
 import {
   isReplaceableAssistantStreamEvent,
@@ -490,6 +494,8 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
 
+  const abortController = new AbortController();
+  const stopWatchingMediaDisconnect = watchClientDisconnect(req, res, abortController);
   const prompt = buildAgentPrompt(payload.input);
 
   // Count URL sources request-wide, but replay media only from the current user turn.
@@ -528,7 +534,11 @@ export async function handleOpenResponsesHttpRequest(
                       data: source.data,
                       mediaType: source.media_type,
                     };
-              const image = await extractImageContentFromSource(imageSource, limits.images);
+              const image = await extractImageContentFromSource(
+                imageSource,
+                limits.images,
+                abortController.signal,
+              );
               images.push(image);
               continue;
             }
@@ -545,6 +555,7 @@ export async function handleOpenResponsesHttpRequest(
                       filename: source.filename,
                     },
               limits: limits.files,
+              signal: abortController.signal,
             });
             const rawText = file.text;
             if (rawText?.trim()) {
@@ -579,10 +590,29 @@ export async function handleOpenResponsesHttpRequest(
       }
     }
   } catch (err) {
+    stopWatchingMediaDisconnect();
+    if (abortController.signal.aborted) {
+      return true;
+    }
+    if (isDocumentExtractorCapacityError(err)) {
+      res.setHeader("Retry-After", "1");
+      sendJson(res, 503, {
+        error: {
+          message: "Document extraction is temporarily busy; retry shortly.",
+          type: "service_unavailable",
+          code: DOCUMENT_EXTRACTOR_CAPACITY_ERROR_CODE,
+        },
+      });
+      return true;
+    }
     logWarn(`openresponses: request parsing failed: ${String(err)}`);
     sendJson(res, 400, {
       error: { message: "invalid request", type: "invalid_request_error" },
     });
+    return true;
+  }
+  stopWatchingMediaDisconnect();
+  if (abortController.signal.aborted) {
     return true;
   }
 
@@ -672,7 +702,6 @@ export async function handleOpenResponsesHttpRequest(
     storeResponseSession(responseId, sessionKey, responseSessionScope);
   const outputItemId = `msg_${randomUUID()}`;
   const deps = createDefaultDeps();
-  const abortController = new AbortController();
   const streamMaxTokens =
     typeof payload.max_output_tokens === "number" ? payload.max_output_tokens : undefined;
   const streamTemperature =
