@@ -36,7 +36,7 @@ export function expandOsHomePrefix(filePath: string): string {
 }
 
 function expandPath(filePath: string, normalizeSpaces = true): string {
-  const withoutAtPrefix = normalizeWindowsPosixDrivePath(normalizeAtPrefix(filePath));
+  const withoutAtPrefix = normalizeAtPrefix(filePath);
   const normalized = normalizeSpaces ? normalizeUnicodeSpaces(withoutAtPrefix) : withoutAtPrefix;
   if (normalized.startsWith("file://")) {
     try {
@@ -60,8 +60,12 @@ export function resolveToCwd(filePath: string, cwd: string): string {
   return resolvePath(cwd, expanded);
 }
 
+export function resolveLocalToolPath(filePath: string, cwd: string): string {
+  return resolveToCwd(normalizeWindowsPosixDrivePath(filePath), cwd);
+}
+
 export function resolveReadPath(filePath: string, cwd: string): string {
-  const expanded = expandPath(filePath, false);
+  const expanded = expandPath(normalizeWindowsPosixDrivePath(filePath), false);
   return isAbsolute(expanded) ? expanded : resolvePath(cwd, expanded);
 }
 

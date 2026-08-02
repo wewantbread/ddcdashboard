@@ -48,7 +48,8 @@ import {
   type ReadToolDetails,
   type ReadToolTruncationDetails,
 } from "./sessions/tools/index.js";
-import { expandOsHomePrefix } from "./sessions/tools/path-utils.js";
+} from "./sessions/tools/index.js";
+import { expandOsHomePrefix, resolveLocalToolPath } from "./sessions/tools/path-utils.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
@@ -1054,6 +1055,7 @@ function createSandboxReadOperations(params: SandboxToolParams) {
 function createSandboxWriteOperations(params: SandboxToolParams) {
   return withMemoryWriteProvenance(
     {
+      resolvePath: (filePath: string) => resolveContainerPathCandidate(filePath) ?? filePath,
       mkdir: async (dir: string) => {
         await params.bridge.mkdirp({ filePath: dir, cwd: params.root });
       },
@@ -1072,6 +1074,7 @@ function createSandboxWriteOperations(params: SandboxToolParams) {
 function createSandboxEditOperations(params: SandboxToolParams) {
   return withMemoryWriteProvenance(
     {
+      resolvePath: (filePath: string) => resolveContainerPathCandidate(filePath) ?? filePath,
       readFile: (absolutePath: string) =>
         params.bridge.readFile({ filePath: absolutePath, cwd: params.root }),
       writeFile: (absolutePath: string, content: string) =>
@@ -1159,6 +1162,7 @@ function createHostWriteOperations(
     // When workspaceOnly is false, allow writes anywhere on the host
     return withMemoryWriteProvenance(
       {
+        resolvePath: resolveLocalToolPath,
         mkdir: async (dir: string) => {
           const resolved = resolveHostPath(dir);
           await fs.mkdir(resolved, { recursive: true });
@@ -1181,6 +1185,7 @@ function createHostWriteOperations(
   const getRoot = () => (rootPromise ??= fsRoot(root));
   return withMemoryWriteProvenance(
     {
+      resolvePath: resolveLocalToolPath,
       mkdir: async (dir: string) => {
         const relative = toRelativeWorkspacePath(root, dir, { allowRoot: true });
         const resolved = relative ? path.resolve(root, relative) : path.resolve(root);
@@ -1218,6 +1223,7 @@ function createHostEditOperations(
     // When workspaceOnly is false, allow edits anywhere on the host
     return withMemoryWriteProvenance(
       {
+        resolvePath: resolveLocalToolPath,
         readFile: async (absolutePath: string) => {
           return await fs.readFile(resolveHostPath(absolutePath));
         },
@@ -1239,6 +1245,7 @@ function createHostEditOperations(
   const getRoot = () => (rootPromise ??= fsRoot(root));
   return withMemoryWriteProvenance(
     {
+      resolvePath: resolveLocalToolPath,
       readFile: async (absolutePath: string) => {
         // Canonicalize symlink parents like the write path: fs-safe 0.5.2
         // rejects intermediate symlinks by default, but in-workspace symlink
