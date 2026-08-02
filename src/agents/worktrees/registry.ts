@@ -10,6 +10,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import { ensureWorktreeRetentionClaimsSchema } from "./retention-schema.js";
 import type {
   ManagedWorktreeOwnerKind,
   ManagedWorktreeRecord,
@@ -450,6 +451,7 @@ export function updateRegistryWorktree(
 }
 
 export function deleteRegistryWorktree(env: NodeJS.ProcessEnv, id: string): void {
+  ensureWorktreeRetentionClaimsSchema(env);
   const db = dbFor(env);
   runOpenClawStateWriteTransaction(() => {
     executeSqliteQuerySync(
@@ -619,6 +621,7 @@ export function claimWorktreeRemovalRow(
     checks?: RunLeaseOwnerChecks;
   },
 ): void {
+  ensureWorktreeRetentionClaimsSchema(env);
   runOpenClawStateWriteTransaction(
     (database) => {
       const db = database.db;
@@ -741,6 +744,7 @@ export function setWorktreeRetentionClaimRow(
     now: number;
   },
 ): boolean {
+  ensureWorktreeRetentionClaimsSchema(env);
   return runOpenClawStateWriteTransaction(
     (database) => {
       const db = database.db;
@@ -799,6 +803,7 @@ export function setWorktreeRetentionClaimRow(
 }
 
 export function hasWorktreeRetentionClaimRow(env: NodeJS.ProcessEnv, worktreeId: string): boolean {
+  ensureWorktreeRetentionClaimsSchema(env);
   const db = dbFor(env);
   const row = executeSqliteQuerySync(
     db,
