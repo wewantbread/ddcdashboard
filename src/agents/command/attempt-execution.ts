@@ -78,6 +78,7 @@ import {
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { resolveConversationToolPolicies } from "../conversation-tool-policy-pipeline.js";
 import type { RunEmbeddedAgentInternalParams } from "../embedded-agent-runner/run/internal-params.js";
+import { resolveDelegationCapability } from "../delegation-capability.js";
 import { runEmbeddedAgent, type EmbeddedAgentRunResult } from "../embedded-agent.js";
 import { appendGitCoauthorContext } from "../git-coauthor-attribution.js";
 import type { ContextEngineLogicalTurnLease } from "../harness/context-engine-logical-turn.js";
@@ -1024,6 +1025,15 @@ export function runAgentAttempt(params: {
               runtimeToolsAllow,
               params.opts.toolsAllowIsDefault,
             ),
+            // This loop is the command-origin sibling of the auto-reply fallback
+            // candidate, so its CLI grant needs the same delegation gate; the
+            // inputs match the tool state this invocation actually runs with.
+            delegationCapability: resolveDelegationCapability({
+              fallbackActive: params.isFallbackRetry,
+              inputProvenance: params.opts.inputProvenance,
+              disableTools,
+              toolsAllow: runtimeToolsAllow,
+            }),
             scheduledToolPolicy: params.opts.scheduledToolPolicy,
             cleanupBundleMcpOnRunEnd: params.opts.cleanupBundleMcpOnRunEnd,
             cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,
