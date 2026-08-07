@@ -24,8 +24,10 @@ import {
 } from "../agent-settings.js";
 import { resolveCliBackendConfig as resolveCliBackendConfigImpl } from "../cli-backends.js";
 import {
+  CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
   isBenignCompactionSkipReason,
   isBenignCompactionSkipResult,
+  isCodexOwnedAutomaticCompactionSkip,
 } from "../embedded-agent-runner/compact-reasons.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
 import {
@@ -49,8 +51,6 @@ import {
   normalizeSessionTokenCount,
   recordCliCompactionInStore as recordCliCompactionInStoreImpl,
 } from "./session-store.js";
-
-const CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON = "codex app-server owns automatic compaction";
 
 type SessionManagerLike = ReturnType<typeof SessionManager.open>;
 type SettingsManagerLike = {
@@ -194,16 +194,6 @@ function isUnsupportedNativeHarnessCompaction(
   result: EmbeddedAgentCompactResult | undefined,
 ): boolean {
   return result?.ok === false && result.failure?.reason === "unsupported_harness_compaction";
-}
-
-function isIntentionalNativeAutoCompactionSkip(
-  result: EmbeddedAgentCompactResult | undefined,
-): boolean {
-  return (
-    result?.ok === true &&
-    !result.compacted &&
-    result.reason === CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON
-  );
 }
 
 function readAgentIdFromSessionKey(sessionKey: string): string | undefined {
@@ -535,7 +525,7 @@ async function compactNativeHarnessCliTranscript(params: {
       );
       return { compacted: false };
     }
-    if (isIntentionalNativeAutoCompactionSkip(result)) {
+    if (result && isCodexOwnedAutomaticCompactionSkip(result)) {
       // Codex owns automatic thread compaction (codex-rs runs it inline during
       // turns); falling back to context-engine compaction here fought that
       // ownership and failed OAuth-only sessions with "No API key found".

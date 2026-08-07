@@ -564,6 +564,33 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
+  it("reports a missing binding on automatic triggers instead of deferring to codex-rs", async () => {
+    // #119977: the automatic ownership deferral reads the binding first, so a
+    // missing thread binding surfaces for recovery instead of being trusted
+    // indefinitely as a benign "codex owns automatic compaction" no-op.
+    const fake = createFakeCodexClient();
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = path.join(tempDir, "missing-auto-binding.jsonl");
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      }),
+    );
+
+    expect(fake.request).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("no codex app-server thread binding");
+    expect(result.failure?.reason).toBe("missing_thread_binding");
+    expect(result.result).toBeUndefined();
+  });
+
   it("starts native app-server compaction for post-context-engine budget requests", async () => {
     const fake = createFakeCodexClient({ retainedThreadId: null });
     setCodexAppServerClientFactoryForTest(async () => fake.client);
@@ -1929,6 +1956,48 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
     expect(fake.closeAndWait).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a dead thread as a recoverable stale binding on guarded native requests", async () => {
+    // #119977: a guarded (allowNonManual) escalation for a retired thread must
+    // reach stale_thread_binding so the recovery path can rebind, not a benign
+    // no-op. The RPC rejection travels the guarded withLease route to recovery.
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding();
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        },
+        { allowNonManualNativeRequest: true },
+      ),
+    );
+
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("thread not found: thread-1");
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    expect(result.result).toBeUndefined();
+    // The stale binding is preserved for the recovery path to clear/rebind.
+    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
   });
 
   it("retires the client before releasing an unconfirmed compaction start", async () => {
