@@ -728,6 +728,21 @@ describe("retired runtime config migrations", () => {
     );
   });
 
+  it("treats a whitespace-only legacy emoji as absent, not effective (#119501)", () => {
+    const result = applyAll({
+      messages: { ackReaction: "🔥" },
+      channels: { whatsapp: { ackReaction: { emoji: " ", direct: false, group: "always" } } },
+      agents: { list: [{ default: true, identity: { emoji: "🤖" } }] },
+    });
+
+    // WhatsApp trims a whitespace-only emoji and falls back, so the effective
+    // legacy value is the identity emoji "🤖", not the literal " ".
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🔥");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied legacy scope "group-all" to messages.ackReactionScope; kept existing messages.ackReaction over effective legacy emoji "🤖".',
+    );
+  });
+
   it("reports the default fallback emoji when no legacy emoji or identity exists", () => {
     const result = applyAll({
       messages: { ackReaction: "🔥" },

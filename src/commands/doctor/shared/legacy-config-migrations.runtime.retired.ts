@@ -357,12 +357,14 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     const defaultAgent =
       agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
     const identityEmoji = getRecord(getRecord(defaultAgent)?.identity)?.emoji;
-    const emoji =
-      typeof ack.emoji === "string"
-        ? ack.emoji
-        : typeof identityEmoji === "string"
-          ? identityEmoji
-          : "👀";
+    // WhatsApp trims the reaction emoji, so a whitespace-only legacy value is not
+    // effective — it falls back to identity or the default. Normalize before the
+    // receipt so the recovery record names the value WhatsApp would actually use.
+    const effectiveEmoji = (value: unknown): string | undefined => {
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
+    const emoji = effectiveEmoji(ack.emoji) ?? effectiveEmoji(identityEmoji) ?? "👀";
     if (messages.ackReaction === undefined) {
       messages.ackReaction = emoji;
       applied.push(`applied effective legacy emoji "${emoji}" to messages.ackReaction`);
