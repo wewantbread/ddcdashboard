@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
+import { CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import type { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import type { ModelFallbackAttemptProvenance } from "../../agents/model-fallback.types.js";
@@ -1611,6 +1612,82 @@ describe("runMemoryFlushIfNeeded", () => {
     ).rejects.toThrow("Preflight compaction required but failed: no real conversation messages");
     expect(onCompactionNotice).toHaveBeenNthCalledWith(1, "start");
     expect(onCompactionNotice).toHaveBeenNthCalledWith(2, "incomplete");
+  });
+
+  it("continues the turn when required preflight compaction defers to codex-owned automatic compaction", async () => {
+    const sessionFile = path.join(rootDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
+      "utf8",
+    );
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 1,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    // Exact blocked-native ownership deferral the codex plugin emits when the
+    // sandbox/exec host blocks native execution (compact.ts). codex-rs still
+    // auto-compacts the bound thread inline during the next turn, so the required
+    // preflight must continue the turn rather than drop it (#119971).
+    compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: false,
+      reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
+      result: {
+        details: {
+          backend: "codex-app-server",
+          skipped: true,
+          reason: "native_execution_unavailable",
+          trigger: "budget",
+        },
+      },
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 120,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      agentHarnessId: "openclaw",
+      modelSelectionLocked: true,
+    };
+    const onCompactionNotice = vi.fn();
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
+      followupRun: createTestFollowupRun({
+        sessionId: "session",
+        sessionFile,
+        sessionKey: "agent:main:main",
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      agentCfgContextTokens: 100,
+      sessionEntry,
+      sessionStore: { "agent:main:main": sessionEntry },
+      sessionKey: "agent:main:main",
+      storePath: path.join(rootDir, "sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+      onCompactionNotice,
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preflightRequired: true,
+        forcePreflight: true,
+        trigger: "budget",
+      }),
+    );
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(onCompactionNotice).toHaveBeenNthCalledWith(1, "start");
+    expect(onCompactionNotice).toHaveBeenNthCalledWith(2, "skipped");
+    expect(onCompactionNotice).not.toHaveBeenCalledWith("incomplete");
   });
 
   it("fails when required preflight context-engine compaction is deferred to background maintenance", async () => {
