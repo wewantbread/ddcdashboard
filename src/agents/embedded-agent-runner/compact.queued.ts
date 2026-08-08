@@ -38,10 +38,7 @@ import { materializePreparedRuntimeModel } from "../runtime-plan/materialize-mod
 import type { SandboxContext } from "../sandbox/types.js";
 import { resolveSessionPlacementSandbox } from "../session-placement-admission.js";
 import { SessionManager } from "../sessions/index.js";
-import {
-  DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON,
-  isCodexOwnedAutomaticCompactionSkip,
-} from "./compact-reasons.js";
+import { DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON } from "./compact-reasons.js";
 import { compactNativeCliSession } from "./compact.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
 import { compactionCheckpointStore, persistCompactionCheckpoint } from "./compaction-checkpoint.js";
@@ -610,7 +607,7 @@ async function compactResolvedContextEngine(
   });
   const contextEngineOwnsCompaction = contextEngine.info.ownsCompaction === true;
   let requiredPreflightNativeCapabilityUsed = false;
-  let harnessResult =
+  const harnessResult =
     attemptNativeHarnessCompaction && (!contextEngineOwnsCompaction || lockedNativeHarness)
       ? await maybeCompactAgentHarnessSession(
           {
@@ -633,39 +630,6 @@ async function compactResolvedContextEngine(
           },
         )
       : undefined;
-  const forcedPreflightCompaction =
-    params.forcePreflight === true || params.preflightRequired === true;
-  if (
-    harnessResult &&
-    forcedPreflightCompaction &&
-    isCodexOwnedAutomaticCompactionSkip(harnessResult)
-  ) {
-    // A forced/preflight compaction has declared compaction mandatory, so Codex's
-    // "owns automatic compaction" deferral must not end the turn against a thread
-    // that may no longer exist. Re-issue it as a guarded native request (the
-    // allowNonManual compactAfterContextEngine path): a live bound thread compacts
-    // itself over its own OAuth — context-engine compaction would fail an
-    // OAuth-only Codex session with "No API key found" — and a dead thread surfaces
-    // "thread not found" (stale_thread_binding), which the recoverable-binding
-    // handling below repairs (context-engine fallback for unlocked sessions, or
-    // recovery on a locked session) (#119977, #119971). The required_preflight
-    // path above already avoids the deferral, so this only fires for forcePreflight
-    // triggers that still receive Codex's ownership skip.
-    log.warn(
-      `native harness deferred required compaction to codex-rs; escalating to a guarded native request: ${harnessResult.reason ?? "unknown"}`,
-    );
-    const guardedNativeResult = await maybeCompactAgentHarnessSession(
-      {
-        ...preparedParams,
-        runtimeModel: effectiveRuntimeModel,
-        contextEngine,
-        contextTokenBudget,
-        contextEngineRuntimeContext,
-      },
-      { nativeCompactionRequest: "after_context_engine" },
-    );
-    harnessResult = guardedNativeResult ?? harnessResult;
-  }
   // A model lock normally makes the native harness result terminal: the
   // persisted runtime is authoritative and must not be swapped for
   // context-engine compaction. Required preflight permits a harness-declared
@@ -682,14 +646,16 @@ async function compactResolvedContextEngine(
       shouldFallbackAfterHarnessCompaction(harnessResult)
     )
   ) {
-    return harnessResult ?? lockedCompactionRuntimeFailure(selectedHarnessRuntime);
+    return harnessResult
+      ? { ...harnessResult, compactionKind: "native-harness" }
+      : lockedCompactionRuntimeFailure(selectedHarnessRuntime);
   }
   if (harnessResult) {
     if (!shouldFallbackAfterHarnessCompaction(harnessResult)) {
       return { ...harnessResult, compactionKind: "native-harness" };
     }
-    // A missing/stale binding — including a dead thread surfaced by the guarded
-    // native escalation above — falls back to context-engine compaction, which
+    // A missing/stale binding — including a dead thread the native request surfaced
+    // as "thread not found" — falls back to context-engine compaction, which
     // recompacts a live transcript or exposes the stale binding for recovery.
     log.warn(
       `native harness compaction could not use its session binding; falling back to context engine: ${harnessResult.reason ?? "unknown"}`,

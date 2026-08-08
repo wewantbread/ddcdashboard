@@ -349,7 +349,6 @@ export function createCodexAppServerNativeCompaction(
     return maybeCompactCodexAppServerSession(params, {
       bindingStore: options.bindingStore,
       pluginConfig: options.resolvePluginConfig?.() ?? options.pluginConfig,
-      allowNonManualNativeRequest: true,
       nativeCompactionRequest: params.nativeCompactionRequest,
     });
   };
