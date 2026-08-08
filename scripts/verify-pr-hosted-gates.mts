@@ -164,6 +164,9 @@ export function parseArgs(argv: readonly string[]) {
         missingValueMessage: "Expected --pr <value>.",
         rejectShortOptions: true,
         transform(value: string) {
+          if (!/^\d+$/u.test(value)) {
+            throw new Error("Expected --pr <positive-integer>.");
+          }
           const parsed = Number(value);
           if (!Number.isSafeInteger(parsed) || parsed <= 0) {
             throw new Error("Expected --pr <positive-integer>.");
