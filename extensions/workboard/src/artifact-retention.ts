@@ -53,6 +53,7 @@ async function setArtifactRetentionClaim(params: {
   card: WorkboardCard;
   workspacePath: string;
   active: boolean;
+  allowUnavailable?: boolean;
 }): Promise<void> {
   const accepted = await params.worktrees.setRetentionClaim({
     path: params.workspacePath,
@@ -61,7 +62,7 @@ async function setArtifactRetentionClaim(params: {
     claimId: ARTIFACT_RETENTION_CLAIM_ID,
     active: params.active,
   });
-  if (params.active && !accepted) {
+  if (params.active && !accepted && !params.allowUnavailable) {
     throw new Error(
       `managed worktree is unavailable for artifact retention: ${params.workspacePath}`,
     );
@@ -86,6 +87,8 @@ export function withWorkboardArtifactRetention(
           card,
           workspacePath,
           active: Boolean(await retainedWorkspacePath(card)),
+          // Pre-retention cards can outlive worktrees that old cleanup already removed.
+          allowUnavailable: true,
         });
       }
     })().catch((error: unknown) => {

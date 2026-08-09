@@ -109,6 +109,46 @@ describe("Workboard artifact worktree retention", () => {
     };
   }
 
+  function restartWithRetentionStore() {
+    sqlite.close();
+    closeOpenClawStateDatabaseForTest();
+    service = new ManagedWorktreeService({ env, now: () => now });
+    sqlite = createWorkboardSqliteStores({ env });
+    const cards = withWorkboardArtifactRetention(sqlite.cards, retentionWorktrees());
+    store = new WorkboardStore(cards, {
+      boards: sqlite.boards,
+      subscriptions: sqlite.subscriptions,
+      attachments: sqlite.attachments,
+      dataVersion: sqlite.dataVersion,
+    });
+    return cards;
+  }
+
+  async function createLegacyArtifactCard(name: string) {
+    const legacyStore = new WorkboardStore(sqlite.cards, {
+      boards: sqlite.boards,
+      subscriptions: sqlite.subscriptions,
+      attachments: sqlite.attachments,
+      dataVersion: sqlite.dataVersion,
+    });
+    const card = await legacyStore.create({ title: name, status: "ready", runId: `run-${name}` });
+    const worktree = await service.create({
+      repoRoot: repo,
+      name,
+      ownerKind: "workboard",
+      ownerId: card.id,
+    });
+    await service.acquire(worktree.id);
+    await legacyStore.update(card.id, {
+      workspace: { kind: "worktree", path: worktree.path, branch: worktree.branch },
+      workspaceAccess: { unrestricted: true },
+    });
+    await fs.mkdir(path.join(worktree.path, "dist"));
+    await fs.writeFile(path.join(worktree.path, "dist", "report.txt"), "report\n");
+    await legacyStore.addArtifact(card.id, { path: "dist/report.txt" });
+    return { card, worktree };
+  }
+
   it("persists an aliased local artifact claim until the reference is externalized", async () => {
     const { card, worktree } = await createCardWorktree("aliased-artifact");
     const artifactDir = path.join(worktree.path, "dist");
@@ -143,43 +183,9 @@ describe("Workboard artifact worktree retention", () => {
   });
 
   it("reconciles artifacts persisted before retention claims existed", async () => {
-    const legacyStore = new WorkboardStore(sqlite.cards, {
-      boards: sqlite.boards,
-      subscriptions: sqlite.subscriptions,
-      attachments: sqlite.attachments,
-      dataVersion: sqlite.dataVersion,
-    });
-    const card = await legacyStore.create({
-      title: "legacy-artifact",
-      status: "ready",
-      runId: "run-legacy-artifact",
-    });
-    const worktree = await service.create({
-      repoRoot: repo,
-      name: "legacy-artifact",
-      ownerKind: "workboard",
-      ownerId: card.id,
-    });
-    await service.acquire(worktree.id);
-    await legacyStore.update(card.id, {
-      workspace: { kind: "worktree", path: worktree.path, branch: worktree.branch },
-      workspaceAccess: { unrestricted: true },
-    });
-    await fs.mkdir(path.join(worktree.path, "dist"));
-    await fs.writeFile(path.join(worktree.path, "dist", "report.txt"), "report\n");
-    await legacyStore.addArtifact(card.id, { path: "dist/report.txt" });
+    const { card, worktree } = await createLegacyArtifactCard("legacy-artifact");
 
-    sqlite.close();
-    closeOpenClawStateDatabaseForTest();
-    service = new ManagedWorktreeService({ env, now: () => now });
-    sqlite = createWorkboardSqliteStores({ env });
-    const cards = withWorkboardArtifactRetention(sqlite.cards, retentionWorktrees());
-    store = new WorkboardStore(cards, {
-      boards: sqlite.boards,
-      subscriptions: sqlite.subscriptions,
-      attachments: sqlite.attachments,
-      dataVersion: sqlite.dataVersion,
-    });
+    restartWithRetentionStore();
 
     await cleanupWorkboardRunWorktree({
       store,
@@ -201,6 +207,23 @@ describe("Workboard artifact worktree retention", () => {
     });
     expect((await service.gc({ limits: { maxCount: 0 } })).removed).toEqual([worktree.id]);
     await expect(fs.stat(worktree.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("skips legacy cards whose worktrees were already removed", async () => {
+    const { card, worktree } = await createLegacyArtifactCard("removed-legacy-artifact");
+    await service.release(worktree.id);
+    await expect(service.removeIfLossless(worktree.id)).resolves.toBe(true);
+
+    const cards = restartWithRetentionStore();
+
+    await expect(cards.reconcileArtifactRetention()).resolves.toBeUndefined();
+    await expect(store.get(card.id)).resolves.toMatchObject({ id: card.id });
+    await expect(store.addArtifact(card.id, { path: "dist/new.txt" })).rejects.toThrow(
+      "managed worktree is unavailable for artifact retention",
+    );
+    await expect(store.get(card.id)).resolves.toMatchObject({
+      metadata: { artifacts: [{ path: "dist/report.txt" }] },
+    });
   });
 
   it("does not claim URL-only or outside-worktree artifacts", async () => {
