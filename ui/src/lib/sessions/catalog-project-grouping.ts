@@ -7,6 +7,8 @@ export function normalizeCatalogProjectGrouping(raw: unknown): CatalogProjectGro
 }
 
 type CatalogProjectGroup = {
+  // Collapse state persists this stable identity; `key` keeps first-seen display spelling.
+  id: string;
   key: string;
   label: string;
   title: string;
@@ -63,6 +65,7 @@ export function groupCatalogSessionsByProject(sessions: readonly SessionCatalogS
       let group = groupsByPath.get(key);
       if (!group) {
         group = {
+          id: key,
           key,
           label: customGroup,
           title: `Custom group: ${customGroup}`,
@@ -97,6 +100,7 @@ export function groupCatalogSessionsByProject(sessions: readonly SessionCatalogS
     let group = groupsByPath.get(pathIdentity);
     if (!group) {
       group = {
+        id: pathIdentity,
         key: projectPath,
         label: projectPath.split(/[\\/]/).at(-1) || projectPath,
         title: projectPath,
@@ -131,7 +135,7 @@ export function groupCatalogSessionsByPerson(sessions: readonly SessionCatalogSe
     let group = groupsById.get(key);
     if (!group) {
       const label = actor.label?.trim() || actor.id;
-      group = { key, label, title: `Created by ${label}`, sessions: [] };
+      group = { id: key, key, label, title: `Created by ${label}`, sessions: [] };
       groupsById.set(key, group);
     }
     group.sessions.push(session);

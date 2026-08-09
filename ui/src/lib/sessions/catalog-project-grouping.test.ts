@@ -117,6 +117,7 @@ describe("groupCatalogSessionsByProject", () => {
 
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
       key: "C:\\Work\\Notes",
       label: "Notes",
       title: "C:\\Work\\Notes",
@@ -126,6 +127,26 @@ describe("groupCatalogSessionsByProject", () => {
       "second",
       "third",
     ]);
+  });
+
+  it("keeps the normalized Windows group id stable when recency order reverses", () => {
+    const firstOrder = groupCatalogSessionsByProject([
+      session("newer", "C:\\Work\\Notes"),
+      session("older", "c:/work/notes/"),
+    ]);
+    const reversedOrder = groupCatalogSessionsByProject([
+      session("older", "c:/work/notes/"),
+      session("newer", "C:\\Work\\Notes"),
+    ]);
+
+    expect(firstOrder.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
+      key: "C:\\Work\\Notes",
+    });
+    expect(reversedOrder.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
+      key: "c:/work/notes",
+    });
   });
 
   it("preserves Windows root kinds while grouping equivalent UNC paths", () => {

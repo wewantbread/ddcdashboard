@@ -325,7 +325,7 @@ function renderCatalogHostGroup(
       <div class="sidebar-session-catalog-host__sessions" role="list" aria-label=${host.label}>
         ${projectGroups
           ? html`${projectGroups.groups.map((group) => {
-              const sectionId = `catalog-project:${catalog.id}:${host.hostId}:${group.key}`;
+              const sectionId = `catalog-project:${catalog.id}:${host.hostId}:${group.id}`;
               const collapsed = params.collapsedSections.has(sectionId);
               return html`
                 <button
