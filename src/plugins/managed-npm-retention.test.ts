@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolvePluginNpmGenerationProjectDir } from "./install-paths.js";
 import { RETAINED_MANAGED_NPM_KEEP_FILES_REASON } from "./managed-npm-retention-contract.js";
@@ -11,6 +11,7 @@ import {
   cleanupRetainedManagedNpmInstallGenerations,
   hasRetainedManagedNpmInstallMarker,
   markRetainedManagedNpmInstall,
+  resolveRetainedManagedNpmInstallMarkerPath,
 } from "./managed-npm-retention.js";
 
 describe("managed npm retention", () => {
@@ -35,7 +36,7 @@ describe("managed npm retention", () => {
     await markRetainedManagedNpmInstall({
       packageDir: oldPackageDir,
       pluginId: "codex",
-      reason: "test-retired-generation",
+      reason: "replaced-by-managed-npm-generation-update",
     });
 
     try {
@@ -61,7 +62,7 @@ describe("managed npm retention", () => {
     await markRetainedManagedNpmInstall({
       packageDir,
       pluginId: "codex",
-      reason: "test-legacy-generation",
+      reason: "doctor-repaired-stale-managed-npm-generation",
     });
 
     try {
@@ -105,6 +106,53 @@ describe("managed npm retention", () => {
       } finally {
         fs.rmSync(stateDir, { recursive: true, force: true });
       }
+    },
+  );
+
+  it.each([
+    { layout: "project" as const, markerState: "corrupt" as const },
+    { layout: "legacy" as const, markerState: "corrupt" as const },
+    { layout: "project" as const, markerState: "unknown" as const },
+    { layout: "legacy" as const, markerState: "unknown" as const },
+  ])(
+    "preserves $layout package files for a $markerState marker",
+    async ({ layout, markerState }) => {
+      const stateDir = retentionTempDirs.make("openclaw-retention-");
+      const npmDir = path.join(stateDir, "npm");
+      const projectRoot =
+        layout === "legacy"
+          ? npmDir
+          : resolvePluginNpmGenerationProjectDir({
+              npmDir,
+              packageName: "@openclaw/kept-plugin",
+              generationKey: "kept-plugin-v1",
+            });
+      const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "kept-plugin");
+      fs.mkdirSync(packageDir, { recursive: true });
+      await markRetainedManagedNpmInstall({
+        packageDir,
+        pluginId: "kept-plugin",
+        reason:
+          markerState === "unknown"
+            ? "future-retention-policy"
+            : "replaced-by-managed-npm-generation-update",
+      });
+      if (markerState === "corrupt") {
+        fs.writeFileSync(resolveRetainedManagedNpmInstallMarkerPath(packageDir), "{", "utf8");
+      }
+      const onError = vi.fn();
+
+      await expect(cleanupRetainedManagedNpmInstallGenerations({ npmDir, onError })).resolves.toBe(
+        0,
+      );
+
+      expect(fs.existsSync(packageDir)).toBe(true);
+      expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(true);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledWith(
+        expect.any(Error),
+        layout === "legacy" ? packageDir : projectRoot,
+      );
     },
   );
 });
