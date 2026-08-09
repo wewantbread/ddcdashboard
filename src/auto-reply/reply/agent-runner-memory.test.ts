@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
-import { CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import type { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import type { ModelFallbackAttemptProvenance } from "../../agents/model-fallback.types.js";
@@ -1630,13 +1629,15 @@ describe("runMemoryFlushIfNeeded", () => {
       relativePath: "memory/2023-11-14.md",
     }));
     // Exact blocked-native ownership deferral the codex plugin emits when the
-    // sandbox/exec host blocks native execution (compact.ts). codex-rs still
+    // sandbox/exec host blocks native execution (compact.ts): the typed
+    // harnessOwnedAutomaticCompaction flag with a diagnostic reason. codex-rs still
     // auto-compacts the bound thread inline during the next turn, so the required
     // preflight must continue the turn rather than drop it (#119971).
     compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: false,
-      reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
+      harnessOwnedAutomaticCompaction: true,
+      reason: "codex app-server owns automatic compaction",
       result: {
         details: {
           backend: "codex-app-server",

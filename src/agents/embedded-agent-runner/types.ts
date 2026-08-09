@@ -281,6 +281,15 @@ export type EmbeddedAgentCompactResult = {
   compacted: boolean;
   compactionKind?: "context-engine" | "native-harness" | "server-endpoint";
   reason?: string;
+  /**
+   * Set by a native harness that owns automatic context-pressure compaction and
+   * runs it inline itself, signalling that this trigger was intentionally deferred
+   * to the harness rather than failed. Core recognizes this typed flag and must not
+   * fall back to context-engine compaction, which would fight the harness's ownership
+   * (e.g. failing an OAuth-only session that has no direct API key). The human-readable
+   * `reason` stays a plugin-private diagnostic; core matches this flag, never the text.
+   */
+  harnessOwnedAutomaticCompaction?: boolean;
   /** Structured failure metadata used by model fallback classification. */
   failure?: {
     reason?: string;

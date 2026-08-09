@@ -13,34 +13,24 @@ export const DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON =
   "deferred to background context-engine maintenance";
 
 /**
- * Exact reason a Codex app-server session emits when it defers automatic
- * compaction to codex-rs's inline compaction. Cross-boundary contract: the codex
- * plugin produces this literal (extensions/codex/src/app-server/compact.ts) and
- * core callers match it here.
+ * Returns whether a result is a native harness's intentional automatic-compaction
+ * ownership no-op: the harness owns inline automatic compaction for the bound
+ * session and handled (or will handle) this trigger itself. Callers accept this
+ * deferral and must not fall back to context-engine compaction, which would fight
+ * the harness's ownership and can fail an auth-scoped (e.g. OAuth-only) session with
+ * "No API key found"; it is kept out of isBenignCompactionSkipResult so callers
+ * recognize it explicitly rather than folding it into a generic benign skip.
+ *
+ * The signal is the typed harnessOwnedAutomaticCompaction flag, not any harness's
+ * free-form reason text — core stays plugin-agnostic and does not string-match one
+ * plugin's diagnostic literal.
  */
-export const CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON =
-  "codex app-server owns automatic compaction";
-
-/**
- * Returns whether a result is Codex's intentional automatic-compaction ownership
- * no-op. The plugin now emits it only when native execution is blocked
- * (sandbox/exec host) so codex-rs handles inline compaction for the bound thread;
- * a present-but-dead thread instead surfaces a recoverable stale binding. Callers
- * accept this deferral and must not fall back to context-engine compaction, which
- * would fight Codex's ownership and fail an OAuth-only session with "No API key
- * found"; it is kept out of isBenignCompactionSkipResult so callers recognize it
- * explicitly rather than folding it into a generic benign skip.
- */
-export function isCodexOwnedAutomaticCompactionSkip(result: {
+export function isHarnessOwnedAutomaticCompactionSkip(result: {
   ok: boolean;
   compacted: boolean;
-  reason?: string;
+  harnessOwnedAutomaticCompaction?: boolean;
 }): boolean {
-  return (
-    result.ok &&
-    !result.compacted &&
-    result.reason === CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON
-  );
+  return result.ok && !result.compacted && result.harnessOwnedAutomaticCompaction === true;
 }
 
 function isGenericCompactionCancelledReason(reason: string): boolean {

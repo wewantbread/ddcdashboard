@@ -8,15 +8,13 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Cross-boundary contract: the automatic-compaction ownership no-op this plugin
-// produces when native execution is blocked must stay byte-identical to the core
-// constant that core compaction callers match on. A test-only reach into core
-// (bundled-plugin tests are exempt from the production plugin-SDK import boundary)
-// keeps both sides pinned so a change to either string turns this red instead of
-// silently mishandling codex's automatic-ownership defer (#119977).
-import {
-  CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
-  isCodexOwnedAutomaticCompactionSkip,
-} from "../../../../src/agents/embedded-agent-runner/compact-reasons.js";
+// produces when native execution is blocked must set the typed
+// harnessOwnedAutomaticCompaction flag that core's plugin-agnostic recognizer
+// matches. A test-only reach into core (bundled-plugin tests are exempt from the
+// production plugin-SDK import boundary) keeps the plugin's emitted shape pinned to
+// what core accepts, so a change to either side turns this red instead of silently
+// mishandling the automatic-ownership defer (#119977).
+import { isHarnessOwnedAutomaticCompactionSkip } from "../../../../src/agents/embedded-agent-runner/compact-reasons.js";
 import {
   consumeCodexAppServerLiveThread,
   ensureCodexAppServerClientRuntime,
@@ -607,7 +605,8 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server owns automatic compaction");
-    expect(isCodexOwnedAutomaticCompactionSkip(result)).toBe(true);
+    expect(result.harnessOwnedAutomaticCompaction).toBe(true);
+    expect(isHarnessOwnedAutomaticCompactionSkip(result)).toBe(true);
     expect(result.result?.tokensBefore).toBe(456);
     expect(compactDetails(result)).toMatchObject({
       backend: "codex-app-server",
@@ -617,26 +616,24 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("pins the automatic-compaction ownership reason to the core constant and recognizer", () => {
-    // #119977: the deferral reason the plugin emits when native execution is blocked
-    // must stay byte-identical to the core constant, and the core recognizer must
-    // accept exactly that ok/!compacted shape. If either drifts, core mishandles
-    // codex's automatic-ownership defer. Behavior-free pin — no compaction call.
-    expect(CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON).toBe(
-      "codex app-server owns automatic compaction",
-    );
+  it("pins the automatic-compaction ownership defer to core's typed recognizer", () => {
+    // #119977: the deferral the plugin emits when native execution is blocked must
+    // set the typed harnessOwnedAutomaticCompaction flag on an ok/!compacted result,
+    // and core's plugin-agnostic recognizer must accept exactly that shape. If either
+    // drifts, core mishandles codex's automatic-ownership defer. Behavior-free pin —
+    // no compaction call.
     expect(
-      isCodexOwnedAutomaticCompactionSkip({
+      isHarnessOwnedAutomaticCompactionSkip({
         ok: true,
         compacted: false,
-        reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
+        harnessOwnedAutomaticCompaction: true,
       }),
     ).toBe(true);
     expect(
-      isCodexOwnedAutomaticCompactionSkip({
+      isHarnessOwnedAutomaticCompactionSkip({
         ok: true,
         compacted: true,
-        reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
+        harnessOwnedAutomaticCompaction: true,
       }),
     ).toBe(false);
   });
@@ -2060,9 +2057,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
     // The ownership no-op must not be produced for a present-but-dead binding.
-    expect(isCodexOwnedAutomaticCompactionSkip({ ...result, reason: result.reason ?? "" })).toBe(
-      false,
-    );
+    expect(isHarnessOwnedAutomaticCompactionSkip(result)).toBe(false);
     // The stale binding is preserved for the recovery path to clear/rebind.
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
   });

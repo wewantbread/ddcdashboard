@@ -15,7 +15,7 @@ import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import {
   isBenignCompactionSkipResult,
-  isCodexOwnedAutomaticCompactionSkip,
+  isHarnessOwnedAutomaticCompactionSkip,
 } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import { createToolResultPromptProjectionState } from "../../agents/embedded-agent-runner/session-prompt-state.js";
@@ -1054,13 +1054,13 @@ export async function runSessionCompactionIfNeeded(params: {
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;
       }
-      if (isCodexOwnedAutomaticCompactionSkip(result)) {
-        // Codex owns automatic thread compaction: codex-rs auto-compacts the bound
-        // thread inline on its own OAuth during the next turn (run_turn ->
-        // run_auto_compact). Failing the required preflight here would drop the turn
-        // (#119971), and a context-engine fallback would fail an OAuth-only Codex
-        // session with "No API key found". So defer and let the turn continue.
-        // Mirrors the sibling caller at cli-compaction.ts.
+      if (isHarnessOwnedAutomaticCompactionSkip(result)) {
+        // The native harness owns automatic thread compaction: it auto-compacts the
+        // bound session inline on its own auth during the next turn. Failing the
+        // required preflight here would drop the turn (#119971), and a context-engine
+        // fallback would fail an auth-scoped (e.g. OAuth-only) session with "No API
+        // key found". So defer and let the turn continue. Mirrors the sibling caller
+        // at cli-compaction.ts.
         await notifyTerminalCompaction("skipped");
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;

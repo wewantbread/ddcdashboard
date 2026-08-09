@@ -60,6 +60,11 @@ import { resumeCodexAppServerThread } from "./thread-resume.js";
 const warnedIgnoredCompactionOverrides = createDedupeCache({ ttlMs: 0, maxSize: 4096 });
 const codexNativeCompactionQueue = new KeyedAsyncQueue();
 const CODEX_NATIVE_COMPACTION_INTERRUPT_GRACE_MS = 30_000;
+
+// Plugin-private diagnostic label for logs/telemetry only. Core recognizes this
+// deferral via the typed harnessOwnedAutomaticCompaction flag on the result, not
+// this string; keep it local so no cross-boundary literal match can form.
+const CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON = "codex app-server owns automatic compaction";
 type CodexAppServerCompactOptions = {
   bindingStore: CodexAppServerBindingStore;
   pluginConfig?: unknown;
@@ -466,8 +471,9 @@ async function compactCodexNativeThread(
       // Native execution is unavailable (OpenClaw sandbox/exec host), so OpenClaw
       // cannot drive a native request — but codex-rs still owns inline automatic
       // compaction for the bound thread, so defer instead of failing the turn.
-      // Cross-boundary contract: core compaction callers match this exact reason
-      // (see CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON in compact-reasons.ts).
+      // Cross-boundary contract: core recognizes this deferral via the typed
+      // harnessOwnedAutomaticCompaction flag (isHarnessOwnedAutomaticCompactionSkip
+      // in compact-reasons.ts), not the diagnostic reason text below.
       embeddedAgentLog.info("deferring codex app-server compaction; native execution blocked", {
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
@@ -475,7 +481,8 @@ async function compactCodexNativeThread(
       });
       return codexNativeCompactionResult(params, {
         compacted: false,
-        reason: "codex app-server owns automatic compaction",
+        harnessOwnedAutomaticCompaction: true,
+        reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
         details: {
           backend: "codex-app-server",
           skipped: true,
@@ -882,12 +889,19 @@ async function compactCodexNativeThread(
 
 function codexNativeCompactionResult(
   params: CompactEmbeddedAgentSessionParams,
-  outcome: { compacted: boolean; reason?: string; tokensAfter?: number; details: JsonObject },
+  outcome: {
+    compacted: boolean;
+    reason?: string;
+    tokensAfter?: number;
+    harnessOwnedAutomaticCompaction?: boolean;
+    details: JsonObject;
+  },
 ): EmbeddedAgentCompactResult {
   return {
     ok: true,
     compacted: outcome.compacted,
     ...(outcome.reason ? { reason: outcome.reason } : {}),
+    ...(outcome.harnessOwnedAutomaticCompaction ? { harnessOwnedAutomaticCompaction: true } : {}),
     result: {
       summary: "",
       firstKeptEntryId: "",

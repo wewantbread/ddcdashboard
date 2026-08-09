@@ -4556,6 +4556,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: false,
+      harnessOwnedAutomaticCompaction: true,
       reason: "codex app-server owns automatic compaction",
     });
 

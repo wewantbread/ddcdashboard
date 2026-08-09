@@ -24,10 +24,9 @@ import {
 } from "../agent-settings.js";
 import { resolveCliBackendConfig as resolveCliBackendConfigImpl } from "../cli-backends.js";
 import {
-  CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
   isBenignCompactionSkipReason,
   isBenignCompactionSkipResult,
-  isCodexOwnedAutomaticCompactionSkip,
+  isHarnessOwnedAutomaticCompactionSkip,
 } from "../embedded-agent-runner/compact-reasons.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
 import {
@@ -525,12 +524,12 @@ async function compactNativeHarnessCliTranscript(params: {
       );
       return { compacted: false };
     }
-    if (result && isCodexOwnedAutomaticCompactionSkip(result)) {
-      // Codex owns automatic thread compaction (codex-rs runs it inline during
-      // turns); falling back to context-engine compaction here fought that
-      // ownership and failed OAuth-only sessions with "No API key found".
+    if (result && isHarnessOwnedAutomaticCompactionSkip(result)) {
+      // The native harness owns automatic thread compaction (it runs inline during
+      // turns); falling back to context-engine compaction here fought that ownership
+      // and failed auth-scoped (e.g. OAuth-only) sessions with "No API key found".
       log.info(
-        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON}`,
+        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${reason ?? "harness owns automatic compaction"}`,
       );
       return { compacted: false };
     }

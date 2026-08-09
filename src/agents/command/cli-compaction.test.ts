@@ -809,6 +809,7 @@ describe("runCliTurnCompactionLifecycle", () => {
     const compactAgentHarnessSession = vi.fn(async (_params: Record<string, unknown>) => ({
       ok: true,
       compacted: false,
+      harnessOwnedAutomaticCompaction: true,
       reason: "codex app-server owns automatic compaction",
       result: {
         summary: "",
