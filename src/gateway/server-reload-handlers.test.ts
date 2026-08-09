@@ -21,6 +21,10 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
+import {
+  attachRuntimeConfigWriteApplication,
+  createRuntimeConfigWriteApplication,
+} from "../config/runtime-write-application.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   consumeGatewaySigusr1RestartIntent,
@@ -1533,6 +1537,41 @@ describe("gateway hot reload model state", () => {
     expect(hoisted.warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledWith(nextConfig);
   });
 
+  it("keeps hot reload pending until prepared model runtime owners are published", async () => {
+    let releasePreparedOwners!: () => void;
+    const preparedOwnersGate = new Promise<void>((resolve) => {
+      releasePreparedOwners = resolve;
+    });
+    hoisted.refreshPreparedModelRuntimeSnapshots.mockImplementationOnce(
+      async () => await preparedOwnersGate,
+    );
+    const logReload = { info: vi.fn(), warn: vi.fn() };
+    const { applyHotReload } = createGatewayReloadHandlers({ logReload });
+    const nextConfig = { agents: { defaults: { contextTokens: 12_345 } } } as OpenClawConfig;
+    let completed = false;
+
+    const reload = applyHotReload(
+      buildGatewayReloadPlan(["agents.defaults.contextTokens"]),
+      nextConfig,
+    );
+    void reload.then(() => {
+      completed = true;
+    });
+    await waitForFast(() =>
+      expect(hoisted.refreshPreparedModelRuntimeSnapshots).toHaveBeenCalledWith(nextConfig, {
+        allowGatewaySubagentBinding: true,
+        catalogMode: "static",
+      }),
+    );
+
+    expect(completed).toBe(false);
+
+    releasePreparedOwners();
+    await reload;
+
+    expect(completed).toBe(true);
+  });
+
   it("disposes cached MCP runtimes on MCP config hot reloads", async () => {
     const logReload = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     hoisted.disposeAllSessionMcpRuntimes.mockRejectedValueOnce(new Error("dispose failed"));
@@ -2216,6 +2255,82 @@ describe("gateway restart deferral preflight", () => {
       stopRestartRetries();
       restartTesting.resetSigusr1State();
       resetGatewayWorkAdmission();
+    }
+  });
+
+  it("admits an idle restart while gating fresh preparation and retry emission", async () => {
+    let releaseResponse!: () => void;
+    let recordFirstEmission!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const firstEmission = new Promise<void>((resolve) => {
+      recordFirstEmission = resolve;
+    });
+    const events: string[] = [];
+    const assertRestartReady = vi.fn(async () => {
+      events.push("ready");
+    });
+    const prepareRuntimeConfig = vi.fn(async () => {
+      events.push("prepare");
+      return {} as OpenClawConfig;
+    });
+    const requestRecoveryRestart = vi
+      .fn<NonNullable<ReloadHandlerParams["requestRecoveryRestart"]>>()
+      .mockImplementationOnce(() => {
+        events.push("emit-1");
+        recordFirstEmission();
+        return { status: "failed" };
+      })
+      .mockImplementationOnce(() => {
+        events.push("emit-2");
+        return { status: "emitted" };
+      });
+    const { requestGatewayRestart, stopRestartRetries } = createGatewayReloadHandlers({
+      assertRestartReady,
+      requestRecoveryRestart,
+    });
+    vi.useFakeTimers();
+
+    try {
+      const result = requestGatewayRestart(
+        createGatewayRestartPlan(),
+        {},
+        {
+          beforeRestartEmission: async () => {
+            events.push("gate");
+            await responseGate;
+          },
+          prepareRuntimeConfig,
+        },
+      );
+
+      expect(result.status).toBe("accepted");
+      await Promise.resolve();
+      expect(events).toEqual(["gate"]);
+      expect(assertRestartReady).not.toHaveBeenCalled();
+      expect(prepareRuntimeConfig).not.toHaveBeenCalled();
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+
+      releaseResponse();
+      await firstEmission;
+
+      expect(events).toEqual(["gate", "ready", "prepare", "emit-1"]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(events).toEqual([
+        "gate",
+        "ready",
+        "prepare",
+        "emit-1",
+        "gate",
+        "ready",
+        "prepare",
+        "emit-2",
+      ]);
+    } finally {
+      stopRestartRetries();
     }
   });
 
@@ -4049,6 +4164,83 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(logReload.error).not.toHaveBeenCalled();
       expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(safeConfig);
       expect(terminalPolicy.isEnabled()).toBe(true);
+    } finally {
+      await reloader.stop();
+    }
+  });
+
+  it("admits a managed restart while response gates fresh emission and auth eviction", async () => {
+    const initialConfig = {
+      gateway: {
+        port: 18789,
+        reload: {},
+        auth: { mode: "token" as const, token: "old-token" },
+      },
+    } satisfies OpenClawConfig;
+    const nextConfig = {
+      gateway: {
+        port: 18790,
+        reload: {},
+        auth: { mode: "token" as const, token: "new-token" },
+      },
+    } satisfies OpenClawConfig;
+    const writeListenerRef = createConfigWriteListenerRef();
+    const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) =>
+      makePreparedSecretsSnapshot(config),
+    );
+    const close = vi.fn();
+    const application = createRuntimeConfigWriteApplication({
+      deferSharedAuthDisconnect: true,
+    });
+    const reloader = startManagedGatewayConfigReloader({
+      initialConfig,
+      readSnapshot: vi.fn(async () =>
+        createValidConfigSnapshot(nextConfig, "managed-response-gate"),
+      ) as never,
+      subscribeToWrites: captureConfigWriteListener(writeListenerRef),
+      activateRuntimeSecrets: activateRuntimeSecrets as never,
+      requestRecoveryRestart,
+      resolveSharedGatewaySessionGenerationForConfig: (config) =>
+        typeof config.gateway?.auth?.token === "string" ? config.gateway.auth.token : undefined,
+      sharedGatewaySessionGenerationState: { current: "old-token", required: null },
+      clients: [
+        {
+          usesSharedGatewayAuth: true,
+          sharedGatewaySessionGeneration: "old-token",
+          socket: { close },
+        },
+      ],
+    });
+    const listener = writeListenerRef.current;
+    if (!listener) {
+      throw new Error("Expected config write listener to be registered");
+    }
+    const event = attachRuntimeConfigWriteApplication(
+      createConfigWriteNotification(
+        nextConfig,
+        "managed-response-gate",
+        1,
+        "runtime-managed-response-gate",
+        "source-managed-response-gate",
+      ),
+      application,
+    );
+
+    try {
+      listener(event);
+
+      await expect(application.result).resolves.toEqual({ status: "restart-required" });
+      expect(application.claimed).toBe(true);
+      expect(activateRuntimeSecrets).toHaveBeenCalledTimes(1);
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+
+      application.acknowledgeResponse();
+
+      await waitForFast(() => expect(requestRecoveryRestart).toHaveBeenCalledOnce());
+      expect(activateRuntimeSecrets).toHaveBeenCalledTimes(2);
+      expect(close).not.toHaveBeenCalled();
     } finally {
       await reloader.stop();
     }

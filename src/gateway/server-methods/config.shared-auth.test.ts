@@ -246,7 +246,10 @@ describe("config shared auth disconnects", () => {
     )(options);
     await flushConfigHandlerMicrotasks();
 
-    expect(writeConfigFileMock).toHaveBeenCalledWith(submittedConfig, GATEWAY_CONFIG_WRITE_OPTIONS);
+    expect(writeConfigFileMock).toHaveBeenCalledWith(
+      submittedConfig,
+      expect.objectContaining(GATEWAY_CONFIG_WRITE_OPTIONS),
+    );
     expect(respond).toHaveBeenCalledWith(
       true,
       {
@@ -416,7 +419,10 @@ describe("config shared auth disconnects", () => {
     )(options);
     await flushConfigHandlerMicrotasks();
 
-    expect(writeConfigFileMock).toHaveBeenCalledWith(nextConfig, GATEWAY_CONFIG_WRITE_OPTIONS);
+    expect(writeConfigFileMock).toHaveBeenCalledWith(
+      nextConfig,
+      expect.objectContaining(GATEWAY_CONFIG_WRITE_OPTIONS),
+    );
     expect(disconnectClientsUsingSharedGatewayAuth).not.toHaveBeenCalled();
     expectNoDirectRestart();
   });

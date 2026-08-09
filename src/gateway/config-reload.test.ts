@@ -15,6 +15,10 @@ import type {
 } from "../config/config.js";
 import { createConfigIO } from "../config/io.js";
 import { hashRuntimeConfigValue } from "../config/runtime-snapshot.js";
+import {
+  attachRuntimeConfigWriteApplication,
+  createRuntimeConfigWriteApplication,
+} from "../config/runtime-write-application.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import {
@@ -768,6 +772,19 @@ function makeZeroDebounceHookWrite(persistedHash: string): ConfigWriteNotificati
   };
 }
 
+function makeApplicationWrite(event: ConfigWriteNotification) {
+  const application = createRuntimeConfigWriteApplication();
+  return {
+    application,
+    event: attachRuntimeConfigWriteApplication(
+      {
+        ...event,
+      },
+      application,
+    ),
+  };
+}
+
 function createReloaderHarness(
   readSnapshot: () => Promise<ConfigFileSnapshot>,
   options: {
@@ -1090,6 +1107,245 @@ describe("startGatewayConfigReloader", () => {
     resetGatewayWorkAdmission();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("settles hot application only after the accepted runtime transaction completes", async () => {
+    let releaseHotReload!: () => void;
+    let markHotReloadStarted!: () => void;
+    const hotReloadStarted = new Promise<void>((resolve) => {
+      markHotReloadStarted = resolve;
+    });
+    const hotReloadGate = new Promise<void>((resolve) => {
+      releaseHotReload = resolve;
+    });
+    const harness = createReloaderHarness(async () => makeZeroDebounceHookSnapshot("blocked"), {
+      onHotReload: async () => {
+        markHotReloadStarted();
+        await hotReloadGate;
+      },
+    });
+    const write = makeApplicationWrite(makeZeroDebounceHookWrite("blocked"));
+    let settled = false;
+    void write.application.result.then(() => {
+      settled = true;
+    });
+
+    harness.emitWrite(write.event);
+    await vi.advanceTimersByTimeAsync(0);
+    await hotReloadStarted;
+
+    expect(write.application.claimed).toBe(true);
+    expect(settled).toBe(false);
+
+    releaseHotReload();
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "applied" });
+    await harness.reloader.stop();
+  });
+
+  it("settles an effective no-op only after its source revision is accepted", async () => {
+    const harness = createReloaderHarness(async () => makeSnapshot());
+    const config = { gateway: { reload: {} } };
+    const write = makeApplicationWrite({
+      ...makeZeroDebounceHookWrite("noop"),
+      sourceConfig: config,
+      runtimeConfig: config,
+    });
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "applied" });
+    expect(harness.onHotReload).not.toHaveBeenCalled();
+    await harness.reloader.stop();
+  });
+
+  it.each([
+    {
+      name: "writer intent",
+      expected: "writer-intent",
+      makeEvent: () => ({
+        ...makeZeroDebounceHookWrite("writer-intent"),
+        afterWrite: { mode: "none" as const, reason: "source only" },
+      }),
+    },
+    {
+      name: "reload disabled",
+      expected: "reload-disabled",
+      makeEvent: () => {
+        const config = {
+          gateway: { reload: { mode: "off" as const } },
+          hooks: { enabled: true },
+        };
+        return {
+          ...makeZeroDebounceHookWrite("reload-disabled"),
+          sourceConfig: config,
+          runtimeConfig: config,
+        };
+      },
+    },
+    {
+      name: "restart required",
+      expected: "restart-required",
+      makeEvent: () => ({
+        ...makeZeroDebounceHookWrite("restart-required"),
+        afterWrite: { mode: "restart" as const, reason: "runtime contract changed" },
+      }),
+    },
+  ])("settles $name as an explicit terminal outcome", async ({ expected, makeEvent }) => {
+    const harness = createReloaderHarness(async () => makeZeroDebounceHookSnapshot("terminal"));
+    const write = makeApplicationWrite(makeEvent());
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: expected });
+    await harness.reloader.stop();
+  });
+
+  it("keeps restart application pending until restart admission succeeds", async () => {
+    let markRestartStarted!: () => void;
+    let releaseRestart!: () => void;
+    const restartStarted = new Promise<void>((resolve) => {
+      markRestartStarted = resolve;
+    });
+    const restartGate = new Promise<void>((resolve) => {
+      releaseRestart = resolve;
+    });
+    const harness = createReloaderHarness(
+      async () => makeZeroDebounceHookSnapshot("restart-admission"),
+      {
+        onRestart: async () => {
+          markRestartStarted();
+          await restartGate;
+        },
+      },
+    );
+    const write = makeApplicationWrite({
+      ...makeZeroDebounceHookWrite("restart-admission"),
+      afterWrite: { mode: "restart", reason: "admission gate" },
+    });
+    let settled = false;
+    void write.application.result.then(() => {
+      settled = true;
+    });
+
+    harness.emitWrite(write.event);
+    await vi.advanceTimersByTimeAsync(0);
+    await restartStarted;
+
+    expect(settled).toBe(false);
+
+    releaseRestart();
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "restart-required" });
+    await harness.reloader.stop();
+  });
+
+  it("settles restart admission rejection as failed", async () => {
+    const harness = createReloaderHarness(
+      async () => makeZeroDebounceHookSnapshot("restart-rejected"),
+      {
+        onRestart: async () => {
+          throw new Error("restart admission rejected");
+        },
+      },
+    );
+    const write = makeApplicationWrite({
+      ...makeZeroDebounceHookWrite("restart-rejected"),
+      afterWrite: { mode: "restart", reason: "rejected admission" },
+    });
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "failed" });
+    await harness.reloader.stop();
+  });
+
+  it("settles superseded restart admission as superseded", async () => {
+    const superseded = new Error("restart admission superseded");
+    superseded.name = "GatewayConfigReloadSupersededError";
+    const supersedingSnapshot = makeZeroDebounceHookSnapshot("newer-write");
+    const harness = createReloaderHarness(async () => supersedingSnapshot, {
+      onRestart: vi.fn().mockRejectedValueOnce(superseded),
+    });
+    const write = makeApplicationWrite({
+      ...makeZeroDebounceHookWrite("restart-superseded"),
+      afterWrite: { mode: "restart", reason: "superseded admission" },
+    });
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+    await flushWatcherChange(harness);
+
+    await expect(write.application.result).resolves.toEqual({ status: "superseded" });
+    await harness.reloader.stop();
+  });
+
+  it("keeps restart-required terminal after admitted restart baseline publication fails", async () => {
+    const harness = createReloaderHarness(
+      async () => makeZeroDebounceHookSnapshot("restart-baseline-failed"),
+      {
+        onConfigAccepted: async () => {
+          throw new Error("baseline publication failed");
+        },
+      },
+    );
+    const write = makeApplicationWrite({
+      ...makeZeroDebounceHookWrite("restart-baseline-failed"),
+      afterWrite: { mode: "restart", reason: "admitted restart" },
+    });
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "restart-required" });
+    expect(harness.log.error).toHaveBeenCalledWith(
+      "config reload failed: Error: baseline publication failed",
+    );
+    await harness.reloader.stop();
+  });
+
+  it("keeps same-hash writes distinct while settling a coalesced predecessor", async () => {
+    const harness = createReloaderHarness(async () => makeZeroDebounceHookSnapshot("same-hash"));
+    const first = makeApplicationWrite(makeZeroDebounceHookWrite("same-hash"));
+    const second = makeApplicationWrite(makeZeroDebounceHookWrite("same-hash"));
+
+    harness.emitWrite(first.event);
+    harness.emitWrite(second.event);
+    await vi.runAllTimersAsync();
+
+    await expect(first.application.result).resolves.toEqual({ status: "superseded" });
+    await expect(second.application.result).resolves.toEqual({ status: "applied" });
+    await harness.reloader.stop();
+  });
+
+  it("settles a rejected hot application as failed", async () => {
+    const harness = createReloaderHarness(async () => makeZeroDebounceHookSnapshot("failed"), {
+      onHotReload: async () => {
+        throw new Error("reload refused");
+      },
+    });
+    const write = makeApplicationWrite(makeZeroDebounceHookWrite("failed"));
+
+    harness.emitWrite(write.event);
+    await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: "failed" });
+    await harness.reloader.stop();
+  });
+
+  it("settles a queued write when the reloader stops", async () => {
+    const harness = createReloaderHarness(async () => makeZeroDebounceHookSnapshot("stopped"));
+    const write = makeApplicationWrite(makeZeroDebounceHookWrite("stopped"));
+
+    harness.emitWrite(write.event);
+    await harness.reloader.stop();
+
+    await expect(write.application.result).resolves.toEqual({ status: "stopped" });
   });
 
   it("watches resolved includes and reconciles them after an accepted reload", async () => {
@@ -3513,14 +3769,21 @@ describe("startGatewayConfigReloader", () => {
 
   it.each([
     {
-      label: "none",
-      afterWrite: { mode: "none" as const, reason: "caller handles follow-up" },
+      label: "hot apply",
+      afterWrite: undefined,
+      expectedOutcome: "applied" as const,
     },
     {
-      label: "restart",
-      afterWrite: { mode: "restart" as const, reason: "plugin runtime contract changed" },
+      label: "writer intent",
+      afterWrite: { mode: "none" as const, reason: "caller handles follow-up" },
+      expectedOutcome: "writer-intent" as const,
     },
-  ])("preserves slow in-process $label intent across its watcher echo", async (testCase) => {
+    {
+      label: "restart intent",
+      afterWrite: { mode: "restart" as const, reason: "plugin runtime contract changed" },
+      expectedOutcome: "restart-required" as const,
+    },
+  ])("preserves slow in-process $label completion across its watcher echo", async (testCase) => {
     const hash = `slow-${testCase.label}`;
     let releasePluginRead = () => {};
     let recordPluginReadStarted: (() => void) | undefined;
@@ -3542,23 +3805,35 @@ describe("startGatewayConfigReloader", () => {
       readPluginInstallRecords,
     });
 
-    harness.emitWrite({
+    const write = makeApplicationWrite({
       ...makeZeroDebounceHookWrite(hash),
-      afterWrite: testCase.afterWrite,
+      ...(testCase.afterWrite ? { afterWrite: testCase.afterWrite } : {}),
     });
+    let applicationSettled = false;
+    void write.application.result.then(() => {
+      applicationSettled = true;
+    });
+
+    harness.emitWrite(write.event);
     await vi.advanceTimersByTimeAsync(0);
     await pluginReadStarted;
 
     harness.watcher.emit("change");
+    expect(applicationSettled).toBe(false);
     releasePluginRead();
     await vi.runAllTimersAsync();
+
+    await expect(write.application.result).resolves.toEqual({ status: testCase.expectedOutcome });
 
     expect(readSnapshot).toHaveBeenCalledOnce();
     expect(readPluginInstallRecords).toHaveBeenCalledTimes(2);
     expect(harness.onConfigAccepted).toHaveBeenCalledOnce();
     expect(promoteSnapshot).toHaveBeenCalledOnce();
     expect(promoteSnapshot.mock.calls[0]?.[1]).toBe("in-process-write");
-    if (testCase.afterWrite.mode === "none") {
+    if (!testCase.afterWrite) {
+      expect(harness.onHotReload).toHaveBeenCalledOnce();
+      expect(harness.onRestart).not.toHaveBeenCalled();
+    } else if (testCase.afterWrite.mode === "none") {
       expect(harness.onHotReload).not.toHaveBeenCalled();
       expect(harness.onRestart).not.toHaveBeenCalled();
       expect(harness.log.info).toHaveBeenCalledWith(

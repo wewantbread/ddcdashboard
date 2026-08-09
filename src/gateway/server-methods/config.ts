@@ -689,6 +689,24 @@ async function respondWithConfigRestartWrite(params: {
   preparedSecretsSnapshot: PreparedSecretsRuntimeSnapshot;
 }): Promise<void> {
   clearConfigSchemaResponseCache();
+  const application = await params.writeResult.application;
+  if (
+    application &&
+    (application.status === "superseded" ||
+      application.status === "failed" ||
+      application.status === "stopped")
+  ) {
+    params.respond(
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.UNAVAILABLE,
+        `Config was persisted but not applied to the active Gateway (${application.status}). Run config.get, then retry ${params.mode} or restart the Gateway.`,
+      ),
+    );
+    params.writeResult.acknowledgeResponse();
+    return;
+  }
   const { payload, sentinelPersisted, restart } = await resolveGatewayConfigRestartWriteResult({
     requestParams: params.requestParams,
     kind: params.kind,

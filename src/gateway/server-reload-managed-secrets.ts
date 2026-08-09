@@ -433,7 +433,10 @@ export function createManagedReloadSecretHandlers(options: {
                   params.reconcileTerminalSessions(plan, prepared.config);
                   terminalConfigReconciled = true;
                 }
-                if (sharedGatewaySessionGenerationChanged) {
+                if (
+                  sharedGatewaySessionGenerationChanged &&
+                  !transactionOwnership.runtimeApplication?.deferSharedAuthDisconnect
+                ) {
                   disconnectStaleSharedGatewayAuthClients({
                     clients: params.clients,
                     expectedGeneration: nextSharedGatewaySessionGeneration,

@@ -268,6 +268,8 @@ export function startManagedGatewayConfigReloader(
       restartTransaction = requestGatewayRestart(plan, preparedRuntimeConfig, {
         ...restartOptions,
         debtConfig: sourceConfig,
+        beforeRestartEmission: async () =>
+          await transactionOwnership.runtimeApplication?.responseAcknowledged,
         prepareRuntimeConfig: async () => {
           for (;;) {
             const prepared = await tryPrepareRuntimeSecrets(
@@ -291,7 +293,10 @@ export function startManagedGatewayConfigReloader(
       if (restartTransaction.status === "recovery-pending") {
         throw new GatewayHotReloadRecoveryError("config restart");
       }
-      if (previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration) {
+      if (
+        previousSharedGatewaySessionGeneration !== nextSharedGatewaySessionGeneration &&
+        !transactionOwnership.runtimeApplication?.deferSharedAuthDisconnect
+      ) {
         disconnectStaleSharedGatewayAuthClients({
           clients: params.clients,
           expectedGeneration: nextSharedGatewaySessionGeneration,
@@ -300,6 +305,8 @@ export function startManagedGatewayConfigReloader(
       restartTransaction.settle("committed");
       transactionOwnership.commitRuntimeEnv();
       restartLifecycle.settle("committed");
+      // The restart is admitted; response acknowledgement gates only its delivery.
+      transactionOwnership.runtimeApplication?.settle({ status: "restart-required" });
     } catch (error) {
       restartTransaction?.settle("rejected");
       restartLifecycle.settle("rejected");
