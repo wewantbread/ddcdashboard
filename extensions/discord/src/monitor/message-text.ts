@@ -2,7 +2,7 @@
 import { ComponentType } from "discord-api-types/v10";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Message } from "../internal/discord.js";
-import { discordTextHasUserMentionToken } from "../mentions.js";
+import { hasRawDiscordUserMention } from "../mentions.js";
 import {
   formatDiscordSnapshotAuthor,
   normalizeDiscordMessageSnapshots,
@@ -55,12 +55,11 @@ export function resolveDiscordMessageText(
 }
 
 export function hasDiscordMessageUserMentionToken(message: Message, userId: string): boolean {
-  const content = normalizeOptionalString(message.content) ?? "";
-  if (discordTextHasUserMentionToken(content, userId)) {
+  const content = typeof message.content === "string" ? message.content : "";
+  if (hasRawDiscordUserMention(content, userId)) {
     return true;
   }
-  const componentText = extractDiscordComponentsV2Text(resolveDiscordMessageComponents(message));
-  return discordTextHasUserMentionToken(componentText, userId);
+  return hasDiscordComponentsV2UserMentionToken(resolveDiscordMessageComponents(message), userId);
 }
 
 /** Adds native media text only for history surfaces that cannot carry structured facts. */
@@ -152,6 +151,32 @@ function collectDiscordTextDisplayContent(value: unknown, parts: string[]): void
   }
   collectDiscordTextDisplayContent(component.components, parts);
   collectDiscordTextDisplayContent(component.component, parts);
+}
+
+function hasDiscordComponentsV2UserMentionToken(value: unknown, userId: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasDiscordComponentsV2UserMentionToken(entry, userId));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const component = value as {
+    type?: unknown;
+    content?: unknown;
+    components?: unknown;
+    component?: unknown;
+  };
+  if (
+    component.type === ComponentType.TextDisplay &&
+    typeof component.content === "string" &&
+    hasRawDiscordUserMention(component.content, userId)
+  ) {
+    return true;
+  }
+  return (
+    hasDiscordComponentsV2UserMentionToken(component.components, userId) ||
+    hasDiscordComponentsV2UserMentionToken(component.component, userId)
+  );
 }
 
 export function resolveDiscordForwardedMessagesTextFromSnapshots(snapshots: unknown): string {

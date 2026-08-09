@@ -24,6 +24,7 @@ import { getChildLogger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { resolveDefaultDiscordAccountId } from "../accounts.js";
 import { ChannelType, MessageType, type User } from "../internal/discord.js";
+import { hasRawDiscordUserMention } from "../mentions.js";
 import {
   resolveDiscordGuildEntry,
   resolveDiscordMemberAccessState,
@@ -40,7 +41,6 @@ import { resolveDiscordPreflightChannelAccess } from "./message-handler.prefligh
 import { resolveDiscordPreflightChannelContext } from "./message-handler.preflight-channel-context.js";
 import { buildDiscordMessagePreflightContext } from "./message-handler.preflight-context.js";
 import {
-  hasRawDiscordUserMention,
   isBoundThreadBotSystemMessage,
   isDiscordThreadChannelMessage,
   resolveDiscordMentionState,

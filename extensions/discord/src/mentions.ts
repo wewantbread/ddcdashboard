@@ -5,6 +5,7 @@ import {
   normalizeOptionalString,
   normalizeOptionalStringifiedId,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { findCodeRegions, isInsideCode } from "openclaw/plugin-sdk/text-chunking";
 import { normalizeDiscordHandleKey, resolveDiscordDirectoryUserId } from "./directory-cache.js";
 
 type DiscordMentionAliasesConfig = Record<string, string>;
@@ -111,22 +112,22 @@ function rewritePlainTextMentions(
   });
 }
 
-function plainTextHasDiscordUserMentionToken(text: string, userId: string): boolean {
-  for (const token of [`<@${userId}>`, `<@!${userId}>`]) {
-    let searchIndex = 0;
-    while (searchIndex < text.length) {
-      const tokenIndex = text.indexOf(token, searchIndex);
-      if (tokenIndex === -1) {
-        break;
+export function hasRawDiscordUserMention(text: string, userId?: string): boolean {
+  if (!userId) {
+    return false;
+  }
+  const codeRegions = findCodeRegions(text);
+  for (const mention of [`<@${userId}>`, `<@!${userId}>`]) {
+    let index = text.indexOf(mention);
+    while (index >= 0) {
+      let precedingBackslashes = 0;
+      for (let offset = index - 1; offset >= 0 && text[offset] === "\\"; offset -= 1) {
+        precedingBackslashes += 1;
       }
-      let backslashCount = 0;
-      for (let index = tokenIndex - 1; index >= 0 && text[index] === "\\"; index -= 1) {
-        backslashCount += 1;
-      }
-      if (backslashCount % 2 === 0) {
+      if (precedingBackslashes % 2 === 0 && !isInsideCode(index, codeRegions)) {
         return true;
       }
-      searchIndex = tokenIndex + token.length;
+      index = text.indexOf(mention, index + mention.length);
     }
   }
   return false;
@@ -219,19 +220,6 @@ export function rewriteDiscordKnownMentions(
   }
   rewritten += rewritePlainTextMentions(text.slice(offset), params);
   return rewritten;
-}
-
-export function discordTextHasUserMentionToken(text: string, userId: string): boolean {
-  let offset = 0;
-  let segment = findNextMarkdownCodeSegment(text, offset);
-  while (segment) {
-    if (plainTextHasDiscordUserMentionToken(text.slice(offset, segment.startIndex), userId)) {
-      return true;
-    }
-    offset = segment.endIndex;
-    segment = findNextMarkdownCodeSegment(text, offset);
-  }
-  return plainTextHasDiscordUserMentionToken(text.slice(offset), userId);
 }
 
 /** Whether text carries an `@everyone`/`@here` broadcast mention. */
