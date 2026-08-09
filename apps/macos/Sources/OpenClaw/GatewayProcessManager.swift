@@ -1000,13 +1000,19 @@ extension GatewayProcessManager {
                 _ = try await self.probeGatewayHealth(timeoutMs: min(1500, remainingMs))
                 guard !Task.isCancelled else { return false }
                 let instance = await PortGuardian.shared.describe(port: readinessPort)
-                return self.publishGatewayReadinessSuccess(
+                if self.publishGatewayReadinessSuccess(
                     instance: instance,
                     startGeneration: startGeneration,
                     readinessCandidate: readinessCandidate,
                     readinessRevision: readinessRevision,
                     launchAgentInstalled: launchAgentInstalled,
                     endpointPIDBeforeProbe: endpointPIDBeforeProbe)
+                {
+                    return true
+                }
+                // A sibling waiter can publish the same candidate while this probe is in flight.
+                // Accept its terminal success, but never a replacement startup generation.
+                return self.currentGatewayStartPublishedReadiness(startGeneration)
             } catch {
                 if Task.isCancelled || !self.isCurrentGatewayStart(startGeneration) {
                     return false
@@ -1100,6 +1106,15 @@ extension GatewayProcessManager {
         return true
     }
 
+    private func currentGatewayStartPublishedReadiness(_ generation: UInt64) -> Bool {
+        guard self.isCurrentGatewayStart(generation) else { return false }
+        guard self.launchAgentReadinessCandidate == nil else { return false }
+        return switch self.status {
+        case .running, .attachedExisting: true
+        case .stopped, .starting, .failed: false
+        }
+    }
+
     private func finishGatewayReadinessTimeout(
         startGeneration: UInt64,
         readinessCandidate: LaunchAgentReadinessCandidate?,
@@ -1142,19 +1157,32 @@ extension GatewayProcessManager {
     }
 
     private func probeGatewayHealth(timeoutMs: Double) async throws -> Data {
-        let connection = self.connection
+        let connection = self.connection.isolatedConnection()
         // Startup owns recovery and its wall-clock deadline. A normal request can recursively
         // start the Gateway and spend several 30-second connect retries before its RPC timer begins.
-        return try await AsyncTimeout.withTimeout(
-            seconds: max(0.001, timeoutMs / 1000),
-            onTimeout: { GatewayHealthProbeTimeout(timeoutMs: timeoutMs) },
-            operation: {
-                try await connection.request(
-                    method: GatewayConnection.Method.health.rawValue,
-                    params: nil,
-                    timeoutMs: timeoutMs,
-                    retryTransportFailures: false)
-            })
+        // Each poll owns a fresh connection: cancelling a connect waiter intentionally does not
+        // cancel the channel's shared connect attempt, so reusing it would keep joining a stale socket.
+        do {
+            let response = try await AsyncTimeout.withTimeout(
+                seconds: max(0.001, timeoutMs / 1000),
+                onTimeout: { GatewayHealthProbeTimeout(timeoutMs: timeoutMs) },
+                operation: {
+                    try await connection.request(
+                        method: GatewayConnection.Method.health.rawValue,
+                        params: nil,
+                        timeoutMs: timeoutMs,
+                        retryTransportFailures: false)
+                })
+            // Probe-local cleanup must not extend readiness past its deadline, even after
+            // the Gateway answered. The task retains the isolated connection until shutdown.
+            Task { await connection.shutdown() }
+            return response
+        } catch {
+            // A timed-out socket connect may ignore cancellation and keep the connection actor busy.
+            // Queue probe-local cleanup without extending the readiness deadline behind that work.
+            Task { await connection.shutdown() }
+            throw error
+        }
     }
 
     func clearLog() {

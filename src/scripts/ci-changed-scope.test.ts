@@ -381,21 +381,27 @@ describe("detectChangedScope", () => {
   });
 
   it("runs macOS CI for macOS packaging scripts with Darwin-only tests", () => {
-    for (const changedPath of [
-      "scripts/codesign-mac-app.sh",
-      "scripts/create-dmg.sh",
-      "scripts/lib/plistbuddy.sh",
-      "scripts/lib/swift-toolchain.sh",
-      "scripts/notarize-mac-artifact.sh",
-      "scripts/package-mac-app.sh",
-      "scripts/package-mac-dist.sh",
-    ]) {
+    const windowsOwnedRuntimeHelpers = new Set(
+      `
+      scripts/lib/windows-cmd-helpers-runtime.mts scripts/npm-runner.mts scripts/pnpm-runner.mts scripts/windows-cmd-helpers.mjs
+    `
+        .trim()
+        .split(/\s+/u),
+    );
+    const macosScriptPaths = `
+      scripts/codesign-mac-app.sh scripts/create-dmg.sh scripts/e2e/macos-app-bootstrap-ci.ts scripts/e2e/lib/plugins/npm-registry-server.mjs scripts/e2e/parallels/env-limits.ts scripts/e2e/parallels/filesystem.ts scripts/e2e/parallels/host-command.ts scripts/e2e/parallels/host-server.ts
+      scripts/e2e/parallels/package-artifact.ts scripts/e2e/parallels/types.ts scripts/lib/bounded-response.mjs scripts/lib/npm-json-output.mts scripts/lib/plistbuddy.sh scripts/lib/sleep.mjs scripts/lib/swift-toolchain.sh scripts/lib/windows-cmd-helpers-runtime.mts
+      scripts/notarize-mac-artifact.sh scripts/npm-runner.mts scripts/package-mac-app.sh scripts/package-mac-dist.sh scripts/pnpm-runner.mts scripts/windows-cmd-helpers.mjs test/scripts/parallels-smoke-model.test.ts
+    `
+      .trim()
+      .split(/\s+/u);
+    for (const changedPath of macosScriptPaths) {
       expect(detectChangedScope([changedPath])).toEqual({
         runNode: true,
         runMacos: true,
         runIosBuild: false,
         runAndroid: false,
-        runWindows: false,
+        runWindows: windowsOwnedRuntimeHelpers.has(changedPath),
         runSkillsPython: false,
         runChangedSmoke: false,
         runControlUiI18n: false,
@@ -514,7 +520,7 @@ describe("detectChangedScope", () => {
     });
     expect(detectChangedScope(["scripts/npm-runner.mts"])).toEqual({
       runNode: true,
-      runMacos: false,
+      runMacos: true,
       runIosBuild: false,
       runAndroid: false,
       runWindows: true,
@@ -591,7 +597,7 @@ describe("detectChangedScope", () => {
     });
     expect(detectChangedScope(["scripts/install-cli.sh"])).toEqual({
       runNode: true,
-      runMacos: false,
+      runMacos: true,
       runIosBuild: false,
       runAndroid: false,
       runWindows: false,

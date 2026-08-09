@@ -55,14 +55,12 @@ actor MacGatewayProfileStore {
         var password: String?
     }
 
-    // Dev builds carry a different code signature; creating the release item
-    // would poison its Keychain ACL and make the shipped app demand the login
-    // keychain password on every read. DEBUG is a config heuristic, not a
-    // signing check: it covers swift build/Xcode dev runs, the observed
-    // poisoning path. Release-config ad-hoc builds stay out of scope; running
-    // those against saved Keychain items is already unsupported.
+    // Debug app variants have distinct code identities. Give each bundle its
+    // own item so one variant cannot leave another blocked on a Keychain ACL prompt.
     #if DEBUG
-    private static let service = "ai.openclaw.gateway-profiles.debug"
+    private static let service = DebugKeychainServiceName.scoped(
+        "ai.openclaw.gateway-profiles.debug",
+        bundleIdentifier: Bundle.main.bundleIdentifier)
     #else
     private static let service = "ai.openclaw.gateway-profiles"
     #endif

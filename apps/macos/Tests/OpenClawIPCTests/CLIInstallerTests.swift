@@ -139,6 +139,16 @@ struct CLIInstallerTests {
             "Fresh Git installs require at least 6 GiB of free disk space; only 2.0 GiB is available. Free disk space and retry.")
     }
 
+    #if DEBUG
+    @Test func `debug E2E channel bypass is explicit and validated`() {
+        #expect(CLIInstallPrompter.debugE2EInstallTarget(
+            arguments: ["OpenClaw", "--e2e-cli-channel", "stable"]) == .channel(.stable))
+        #expect(CLIInstallPrompter.debugE2EInstallTarget(
+            arguments: ["OpenClaw", "--e2e-cli-channel", "unknown"]) == nil)
+        #expect(CLIInstallPrompter.debugE2EInstallTarget(arguments: ["OpenClaw"]) == nil)
+    }
+    #endif
+
     @Test func `managed update uses the canonical updater without accepting downgrades`() {
         let command = CLIInstaller.managedUpdateCommand(
             executable: "/Users/Test User/.openclaw/bin/openclaw",
