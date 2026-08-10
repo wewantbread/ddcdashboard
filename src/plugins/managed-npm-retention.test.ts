@@ -4,7 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolvePluginNpmGenerationProjectDir } from "./install-paths.js";
-import { RETAINED_MANAGED_NPM_KEEP_FILES_REASON } from "./managed-npm-retention-contract.js";
+import {
+  RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+  RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+} from "./managed-npm-retention-contract.js";
 
 const retentionTempDirs = useAutoCleanupTempDirTracker(afterEach);
 import {
@@ -155,4 +158,24 @@ describe("managed npm retention", () => {
       );
     },
   );
+
+  it("cleans staged Codex inference activation markers", async () => {
+    const stateDir = retentionTempDirs.make("openclaw-retention-");
+    const npmDir = path.join(stateDir, "npm");
+    const projectRoot = resolvePluginNpmGenerationProjectDir({
+      npmDir,
+      packageName: "@openclaw/codex",
+      generationKey: "inference-v1",
+    });
+    const packageDir = path.join(projectRoot, "node_modules", "@openclaw", "codex");
+    fs.mkdirSync(packageDir, { recursive: true });
+    await markRetainedManagedNpmInstall({
+      packageDir,
+      pluginId: "codex",
+      reason: RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+    });
+
+    await expect(cleanupRetainedManagedNpmInstallGenerations({ npmDir })).resolves.toBe(1);
+    expect(fs.existsSync(packageDir)).toBe(false);
+  });
 });

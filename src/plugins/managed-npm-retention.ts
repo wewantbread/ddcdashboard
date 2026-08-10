@@ -4,7 +4,10 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { safePathSegmentHashed } from "../infra/install-safe-path.js";
 import { resolveDefaultPluginNpmDir, resolvePluginNpmProjectsDir } from "./install-paths.js";
-import { RETAINED_MANAGED_NPM_KEEP_FILES_REASON } from "./managed-npm-retention-contract.js";
+import {
+  RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+  RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+} from "./managed-npm-retention-contract.js";
 import { listManagedPluginNpmRootsSync } from "./npm-project-roots.js";
 
 const RETAINED_MANAGED_NPM_INSTALL_MARKER_DIR = ".openclaw-retained-npm-installs";
@@ -13,6 +16,7 @@ const CLEANUP_ELIGIBLE_REASONS = new Set([
   "doctor-repaired-stale-managed-npm-generation",
   "replaced-by-managed-npm-generation-update",
   "replaced-by-plugin-source-change",
+  RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
 ]);
 
 type MarkerCleanupDisposition =
