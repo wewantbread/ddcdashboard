@@ -38,11 +38,23 @@ type AnyRecord = Record<string, unknown>;
 type Notification = { method: string; params?: AnyRecord };
 type Binding = AnyRecord & { threadId: string; cwd: string };
 
+// The Codex client is a class with private members and the compaction
+// param/option/result shapes are not exported, so we borrow the real function
+// signatures here and double-assert the simulated fakes at each call boundary.
+type CodexClient = Parameters<typeof ensureCodexAppServerClientRuntime>[0];
+type CodexClientRuntimeContext = Parameters<typeof ensureCodexAppServerClientRuntime>[1];
+type CompactParams = Parameters<typeof maybeCompactCodexAppServerSession>[0];
+type CompactOptions = Parameters<typeof maybeCompactCodexAppServerSession>[1];
+type BindingFailureResult = Parameters<typeof isRecoverableNativeHarnessBindingFailure>[0];
+type HarnessSkipResult = Parameters<typeof isHarnessOwnedAutomaticCompactionSkip>[0];
+
 let failures = 0;
 
 function check(label: string, condition: boolean): void {
   const status = condition ? "PASS" : "FAIL";
-  if (!condition) failures += 1;
+  if (!condition) {
+    failures += 1;
+  }
   console.log(`  [${status}] ${label}`);
 }
 
@@ -57,7 +69,7 @@ function printResult(label: string, value: unknown): void {
 function createInMemoryBindingStore(
   initial: Binding | undefined,
   options: { staleBindingAfterFirstRead?: Binding } = {},
-): { store: any; current: () => Binding | undefined; reads: () => number } {
+): { store: unknown; current: () => Binding | undefined; reads: () => number } {
   let current = initial;
   let reads = 0;
   const notUsed = (name: string) => async () => {
@@ -75,9 +87,12 @@ function createInMemoryBindingStore(
     withLease: async <T,>(_identity: unknown, run: () => Promise<T>): Promise<T> => run(),
     mutate: async (_identity: unknown, mutation: AnyRecord): Promise<boolean> => {
       if (mutation.kind === "clear") {
-        if (!current) return false;
-        if (typeof mutation.threadId === "string" && current.threadId !== mutation.threadId)
+        if (!current) {
           return false;
+        }
+        if (typeof mutation.threadId === "string" && current.threadId !== mutation.threadId) {
+          return false;
+        }
         current = undefined;
         return true;
       }
@@ -86,7 +101,9 @@ function createInMemoryBindingStore(
         return true;
       }
       if (mutation.kind === "patch") {
-        if (!current || current.threadId !== mutation.threadId) return false;
+        if (!current || current.threadId !== mutation.threadId) {
+          return false;
+        }
         current = { ...current, ...(mutation.patch as AnyRecord) } as Binding;
         return true;
       }
@@ -106,7 +123,7 @@ function createFakeCodexClient(options: {
   agentDir: string;
   autoCompleteCompaction?: boolean;
   retainedThreadId?: string | null;
-}): { client: any; requestCalls: Array<{ method: string; params?: AnyRecord }> } {
+}): { client: unknown; requestCalls: Array<{ method: string; params?: AnyRecord }> } {
   const handlers = new Set<(n: Notification) => void>();
   const closeHandlers = new Set<() => void>();
   const requestCalls: Array<{ method: string; params?: AnyRecord }> = [];
@@ -116,8 +133,12 @@ function createFakeCodexClient(options: {
 
   const emit = (n: Notification): void => {
     const threadId = n.params?.threadId as string | undefined;
-    if (threadId && !subscribed.has(threadId)) return;
-    for (const h of handlers) h(n);
+    if (threadId && !subscribed.has(threadId)) {
+      return;
+    }
+    for (const h of handlers) {
+      h(n);
+    }
   };
 
   const emitCompactionLifecycle = (threadId: string): void => {
@@ -155,14 +176,18 @@ function createFakeCodexClient(options: {
       return {};
     }
     if (method === "thread/compact/start" && options.autoCompleteCompaction !== false) {
-      if (typeof threadId !== "string") throw new Error("thread/compact/start requires threadId");
+      if (typeof threadId !== "string") {
+        throw new Error("thread/compact/start requires threadId");
+      }
       emitCompactionLifecycle(threadId);
     }
     return {};
   };
 
   const close = (): void => {
-    for (const h of closeHandlers) h();
+    for (const h of closeHandlers) {
+      h();
+    }
   };
   const client = {
     request,
@@ -182,10 +207,13 @@ function createFakeCodexClient(options: {
     },
   };
 
-  ensureCodexAppServerClientRuntime(client as any, { agentDir: options.agentDir } as any);
+  ensureCodexAppServerClientRuntime(
+    client as unknown as CodexClient,
+    { agentDir: options.agentDir } as unknown as CodexClientRuntimeContext,
+  );
   if (retainedThreadId) {
     void retainCodexAppServerLiveThread(
-      client as any,
+      client as unknown as CodexClient,
       retainedThreadId,
       undefined,
       `config-${retainedThreadId}`,
@@ -195,7 +223,9 @@ function createFakeCodexClient(options: {
 }
 
 function requireResult(result: unknown): AnyRecord {
-  if (!result || typeof result !== "object") throw new Error("expected a compaction result object");
+  if (!result || typeof result !== "object") {
+    throw new Error("expected a compaction result object");
+  }
   return result as AnyRecord;
 }
 
@@ -223,13 +253,15 @@ async function scenarioStaleBinding(tempDir: string): Promise<void> {
         workspaceDir: tempDir,
         trigger: "budget",
         currentTokenCount: 456,
-      } as any,
-      { bindingStore: store, clientFactory: async () => fake.client } as any,
+      } as unknown as CompactParams,
+      { bindingStore: store, clientFactory: async () => fake.client } as unknown as CompactOptions,
     ),
   );
 
   printResult("returned result", result);
-  const routesToRecovery = isRecoverableNativeHarnessBindingFailure(result as any);
+  const routesToRecovery = isRecoverableNativeHarnessBindingFailure(
+    result as unknown as BindingFailureResult,
+  );
   console.log(`  isRecoverableNativeHarnessBindingFailure(result) => ${routesToRecovery}`);
 
   check("ok === false", result.ok === false);
@@ -246,7 +278,7 @@ async function scenarioStaleBinding(tempDir: string): Promise<void> {
     "no native thread/compact/start was issued",
     fake.requestCalls.every((c) => c.method !== "thread/compact/start"),
   );
-  check("routed to recovery (not thrown / not skipped)", routesToRecovery === true);
+  check("routed to recovery (not thrown / not skipped)", routesToRecovery);
 }
 
 async function scenarioBlockedNativeDeferral(tempDir: string): Promise<void> {
@@ -264,13 +296,15 @@ async function scenarioBlockedNativeDeferral(tempDir: string): Promise<void> {
         trigger: "budget",
         currentTokenCount: 456,
         config: { agents: { defaults: { sandbox: { mode: "all" } } } },
-      } as any,
-      { bindingStore: store, clientFactory: async () => fake.client } as any,
+      } as unknown as CompactParams,
+      { bindingStore: store, clientFactory: async () => fake.client } as unknown as CompactOptions,
     ),
   );
 
   printResult("returned result", result);
-  const recognizedSkip = isHarnessOwnedAutomaticCompactionSkip(result as any);
+  const recognizedSkip = isHarnessOwnedAutomaticCompactionSkip(
+    result as unknown as HarnessSkipResult,
+  );
   console.log(`  isHarnessOwnedAutomaticCompactionSkip(result) => ${recognizedSkip}`);
 
   const publicTypeSource = await fs.readFile(
@@ -290,12 +324,12 @@ async function scenarioBlockedNativeDeferral(tempDir: string): Promise<void> {
   );
   check(
     "harnessOwnedAutomaticCompaction === true",
-    (result as any).harnessOwnedAutomaticCompaction === true,
+    result.harnessOwnedAutomaticCompaction === true,
   );
-  check("isHarnessOwnedAutomaticCompactionSkip(result) === true", recognizedSkip === true);
+  check("isHarnessOwnedAutomaticCompactionSkip(result) === true", recognizedSkip);
   check(
     "public SDK EmbeddedAgentCompactResult does NOT declare harnessOwnedAutomaticCompaction",
-    publicTypeHasFlag === false,
+    !publicTypeHasFlag,
   );
 }
 
@@ -316,8 +350,11 @@ async function scenarioStageTelemetry(tempDir: string): Promise<void> {
         workspaceDir: tempDir,
         trigger: "budget",
         currentTokenCount: 456,
-      } as any,
-      { bindingStore: storePrimary, clientFactory: async () => primary.client } as any,
+      } as unknown as CompactParams,
+      {
+        bindingStore: storePrimary,
+        clientFactory: async () => primary.client,
+      } as unknown as CompactOptions,
     ),
   );
   printResult("primary result", primaryResult);
@@ -337,12 +374,12 @@ async function scenarioStageTelemetry(tempDir: string): Promise<void> {
         workspaceDir: tempDir,
         trigger: "budget",
         currentTokenCount: 456,
-      } as any,
+      } as unknown as CompactParams,
       {
         bindingStore: storeAfter,
         clientFactory: async () => after.client,
         nativeCompactionRequest: "after_context_engine",
-      } as any,
+      } as unknown as CompactOptions,
     ),
   );
   printResult("after-context-engine result", afterResult);
@@ -380,10 +417,12 @@ async function main(): Promise<void> {
   console.log(
     `\n=== Summary ===\n  ${failures === 0 ? "ALL CHECKS PASSED" : `${failures} FAILED CHECK(S)`}`,
   );
-  if (failures > 0) process.exitCode = 1;
+  if (failures > 0) {
+    process.exitCode = 1;
+  }
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   console.error("proof runner threw:", error);
   process.exit(2);
 });
