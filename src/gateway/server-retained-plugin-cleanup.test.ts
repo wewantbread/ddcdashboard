@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import {
   RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
@@ -77,3 +78,44 @@ it("runs the Gateway cleanup owner across invalid and staged markers", async () 
     },
   );
 });
+
+it.runIf(process.platform !== "win32")(
+  "warns when a legacy retained marker cannot be read",
+  async () => {
+    await withOpenClawTestState(
+      { label: "gateway-retained-plugin-cleanup-access-error" },
+      async (state) => {
+        const packageDir = writeManagedNpmPlugin({
+          stateDir: state.stateDir,
+          packageName: "@openclaw/inaccessible-plugin",
+          pluginId: "inaccessible-plugin",
+          version: "1.0.0",
+          layout: "legacy",
+        });
+        await markRetainedManagedNpmInstall({
+          packageDir,
+          pluginId: "inaccessible-plugin",
+          reason: "replaced-by-managed-npm-generation-update",
+        });
+        const markerPath = resolveRetainedManagedNpmInstallMarkerPath(packageDir);
+        const markerDir = path.dirname(markerPath);
+        const log = { info: vi.fn(), warn: vi.fn() };
+        fs.chmodSync(markerDir, 0o000);
+
+        try {
+          await cleanupRetainedPluginInstallGenerations({ log });
+        } finally {
+          fs.chmodSync(markerDir, 0o700);
+        }
+
+        expect(fs.existsSync(packageDir)).toBe(true);
+        expect(fs.existsSync(markerPath)).toBe(true);
+        expect(log.info).not.toHaveBeenCalled();
+        expect(log.warn).toHaveBeenCalledOnce();
+        expect(log.warn).toHaveBeenCalledWith(
+          expect.stringContaining(`failed to clean retained npm generation ${packageDir}:`),
+        );
+      },
+    );
+  },
+);

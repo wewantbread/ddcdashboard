@@ -81,6 +81,21 @@ describe("managed npm retention", () => {
     }
   });
 
+  it("ignores unmarked legacy packages without reporting an error", async () => {
+    const stateDir = retentionTempDirs.make("openclaw-retention-");
+    const npmDir = path.join(stateDir, "npm");
+    const packageDir = path.join(npmDir, "node_modules", "@openclaw", "active-plugin");
+    fs.mkdirSync(packageDir, { recursive: true });
+    const onError = vi.fn();
+
+    await expect(
+      cleanupRetainedManagedNpmInstallGenerations({ npmDir, onError }),
+    ).resolves.toBe(0);
+
+    expect(fs.existsSync(packageDir)).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it.each(["project", "legacy"] as const)(
     "preserves %s packages retained by an explicit keep-files uninstall",
     async (layout) => {
@@ -155,6 +170,42 @@ describe("managed npm retention", () => {
       expect(onError).toHaveBeenCalledWith(
         expect.any(Error),
         layout === "legacy" ? packageDir : projectRoot,
+      );
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "reports inaccessible legacy markers while preserving package files",
+    async () => {
+      const stateDir = retentionTempDirs.make("openclaw-retention-");
+      const npmDir = path.join(stateDir, "npm");
+      const packageDir = path.join(npmDir, "node_modules", "@openclaw", "kept-plugin");
+      fs.mkdirSync(packageDir, { recursive: true });
+      await markRetainedManagedNpmInstall({
+        packageDir,
+        pluginId: "kept-plugin",
+        reason: "replaced-by-managed-npm-generation-update",
+      });
+      const markerPath = resolveRetainedManagedNpmInstallMarkerPath(packageDir);
+      const markerDir = path.dirname(markerPath);
+      const onError = vi.fn();
+      fs.chmodSync(markerDir, 0o000);
+
+      try {
+        expect(hasRetainedManagedNpmInstallMarker(packageDir)).toBe(true);
+        await expect(
+          cleanupRetainedManagedNpmInstallGenerations({ npmDir, onError }),
+        ).resolves.toBe(0);
+      } finally {
+        fs.chmodSync(markerDir, 0o700);
+      }
+
+      expect(fs.existsSync(packageDir)).toBe(true);
+      expect(fs.existsSync(markerPath)).toBe(true);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ code: expect.stringMatching(/^(?:EACCES|EPERM)$/u) }),
+        packageDir,
       );
     },
   );

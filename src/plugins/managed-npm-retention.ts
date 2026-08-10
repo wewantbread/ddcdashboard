@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { safePathSegmentHashed } from "../infra/install-safe-path.js";
+import { isNotFoundPathError } from "../infra/path-guards.js";
 import { resolveDefaultPluginNpmDir, resolvePluginNpmProjectsDir } from "./install-paths.js";
 import {
   RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
@@ -20,6 +21,7 @@ const CLEANUP_ELIGIBLE_REASONS = new Set([
 ]);
 
 type MarkerCleanupDisposition =
+  | { kind: "absent" }
   | { kind: "cleanup" }
   | { kind: "preserve" }
   | { kind: "invalid"; error: unknown };
@@ -52,6 +54,9 @@ function classifyMarkerForCleanup(markerPath: string): MarkerCleanupDisposition 
       error: new Error(`Unknown retained managed npm marker reason: ${markerPath}`),
     };
   } catch (error) {
+    if (isNotFoundPathError(error)) {
+      return { kind: "absent" };
+    }
     // Cleanup requires positive proof that the marker is disposable. A damaged marker may be
     // the only remaining record that package files were intentionally retained.
     return { kind: "invalid", error };
@@ -98,7 +103,16 @@ export function resolveRetainedManagedNpmInstallMarkerPath(packageDir: string): 
 
 export function hasRetainedManagedNpmInstallMarker(packageDir: string): boolean {
   const info = resolveRetainedManagedNpmInstallPackageInfo(packageDir);
-  return info ? fs.existsSync(info.markerPath) : false;
+  if (!info) {
+    return false;
+  }
+  try {
+    fs.lstatSync(info.markerPath);
+    return true;
+  } catch (error) {
+    // Discovery must fail closed: an inaccessible marker cannot make retained files recoverable.
+    return !isNotFoundPathError(error);
+  }
 }
 
 export async function clearRetainedManagedNpmInstallMarker(packageDir: string): Promise<boolean> {
@@ -199,12 +213,10 @@ async function cleanupRetainedLegacyNpmPackages(params: {
 }): Promise<number> {
   let removed = 0;
   for (const packageDir of listManagedNpmPackageDirs(params.npmRoot)) {
-    if (
-      !hasRetainedManagedNpmInstallMarker(packageDir) ||
-      params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))
-    ) {
+    if (params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))) {
       continue;
     }
+    // Classify in one read so access failures cannot masquerade as a missing marker.
     const disposition = classifyMarkerForCleanup(
       resolveRetainedManagedNpmInstallMarkerPath(packageDir),
     );
