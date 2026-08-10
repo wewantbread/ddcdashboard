@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createOpenClawReadTool } from "./agent-tools.read.js";
+import { createOpenClawReadTool, wrapReadToolWithSkillContent } from "./agent-tools.read.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import { createEditTool, createReadTool, createWriteTool } from "./sessions/index.js";
@@ -57,6 +57,84 @@ describe("filesystem tool output contracts", () => {
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
       '{ content: string; kind: "text" } | { content: string; kind: "image"; mimeType: string } | { content: string; kind: "truncated"; truncation: { firstLineExceedsLimit: boolean; lastLinePartial: boolean; maxBytes: number; maxLines: number; outputBytes: number; outputLines: number; totalBytes: number; totalLines: number; truncated: true; truncatedBy: "lines" | "bytes" } } | { kind: "not_found"; optional: true; path: string; status: "not_found" }',
     );
+  });
+
+  it.each([
+    {
+      label: "multiple ASCII pages",
+      lines: Array.from({ length: 5000 }, (_, index) => String(index + 1)),
+      trailingNewline: false,
+    },
+    {
+      label: "multiple CJK pages",
+      lines: Array.from({ length: 3001 }, (_, index) => `漢${index + 1}`),
+      trailingNewline: false,
+    },
+    {
+      label: "empty boundary lines and a trailing newline",
+      lines: Array.from({ length: 2505 }, (_, index) =>
+        index === 1999 || index === 2000 ? "" : `line-${index + 1}`,
+      ),
+      trailingNewline: true,
+    },
+  ])("returns the original file bytes across $label", async ({ lines, trailingNewline }) => {
+    const source = `${lines.join("\n")}${trailingNewline ? "\n" : ""}`;
+    await fs.writeFile(path.join(tmpDir, "multi-page.txt"), source, "utf8");
+    const tool = createOpenClawReadTool(createReadTool(tmpDir) as unknown as AnyAgentTool);
+
+    const result = await tool.execute("read-multi-page", { path: "multi-page.txt" });
+
+    expect(result.content).toEqual([{ type: "text", text: source }]);
+    expect(result.details).toEqual({ kind: "text", content: source });
+    expectContract(tool, result.details);
+  });
+
+  it("returns complete virtual skill content without inserting page separators", async () => {
+    const locator = "node://node-1/skills/pond/SKILL.md";
+    const source = Array.from({ length: 2501 }, (_, index) => String(index + 1)).join("\n");
+    const base = createOpenClawReadTool(createReadTool(tmpDir) as unknown as AnyAgentTool);
+    const tool = wrapReadToolWithSkillContent(base, [{ filePath: locator, readContent: source }]);
+
+    const result = await tool.execute("read-whole-skill", { path: locator });
+
+    expect(result.content).toEqual([{ type: "text", text: source }]);
+    expect(result.details).toEqual({ kind: "text", content: source });
+    expectContract(tool, result.details);
+  });
+
+  it("preserves explicit limits, offsets, and their continuation notices", async () => {
+    const lines = Array.from({ length: 5000 }, (_, index) => String(index + 1));
+    await fs.writeFile(path.join(tmpDir, "offset.txt"), lines.join("\n"), "utf8");
+    const tool = createOpenClawReadTool(createReadTool(tmpDir) as unknown as AnyAgentTool);
+
+    const limited = await tool.execute("read-limited", { path: "offset.txt", limit: 5 });
+    const expectedLimited = `${lines.slice(0, 5).join("\n")}\n\n[4995 more lines in file. Use offset=6 to continue.]`;
+    expect(limited.content).toEqual([{ type: "text", text: expectedLimited }]);
+    expect(limited.details).toEqual({ kind: "text", content: expectedLimited });
+
+    const offset = await tool.execute("read-offset", { path: "offset.txt", offset: 1990 });
+    const expectedOffset = lines.slice(1989).join("\n");
+    expect(offset.content).toEqual([{ type: "text", text: expectedOffset }]);
+    expect(offset.details).toEqual({ kind: "text", content: expectedOffset });
+  });
+
+  it("preserves adaptive continuation offsets and their separate notice", async () => {
+    const lines = Array.from(
+      { length: 8000 },
+      (_, index) => `line-${String(index + 1).padStart(4, "0")}-abcdefghijklmnopqrstuvwxyz`,
+    );
+    await fs.writeFile(path.join(tmpDir, "capped.txt"), lines.join("\n"), "utf8");
+    const tool = createOpenClawReadTool(createReadTool(tmpDir) as unknown as AnyAgentTool);
+
+    const result = await tool.execute("read-capped", { path: "capped.txt" });
+    const output = result.content.find((block) => block.type === "text")?.text;
+
+    expect(output).toBeDefined();
+    expect(output).toMatch(
+      /\n\n\[Read output capped at 32KB for this call\. Use offset=1384 to continue\.\]$/,
+    );
+    expect(result.details).toMatchObject({ kind: "truncated", content: output });
+    expectContract(tool, result.details);
   });
 
   it("validates edit changed and no-op results", async () => {

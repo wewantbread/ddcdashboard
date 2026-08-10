@@ -345,7 +345,7 @@ async function executeReadWithAdaptivePaging(params: {
       (truncation?.outputLines ?? 0) > 0 &&
       page < MAX_ADAPTIVE_READ_PAGES - 1;
     const pageText = canContinue ? stripReadContinuationNotice(rawText) : rawText;
-    const delimiter = aggregatedText && pageText ? "\n\n" : "";
+    const delimiter = aggregatedText && pageText ? "\n" : "";
     const nextBytes = Buffer.byteLength(`${delimiter}${pageText}`, "utf-8");
 
     if (aggregatedText && aggregatedBytes + nextBytes > params.maxBytes) {
