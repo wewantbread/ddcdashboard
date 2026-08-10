@@ -66,6 +66,7 @@ import {
 import { composeSystemPromptWithHookContext } from "./attempt.thread-helpers.js";
 import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import {
+  appendRuntimeSelfContextForPromptSplit,
   buildCurrentInboundPrompt,
   buildRuntimeContextCustomMessage,
   resolveRuntimeContextPromptParts,
@@ -116,6 +117,7 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
   orphanRepair?: OrphanRepairPlan;
   sessionAgentId: string;
   runtimeModel: string;
+  runtimeSelfContextToolAvailable: boolean;
   systemPromptText: string;
   applyPromptBuildToolsAllow: (toolsAllow: string[] | undefined) => string[];
   setActiveSessionSystemPrompt: (systemPrompt: string) => void;
@@ -369,6 +371,14 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
       attempt.inputProvenance,
     );
   }
+  const runtimePromptSplit = appendRuntimeSelfContextForPromptSplit({
+    prompt: promptForRuntimeContextSplit,
+    transcriptPrompt: transcriptPromptForRuntimeSplit,
+    config: attempt.config ?? getRuntimeConfig(),
+    runtimeToolAvailable: input.runtimeSelfContextToolAvailable,
+  });
+  promptForRuntimeContextSplit = runtimePromptSplit.prompt;
+  transcriptPromptForRuntimeSplit = runtimePromptSplit.transcriptPrompt;
   const transcriptLeafId =
     (input.sessionManager.getLeafEntry() as { id?: string } | null | undefined)?.id ?? null;
   const heartbeatSummary =
