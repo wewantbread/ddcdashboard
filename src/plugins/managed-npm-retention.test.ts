@@ -88,9 +88,7 @@ describe("managed npm retention", () => {
     fs.mkdirSync(packageDir, { recursive: true });
     const onError = vi.fn();
 
-    await expect(
-      cleanupRetainedManagedNpmInstallGenerations({ npmDir, onError }),
-    ).resolves.toBe(0);
+    await expect(cleanupRetainedManagedNpmInstallGenerations({ npmDir, onError })).resolves.toBe(0);
 
     expect(fs.existsSync(packageDir)).toBe(true);
     expect(onError).not.toHaveBeenCalled();

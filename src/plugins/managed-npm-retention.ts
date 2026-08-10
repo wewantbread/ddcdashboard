@@ -213,7 +213,9 @@ async function cleanupRetainedLegacyNpmPackages(params: {
 }): Promise<number> {
   let removed = 0;
   for (const packageDir of listManagedNpmPackageDirs(params.npmRoot)) {
-    if (params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))) {
+    if (
+      params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))
+    ) {
       continue;
     }
     // Classify in one read so access failures cannot masquerade as a missing marker.
