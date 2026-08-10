@@ -46,16 +46,26 @@ const PACKAGE_MANAGER_SWAP_SOURCE_HARDLINKS = "allow" as const;
  *
  * Module-private: producers call it when building UpdateRunResult; exporting
  * it trips the unused-exports deadcode gate.
+ *
+ * Live-mutation boundaries:
+ * - staged npm installs: only a successful `global install swap` (staged
+ *   `global update` writes a temp prefix; a failed swap restores the old tree)
+ * - in-place installs: a successful `global update` / omit-optional already
+ *   mutated the live tree before lifecycle scripts/doctor
  */
 function didCompletePackageReplacement(
   steps: ReadonlyArray<{ name: string; exitCode: number | null }>,
+  stagedInstall: boolean,
 ): boolean {
   if (steps.some((step) => step.name === "global install swap" && step.exitCode === 0)) {
     return true;
   }
-  // Record replacement at the mutation boundary. In-place `global update` already
-  // writes the new tree before lifecycle scripts/doctor; a later postinstall
-  // failure must still allow failed-update recovery to start the on-disk unit.
+  // Staged path: a successful stage install or a failed swap must not count.
+  if (stagedInstall || steps.some((step) => step.name === "global install swap")) {
+    return false;
+  }
+  // In-place mutation boundary. A later postinstall/doctor failure still means
+  // a replacement is on disk and recovery may start the installed unit.
   return steps.some(
     (step) =>
       (step.name === "global update" || step.name === "global update (omit optional)") &&
@@ -108,13 +118,14 @@ function packageUpdateFailure(
   failedStep: PackageUpdateStepResult,
   verifiedPackageRoot: string | null,
   steps = [failedStep],
+  stagedInstall = false,
 ): PackageUpdateStepsResult {
   return {
     steps,
     verifiedPackageRoot,
     afterVersion: null,
     failedStep,
-    packageReplacementVerified: didCompletePackageReplacement(steps),
+    packageReplacementVerified: didCompletePackageReplacement(steps, stagedInstall),
   };
 }
 
@@ -976,7 +987,12 @@ export async function runGlobalPackageUpdateSteps(params: {
     const preparedInstall = await prepareStagedNpmInstall(params.installTarget, params.packageName);
     stagedInstall = preparedInstall.stagedInstall;
     if (preparedInstall.failedStep) {
-      return packageUpdateFailure(preparedInstall.failedStep, params.packageRoot ?? null);
+      return packageUpdateFailure(
+        preparedInstall.failedStep,
+        params.packageRoot ?? null,
+        [preparedInstall.failedStep],
+        Boolean(stagedInstall),
+      );
     }
 
     const steps: PackageUpdateStepResult[] = [];
@@ -993,7 +1009,12 @@ export async function runGlobalPackageUpdateSteps(params: {
     packedInstallDir = preparedSpec.packDir;
     steps.push(...preparedSpec.steps);
     if (preparedSpec.failedStep) {
-      return packageUpdateFailure(preparedSpec.failedStep, params.packageRoot ?? null, steps);
+      return packageUpdateFailure(
+        preparedSpec.failedStep,
+        params.packageRoot ?? null,
+        steps,
+        Boolean(stagedInstall),
+      );
     }
 
     // pnpm selects its version from cwd. Keep every pnpm mutation beside its
@@ -1040,6 +1061,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           preparedFallbackInstall.failedStep,
           params.packageRoot ?? null,
           steps,
+          Boolean(stagedInstall),
         );
       }
 
@@ -1112,7 +1134,7 @@ export async function runGlobalPackageUpdateSteps(params: {
         stderrTail: "could not identify a unique active pnpm replacement package",
       };
       steps.push(replacementStep);
-      return packageUpdateFailure(replacementStep, params.packageRoot ?? null, steps);
+      return packageUpdateFailure(replacementStep, params.packageRoot ?? null, steps, Boolean(stagedInstall));
     }
     const livePackageRoot =
       refreshedPnpmPackageRoot ??
@@ -1171,7 +1193,7 @@ export async function runGlobalPackageUpdateSteps(params: {
               stderrTail: formatErrorMessage(error),
             };
             steps.push(markerStep);
-            return packageUpdateFailure(markerStep, verifiedPackageRoot, steps);
+            return packageUpdateFailure(markerStep, verifiedPackageRoot, steps, Boolean(stagedInstall));
           }
         }
 
@@ -1191,7 +1213,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           });
           steps.push(lifecycleStep);
           if (lifecycleStep.exitCode !== 0) {
-            return packageUpdateFailure(lifecycleStep, verifiedPackageRoot, steps);
+            return packageUpdateFailure(lifecycleStep, verifiedPackageRoot, steps, Boolean(stagedInstall));
           }
         }
 
@@ -1207,7 +1229,7 @@ export async function runGlobalPackageUpdateSteps(params: {
             stderrTail: formatErrorMessage(error),
           };
           steps.push(finalizeStep);
-          return packageUpdateFailure(finalizeStep, verifiedPackageRoot, steps);
+          return packageUpdateFailure(finalizeStep, verifiedPackageRoot, steps, Boolean(stagedInstall));
         }
       }
     }
@@ -1279,7 +1301,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       verifiedPackageRoot,
       afterVersion,
       failedStep,
-      packageReplacementVerified: didCompletePackageReplacement(steps),
+      packageReplacementVerified: didCompletePackageReplacement(steps, Boolean(stagedInstall)),
     };
   } finally {
     await cleanupStagedNpmInstall(stagedInstall);
