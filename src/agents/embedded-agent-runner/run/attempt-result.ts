@@ -12,6 +12,7 @@ import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome
 import type { createCacheTrace } from "../../cache-trace.js";
 import { isCloudCodeAssistFormatError } from "../../embedded-agent-helpers.js";
 import type { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
+import { getHostOwnedMcpRelayPayloadUrls } from "../../mcp-tool-result-media-provenance.js";
 import { log } from "../logger.js";
 import type { PromptCacheBreak, PromptCacheChange } from "../prompt-cache-observability.js";
 import { observeReplayMetadata, replayMetadataFromState } from "../replay-state.js";
@@ -23,6 +24,7 @@ import {
   resolveSilentToolResultReplyPayload,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn.js";
+import { markAttemptToolMediaAttachments } from "./tool-media-payloads.js";
 import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
@@ -285,6 +287,9 @@ export function completeEmbeddedAttemptResult(
     successfulCronAdds: getSuccessfulCronAdds(),
   });
   const pendingToolMediaReply = getPendingToolMediaReply();
+  const pendingHostOwnedToolMediaUrls = pendingToolMediaReply
+    ? getHostOwnedMcpRelayPayloadUrls(pendingToolMediaReply)
+    : undefined;
   const replayMetadata = replayMetadataFromState(
     observeReplayMetadata(getReplayState(), observedReplayMetadata),
   );
@@ -395,6 +400,7 @@ export function completeEmbeddedAttemptResult(
     messagingToolSourceReplyPayloads,
     heartbeatToolResponse,
     toolMediaUrls: pendingToolMediaReply?.mediaUrls,
+    hostOwnedToolMediaUrls: pendingHostOwnedToolMediaUrls,
     toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
     toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,
     hasToolMediaBlockReply: hasToolMediaBlockReplyNow,
@@ -408,6 +414,7 @@ export function completeEmbeddedAttemptResult(
     clientToolCalls,
     yieldDetected: state.yieldDetected || undefined,
   };
+  markAttemptToolMediaAttachments(result, pendingToolMediaReply?.attachments);
   return finalizeEmbeddedAttempt({
     result,
     trajectoryRecorder: input.trajectoryRecorder,

@@ -5,7 +5,28 @@ import {
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
-import { mergeAttemptToolMediaPayloads } from "./tool-media-payloads.js";
+import {
+  getAttemptToolMediaAttachments,
+  markAttemptToolMediaAttachments,
+  mergeAttemptToolMediaPayloads,
+} from "./tool-media-payloads.js";
+
+describe("attempt tool media attachments", () => {
+  it("keeps attachment metadata out of the public attempt object", () => {
+    const attempt = {};
+    markAttemptToolMediaAttachments(attempt, [
+      { type: "image", mimeType: "image/png", trustedLocalMedia: true },
+    ]);
+
+    expect(attempt).toEqual({});
+    const firstRead = getAttemptToolMediaAttachments(attempt);
+    expect(firstRead).toEqual([{ type: "image", mimeType: "image/png", trustedLocalMedia: true }]);
+    firstRead?.push({ type: "audio" });
+    expect(getAttemptToolMediaAttachments(attempt)).toEqual([
+      { type: "image", mimeType: "image/png", trustedLocalMedia: true },
+    ]);
+  });
+});
 
 describe("mergeAttemptToolMediaPayloads", () => {
   it("attaches tool media to the first visible reply", () => {
@@ -48,10 +69,39 @@ describe("mergeAttemptToolMediaPayloads", () => {
     ]);
   });
 
+  it("keeps per-URL trust aligned when trusted and untrusted tool media are mixed", () => {
+    expect(
+      mergeAttemptToolMediaPayloads({
+        payloads: [{ text: "done", mediaUrls: ["https://example.test/existing.png"] }],
+        toolMediaUrls: ["/tmp/staged.png", "https://example.test/remote.opus"],
+        toolMediaAttachments: [
+          { type: "image", mimeType: "image/png", trustedLocalMedia: true },
+          { type: "audio", mimeType: "audio/ogg" },
+        ],
+      }),
+    ).toEqual([
+      {
+        text: "done",
+        mediaUrls: [
+          "https://example.test/existing.png",
+          "/tmp/staged.png",
+          "https://example.test/remote.opus",
+        ],
+        mediaUrl: "https://example.test/existing.png",
+        attachments: [
+          {},
+          { type: "image", mimeType: "image/png", trustedLocalMedia: true },
+          { type: "audio", mimeType: "audio/ogg" },
+        ],
+      },
+    ]);
+  });
+
   it("marks harness-owned media when source replies require the message tool", () => {
     const [mediaReply] =
       mergeAttemptToolMediaPayloads({
         toolMediaUrls: ["/tmp/generated.png"],
+        toolMediaAttachments: [{ type: "image", mimeType: "image/png", trustedLocalMedia: true }],
         hostOwnedToolMediaUrls: ["/tmp/generated.png"],
         sourceReplyDeliveryMode: "message_tool_only",
       }) ?? [];
@@ -59,6 +109,7 @@ describe("mergeAttemptToolMediaPayloads", () => {
     expect(mediaReply).toEqual({
       mediaUrls: ["/tmp/generated.png"],
       mediaUrl: "/tmp/generated.png",
+      attachments: [{ type: "image", mimeType: "image/png", trustedLocalMedia: true }],
       audioAsVoice: undefined,
       trustedLocalMedia: undefined,
     });

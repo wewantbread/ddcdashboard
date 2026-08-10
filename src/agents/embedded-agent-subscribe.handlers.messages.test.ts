@@ -24,6 +24,7 @@ import {
   createOpenAiResponsesTextEvent as createTextUpdateEvent,
 } from "./embedded-agent-subscribe.openai-responses.test-helpers.js";
 import { createThinkingTagStreamState } from "./embedded-agent-utils.js";
+import { getHostOwnedMcpRelayPayloadUrls } from "./mcp-tool-result-media-provenance.js";
 
 function updateMessage(
   context: EmbeddedAgentSubscribeContext,
@@ -1276,6 +1277,23 @@ describe("handleMessageUpdate text signatures", () => {
 });
 
 describe("consumePendingToolMediaIntoReply", () => {
+  it("keeps host-owned MCP media queued for durable terminal delivery", () => {
+    const state = {
+      pendingToolMediaUrls: ["/tmp/mcp-image.png"],
+      pendingToolMediaAttachments: [
+        { type: "image" as const, mimeType: "image/png", trustedLocalMedia: true },
+      ],
+      pendingToolMediaTrustByUrl: new Map([["/tmp/mcp-image.png", true]]),
+      pendingToolMediaHostOwnedUrls: new Set(["/tmp/mcp-image.png"]),
+      pendingToolAudioAsVoice: false,
+    };
+    const payload = { text: "done" };
+
+    expect(consumePendingToolMediaIntoReply(state, payload)).toBe(payload);
+    expect(state.pendingToolMediaUrls).toEqual(["/tmp/mcp-image.png"]);
+    expect(state.pendingToolMediaHostOwnedUrls).toEqual(new Set(["/tmp/mcp-image.png"]));
+  });
+
   it("attaches queued tool media to the next assistant reply", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/a.png", "/tmp/a.png", "/tmp/b.png"],
@@ -1288,6 +1306,7 @@ describe("consumePendingToolMediaIntoReply", () => {
         ["/tmp/a.png", true],
         ["/tmp/b.png", false],
       ]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: false,
     };
 
@@ -1318,6 +1337,7 @@ describe("consumePendingToolMediaIntoReply", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/generated.png"],
       pendingToolMediaTrustByUrl: new Map([["/tmp/generated.png", true]]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: false,
     };
 
@@ -1347,6 +1367,7 @@ describe("consumePendingToolMediaIntoReply", () => {
         ["/tmp/generated.mp3", true],
         ["/tmp/unselected.mp3", false],
       ]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: false,
     };
 
@@ -1386,6 +1407,7 @@ describe("consumePendingToolMediaIntoReply", () => {
         ["/tmp/generated.mp3", true],
         ["/tmp/untrusted.mp3", false],
       ]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: false,
     };
 
@@ -1405,6 +1427,7 @@ describe("consumePendingToolMediaIntoReply", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/reply.opus"],
       pendingToolMediaTrustByUrl: new Map([["/tmp/reply.opus", true]]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: true,
     };
 
@@ -1426,6 +1449,7 @@ describe("consumePendingToolMediaIntoReply", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/a.png"],
       pendingToolMediaTrustByUrl: new Map([["/tmp/a.png", false]]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: true,
     };
 
@@ -1444,10 +1468,34 @@ describe("consumePendingToolMediaIntoReply", () => {
 });
 
 describe("consumePendingToolMediaReply", () => {
+  it("carries host-owned provenance without exposing it on the wire payload", () => {
+    const state = {
+      pendingToolMediaUrls: ["/tmp/mcp-image.png"],
+      pendingToolMediaAttachments: [
+        { type: "image" as const, mimeType: "image/png", trustedLocalMedia: true },
+      ],
+      pendingToolMediaTrustByUrl: new Map([["/tmp/mcp-image.png", true]]),
+      pendingToolMediaHostOwnedUrls: new Set(["/tmp/mcp-image.png"]),
+      pendingToolAudioAsVoice: false,
+    };
+
+    const reply = consumePendingToolMediaReply(state);
+
+    expect(reply).toEqual({
+      mediaUrls: ["/tmp/mcp-image.png"],
+      attachments: [{ type: "image", mimeType: "image/png", trustedLocalMedia: true }],
+      audioAsVoice: undefined,
+      trustedLocalMedia: true,
+    });
+    expect(getHostOwnedMcpRelayPayloadUrls(reply ?? {})).toEqual(["/tmp/mcp-image.png"]);
+    expect(state.pendingToolMediaHostOwnedUrls.size).toBe(0);
+  });
+
   it("reads a media-only reply without consuming queued tool media", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/reply.opus"],
       pendingToolMediaTrustByUrl: new Map([["/tmp/reply.opus", false]]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: true,
     };
 
@@ -1463,6 +1511,7 @@ describe("consumePendingToolMediaReply", () => {
     const state = {
       pendingToolMediaUrls: ["/tmp/reply.opus"],
       pendingToolMediaTrustByUrl: new Map([["/tmp/reply.opus", false]]),
+      pendingToolMediaHostOwnedUrls: new Set<string>(),
       pendingToolAudioAsVoice: true,
     };
 

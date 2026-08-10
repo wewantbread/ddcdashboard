@@ -55,7 +55,7 @@ import { isPromiseLike } from "./embedded-agent-subscribe.promise.js";
 import {
   buildToolLifecycleErrorResult,
   extractToolResultMediaArtifact,
-  filterToolResultMediaUrls,
+  filterToolResultMediaArtifact,
 } from "./embedded-agent-subscribe.tools.js";
 import type { SubscribeEmbeddedAgentSessionParams } from "./embedded-agent-subscribe.types.js";
 import {
@@ -66,6 +66,7 @@ import {
 import { mediaUrlsFromGeneratedAttachments } from "./generated-attachments.js";
 import { hasGeneratedMediaCompletionEvent } from "./internal-event-contract.js";
 import type { AgentInternalEvent } from "./internal-events.js";
+import { getHostOwnedMcpRelayPayloadUrls } from "./mcp-tool-result-media-provenance.js";
 import type { AgentRunTimeoutPhase } from "./run-timeout-attribution.js";
 import type { AgentMessage } from "./runtime/index.js";
 import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
@@ -278,6 +279,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     pendingToolMediaUrls: initialPendingToolMedia.mediaUrls,
     pendingToolMediaAttachments: initialPendingToolMedia.attachments,
     pendingToolMediaTrustByUrl: initialPendingToolMedia.trustByUrl,
+    pendingToolMediaHostOwnedUrls: new Set(),
     pendingToolAudioAsVoice: false,
     hasToolMediaBlockReply: false,
     visibleBlockReplyCount: 0,
@@ -433,6 +435,12 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
             ...(assistantTranscriptMediaUrls.length > 0 ? { assistantTranscriptMediaUrls } : {}),
           })
         : withToolMedia;
+    if (
+      getHostOwnedMcpRelayPayloadUrls(taggedPayload)?.length &&
+      !normalizeOptionalString(taggedPayload.text)
+    ) {
+      setReplyPayloadMetadata(taggedPayload, { deliverDespiteSourceReplySuppression: true });
+    }
     if (state.deferBlockReplyDelivery) {
       if (consumesPendingToolMedia) {
         deferredToolMediaReplies.add(taggedPayload);
@@ -820,12 +828,15 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
       stripReplyTags: true,
     });
     const mediaArtifact = result ? extractToolResultMediaArtifact(result) : undefined;
-    const filteredMediaUrls = filterToolResultMediaUrls(
-      toolName,
-      mediaArtifact?.mediaUrls ?? [],
-      result,
-      params.trustedLocalMediaToolNames,
-    );
+    const filteredMediaArtifact = mediaArtifact
+      ? filterToolResultMediaArtifact({
+          toolName,
+          artifact: mediaArtifact,
+          result,
+          trustedLocalMediaToolNames: params.trustedLocalMediaToolNames,
+        })
+      : undefined;
+    const filteredMediaUrls = filteredMediaArtifact?.mediaUrls ?? [];
     if (
       params.sourceReplyDeliveryMode === "message_tool_only" &&
       parsed.text &&
@@ -841,15 +852,22 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     if (!parsed.text && filteredMediaUrls.length === 0) {
       return;
     }
+    const toolResultPayload: BlockReplyPayload = {
+      text: parsed.text,
+      mediaUrls: filteredMediaUrls.length ? filteredMediaUrls : undefined,
+      attachments: filteredMediaArtifact?.attachments,
+      ...(filteredMediaArtifact?.audioAsVoice ? { audioAsVoice: true } : {}),
+      ...(filteredMediaArtifact?.trustedLocalMedia ? { trustedLocalMedia: true } : {}),
+    };
+    if (filteredMediaArtifact?.hostOwnedMediaUrls?.length) {
+      setReplyPayloadMetadata(toolResultPayload, {
+        deliverDespiteSourceReplySuppression: true,
+      });
+    }
     runBestEffortCallback({
       label: "tool result",
       log,
-      callback: () =>
-        params.onToolResult?.({
-          text: parsed.text,
-          mediaUrls: filteredMediaUrls.length ? filteredMediaUrls : undefined,
-          ...(mediaArtifact?.audioAsVoice ? { audioAsVoice: true } : {}),
-        }),
+      callback: () => params.onToolResult?.(toolResultPayload),
     });
   };
   const emitToolSummary = (toolName?: string, meta?: string) => {
@@ -1372,6 +1390,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     state.pendingToolMediaUrls = [];
     state.pendingToolMediaAttachments = [];
     state.pendingToolMediaTrustByUrl.clear();
+    state.pendingToolMediaHostOwnedUrls.clear();
     state.pendingToolAudioAsVoice = false;
     state.visibleBlockReplyCount = 0;
     state.deferBlockReplyDelivery = typeof params.onBeforeTerminalDelivery === "function";
