@@ -594,6 +594,27 @@ test("createGatewaySession rechecks admin scope after incognito inheritance reso
   }
 });
 
+test("sessions.create preserves explicit and parent-derived agent routing", async () => {
+  const parent = await directSessionReq<{ key?: string }>("sessions.create", {
+    agentId: "work",
+  });
+  expect(parent.ok, JSON.stringify(parent.error)).toBe(true);
+  const parentSessionKey = requireNonEmptyString(parent.payload?.key, "work parent key");
+
+  const inherited = await directSessionReq<{ key?: string }>("sessions.create", {
+    parentSessionKey,
+  });
+  expect(inherited.ok, JSON.stringify(inherited.error)).toBe(true);
+  expect(inherited.payload?.key).toMatch(/^agent:work:dashboard:/u);
+
+  const explicit = await directSessionReq<{ key?: string }>("sessions.create", {
+    agentId: "main",
+    parentSessionKey,
+  });
+  expect(explicit.ok, JSON.stringify(explicit.error)).toBe(true);
+  expect(explicit.payload?.key).toMatch(/^agent:main:dashboard:/u);
+});
+
 test("createGatewaySession persists a generated title only for a new session", async () => {
   await createSessionStoreDir();
   const { createGatewaySession } = await import("./session-create-service.js");
@@ -1597,6 +1618,54 @@ test("sessions.create rejects worktrees for non-git agent workspaces", async () 
     });
   } finally {
     testState.agentConfig = undefined;
+  }
+});
+
+test("sessions.create provisions a worktree from the authenticated parent agent workspace", async () => {
+  const openClawState = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-inherited-agent-worktree-",
+  });
+  const workWorkspace = await initializeGitWorkspace(openClawState.root);
+  const mainWorkspace = await makeNonGitTempDir("openclaw-main-non-git-workspace-");
+  closeOpenClawStateDatabaseForTest();
+  await createSelectedGlobalSessionStore();
+  testState.agentsConfig = {
+    list: [
+      { id: "main", default: true, workspace: mainWorkspace },
+      { id: "work", workspace: workWorkspace },
+    ],
+  };
+  let worktreeId: string | undefined;
+  try {
+    const parent = await directSessionReq<{ key?: string }>("sessions.create", {
+      agentId: "work",
+    });
+    const parentSessionKey = requireNonEmptyString(parent.payload?.key, "work parent key");
+
+    const child = await directSessionReq<{
+      key?: string;
+      worktree?: { id: string; path: string };
+    }>(
+      "sessions.create",
+      { parentSessionKey, worktree: true },
+      { client: { connect: { scopes: ["operator.admin"] } } as never },
+    );
+
+    expect(child.ok, JSON.stringify(child.error)).toBe(true);
+    expect(child.payload?.key).toMatch(/^agent:work:dashboard:/u);
+    worktreeId = child.payload?.worktree?.id;
+    expect(
+      findLiveRegistryWorktreeByOwner(process.env, "session", child.payload?.key ?? ""),
+    ).toMatchObject({ id: worktreeId, repoRoot: workWorkspace });
+  } finally {
+    if (worktreeId) {
+      await managedWorktrees.remove({ id: worktreeId, reason: "test-cleanup", force: true });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentsConfig = undefined;
+    testState.sessionConfig = undefined;
+    await openClawState.cleanup();
   }
 });
 
@@ -3166,6 +3235,53 @@ test.each([
   expect(loadSessionEntry({ sessionKey: target, storePath })).toBeDefined();
 });
 
+test("sessions.create authenticates an agent-qualified parent before deriving child routing", async () => {
+  const { dir } = await createSessionStoreDir();
+  const storeTemplate = path.join(dir, "{agentId}", "sessions.json");
+  const workStorePath = storeTemplate.replace("{agentId}", "work");
+  const parentSessionKey = "agent:work:dashboard:foreign-owned";
+  testState.sessionStorePath = storeTemplate;
+  testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "work" }] };
+  try {
+    await fs.mkdir(path.dirname(workStorePath), { recursive: true });
+    await writeSessionStore({
+      storePath: workStorePath,
+      agentId: "work",
+      entries: {
+        [parentSessionKey]: sessionStoreEntry("foreign-work-session", {
+          pluginOwnerId: "other-plugin",
+        }),
+      },
+    });
+    const pluginClient = {
+      connect: { scopes: ["operator.write"] },
+      internal: { pluginRuntimeOwnerId: "memory-core" },
+    } as never;
+
+    const created = await directSessionReq(
+      "sessions.create",
+      { parentSessionKey },
+      { client: pluginClient },
+    );
+
+    expect(created.ok).toBe(false);
+    expect(created.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      message: `Plugin "memory-core" cannot link session "${parentSessionKey}" because it did not create it.`,
+    });
+    expect(
+      loadSessionEntry({
+        agentId: "work",
+        sessionKey: parentSessionKey,
+        storePath: workStorePath,
+      }),
+    ).toMatchObject({ sessionId: "foreign-work-session", pluginOwnerId: "other-plugin" });
+  } finally {
+    testState.sessionStorePath = undefined;
+    testState.agentsConfig = undefined;
+  }
+});
+
 test("sessions.create allows plugin runtimes to link their own parent session", async () => {
   const { storePath } = await createSessionStoreDir();
   const parentSessionKey = "agent:main:dashboard:memory-core-parent";
@@ -3497,7 +3613,6 @@ test("sessions.create rejects fork while the parent session is active", async ()
 test("sessions.create resolves an agent-qualified fork from the parent store", async () => {
   const { dir } = await createSessionStoreDir();
   const storeTemplate = path.join(dir, "{agentId}", "sessions.json");
-  const mainStorePath = storeTemplate.replace("{agentId}", "main");
   const workStorePath = storeTemplate.replace("{agentId}", "work");
   const workDir = path.dirname(workStorePath);
   testState.sessionStorePath = storeTemplate;
@@ -3539,7 +3654,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
     });
 
     expect(created.ok, JSON.stringify(created.error)).toBe(true);
-    expect(created.payload?.key).toMatch(/^agent:main:dashboard:/);
+    expect(created.payload?.key).toMatch(/^agent:work:dashboard:/);
     expect(created.payload?.entry?.parentSessionKey).toBe("agent:work:main");
     expect(created.payload?.entry?.forkSource).toEqual({
       sessionKey: "agent:work:main",
@@ -3554,7 +3669,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
           "agent-qualified forked session id",
         ),
         sessionKey: created.payload?.key ?? "",
-        storePath: mainStorePath,
+        storePath: workStorePath,
       }),
     ).resolves.toEqual(
       expect.arrayContaining([

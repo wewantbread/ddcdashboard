@@ -221,6 +221,78 @@ type CreateGatewaySessionResult =
     }
   | { ok: false; error: ErrorShape };
 
+const gatewaySessionCreateAgentRoutingBrand = Symbol("gateway-session-create-agent-routing");
+
+type GatewaySessionCreateAgentRouting = {
+  [gatewaySessionCreateAgentRoutingBrand]: true;
+  agentId: string;
+  authenticatedParent?: ReturnType<typeof loadSessionEntryReadOnly>;
+};
+
+type GatewaySessionCreateAgentRoutingResult =
+  | { ok: true; routing: GatewaySessionCreateAgentRouting }
+  | { ok: false; error: ErrorShape };
+
+export function resolveGatewaySessionCreateAgentRouting(params: {
+  cfg: OpenClawConfig;
+  key?: string;
+  agentId?: string;
+  parentSessionKey?: string;
+  fork?: boolean;
+  authorizedPluginId?: string;
+}): GatewaySessionCreateAgentRoutingResult {
+  const requestedAgentId = normalizeOptionalString(params.agentId);
+  const requestedKey = normalizeOptionalString(params.key);
+  const requestedKeyAgentId = parseAgentSessionKey(requestedKey)?.agentId;
+  let agentId = normalizeAgentId(
+    requestedAgentId ?? requestedKeyAgentId ?? resolveDefaultAgentId(params.cfg),
+  );
+  const parentSessionKey = normalizeOptionalString(params.parentSessionKey);
+  if (
+    !parentSessionKey ||
+    resolveSessionStoreKey({ cfg: params.cfg, sessionKey: parentSessionKey }) === "global"
+  ) {
+    return {
+      ok: true,
+      routing: { [gatewaySessionCreateAgentRoutingBrand]: true, agentId },
+    };
+  }
+  const parent = loadSessionEntryReadOnly(parentSessionKey);
+  if (!parent.entry?.sessionId) {
+    return {
+      ok: false,
+      error: errorShape(ErrorCodes.INVALID_REQUEST, `unknown parent session: ${parentSessionKey}`),
+    };
+  }
+  const parentOwnershipError = resolvePluginSessionOwnershipError({
+    action: params.fork === true ? "fork" : "link",
+    entry: parent.entry,
+    key: parent.canonicalKey,
+    pluginOwnerId: params.authorizedPluginId,
+  });
+  if (parentOwnershipError) {
+    return { ok: false, error: parentOwnershipError };
+  }
+  const authenticatedParentAgentId = parseAgentSessionKey(parent.canonicalKey)?.agentId;
+  if (!authenticatedParentAgentId) {
+    return {
+      ok: true,
+      routing: { [gatewaySessionCreateAgentRoutingBrand]: true, agentId },
+    };
+  }
+  if (!requestedAgentId && !requestedKeyAgentId) {
+    agentId = normalizeAgentId(authenticatedParentAgentId);
+  }
+  return {
+    ok: true,
+    routing: {
+      [gatewaySessionCreateAgentRoutingBrand]: true,
+      agentId,
+      authenticatedParent: parent,
+    },
+  };
+}
+
 export async function createGatewaySession(params: {
   cfg: OpenClawConfig;
   key?: string;
@@ -280,14 +352,21 @@ export async function createGatewaySession(params: {
   authorizedAgentHarnessId?: string;
   /** Exact plugin namespace authorized by the scoped plugin runtime. */
   authorizedPluginId?: string;
+  /** Trusted routing snapshot captured before agent-specific Gateway preflight. */
+  preflightAgentRouting?: GatewaySessionCreateAgentRouting;
   afterCreate?: (created: CreatedGatewaySession) => Promise<void>;
 }): Promise<CreateGatewaySessionResult> {
   const requestedKey = normalizeOptionalString(params.key);
   const parentSessionKey = normalizeOptionalString(params.parentSessionKey);
   const generatedDisplayName = normalizeOptionalString(params.generatedDisplayName);
-  const agentId = normalizeAgentId(
-    normalizeOptionalString(params.agentId) ?? resolveDefaultAgentId(params.cfg),
-  );
+  const requestedAgentId = normalizeOptionalString(params.agentId);
+  const agentRouting = params.preflightAgentRouting?.[gatewaySessionCreateAgentRoutingBrand]
+    ? { ok: true as const, routing: params.preflightAgentRouting }
+    : resolveGatewaySessionCreateAgentRouting(params);
+  if (!agentRouting.ok) {
+    return agentRouting;
+  }
+  const { agentId, authenticatedParent: authenticatedParentForAgentRouting } = agentRouting.routing;
   const catalogModel = normalizeOptionalString(params.catalogTarget?.model);
   const catalogAgentRuntime = normalizeOptionalAgentRuntimeId(params.catalogTarget?.agentRuntime);
   const catalogPluginOwnerId = normalizeOptionalString(params.catalogTarget?.pluginOwnerId);
@@ -321,17 +400,13 @@ export async function createGatewaySession(params: {
     }
   }
   if (requestedKey) {
-    const requestedAgentId = parseAgentSessionKey(requestedKey)?.agentId;
-    if (
-      requestedAgentId &&
-      requestedAgentId !== agentId &&
-      normalizeOptionalString(params.agentId)
-    ) {
+    const requestedKeyAgentId = parseAgentSessionKey(requestedKey)?.agentId;
+    if (requestedKeyAgentId && requestedKeyAgentId !== agentId && requestedAgentId) {
       return {
         ok: false,
         error: errorShape(
           ErrorCodes.INVALID_REQUEST,
-          `sessions.create key agent (${requestedAgentId}) does not match agentId (${agentId})`,
+          `sessions.create key agent (${requestedKeyAgentId}) does not match agentId (${agentId})`,
         ),
       };
     }
@@ -480,10 +555,12 @@ export async function createGatewaySession(params: {
       }
       parentSelectedAgentId = parentRequestedAgent.agentId;
     }
-    const parent = loadSessionEntryReadOnly(
-      parentSessionKey,
-      parentSelectedAgentId ? { agentId: parentSelectedAgentId } : undefined,
-    );
+    const parent =
+      authenticatedParentForAgentRouting ??
+      loadSessionEntryReadOnly(
+        parentSessionKey,
+        parentSelectedAgentId ? { agentId: parentSelectedAgentId } : undefined,
+      );
     if (!parent.entry?.sessionId) {
       return {
         ok: false,
