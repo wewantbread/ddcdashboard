@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import {
+  RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
   RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
   RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
 } from "../plugins/managed-npm-retention-contract.js";
@@ -51,7 +52,7 @@ it("runs the Gateway cleanup owner across invalid and staged markers", async () 
       await markRetainedManagedNpmInstall({
         packageDir: invalidPackageDir,
         pluginId: "invalid-plugin",
-        reason: "replaced-by-managed-npm-generation-update",
+        reason: RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
       });
       fs.writeFileSync(resolveRetainedManagedNpmInstallMarkerPath(invalidPackageDir), "{", "utf8");
 
@@ -95,7 +96,7 @@ it.runIf(process.platform !== "win32")(
         await markRetainedManagedNpmInstall({
           packageDir,
           pluginId: "inaccessible-plugin",
-          reason: "replaced-by-managed-npm-generation-update",
+          reason: RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
         });
         const markerPath = resolveRetainedManagedNpmInstallMarkerPath(packageDir);
         const markerDir = path.dirname(markerPath);

@@ -138,4 +138,47 @@ describe("retained managed npm record commits", () => {
       expect(fs.existsSync(localInstallPath)).toBe(true);
     });
   });
+
+  it("keeps npm generation replacements cleanup-eligible", async () => {
+    await withOpenClawTestState({ label: "retained-generation-update" }, async (state) => {
+      const packageName = "@openclaw/updated-plugin";
+      const previousInstallPath = state.statePath(
+        "npm",
+        "projects",
+        "updated-plugin-v1",
+        "node_modules",
+        "@openclaw",
+        "updated-plugin",
+      );
+      const nextInstallPath = state.statePath(
+        "npm",
+        "projects",
+        "updated-plugin-v2",
+        "node_modules",
+        "@openclaw",
+        "updated-plugin",
+      );
+      fs.mkdirSync(previousInstallPath, { recursive: true });
+      fs.mkdirSync(nextInstallPath, { recursive: true });
+
+      await commitPluginInstallRecordsWithConfig({
+        previousInstallRecords: {
+          "updated-plugin": npmRecord(packageName, previousInstallPath),
+        },
+        nextInstallRecords: {
+          "updated-plugin": npmRecord(packageName, nextInstallPath),
+        },
+        nextConfig: {},
+      });
+
+      expect(hasRetainedManagedNpmInstallMarker(previousInstallPath)).toBe(true);
+      await expect(
+        cleanupRetainedManagedNpmInstallGenerations({
+          activeInstallPaths: [nextInstallPath],
+        }),
+      ).resolves.toBe(1);
+      expect(fs.existsSync(previousInstallPath)).toBe(false);
+      expect(fs.existsSync(nextInstallPath)).toBe(true);
+    });
+  });
 });

@@ -6,19 +6,13 @@ import { safePathSegmentHashed } from "../infra/install-safe-path.js";
 import { isNotFoundPathError } from "../infra/path-guards.js";
 import { resolveDefaultPluginNpmDir, resolvePluginNpmProjectsDir } from "./install-paths.js";
 import {
-  RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+  isRetainedManagedNpmCleanupEligibleReason,
   RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
 } from "./managed-npm-retention-contract.js";
 import { listManagedPluginNpmRootsSync } from "./npm-project-roots.js";
 
 const RETAINED_MANAGED_NPM_INSTALL_MARKER_DIR = ".openclaw-retained-npm-installs";
 const RETAINED_MANAGED_NPM_INSTALL_MARKER_VERSION = 1;
-const CLEANUP_ELIGIBLE_REASONS = new Set([
-  "doctor-repaired-stale-managed-npm-generation",
-  "replaced-by-managed-npm-generation-update",
-  "replaced-by-plugin-source-change",
-  RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
-]);
 
 type MarkerCleanupDisposition =
   | { kind: "absent" }
@@ -46,7 +40,7 @@ function classifyMarkerForCleanup(markerPath: string): MarkerCleanupDisposition 
     if (marker.reason === RETAINED_MANAGED_NPM_KEEP_FILES_REASON) {
       return { kind: "preserve" };
     }
-    if (CLEANUP_ELIGIBLE_REASONS.has(marker.reason)) {
+    if (isRetainedManagedNpmCleanupEligibleReason(marker.reason)) {
       return { kind: "cleanup" };
     }
     return {

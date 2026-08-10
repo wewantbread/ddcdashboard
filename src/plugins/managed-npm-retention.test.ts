@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolvePluginNpmGenerationProjectDir } from "./install-paths.js";
 import {
+  RETAINED_MANAGED_NPM_DOCTOR_REPAIR_REASON,
+  RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
   RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
   RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
+  RETAINED_MANAGED_NPM_PLUGIN_SOURCE_CHANGE_REASON,
 } from "./managed-npm-retention-contract.js";
 
 const retentionTempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -39,7 +42,7 @@ describe("managed npm retention", () => {
     await markRetainedManagedNpmInstall({
       packageDir: oldPackageDir,
       pluginId: "codex",
-      reason: "replaced-by-managed-npm-generation-update",
+      reason: RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
     });
 
     try {
@@ -65,7 +68,7 @@ describe("managed npm retention", () => {
     await markRetainedManagedNpmInstall({
       packageDir,
       pluginId: "codex",
-      reason: "doctor-repaired-stale-managed-npm-generation",
+      reason: RETAINED_MANAGED_NPM_DOCTOR_REPAIR_REASON,
     });
 
     try {
@@ -151,7 +154,7 @@ describe("managed npm retention", () => {
         reason:
           markerState === "unknown"
             ? "future-retention-policy"
-            : "replaced-by-managed-npm-generation-update",
+            : RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
       });
       if (markerState === "corrupt") {
         fs.writeFileSync(resolveRetainedManagedNpmInstallMarkerPath(packageDir), "{", "utf8");
@@ -182,7 +185,7 @@ describe("managed npm retention", () => {
       await markRetainedManagedNpmInstall({
         packageDir,
         pluginId: "kept-plugin",
-        reason: "replaced-by-managed-npm-generation-update",
+        reason: RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
       });
       const markerPath = resolveRetainedManagedNpmInstallMarkerPath(packageDir);
       const markerDir = path.dirname(markerPath);
@@ -222,6 +225,26 @@ describe("managed npm retention", () => {
       packageDir,
       pluginId: "codex",
       reason: RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+    });
+
+    await expect(cleanupRetainedManagedNpmInstallGenerations({ npmDir })).resolves.toBe(1);
+    expect(fs.existsSync(packageDir)).toBe(false);
+  });
+
+  it.each([
+    RETAINED_MANAGED_NPM_DOCTOR_REPAIR_REASON,
+    RETAINED_MANAGED_NPM_GENERATION_UPDATE_REASON,
+    RETAINED_MANAGED_NPM_PLUGIN_SOURCE_CHANGE_REASON,
+    RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
+  ])("cleans the canonical cleanup-eligible reason %s", async (reason) => {
+    const stateDir = retentionTempDirs.make("openclaw-retention-contract-");
+    const npmDir = path.join(stateDir, "npm");
+    const packageDir = path.join(npmDir, "node_modules", "@openclaw", "retired-plugin");
+    fs.mkdirSync(packageDir, { recursive: true });
+    await markRetainedManagedNpmInstall({
+      packageDir,
+      pluginId: "retired-plugin",
+      reason,
     });
 
     await expect(cleanupRetainedManagedNpmInstallGenerations({ npmDir })).resolves.toBe(1);
