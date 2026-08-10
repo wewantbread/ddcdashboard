@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.7
+#
+# Real-behavior proof image for issue #119977 / PR #120443.
+#
+# Lean image: Node + tsx + a Linux esbuild binary that overrides the host's
+# darwin-arm64 esbuild inside node_modules when the host-built tree is bind-
+# mounted. Repository is host-built (pnpm install + pnpm build) and mounted
+# read-only, so openclaw/plugin-sdk/* resolves to the compiled dist bytes.
+
+FROM node:24-bookworm
+
+# tsx bundles esbuild but honors ESBUILD_BINARY_PATH; install the linux
+# variant globally and point tsx/esbuild at it so a host-mounted node_modules
+# containing a darwin-arm64 binary does not get in the way.
+RUN npm install -g tsx@4.21.0 esbuild@0.28.1 --no-fund --no-audit \
+ && ESBUILD_BIN="$(node -e 'console.log(require("esbuild").version && require.resolve("@esbuild/linux-arm64/bin/esbuild"))' 2>/dev/null || true)" \
+ && if [ -z "$ESBUILD_BIN" ]; then ESBUILD_BIN="$(command -v esbuild)"; fi \
+ && test -x "$ESBUILD_BIN" \
+ && printf '#!/bin/sh\nexec %s "$@"\n' "$ESBUILD_BIN" > /usr/local/bin/esbuild-linux \
+ && chmod +x /usr/local/bin/esbuild-linux \
+ && echo "$ESBUILD_BIN" > /etc/esbuild-binary-path
+
+ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
+WORKDIR /app
+
+# Force tsx/esbuild to use the linux binary regardless of what the mounted
+# node_modules contains.
+CMD ["/bin/sh","-c","export ESBUILD_BINARY_PATH=\"$(cat /etc/esbuild-binary-path)\" && node --import tsx scripts/proof/issue-119977-proof.mts"]
