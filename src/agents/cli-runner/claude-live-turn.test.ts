@@ -10,6 +10,7 @@ import {
 } from "../cli-runner.test-helpers.js";
 import { supervisorSpawnMock } from "../cli-runner.test-support.js";
 import { createClaudeApiErrorFixture } from "../test-helpers/claude-api-error-fixture.js";
+import { closeClaudeSession } from "./claude-live-registry.js";
 import { runClaudeTurn } from "./claude-live-session.js";
 import { resetClaudeLiveSessionsForTest } from "./claude-live-session.test-support.js";
 
@@ -975,6 +976,52 @@ describe("Claude live turn output bounds and result projection", () => {
 });
 
 describe("Claude live-process bundle-MCP ownership", () => {
+  it("transfers the prepared cleanup to the live process: turn end must not release it, process close must", async () => {
+    mockClaudeLiveRun(supervisorSpawnMock, {
+      events: [
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "live-adopt",
+          claude_code_version: "2.1.206",
+          capabilities: ["interrupt_receipt_v1", "msg_lifecycle_v1"],
+        },
+        { type: "result", subtype: "success", session_id: "live-adopt", result: "done" },
+      ],
+    });
+    const context = buildClaudeLiveRunContext({
+      runId: "run-adopt",
+      timeoutMs: 60_000,
+      liveSessionRequirement,
+      backend: { resumeArgs: ["-p", "--resume", "{sessionId}"] },
+    });
+    const preparedCleanup = vi.fn(async () => {});
+    context.preparedBackend.cleanup = preparedCleanup;
+
+    await expect(
+      runClaudeTurn({
+        context,
+        args: context.preparedBackend.backend.args ?? [],
+        env: {},
+        prompt: "hi",
+        useResume: true,
+        noOutputTimeoutMs: 5_000,
+        getProcessSupervisor: getProcessSupervisorForTest,
+        onAssistantDelta: () => {},
+        cleanup: async () => {},
+      }),
+    ).resolves.toMatchObject({ output: { text: "done" } });
+
+    // Turn complete, process alive: the config must still exist. The adoption
+    // also empties the context slot, so the runner's post-turn cleanup call
+    // becomes a no-op instead of deleting the live config.
+    expect(preparedCleanup).not.toHaveBeenCalled();
+    expect(context.preparedBackend.cleanup).toBeUndefined();
+
+    await closeClaudeSession(context, "restart");
+    await vi.waitFor(() => expect(preparedCleanup).toHaveBeenCalledTimes(1));
+  });
+
   // The live process is the longest-lived holder of a bundled MCP config
   // (#73244), so it must inherit the ownership descriptor. An earlier revision
   // wired the descriptor only into the per-turn spawn and left this route on
