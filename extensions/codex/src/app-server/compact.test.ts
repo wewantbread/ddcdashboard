@@ -188,6 +188,12 @@ function compactDetails(result: CompactResult): Record<string, unknown> {
   return (result.result?.details ?? {}) as Record<string, unknown>;
 }
 
+// The harness-ownership flag rides on the plugin-private runtime result, not the
+// public EmbeddedAgentCompactResult contract, so read it through a local view.
+function harnessOwnedAutomaticCompaction(result: CompactResult): boolean | undefined {
+  return (result as { harnessOwnedAutomaticCompaction?: boolean }).harnessOwnedAutomaticCompaction;
+}
+
 async function flushAsyncTasks(iterations = 3): Promise<void> {
   for (let index = 0; index < iterations; index += 1) {
     await new Promise<void>((resolve) => {
@@ -576,7 +582,7 @@ describe("maybeCompactCodexAppServerSession", () => {
       signal: "thread/compact/start",
       pending: false,
       completed: true,
-      request: "after_context_engine",
+      request: "before_context_engine",
       trigger: "budget",
     });
   });
@@ -605,7 +611,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server owns automatic compaction");
-    expect(result.harnessOwnedAutomaticCompaction).toBe(true);
+    expect(harnessOwnedAutomaticCompaction(result)).toBe(true);
     expect(result.result?.tokensBefore).toBe(456);
     expect(compactDetails(result)).toMatchObject({
       backend: "codex-app-server",
@@ -660,14 +666,17 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
 
     const result = requireCompactResult(
-      await maybeCompactCodexAppServerSession({
-        sessionId: "session-1",
-        sessionKey: "agent:main:session-1",
-        sessionFile,
-        workspaceDir: tempDir,
-        trigger: "budget",
-        currentTokenCount: 456,
-      }),
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        },
+        { nativeCompactionRequest: "after_context_engine" },
+      ),
     );
 
     expect(fake.request).toHaveBeenCalledWith(
@@ -861,7 +870,7 @@ describe("maybeCompactCodexAppServerSession", () => {
       backend: "codex-app-server",
       skipped: true,
       reason: "aborted_before_native_compaction",
-      request: "after_context_engine",
+      request: "before_context_engine",
       trigger: "budget",
       expectedThreadId: "thread-1",
       currentThreadId: "thread-1",
@@ -877,7 +886,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("skips post-context-engine native compaction when the binding changes before projection clear", async () => {
+  it("surfaces a recoverable stale binding when the thread binding changes before native compaction", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const originalContextEngine = {
@@ -933,18 +942,11 @@ describe("maybeCompactCodexAppServerSession", () => {
     );
 
     expect(fake.request).not.toHaveBeenCalled();
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
-    expect(compactDetails(result)).toMatchObject({
-      backend: "codex-app-server",
-      skipped: true,
-      reason: "binding_changed_before_native_compaction",
-      request: "after_context_engine",
-      trigger: "budget",
-      expectedThreadId: "thread-1",
-      currentThreadId: "thread-2",
-    });
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    expect(result.result).toBeUndefined();
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
       threadId: "thread-2",
       contextEngine: {
@@ -1200,7 +1202,7 @@ describe("maybeCompactCodexAppServerSession", () => {
       backend: "codex-app-server",
       threadId: "thread-1",
       signal: "thread/compact/start",
-      request: "after_context_engine",
+      request: "before_context_engine",
       trigger: "unknown",
     });
   });
@@ -2034,7 +2036,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
     // The ownership no-op flag must not be set for a present-but-dead binding.
-    expect(result.harnessOwnedAutomaticCompaction).toBeUndefined();
+    expect(harnessOwnedAutomaticCompaction(result)).toBeUndefined();
     // The stale binding is preserved for the recovery path to clear/rebind.
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
   });
