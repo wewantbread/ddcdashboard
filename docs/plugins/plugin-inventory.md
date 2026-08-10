@@ -119,6 +119,8 @@ Each entry lists the package, distribution route, and description.
 
 - **[minimax](/plugins/reference/minimax)** (`@openclaw/minimax-provider`) - included in OpenClaw. Adds MiniMax, MiniMax Portal model provider support to OpenClaw.
 
+- **[nexforce](/plugins/reference/nexforce)** (`@openclaw/nexforce-provider`) - included in OpenClaw; npm; ClawHub: `clawhub:@openclaw/nexforce-provider`. Adds Nexforce model provider support to OpenClaw.
+
 - **[nvidia](/plugins/reference/nvidia)** (`@openclaw/nvidia-provider`) - included in OpenClaw. Adds NVIDIA model provider support to OpenClaw.
 
 - **[oc-path](/plugins/reference/oc-path)** (`@openclaw/oc-path`) - included in OpenClaw. Adds the openclaw path CLI for oc:// workspace file addressing.
