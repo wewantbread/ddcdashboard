@@ -205,6 +205,18 @@ notifications and OpenClaw adapter state, not native Codex hook commands.
 adapter-level observations, not byte-for-byte captures of Codex's internal
 request or compaction payloads.
 
+Codex owns inline automatic compaction for a bound thread. When an automatic
+(non-manual) trigger cannot drive a native compaction — the sandbox/exec host
+blocks native execution, or the bound thread is dead and codex-rs cannot resume
+it — the harness reports a harness-owned safe skip on its
+`AgentHarnessCompactResult` via
+`harnessCompactionDisposition: "harness_owned_automatic_compaction"`. OpenClaw
+treats that disposition as a safe skip: it continues the turn instead of failing
+required preflight, and it never falls back to context-engine compaction (which
+would fight Codex's ownership and fail an OAuth-only session with no API key).
+For a dead thread the harness also clears the stale binding so the next turn
+lazily rebinds.
+
 Codex native `hook/started` and `hook/completed` app-server notifications are
 projected as `codex_app_server.hook` agent events for trajectory and
 debugging. They do not invoke OpenClaw plugin hooks.

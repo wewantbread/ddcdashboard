@@ -630,22 +630,38 @@ async function compactResolvedContextEngine(
           },
         )
       : undefined;
-  // A model lock normally makes the native harness result terminal: the
-  // persisted runtime is authoritative and must not be swapped for
-  // context-engine compaction. Required preflight permits a harness-declared
-  // exception: missing or stale thread bindings can be recoverable and would
-  // otherwise drop the user's turn, so they fall through to the shared
-  // context-engine fallback below while `preparedHarnessRuntime` keeps the
-  // lock intact. Authorization comes from the private native capability that
-  // core actually dispatched; public result fields cannot escape the lock.
-  if (
-    lockedNativeHarness &&
-    !(
-      preparedParams.preflightRequired === true &&
-      requiredPreflightNativeCapabilityUsed &&
-      shouldFallbackAfterHarnessCompaction(harnessResult)
-    )
-  ) {
+  // A model lock normally makes the native harness result terminal: the persisted
+  // runtime is authoritative and must not be swapped for context-engine compaction.
+  // Required preflight permits one harness-declared exception: when the native
+  // capability core actually dispatched surfaces a recoverable (missing/stale/dead)
+  // thread binding, the turn would otherwise be dropped, so it falls through to the
+  // shared context-engine fallback below while `preparedHarnessRuntime` keeps the lock
+  // intact. Authorization comes from that private native capability, never a public
+  // result field.
+  const recoverableBinding = shouldFallbackAfterHarnessCompaction(harnessResult);
+  const preflightAuthorizedContextEngineFallback =
+    preparedParams.preflightRequired === true &&
+    requiredPreflightNativeCapabilityUsed &&
+    recoverableBinding;
+  if (lockedNativeHarness && !preflightAuthorizedContextEngineFallback) {
+    // Outside an authorized required-preflight fallback, a recoverable binding failure on
+    // a model-locked session cannot reach the context engine: there is no API key and
+    // codex-rs cannot resume a retired thread. The harness already cleared the dead
+    // binding, so surface a harness-owned safe skip — the typed disposition core
+    // recognizes structurally — so the turn continues and the next turn lazily rebinds
+    // instead of returning ok:false and dropping it (#119977). A required preflight that
+    // never used the native capability stays terminal so the honest failure is not
+    // laundered into a skip.
+    if (recoverableBinding && preparedParams.preflightRequired !== true) {
+      return {
+        ok: true,
+        compacted: false,
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
+        ...(harnessResult?.reason ? { reason: harnessResult.reason } : {}),
+      };
+    }
+    // The model lock forbids replacing native compaction with the context engine, so a
+    // locked session returns the (possibly recovered) native result directly.
     return harnessResult
       ? { ...harnessResult, compactionKind: "native-harness" }
       : lockedCompactionRuntimeFailure(selectedHarnessRuntime);

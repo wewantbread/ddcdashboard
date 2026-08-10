@@ -534,9 +534,20 @@ async function compactNativeHarnessCliTranscript(params: {
       return { compacted: false };
     }
     const recoverableBindingFailure = isRecoverableNativeHarnessBindingFailure(result);
+    const modelLocked = params.sessionEntry.modelSelectionLocked === true;
+    if (modelLocked && recoverableBindingFailure) {
+      // A model-locked (e.g. OAuth) session cannot fall back to context-engine
+      // compaction, and codex-rs cannot resume a retired thread. The harness already
+      // cleared the dead binding, so treat the stale binding as a harness-owned safe
+      // skip: the lifecycle keeps the session entry and the next turn lazily rebinds.
+      // Failing here dropped the turn (#119977). Mirrors the core locked branch.
+      log.info(
+        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${reason ?? "stale thread binding"}`,
+      );
+      return { compacted: false };
+    }
     const fallbackToContextEngine =
-      params.sessionEntry.modelSelectionLocked !== true &&
-      (isUnsupportedNativeHarnessCompaction(result) || recoverableBindingFailure);
+      !modelLocked && (isUnsupportedNativeHarnessCompaction(result) || recoverableBindingFailure);
     // Native harness binding failures can be repaired by clearing the stored CLI
     // session binding and falling back to the context engine for this turn.
     log.warn(
@@ -545,8 +556,7 @@ async function compactNativeHarnessCliTranscript(params: {
     return {
       compacted: false,
       fallbackToContextEngine,
-      clearCliSessionBinding:
-        params.sessionEntry.modelSelectionLocked !== true && recoverableBindingFailure,
+      clearCliSessionBinding: !modelLocked && recoverableBindingFailure,
       failureReason: result?.reason ?? "native harness compaction did not reduce context",
     };
   }

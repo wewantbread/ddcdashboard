@@ -142,25 +142,34 @@ describe("isHarnessOwnedAutomaticCompactionSkip", () => {
       isHarnessOwnedAutomaticCompactionSkip({
         ok: true,
         compacted: false,
-        harnessOwnedAutomaticCompaction: true,
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
       }),
     ).toBe(true);
     expect(
       isHarnessOwnedAutomaticCompactionSkip({
         ok: true,
         compacted: true,
-        harnessOwnedAutomaticCompaction: true,
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
       }),
     ).toBe(false);
     expect(
       isHarnessOwnedAutomaticCompactionSkip({
         ok: false,
         compacted: false,
-        harnessOwnedAutomaticCompaction: true,
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
       }),
     ).toBe(false);
-    // The flag is the sole signal: a matching-shaped result without it is not a defer.
+    // The disposition is the sole signal: a matching-shaped result without it is not a defer.
     expect(isHarnessOwnedAutomaticCompactionSkip({ ok: true, compacted: false })).toBe(false);
+    // The retired plugin-private boolean is no longer the signal; only the public
+    // disposition field counts, so a stray legacy flag must not read as a defer.
+    expect(
+      isHarnessOwnedAutomaticCompactionSkip({
+        ok: true,
+        compacted: false,
+        harnessOwnedAutomaticCompaction: true,
+      } as never),
+    ).toBe(false);
   });
 
   it("is not folded into the benign skip contract so forced callers can escalate", () => {

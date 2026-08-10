@@ -9,10 +9,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Cross-boundary contract: the automatic-compaction ownership no-op this plugin
 // produces when native execution is blocked must set the typed
-// harnessOwnedAutomaticCompaction flag core's plugin-agnostic recognizer matches.
-// This test asserts what the plugin emits (the typed flag on its result); core's
+// harnessCompactionDisposition field core's plugin-agnostic recognizer matches.
+// This test asserts what the plugin emits (the disposition on its result); core's
 // own recognizer contract is owned by
-// src/agents/embedded-agent-runner/compact-reasons.test.ts. Asserting the flag
+// src/agents/embedded-agent-runner/compact-reasons.test.ts. Asserting the field
 // directly here keeps the emitted shape pinned without deep-importing core across
 // the extension-test boundary (#119977).
 import {
@@ -188,10 +188,10 @@ function compactDetails(result: CompactResult): Record<string, unknown> {
   return (result.result?.details ?? {}) as Record<string, unknown>;
 }
 
-// The harness-ownership flag rides on the plugin-private runtime result, not the
-// public EmbeddedAgentCompactResult contract, so read it through a local view.
-function harnessOwnedAutomaticCompaction(result: CompactResult): boolean | undefined {
-  return (result as { harnessOwnedAutomaticCompaction?: boolean }).harnessOwnedAutomaticCompaction;
+// The harness-ownership disposition is the public EmbeddedAgentCompactResult field
+// core's plugin-agnostic recognizer matches; assert it directly on the result.
+function harnessCompactionDisposition(result: CompactResult): string | undefined {
+  return result.harnessCompactionDisposition;
 }
 
 async function flushAsyncTasks(iterations = 3): Promise<void> {
@@ -611,7 +611,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server owns automatic compaction");
-    expect(harnessOwnedAutomaticCompaction(result)).toBe(true);
+    expect(harnessCompactionDisposition(result)).toBe("harness_owned_automatic_compaction");
     expect(result.result?.tokensBefore).toBe(456);
     expect(compactDetails(result)).toMatchObject({
       backend: "codex-app-server",
@@ -887,6 +887,9 @@ describe("maybeCompactCodexAppServerSession", () => {
   });
 
   it("surfaces a recoverable stale binding when the thread binding changes before native compaction", async () => {
+    // The binding-changed race must never clobber the concurrently-rebound live thread:
+    // recovery surfaces stale_thread_binding but leaves the new thread-2 binding intact
+    // (the guarded dead-thread clear only targets the original threadId, #119977).
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const originalContextEngine = {
@@ -2000,10 +2003,10 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
 
-  it("surfaces a dead thread as a recoverable stale binding on automatic budget triggers", async () => {
+  it("surfaces a dead thread as a recoverable stale binding and clears it on automatic budget triggers", async () => {
     // #119977: an automatic (non-manual) budget trigger for a retired thread must
-    // reach stale_thread_binding so the recovery path can rebind, not a benign
-    // no-op. The RPC rejection travels the guarded withLease route to recovery.
+    // reach stale_thread_binding and clear the dead binding so the next turn rebinds,
+    // not a benign no-op. The RPC rejection travels the guarded withLease route.
     const fake = createFakeCodexClient();
     fake.request.mockRejectedValueOnce(
       new CodexAppServerRpcError(
@@ -2035,10 +2038,11 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("thread not found: thread-1");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
-    // The ownership no-op flag must not be set for a present-but-dead binding.
-    expect(harnessOwnedAutomaticCompaction(result)).toBeUndefined();
-    // The stale binding is preserved for the recovery path to clear/rebind.
-    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
+    // The ownership no-op disposition must not be set for a present-but-dead binding.
+    expect(harnessCompactionDisposition(result)).toBeUndefined();
+    // The guarded (automatic) trigger owns recovery: the dead binding is cleared so the
+    // next turn lazily rebinds instead of re-probing a thread codex-rs cannot resume.
+    expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
   });
 
   it("retires the client before releasing an unconfirmed compaction start", async () => {

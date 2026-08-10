@@ -15,7 +15,8 @@
  *   (a) stale-binding recovery  -> failure.reason "stale_thread_binding",
  *                                  routed to recovery by
  *                                  isRecoverableNativeHarnessBindingFailure.
- *   (b) blocked-native deferral -> harnessOwnedAutomaticCompaction flag set,
+ *   (b) blocked-native deferral -> harnessCompactionDisposition set to
+ *                                  "harness_owned_automatic_compaction",
  *                                  recognized by
  *                                  isHarnessOwnedAutomaticCompactionSkip, and
  *                                  NOT present on the public SDK type.
@@ -314,7 +315,8 @@ async function scenarioBlockedNativeDeferral(tempDir: string): Promise<void> {
     ),
     "utf8",
   );
-  const publicTypeHasFlag = /harnessOwnedAutomaticCompaction\?/i.test(publicTypeSource);
+  const publicTypeHasPrivateBoolean = /harnessOwnedAutomaticCompaction\?/i.test(publicTypeSource);
+  const publicTypeHasDisposition = /harnessCompactionDisposition\?/i.test(publicTypeSource);
 
   check("ok === true", result.ok === true);
   check("compacted === false", result.compacted === false);
@@ -323,13 +325,17 @@ async function scenarioBlockedNativeDeferral(tempDir: string): Promise<void> {
     details(result).reason === "native_execution_unavailable",
   );
   check(
-    "harnessOwnedAutomaticCompaction === true",
-    result.harnessOwnedAutomaticCompaction === true,
+    'harnessCompactionDisposition === "harness_owned_automatic_compaction"',
+    result.harnessCompactionDisposition === "harness_owned_automatic_compaction",
   );
   check("isHarnessOwnedAutomaticCompactionSkip(result) === true", recognizedSkip);
   check(
-    "public SDK EmbeddedAgentCompactResult does NOT declare harnessOwnedAutomaticCompaction",
-    !publicTypeHasFlag,
+    "public SDK EmbeddedAgentCompactResult declares the neutral harnessCompactionDisposition contract",
+    publicTypeHasDisposition,
+  );
+  check(
+    "public SDK type does NOT expose the Codex-named harnessOwnedAutomaticCompaction boolean",
+    !publicTypeHasPrivateBoolean,
   );
 }
 

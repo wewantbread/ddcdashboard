@@ -21,16 +21,20 @@ export const DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON =
  * "No API key found"; it is kept out of isBenignCompactionSkipResult so callers
  * recognize it explicitly rather than folding it into a generic benign skip.
  *
- * The signal is the typed harnessOwnedAutomaticCompaction flag, not any harness's
+ * The signal is the typed harnessCompactionDisposition field, not any harness's
  * free-form reason text — core stays plugin-agnostic and does not string-match one
  * plugin's diagnostic literal.
  */
 export function isHarnessOwnedAutomaticCompactionSkip(result: {
   ok: boolean;
   compacted: boolean;
-  harnessOwnedAutomaticCompaction?: boolean;
+  harnessCompactionDisposition?: "harness_owned_automatic_compaction";
 }): boolean {
-  return result.ok && !result.compacted && result.harnessOwnedAutomaticCompaction === true;
+  return (
+    result.ok &&
+    !result.compacted &&
+    result.harnessCompactionDisposition === "harness_owned_automatic_compaction"
+  );
 }
 
 function isGenericCompactionCancelledReason(reason: string): boolean {

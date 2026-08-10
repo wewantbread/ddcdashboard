@@ -1630,13 +1630,13 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     // Exact blocked-native ownership deferral the codex plugin emits when the
     // sandbox/exec host blocks native execution (compact.ts): the typed
-    // harnessOwnedAutomaticCompaction flag with a diagnostic reason. codex-rs still
+    // harnessCompactionDisposition field with a diagnostic reason. codex-rs still
     // auto-compacts the bound thread inline during the next turn, so the required
     // preflight must continue the turn rather than drop it (#119971).
     compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: false,
-      harnessOwnedAutomaticCompaction: true,
+      harnessCompactionDisposition: "harness_owned_automatic_compaction",
       reason: "codex app-server owns automatic compaction",
       result: {
         details: {
@@ -1685,6 +1685,71 @@ describe("runMemoryFlushIfNeeded", () => {
         trigger: "budget",
       }),
     );
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(onCompactionNotice).toHaveBeenNthCalledWith(1, "start");
+    expect(onCompactionNotice).toHaveBeenNthCalledWith(2, "skipped");
+    expect(onCompactionNotice).not.toHaveBeenCalledWith("incomplete");
+  });
+
+  it("continues a model-locked turn when required preflight hits a dead thread binding", async () => {
+    const sessionFile = path.join(rootDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
+      "utf8",
+    );
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 1,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    // Exact locked recoverable-binding safe skip the core emits when a model-locked
+    // native-harness session hits a dead/stale thread binding (compact.queued.ts): the
+    // harness cleared the dead binding, so required preflight must continue the turn
+    // and let the next turn lazily rebind instead of throwing and dropping it (#119977).
+    // Uses the OpenClaw runtime so the token-triggered preflight path invokes compaction
+    // (the Codex runtime is gated to the transcript-byte fuse); the caller's safe-skip
+    // handling is harness-agnostic and keys only off harnessCompactionDisposition.
+    compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: false,
+      harnessCompactionDisposition: "harness_owned_automatic_compaction",
+      reason: "thread not found: thread-1",
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 120,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      agentHarnessId: "openclaw",
+      modelSelectionLocked: true,
+    };
+    const onCompactionNotice = vi.fn();
+
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
+      followupRun: createTestFollowupRun({
+        sessionId: "session",
+        sessionFile,
+        sessionKey: "agent:main:main",
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      agentCfgContextTokens: 100,
+      sessionEntry,
+      sessionStore: { "agent:main:main": sessionEntry },
+      sessionKey: "agent:main:main",
+      storePath: path.join(rootDir, "sessions.json"),
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+      onCompactionNotice,
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
     expect(incrementCompactionCountMock).not.toHaveBeenCalled();
     expect(onCompactionNotice).toHaveBeenNthCalledWith(1, "start");
     expect(onCompactionNotice).toHaveBeenNthCalledWith(2, "skipped");

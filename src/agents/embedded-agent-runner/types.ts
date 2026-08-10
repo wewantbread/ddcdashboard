@@ -281,6 +281,14 @@ export type EmbeddedAgentCompactResult = {
   compacted: boolean;
   compactionKind?: "context-engine" | "native-harness" | "server-endpoint";
   reason?: string;
+  /**
+   * Disposition set by a native harness that owns inline automatic compaction for
+   * the bound session. When "harness_owned_automatic_compaction", callers MUST treat
+   * the result as a safe skip and MUST NOT fall back to context-engine compaction
+   * (which would fight the harness and can fail an auth-scoped, e.g. OAuth-only,
+   * session with "No API key found").
+   */
+  harnessCompactionDisposition?: "harness_owned_automatic_compaction";
   /** Structured failure metadata used by model fallback classification. */
   failure?: {
     reason?: string;

@@ -4556,7 +4556,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: false,
-      harnessOwnedAutomaticCompaction: true,
+      harnessCompactionDisposition: "harness_owned_automatic_compaction",
       reason: "codex app-server owns automatic compaction",
     });
 
@@ -4581,7 +4581,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     ["missing_thread_binding", "no codex app-server thread binding"],
     ["stale_thread_binding", "thread not found"],
   ])(
-    "fails model-locked Codex compaction on %s without a context-engine fallback",
+    "safe-skips model-locked Codex compaction on %s without a context-engine fallback",
     async (failureReason, reason) => {
       resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "openclaw" });
       maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
@@ -4601,11 +4601,17 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         }),
       );
 
+      // A model-locked (OAuth) session cannot fall back to the context engine, and the
+      // harness already cleared the dead binding. The recoverable binding failure becomes
+      // a harness-owned safe skip so required preflight continues the turn and the next
+      // turn lazily rebinds, instead of returning ok:false and dropping the turn (#119977).
       expect(result).toMatchObject({
-        ok: false,
+        ok: true,
         compacted: false,
-        failure: { reason: failureReason },
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
+        reason,
       });
+      expect(result.failure).toBeUndefined();
       expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
     },
