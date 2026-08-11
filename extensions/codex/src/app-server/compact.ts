@@ -438,19 +438,14 @@ async function compactCodexNativeThread(
     config: params.config,
   });
   const initialBinding = await options.bindingStore.read(bindingIdentity);
-  // Read the binding before issuing any request, keeping its failure modes
-  // distinct:
-  //   - Missing binding (no threadId): every trigger returns missing_thread_binding
-  //     here. Automatic triggers would otherwise hand context pressure to codex-rs's
-  //     inline compaction, which is only safe while a bound thread exists; a missing
-  //     binding must surface for recovery, not be swallowed as a benign no-op that
-  //     trusts a thread that no longer exists (#119977).
-  //   - Dead thread (binding present, thread already retired): every trigger reaches
-  //     the native request below, where thread/compact/start surfaces "thread not
-  //     found" (stale_thread_binding) for the recovery path. Compacting the bound
-  //     thread natively is the ownership-cooperation itself — codex compacts its own
-  //     transcript over its own OAuth — so an automatic trigger no longer blindly
-  //     defers to a thread that may be gone (#119977).
+  // Read the binding before any request so its two failure modes stay distinct:
+  //   - Missing binding (no threadId): return missing_thread_binding for recovery.
+  //     Deferring to codex-rs inline compaction is safe only while a bound thread
+  //     exists, so a missing binding must surface rather than no-op.
+  //   - Dead thread (binding present, thread retired): reach the native request below,
+  //     where thread/compact/start surfaces "thread not found" (stale_thread_binding)
+  //     for recovery. Compacting the bound thread natively is the ownership-cooperation
+  //     itself, so an automatic trigger does not blindly defer to a thread that may be gone.
   if (!initialBinding?.threadId) {
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",

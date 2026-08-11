@@ -1,20 +1,26 @@
 /**
- * Standalone real-behavior proof for issue #119977 / PR #120443.
+ * Standalone integration + recovery-seam proof for issue #119977 / PR #120443.
  *
- * NOT a Vitest test. Imports the real fix modules and drives
- * `maybeCompactCodexAppServerSession` against a simulated Codex app-server
- * client + in-memory binding store, then feeds the actual returned results
- * into the real core recovery recognizers. Prints observed shapes so the
- * runtime contract of the three fixed code paths can be inspected directly.
+ * NOT a Vitest test, and NOT a live-app-server proof. It imports the real fix
+ * modules and drives `maybeCompactCodexAppServerSession` (OpenClaw's compaction
+ * orchestration) against a SIMULATED Codex app-server client + in-memory binding
+ * store, then feeds the actual returned results into the real core recovery
+ * recognizers. Scenarios (a)-(c) exercise OpenClaw orchestration only. Scenario
+ * (d) additionally makes the simulated client raise the REAL upstream error shape
+ * (CodexAppServerRpcError code -32600, "thread not found: <id>" — the exact
+ * codex-rs app-server contract: load_thread -> invalid_request, verified in
+ * ../codex codex-rs/app-server/src/request_processors/thread_processor.rs,
+ * error_code.rs, and tests/suite/v2/compaction.rs), so the real dead-thread
+ * recovery seam (isCodexThreadNotFoundError + clearDeadCodexThreadBinding) runs.
  *
  * Executed inside a Docker container (see run-issue-119977-docker.sh) against
  * the host-built tree bind-mounted read-only, so `openclaw/plugin-sdk/*`
  * imports resolve to the compiled dist bytes the SDK boundary would ship.
  *
  * Scenarios:
- *   (a) stale-binding recovery  -> failure.reason "stale_thread_binding",
- *                                  routed to recovery by
- *                                  isRecoverableNativeHarnessBindingFailure.
+ *   (a) binding-change guard    -> guard reread rejects a changed binding with
+ *                                  failure.reason "stale_thread_binding"
+ *                                  (OpenClaw orchestration, simulated client).
  *   (b) blocked-native deferral -> harnessCompactionDisposition set to
  *                                  "harness_owned_automatic_compaction",
  *                                  recognized by
@@ -22,6 +28,11 @@
  *                                  NOT present on the public SDK type.
  *   (c) primary/after stage     -> details.request "before_context_engine"
  *                                  and "after_context_engine".
+ *   (d) dead-thread recovery    -> simulated client throws the real
+ *                                  CodexAppServerRpcError(-32600, "thread not
+ *                                  found"); the real recovery seam classifies it
+ *                                  as "stale_thread_binding" AND clears the dead
+ *                                  binding.
  */
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -31,6 +42,7 @@ import {
   ensureCodexAppServerClientRuntime,
   retainCodexAppServerLiveThread,
 } from "../../extensions/codex/src/app-server/client-runtime.js";
+import { CodexAppServerRpcError } from "../../extensions/codex/src/app-server/client.js";
 import { maybeCompactCodexAppServerSession } from "../../extensions/codex/src/app-server/compact.js";
 import { isHarnessOwnedAutomaticCompactionSkip } from "../../src/agents/embedded-agent-runner/compact-reasons.js";
 import { isRecoverableNativeHarnessBindingFailure } from "../../src/agents/harness/compaction-recovery.js";
@@ -124,6 +136,10 @@ function createFakeCodexClient(options: {
   agentDir: string;
   autoCompleteCompaction?: boolean;
   retainedThreadId?: string | null;
+  // When set, thread/compact/start rejects with the real upstream error shape
+  // (CodexAppServerRpcError -32600 "thread not found: <id>") so scenario (d)
+  // drives the actual dead-thread recovery seam rather than a happy lifecycle.
+  threadNotFoundOnCompact?: boolean;
 }): { client: unknown; requestCalls: Array<{ method: string; params?: AnyRecord }> } {
   const handlers = new Set<(n: Notification) => void>();
   const closeHandlers = new Set<() => void>();
@@ -176,11 +192,21 @@ function createFakeCodexClient(options: {
       subscribed.delete(threadId);
       return {};
     }
-    if (method === "thread/compact/start" && options.autoCompleteCompaction !== false) {
-      if (typeof threadId !== "string") {
-        throw new Error("thread/compact/start requires threadId");
+    if (method === "thread/compact/start") {
+      if (options.threadNotFoundOnCompact) {
+        // Exact codex-rs shape: app-server load_thread -> invalid_request,
+        // code -32600, message "thread not found: {threadId}".
+        throw new CodexAppServerRpcError(
+          { code: -32600, message: `thread not found: ${threadId ?? "unknown"}` },
+          "thread/compact/start",
+        );
       }
-      emitCompactionLifecycle(threadId);
+      if (options.autoCompleteCompaction !== false) {
+        if (typeof threadId !== "string") {
+          throw new Error("thread/compact/start requires threadId");
+        }
+        emitCompactionLifecycle(threadId);
+      }
     }
     return {};
   };
@@ -238,7 +264,9 @@ function details(result: AnyRecord): AnyRecord {
 }
 
 async function scenarioStaleBinding(tempDir: string): Promise<void> {
-  heading("Scenario (a): stale thread binding under the guarded native lease");
+  heading(
+    "Scenario (a): binding changed under the guarded native lease (OpenClaw orchestration guard)",
+  );
   const { store } = createInMemoryBindingStore(
     { threadId: "thread-1", cwd: tempDir },
     { staleBindingAfterFirstRead: { threadId: "thread-2", cwd: tempDir } },
@@ -395,6 +423,60 @@ async function scenarioStageTelemetry(tempDir: string): Promise<void> {
   );
 }
 
+async function scenarioDeadThreadRecovery(tempDir: string): Promise<void> {
+  heading(
+    "Scenario (d): real dead-thread app-server error -> stale_thread_binding recovery + cleared binding",
+  );
+  // Unlike (a), the binding never changes: the guard reread passes and the
+  // native thread/compact/start actually fires, then the simulated client
+  // rejects it with the real upstream "thread not found" error so the dead-thread
+  // recovery seam (isCodexThreadNotFoundError + clearDeadCodexThreadBinding) runs.
+  const { store, current } = createInMemoryBindingStore({ threadId: "thread-1", cwd: tempDir });
+  const fake = createFakeCodexClient({ agentDir: tempDir, threadNotFoundOnCompact: true });
+
+  const result = requireResult(
+    await maybeCompactCodexAppServerSession(
+      {
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile: path.join(tempDir, "session-d.jsonl"),
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      } as unknown as CompactParams,
+      { bindingStore: store, clientFactory: async () => fake.client } as unknown as CompactOptions,
+    ),
+  );
+
+  printResult("returned result", result);
+  const bindingAfter = current();
+  console.log(`  binding after recovery => ${JSON.stringify(bindingAfter)}`);
+  const routesToRecovery = isRecoverableNativeHarnessBindingFailure(
+    result as unknown as BindingFailureResult,
+  );
+  console.log(`  isRecoverableNativeHarnessBindingFailure(result) => ${routesToRecovery}`);
+
+  check("ok === false", result.ok === false);
+  check("compacted === false", result.compacted === false);
+  check(
+    "native thread/compact/start was actually issued",
+    fake.requestCalls.some((c) => c.method === "thread/compact/start"),
+  );
+  check(
+    "reason surfaces the real upstream 'thread not found' message",
+    typeof result.reason === "string" && result.reason.toLowerCase().includes("thread not found"),
+  );
+  check(
+    'failure.reason === "stale_thread_binding"',
+    (result.failure as AnyRecord | undefined)?.reason === "stale_thread_binding",
+  );
+  check(
+    "dead thread binding was cleared (clearDeadCodexThreadBinding ran)",
+    bindingAfter === undefined,
+  );
+  check("routed to recovery (not thrown / not skipped)", routesToRecovery);
+}
+
 async function main(): Promise<void> {
   heading("Runtime environment");
   console.log(`  node: ${process.version}`);
@@ -416,6 +498,7 @@ async function main(): Promise<void> {
     await scenarioStaleBinding(tempDir);
     await scenarioBlockedNativeDeferral(tempDir);
     await scenarioStageTelemetry(tempDir);
+    await scenarioDeadThreadRecovery(tempDir);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
