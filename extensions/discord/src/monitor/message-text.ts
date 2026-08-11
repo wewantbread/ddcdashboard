@@ -2,7 +2,11 @@
 import { ComponentType } from "discord-api-types/v10";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Message } from "../internal/discord.js";
-import { hasRawDiscordUserMention } from "../mentions.js";
+import {
+  collectActiveDiscordUserMentionIds,
+  hasRawDiscordUserMention,
+  rewriteRawDiscordUserMentions,
+} from "../mentions.js";
 import {
   formatDiscordSnapshotAuthor,
   normalizeDiscordMessageSnapshots,
@@ -34,13 +38,14 @@ export function resolveDiscordMessageText(
       null,
   );
   const componentText = extractDiscordComponentsV2Text(resolveDiscordMessageComponents(message));
+  const contentText = normalizeOptionalString(message.content) ? message.content : "";
   const rawText =
-    normalizeOptionalString(message.content) ||
+    contentText ||
     embedText ||
     componentText ||
     normalizeOptionalString(options?.fallbackText) ||
     "";
-  const baseText = resolveDiscordMentions(rawText, message);
+  const baseText = normalizeResolvedDiscordMessageText(resolveDiscordMentions(rawText, message));
   if (!options?.includeForwarded) {
     return baseText;
   }
@@ -83,12 +88,24 @@ function resolveDiscordMentions(text: string, message: Message): string {
   if (!Array.isArray(mentions) || mentions.length === 0) {
     return text;
   }
-  let out = text;
+  const replacements = new Map<string, string>();
   for (const user of mentions) {
     const label = user.globalName || user.username;
-    out = out.replace(new RegExp(`<@!?${user.id}>`, "g"), `@${label}`);
+    replacements.set(user.id, `@${label}`);
   }
-  return out;
+  return rewriteRawDiscordUserMentions(text, replacements);
+}
+
+function normalizeResolvedDiscordMessageText(text: string): string {
+  const normalized = normalizeOptionalString(text) ?? "";
+  if (!normalized || normalized === text) {
+    return normalized;
+  }
+  const activeUserIds = collectActiveDiscordUserMentionIds(text);
+  const trimmingActivatesMention = [...collectActiveDiscordUserMentionIds(normalized)].some(
+    (userId) => !activeUserIds.has(userId),
+  );
+  return trimmingActivatesMention ? text.trimEnd() : normalized;
 }
 
 function resolveDiscordForwardedMessagesText(message: Message): string {

@@ -112,25 +112,58 @@ function rewritePlainTextMentions(
   });
 }
 
+const RAW_DISCORD_USER_MENTION_PATTERN = /<@!?([^<>\s]+)>/g;
+
+function isActiveRawDiscordMention(
+  text: string,
+  index: number,
+  codeRegions: ReturnType<typeof findCodeRegions>,
+): boolean {
+  let precedingBackslashes = 0;
+  for (let offset = index - 1; offset >= 0 && text[offset] === "\\"; offset -= 1) {
+    precedingBackslashes += 1;
+  }
+  return precedingBackslashes % 2 === 0 && !isInsideCode(index, codeRegions);
+}
+
 export function hasRawDiscordUserMention(text: string, userId?: string): boolean {
   if (!userId) {
     return false;
   }
+  return collectActiveDiscordUserMentionIds(text).has(userId);
+}
+
+export function collectActiveDiscordUserMentionIds(text: string): Set<string> {
+  const userIds = new Set<string>();
+  if (!text.includes("<@")) {
+    return userIds;
+  }
   const codeRegions = findCodeRegions(text);
-  for (const mention of [`<@${userId}>`, `<@!${userId}>`]) {
-    let index = text.indexOf(mention);
-    while (index >= 0) {
-      let precedingBackslashes = 0;
-      for (let offset = index - 1; offset >= 0 && text[offset] === "\\"; offset -= 1) {
-        precedingBackslashes += 1;
+  for (const match of text.matchAll(RAW_DISCORD_USER_MENTION_PATTERN)) {
+    if (match.index !== undefined && isActiveRawDiscordMention(text, match.index, codeRegions)) {
+      const userId = match[1];
+      if (userId) {
+        userIds.add(userId);
       }
-      if (precedingBackslashes % 2 === 0 && !isInsideCode(index, codeRegions)) {
-        return true;
-      }
-      index = text.indexOf(mention, index + mention.length);
     }
   }
-  return false;
+  return userIds;
+}
+
+export function rewriteRawDiscordUserMentions(
+  text: string,
+  replacements: ReadonlyMap<string, string>,
+): string {
+  if (replacements.size === 0 || !text.includes("<@")) {
+    return text;
+  }
+  const codeRegions = findCodeRegions(text);
+  return text.replace(RAW_DISCORD_USER_MENTION_PATTERN, (match, userId: string, offset: number) => {
+    const replacement = replacements.get(userId);
+    return replacement !== undefined && isActiveRawDiscordMention(text, offset, codeRegions)
+      ? replacement
+      : match;
+  });
 }
 
 function countBacktickRun(text: string, index: number): number {

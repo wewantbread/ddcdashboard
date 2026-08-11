@@ -1397,7 +1397,7 @@ describe("preflightDiscordMessage", () => {
         id: "m-bot-unresolved-mention",
         channelId,
         content: content(botUserId),
-        mentionedUsers: [{ id: botUserId }],
+        mentionedUsers: [{ id: botUserId, username: "OpenClaw" }],
         type: MessageType.Reply,
         author: {
           id: "relay-bot-1",
@@ -1416,6 +1416,10 @@ describe("preflightDiscordMessage", () => {
     );
 
     const result = await runMentionOnlyBotPreflight({
+      cfg: {
+        ...DEFAULT_PREFLIGHT_CFG,
+        messages: { groupChat: { mentionPatterns: ["openclaw"] } },
+      },
       channelId,
       guildId,
       message,
