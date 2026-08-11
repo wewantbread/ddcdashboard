@@ -299,7 +299,7 @@ export async function getMessageFeishu(params: {
 
   try {
     const response = (await client.im.message.get({
-      params: { card_msg_content_type: "user_card_content" },
+      params: { card_msg_content_type: "user_card_content", user_id_type: "open_id" },
       path: { message_id: messageId },
     })) as FeishuGetMessageResponse;
 
@@ -576,6 +576,64 @@ export async function editMessageFeishu(params: {
   }
 
   return { messageId, contentType: "post" };
+}
+
+export async function deleteMessageFeishu(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  accountId?: string;
+}): Promise<{ messageId: string }> {
+  const { cfg, messageId, accountId } = params;
+  const account = resolveFeishuRuntimeAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
+  }
+
+  const client = createFeishuClient(account);
+  const response = await client.im.message.delete({
+    path: { message_id: messageId },
+  });
+
+  if (response.code !== 0) {
+    throw new Error(`Feishu message delete failed: ${response.msg || `code ${response.code}`}`);
+  }
+
+  return { messageId };
+}
+
+/** Fetch the bot's open_id for ownership verification. */
+export async function getBotOpenIdFeishu(params: {
+  cfg: ClawdbotConfig;
+  accountId?: string;
+}): Promise<string> {
+  const { cfg, accountId } = params;
+  const account = resolveFeishuRuntimeAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
+  }
+
+  const client = createFeishuClient(account) as ReturnType<typeof createFeishuClient> & {
+    request(params: { method: "GET" | "POST"; url: string; timeout?: number }): Promise<{
+      code: number;
+      msg?: string;
+      bot?: { open_id?: string };
+      data?: { bot?: { open_id?: string } };
+    }>;
+  };
+  const response = await client.request({
+    method: "GET",
+    url: "/open-apis/bot/v3/info",
+  });
+
+  // The bot-info endpoint returns open_id under either top-level `bot` or
+  // nested `data.bot` depending on the SDK/tenant configuration; match the
+  // established contract from probeFeishu.
+  const botOpenId = response.bot?.open_id ?? response.data?.bot?.open_id;
+  if (response.code !== 0 || !botOpenId) {
+    throw new Error(`Feishu bot info failed: ${response.msg || `code ${response.code}`}`);
+  }
+
+  return botOpenId;
 }
 
 /**

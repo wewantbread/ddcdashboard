@@ -23,7 +23,9 @@ vi.mock("./media.js", () => ({
 }));
 
 vi.mock("./send.js", () => ({
+  deleteMessageFeishu: vi.fn(),
   editMessageFeishu: vi.fn(),
+  getBotOpenIdFeishu: vi.fn(),
   getMessageFeishu: vi.fn(),
   sendCardFeishu: sendCardFeishuMock,
   sendMarkdownCardFeishu: vi.fn(),
