@@ -102,6 +102,27 @@ function authKindForProvider(provider: ModelAuthStatusProvider): ModelProviderAu
   }
 }
 
+const CATALOG_OUTCOME_SEVERITY: ReadonlyArray<ModelCatalogProviderOutcome["status"]> = [
+  "auth-rejected",
+  "unavailable",
+  "ready",
+];
+
+function resolveCatalogStatus(
+  outcomes: ModelCatalogProviderOutcome[],
+): ModelCatalogProviderOutcome["status"] | undefined {
+  const providerWide = outcomes.filter((outcome) => outcome.profileId === undefined);
+  const candidates = providerWide.length > 0 ? providerWide : outcomes;
+  // Provider-wide failures cover every credential. Otherwise one ready profile
+  // keeps the shared provider card usable when a sibling profile is rejected.
+  if (providerWide.length === 0 && candidates.some((outcome) => outcome.status === "ready")) {
+    return "ready";
+  }
+  return CATALOG_OUTCOME_SEVERITY.find((status) =>
+    candidates.some((outcome) => outcome.status === status),
+  );
+}
+
 function findDraft(drafts: CardDraft[], ids: string[]): CardDraft | undefined {
   return drafts.find((draft) => ids.some((id) => draft.ids.has(id)));
 }
@@ -197,22 +218,21 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     }
   }
 
-  const outcomeSeverity: ReadonlyArray<ModelCatalogProviderOutcome["status"]> = [
-    "auth-rejected",
-    "unavailable",
-    "ready",
-  ];
+  const catalogOutcomes = new Map<string, ModelCatalogProviderOutcome[]>();
   for (const outcome of input.providerOutcomes ?? []) {
     const id = canonicalProviderId(outcome.provider);
     if (!id) {
       continue;
     }
-    const card = ensureDraft(drafts, id, providerDisplayLabel(id)).card;
-    if (
-      !card.catalogStatus ||
-      outcomeSeverity.indexOf(outcome.status) < outcomeSeverity.indexOf(card.catalogStatus)
-    ) {
-      card.catalogStatus = outcome.status;
+    ensureDraft(drafts, id, providerDisplayLabel(id));
+    const outcomes = catalogOutcomes.get(id) ?? [];
+    outcomes.push(outcome);
+    catalogOutcomes.set(id, outcomes);
+  }
+  for (const [id, outcomes] of catalogOutcomes) {
+    const catalogStatus = resolveCatalogStatus(outcomes);
+    if (catalogStatus) {
+      ensureDraft(drafts, id, providerDisplayLabel(id)).card.catalogStatus = catalogStatus;
     }
   }
 
