@@ -11,7 +11,8 @@ import { writeJson } from "../../infra/json-files.js";
 import { isImmutableGitCommitRef, parseGitPluginSpec } from "../../plugins/git-install.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveUserPath } from "../../utils.js";
-import { parseSkillFrontmatter } from "../loading/frontmatter.js";
+import { readSkillFrontmatterSafe } from "../loading/local-loader.js";
+import { resolveSkillDiscoveryLimits } from "../loading/skill-root-discovery.js";
 import { installExtractedSkillRoot, validateRequestedSkillSlug } from "./archive-install.js";
 import { untrackClawHubSkill } from "./clawhub.js";
 
@@ -128,34 +129,38 @@ async function resolveGitCommitish(params: {
   };
 }
 
-async function readSkillNameFromFrontmatter(skillDir: string): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
-    const frontmatter = parseSkillFrontmatter(raw);
-    return normalizeOptionalString(frontmatter.name) ?? null;
-  } catch {
-    return null;
+function readLoadableSkillName(
+  skillDir: string,
+  maxSkillFileBytes: number,
+): { ok: true; name: string | null } | { ok: false } {
+  const frontmatter = readSkillFrontmatterSafe({
+    rootDir: skillDir,
+    filePath: path.join(skillDir, "SKILL.md"),
+    maxBytes: maxSkillFileBytes,
+  });
+  if (!frontmatter?.description?.trim()) {
+    return { ok: false };
   }
+  return { ok: true, name: normalizeOptionalString(frontmatter.name) ?? null };
 }
 
 function resolveFallbackSlugFromPath(sourcePath: string): string {
   return path.basename(path.resolve(sourcePath)).trim();
 }
 
-async function resolveSkillInstallSlug(params: {
-  sourceDir: string;
+function resolveSkillInstallSlug(params: {
+  frontmatterName: string | null;
   fallbackLabel: string;
   slug?: string;
-}): Promise<string> {
+}): string {
   const explicit = normalizeOptionalString(params.slug);
   if (explicit) {
     return validateRequestedSkillSlug(explicit);
   }
 
-  const frontmatterName = await readSkillNameFromFrontmatter(params.sourceDir);
-  if (frontmatterName) {
+  if (params.frontmatterName) {
     try {
-      return validateRequestedSkillSlug(frontmatterName);
+      return validateRequestedSkillSlug(params.frontmatterName);
     } catch {
       // Fall back to the source label when the display name is not a valid install slug.
     }
@@ -205,8 +210,19 @@ async function installLocalSkillDir(params: {
   config?: OpenClawConfig;
   git?: SkillSourceOrigin["git"];
 }): Promise<SkillSourceInstallResult> {
-  const slug = await resolveSkillInstallSlug({
-    sourceDir: params.sourceDir,
+  const sourceSkill = readLoadableSkillName(
+    params.sourceDir,
+    resolveSkillDiscoveryLimits(params.config).maxSkillFileBytes,
+  );
+  if (!sourceSkill.ok) {
+    return {
+      ok: false,
+      error:
+        "Skill source SKILL.md has invalid or missing frontmatter; add a leading YAML frontmatter block with a non-empty description.",
+    };
+  }
+  const slug = resolveSkillInstallSlug({
+    frontmatterName: sourceSkill.name,
     fallbackLabel: params.fallbackLabel,
     slug: params.slug,
   });

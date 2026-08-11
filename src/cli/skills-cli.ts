@@ -661,10 +661,11 @@ export function registerSkillsCli(program: Command) {
         command: Command,
       ) => {
         try {
-          const workspaceDir = resolveClawHubTargetWorkspaceDir(command, opts);
-          if (!workspaceDir) {
+          const target = resolveClawHubTargetWorkspace(command, opts);
+          if (!target) {
             return;
           }
+          const { workspaceDir } = target;
           if (slug.trim().startsWith("skills-sh/")) {
             defaultRuntime.error(`Invalid skills.sh skill reference: ${slug}`);
             defaultRuntime.exit(1);
@@ -678,6 +679,7 @@ export function registerSkillsCli(program: Command) {
             }
             const result = await installSkillFromSource({
               workspaceDir,
+              config: target.config,
               spec: slug,
               slug: opts.as,
               force: Boolean(opts.force),

@@ -602,6 +602,8 @@ describe("skills cli commands", () => {
   );
 
   it("installs a skill from a git source into the active workspace", async () => {
+    const config = { skills: { limits: { maxSkillFileBytes: 1234 } } };
+    loadConfigMock.mockReturnValue(config);
     installSkillFromSourceMock.mockResolvedValue({
       ok: true,
       slug: "tools",
@@ -614,6 +616,7 @@ describe("skills cli commands", () => {
     const installArgs = mockFirstObjectArg(installSkillFromSourceMock);
     expectObjectFields(installArgs, {
       workspaceDir: "/tmp/workspace",
+      config,
       spec: "git:owner/tools",
       force: false,
     });
