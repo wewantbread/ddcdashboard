@@ -70,6 +70,72 @@ const MCP_SERVER_ALIASES_RULES: LegacyConfigRule[] = [
     Object.values(value).some((server) => isRecord(server) && hasMcpServerLegacyAliases(server)),
 }));
 
+function hasMixedMcpServerTransports(server: Record<string, unknown>): boolean {
+  return (
+    typeof server.command === "string" &&
+    server.command.trim().length > 0 &&
+    typeof server.url === "string" &&
+    server.url.trim().length > 0
+  );
+}
+
+const MCP_SERVER_MIXED_TRANSPORT_RULES: LegacyConfigRule[] = [
+  ["mcp", "servers"],
+  ["nodeHost", "mcp", "servers"],
+].map((path) => ({
+  path,
+  message:
+    `${path.join(".")} entries cannot define both non-empty "command" and "url" fields. ` +
+    'Run "openclaw doctor --fix" to preserve their historical stdio behavior.',
+  match: (value) =>
+    isRecord(value) &&
+    Object.values(value).some((server) => isRecord(server) && hasMixedMcpServerTransports(server)),
+}));
+
+const MCP_SERVER_HTTP_ONLY_FIELDS = [
+  "url",
+  "transport",
+  "headers",
+  "auth",
+  "oauth",
+  "sslVerify",
+  "clientCert",
+  "clientKey",
+] as const;
+
+function migrateMixedMcpServerTransports(
+  servers: unknown,
+  pathPrefix: string,
+  changes: string[],
+): void {
+  if (!isRecord(servers)) {
+    return;
+  }
+  for (const [serverName, server] of Object.entries(servers)) {
+    if (!isRecord(server) || !hasMixedMcpServerTransports(server)) {
+      continue;
+    }
+    const removed: string[] = [];
+    for (const field of MCP_SERVER_HTTP_ONLY_FIELDS) {
+      if (
+        field === "transport" &&
+        server.transport !== "sse" &&
+        server.transport !== "streamable-http"
+      ) {
+        continue;
+      }
+      if (!Object.hasOwn(server, field)) {
+        continue;
+      }
+      delete server[field];
+      removed.push(field);
+    }
+    changes.push(
+      `Preserved historical stdio behavior for ${pathPrefix}.${serverName} by removing HTTP-only fields: ${removed.join(", ")}.`,
+    );
+  }
+}
+
 function migrateMcpServerAliases(servers: unknown, pathPrefix: string, changes: string[]): void {
   if (!isRecord(servers)) {
     return;
@@ -171,6 +237,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_MCP: LegacyConfigMigrationSpec[] =
       MCP_SERVER_TYPE_RULE,
       ...MCP_SERVER_TIMEOUT_ALIASES_RULES,
       ...MCP_SERVER_ALIASES_RULES,
+      ...MCP_SERVER_MIXED_TRANSPORT_RULES,
     ],
     apply: (raw, changes) => {
       const mcp = isRecord(raw.mcp) ? raw.mcp : undefined;
@@ -183,6 +250,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_MCP: LegacyConfigMigrationSpec[] =
       migrateMcpServerDisabledFlags(nodeHostMcp?.servers, "nodeHost.mcp.servers", changes);
       migrateMcpServerTimeoutAliases(nodeHostMcp?.servers, "nodeHost.mcp.servers", changes);
       migrateMcpServerAliases(nodeHostMcp?.servers, "nodeHost.mcp.servers", changes);
+      migrateMixedMcpServerTransports(nodeHostMcp?.servers, "nodeHost.mcp.servers", changes);
 
       const servers = isRecord(mcp?.servers) ? mcp?.servers : undefined;
       if (!servers) {
@@ -207,6 +275,8 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_MCP: LegacyConfigMigrationSpec[] =
         }
         delete rawServer.type;
       }
+
+      migrateMixedMcpServerTransports(servers, "mcp.servers", changes);
     },
   }),
 ];

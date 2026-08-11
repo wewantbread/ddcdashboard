@@ -209,6 +209,14 @@ export function resolveMcpTransportConfig(
   const requestedTransport = getRequestedTransport(rawServer);
   const requestedTransportAlias = requestedTransport ? "" : getRequestedTransportAlias(rawServer);
   const effectiveTransport = requestedTransport || requestedTransportAlias;
+  if (getStringField(rawServer, ["command"]) && getStringField(rawServer, ["url"])) {
+    if (logWarnings) {
+      logWarn(
+        `bundle-mcp: skipped server "${logServerName}" because "command" and "url" cannot both be non-empty; remove "url" for stdio or remove "command" for an HTTP transport.`,
+      );
+    }
+    return null;
+  }
   const stdioLaunch = resolveStdioMcpServerLaunchConfig(
     rawServer,
     logWarnings
@@ -222,8 +230,6 @@ export function resolveMcpTransportConfig(
       : undefined,
   );
   if (stdioLaunch.ok) {
-    // A command-bearing server is always treated as stdio even when HTTP-ish
-    // aliases are present, matching existing MCP config precedence.
     return {
       kind: "stdio",
       transportType: "stdio",
