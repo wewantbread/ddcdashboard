@@ -7,6 +7,7 @@ import {
   type AuditEvent,
   validateAuditActivityListParams,
   validateAuditListParams,
+  validateAuditRunInspectParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { listAuditEvents } from "../../audit/audit-event-store.js";
 import type {
@@ -14,13 +15,14 @@ import type {
   AuditEventRecord,
   ToolActionAuditEventRecord,
 } from "../../audit/audit-event-types.js";
+import { inspectExecutionIdentityRun } from "../../audit/execution-identity-context.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const DEFAULT_AUDIT_LIST_LIMIT = 100;
 const MAX_AUDIT_LIST_LIMIT = 500;
 
-function parseAuditCursor(cursor: string | undefined): number | undefined | null {
+function parsePositiveCursor(cursor: string | undefined): number | undefined | null {
   if (cursor === undefined) {
     return undefined;
   }
@@ -68,7 +70,7 @@ function invalidRangeOrCursor(params: { cursor?: string; after?: number; before?
   cursor?: number;
   invalid: boolean;
 } {
-  const cursor = parseAuditCursor(params.cursor);
+  const cursor = parsePositiveCursor(params.cursor);
   return {
     ...(cursor !== undefined && cursor !== null ? { cursor } : {}),
     invalid:
@@ -156,6 +158,34 @@ export const auditHandlers: GatewayRequestHandlers = {
       ...(page.nextCursor !== undefined ? { nextCursor: String(page.nextCursor) } : {}),
     });
   },
+  "audit.run.inspect": ({ params, respond }) => {
+    if (!assertValidParams(params, validateAuditRunInspectParams, "audit.run.inspect", respond)) {
+      return;
+    }
+    const decisionOffset = parsePositiveCursor(params.decisionCursor);
+    const executionOffset =
+      typeof params.runId === "string" ? parsePositiveCursor(params.executionCursor) : undefined;
+    if (decisionOffset === null || executionOffset === null) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid audit.run.inspect cursor"),
+      );
+      return;
+    }
+    respond(
+      true,
+      inspectExecutionIdentityRun({
+        ...(typeof params.runId === "string"
+          ? {
+              runId: params.runId,
+              ...(executionOffset !== undefined ? { executionOffset } : {}),
+              executionLimit: params.executionLimit ?? 50,
+            }
+          : { executionId: params.executionId! }),
+        ...(decisionOffset !== undefined ? { decisionOffset } : {}),
+        decisionLimit: params.decisionLimit ?? 50,
+      }),
+    );
+  },
 };
-
-export const testApi = { mapAuditActivityEvent, mapLegacyAuditEvent, parseAuditCursor };

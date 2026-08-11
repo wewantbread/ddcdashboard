@@ -35,8 +35,8 @@ import {
   applySecretRefHeaderSentinels,
   applyLocalNoAuthHeaderOverride,
   formatMissingAuthError,
-  getApiKeyForModel,
-  resolveApiKeyForProvider,
+  getApiKeyForModelCore,
+  resolveApiKeyForProviderCore,
   type ResolvedProviderAuth,
 } from "./model-auth.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
@@ -294,7 +294,7 @@ export async function prepareSimpleCompletionModel(params: {
     : undefined;
   try {
     auth = resolvesAuthBeforePhysicalRoute
-      ? await resolveApiKeyForProvider({
+      ? await resolveApiKeyForProviderCore({
           provider: initialModel.provider,
           cfg: params.cfg,
           agentDir: params.agentDir,
@@ -306,7 +306,7 @@ export async function prepareSimpleCompletionModel(params: {
           modelId: initialModel.id,
           secretSentinels: true,
         })
-      : await getApiKeyForModel({
+      : await getApiKeyForModelCore({
           model: initialModel,
           cfg: params.cfg,
           agentDir: params.agentDir,
@@ -331,6 +331,10 @@ export async function prepareSimpleCompletionModel(params: {
             mode: auth.mode,
             availability: true,
             evidence: "runtime",
+            // The credential is already resolved by the caller and wrapped as
+            // required provider-binding ownership below, so it is not an
+            // ambient discovery competing with declared profiles.
+            authorization: "declared",
           });
       const routeAuthDecision = selectOpenAIModelRouteAuth({
         resolution: routeResolution,
@@ -392,7 +396,7 @@ export async function prepareSimpleCompletionModel(params: {
             ),
         })) ?? initialModel;
       if (resolvesAuthBeforePhysicalRoute) {
-        auth = await getApiKeyForModel({
+        auth = await getApiKeyForModelCore({
           model: resolvedModel,
           cfg: params.cfg,
           agentDir: params.agentDir,

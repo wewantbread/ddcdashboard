@@ -1,11 +1,12 @@
 // Telegram tests cover bot.mediaownloads media file path no file download plugin behavior.
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readRemoteMediaBufferSpy,
   setNextSavedMediaPath,
   telegramBotDepsForTest,
   telegramMediaHarnessSendMessageSpy,
-} from "./bot.media.e2e-harness.js";
+} from "./bot.media.e2e.test-harness.js";
 import {
   TELEGRAM_TEST_TIMINGS,
   createBotHandler,
@@ -39,12 +40,7 @@ function replyPayload(replySpy: ReturnType<typeof vi.fn>, index = 0): ReplyPaylo
   return payload as ReplyPayload;
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`expected ${label} record`);
-  }
-  return value as Record<string, unknown>;
-}
+const requireRecord = createRequireRecord("record", "expected-label-record-short");
 
 function requireArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {

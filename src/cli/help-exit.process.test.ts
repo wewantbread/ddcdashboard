@@ -103,11 +103,10 @@ registerHooks({
     `import { registerHooks } from "node:module";
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    const resolved = nextResolve(specifier, context);
-    if (/\\/cli\\/run-main\\.(?:js|ts)$/.test(resolved.url)) {
+    if (/\\/cli\\/run-main\\.(?:js|ts)(?:[?#].*)?$/.test(specifier)) {
       throw new Error("forced run-main import failure");
     }
-    return resolved;
+    return nextResolve(specifier, context);
   },
 });
 `,
@@ -152,6 +151,10 @@ async function runCliProcess(params: {
   const child = spawn(
     process.execPath,
     [
+      "--import",
+      "tsx",
+      // Node runs later sync customization hooks first. Install test guards after
+      // TSX so they own the requested specifier instead of TSX's resolved result.
       ...(params.forbidTlsImport
         ? ["--import", pathToFileURL(fixture.tlsImportGuardPath).href]
         : []),
@@ -162,8 +165,6 @@ async function runCliProcess(params: {
       ...(params.unsupportedRuntime
         ? ["--import", pathToFileURL(fixture.unsupportedRuntimePath).href]
         : []),
-      "--import",
-      "tsx",
       "src/entry.ts",
       ...params.args,
     ],
@@ -448,42 +449,47 @@ describe("JSON console style process output", () => {
     SLOW_DOTENV_TEST_TIMEOUT_MS,
   );
 
-  it("loads eligible dotenv before formatting a run-main import failure", async () => {
-    let failure: CliProcessFailure | undefined;
-    try {
-      await runCliProcess({
-        args: ["gateway", "status"],
-        config: {
-          logging: {
-            consoleStyle: "${OPENCLAW_TEST_CONSOLE_STYLE}",
-            level: "silent",
+  it(
+    "loads eligible dotenv before formatting a run-main import failure",
+    async () => {
+      let failure: CliProcessFailure | undefined;
+      try {
+        await runCliProcess({
+          args: ["gateway", "status"],
+          config: {
+            logging: {
+              consoleStyle: "${OPENCLAW_TEST_CONSOLE_STYLE}",
+              level: "silent",
+            },
           },
-        },
-        env: {
-          OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
-          OPENCLAW_TEST_CONSOLE_STYLE: undefined,
-        },
-        failRunMainImport: true,
-        stateEnv: () => ({ OPENCLAW_TEST_CONSOLE_STYLE: "json" }),
-      });
-    } catch (error) {
-      failure = error as CliProcessFailure;
-    }
+          env: {
+            OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+            OPENCLAW_TEST_CONSOLE_STYLE: undefined,
+          },
+          failRunMainImport: true,
+          stateEnv: () => ({ OPENCLAW_TEST_CONSOLE_STYLE: "json" }),
+          timeoutMs: SLOW_DOTENV_CHILD_PROCESS_TIMEOUT_MS,
+        });
+      } catch (error) {
+        failure = error as CliProcessFailure;
+      }
 
-    expect(failure?.code).toBe(1);
-    expect(parseJsonLines(failure?.stderr ?? "")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          level: "info",
-          message: expect.stringContaining("startup trace: entry.bootstrap"),
-        }),
-        expect.objectContaining({
-          level: "error",
-          message: expect.stringContaining("forced run-main import failure"),
-        }),
-      ]),
-    );
-  });
+      expect(failure?.code).toBe(1);
+      expect(parseJsonLines(failure?.stderr ?? "")).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: "info",
+            message: expect.stringContaining("startup trace: entry.bootstrap"),
+          }),
+          expect.objectContaining({
+            level: "error",
+            message: expect.stringContaining("forced run-main import failure"),
+          }),
+        ]),
+      );
+    },
+    SLOW_DOTENV_TEST_TIMEOUT_MS,
+  );
 
   it("structures unsupported-runtime diagnostics from included named-profile config", async () => {
     let failure: CliProcessFailure | undefined;

@@ -1,3 +1,4 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionContentPart,
@@ -6,12 +7,12 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
+import { transformProviderMessages as transformMessages } from "./provider-transcript-transform.js";
 import {
   describeToolResultMediaPlaceholder,
   extractToolResultText,
   isImageWithMediaPayload,
 } from "./providers/tool-result-text.js";
-import { transformMessages } from "./transcript-transform.js";
 import type { ResolvedOpenAICompletionsCompat } from "./transports/openai-completions-compat.js";
 import type { Context, Model, TextContent, ThinkingContent, ToolCall } from "./types.js";
 import { sanitizeSurrogates } from "./utils/sanitize-unicode.js";
@@ -36,6 +37,17 @@ function sanitizeToolResultText(text: string, fallback: string): string {
   return sanitized.trim().length > 0 ? sanitized : fallback;
 }
 
+/** Whether replayed messages require a tools marker for proxy compatibility. */
+export function hasToolCallHistory(messages: Context["messages"]): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "toolResult" ||
+      (message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((block) => block.type === "toolCall")),
+  );
+}
+
 /** Convert a normalized transcript to OpenAI Chat Completions messages. */
 export function convertMessages(
   model: Model<"openai-completions">,
@@ -57,7 +69,7 @@ export function convertMessages(
     }
 
     if (model.provider === "openai") {
-      return id.length > 40 ? id.slice(0, 40) : id;
+      return id.length > 40 ? truncateUtf16Safe(id, 40) : id;
     }
     return id;
   };

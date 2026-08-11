@@ -5,13 +5,16 @@ import {
   spawnSync,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import { type RawData, WebSocketServer } from "ws";
+import {
+  closeOpenClawStateDatabaseByPath,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
 const execFileAsync = promisify(execFile);
 const CHILD_PROCESS_TIMEOUT_MS = 30_000;
@@ -29,18 +32,45 @@ const INITIALIZE_FRAME = {
   },
 };
 
-function createAcpProcessEnv(stateDir?: string): NodeJS.ProcessEnv {
+async function createPreparedAcpProcessState() {
+  const state = await createOpenClawTestState({
+    applyEnv: false,
+    label: "acp-process",
+    scenario: "minimal",
+  });
+  try {
+    // These cases assert bridge stderr after normal startup. Prepare canonical
+    // shared state so the one-time migration diagnostic is not part of that signal.
+    const database = openOpenClawStateDatabase({ env: state.env });
+    closeOpenClawStateDatabaseByPath(database.path);
+    return state;
+  } catch (error) {
+    await state.cleanup();
+    throw error;
+  }
+}
+
+function createAcpProcessEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...baseEnv,
     NODE_ENV: undefined,
     NODE_OPTIONS: "--use-openssl-ca",
     NODE_USE_SYSTEM_CA: "0",
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-    OPENCLAW_CONFIG_PATH: stateDir ? path.join(stateDir, "openclaw.json") : undefined,
     OPENCLAW_NO_RESPAWN: "1",
-    OPENCLAW_STATE_DIR: stateDir,
     VITEST: undefined,
   };
+}
+
+function withoutSqliteTransactionWarnings(stderr: string): string {
+  // Slow-hold logger output is load-dependent performance diagnostics, not ACP clean-exit
+  // signal; see logSlowTransactionHold in sqlite-transaction.ts.
+  return stderr
+    .split("\n")
+    .filter(
+      (line) => !stripVTControlCharacters(line).trimStart().startsWith("[sqlite/transaction]"),
+    )
+    .join("\n");
 }
 
 function waitForExit(child: ChildProcessWithoutNullStreams) {
@@ -102,24 +132,29 @@ describe("ACP CLI process exit", () => {
   ])(
     "exits promptly after $args",
     async ({ args, usage }) => {
-      const result = await execFileAsync(
-        process.execPath,
-        ["--import", "tsx", "src/entry.ts", ...args],
-        {
-          cwd: path.resolve("."),
-          encoding: "utf8",
-          env: {
-            ...createAcpProcessEnv(),
-            NODE_OPTIONS: process.platform === "darwin" ? "--use-system-ca" : undefined,
-            NODE_USE_SYSTEM_CA: undefined,
+      const state = await createPreparedAcpProcessState();
+      try {
+        const result = await execFileAsync(
+          process.execPath,
+          ["--import", "tsx", "src/entry.ts", ...args],
+          {
+            cwd: path.resolve("."),
+            encoding: "utf8",
+            env: {
+              ...createAcpProcessEnv(state.env),
+              NODE_OPTIONS: process.platform === "darwin" ? "--use-system-ca" : undefined,
+              NODE_USE_SYSTEM_CA: undefined,
+            },
+            killSignal: "SIGKILL",
+            timeout: CHILD_PROCESS_TIMEOUT_MS,
           },
-          killSignal: "SIGKILL",
-          timeout: CHILD_PROCESS_TIMEOUT_MS,
-        },
-      );
+        );
 
-      expect(result.stderr).toBe("");
-      expect(result.stdout).toContain(usage);
+        expect(withoutSqliteTransactionWarnings(result.stderr)).toBe("");
+        expect(result.stdout).toContain(usage);
+      } finally {
+        await state.cleanup();
+      }
     },
     CHILD_PROCESS_TIMEOUT_MS + 5_000,
   );
@@ -130,28 +165,33 @@ describe("ACP CLI process exit", () => {
       name: "an initialize frame",
       input: `${JSON.stringify(INITIALIZE_FRAME)}\n`,
     },
-  ])("exits when the bridge starts with $name and the client disconnects", ({ input }) => {
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "src/entry.ts", "acp", "--require-existing"],
-      {
-        cwd: path.resolve("."),
-        encoding: "utf8",
-        env: createAcpProcessEnv(),
-        input,
-        killSignal: "SIGKILL",
-        timeout: CHILD_PROCESS_TIMEOUT_MS,
-      },
-    );
+  ])("exits when the bridge starts with $name and the client disconnects", async ({ input }) => {
+    const state = await createPreparedAcpProcessState();
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "src/entry.ts", "acp", "--require-existing"],
+        {
+          cwd: path.resolve("."),
+          encoding: "utf8",
+          env: createAcpProcessEnv(state.env),
+          input,
+          killSignal: "SIGKILL",
+          timeout: CHILD_PROCESS_TIMEOUT_MS,
+        },
+      );
 
-    expect(result.error).toBeUndefined();
-    expect(result.signal).toBeNull();
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe("");
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(0);
+      expect(withoutSqliteTransactionWarnings(result.stderr)).toBe("");
+    } finally {
+      await state.cleanup();
+    }
   });
 
   it("processes an initialize frame buffered before Gateway hello", async () => {
-    const stateDir = mkdtempSync(path.join(tmpdir(), "openclaw-acp-exit-"));
+    const state = await createPreparedAcpProcessState();
     const server = createServer();
     const wss = new WebSocketServer({ server });
     let child: ChildProcessWithoutNullStreams | undefined;
@@ -219,7 +259,7 @@ describe("ACP CLI process exit", () => {
         ],
         {
           cwd: path.resolve("."),
-          env: createAcpProcessEnv(stateDir),
+          env: createAcpProcessEnv(state.env),
           stdio: ["pipe", "pipe", "pipe"],
         },
       );
@@ -243,7 +283,7 @@ describe("ACP CLI process exit", () => {
       child.stdin.end();
       const exit = await exitPromise;
       expect(exit).toEqual({ code: 0, signal: null });
-      expect(stderr).toBe("");
+      expect(withoutSqliteTransactionWarnings(stderr)).toBe("");
     } finally {
       child?.kill("SIGKILL");
       for (const socket of wss.clients) {
@@ -255,7 +295,7 @@ describe("ACP CLI process exit", () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
-      rmSync(stateDir, { force: true, recursive: true });
+      await state.cleanup();
     }
   }, 40_000);
 });

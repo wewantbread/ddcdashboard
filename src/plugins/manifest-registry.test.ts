@@ -2,9 +2,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { collectChannelSchemaMetadata } from "../config/channel-config-metadata.js";
+import { collectChannelSchemaMetadataCore } from "../config/channel-config-metadata.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { collectBundledChannelConfigs } from "./bundled-channel-config-metadata.js";
+import { collectBundledChannelConfigsCore } from "./bundled-channel-config-metadata.js";
 import type { PluginCandidate } from "./discovery.js";
 import { loadPluginManifestRegistry } from "./manifest-registry.js";
 import type { OpenClawPackageManifest } from "./manifest.js";
@@ -1664,7 +1664,7 @@ describe("loadPluginManifestRegistry", () => {
     });
 
     const registry = loadPluginManifestRegistry({
-      bundledChannelConfigCollector: collectBundledChannelConfigs,
+      bundledChannelConfigCollector: collectBundledChannelConfigsCore,
       candidates: [candidate],
     });
 
@@ -1683,7 +1683,7 @@ describe("loadPluginManifestRegistry", () => {
         manifestOnly: { help: "manifest hint" },
       },
     });
-    expect(collectChannelSchemaMetadata(registry)).toEqual([
+    expect(collectChannelSchemaMetadataCore(registry)).toEqual([
       {
         id: "alpha",
         label: "Alpha",
@@ -1809,6 +1809,38 @@ describe("loadPluginManifestRegistry", () => {
       },
     );
     expectRecordFields(wecomConfig.schema, "wecom schema", { type: "object" });
+    expectNoRegistryDiagnosticContains(registry, "without channelConfigs metadata");
+  });
+
+  it("hydrates Slack channel config metadata for lagging npm manifests", () => {
+    const dir = makeTempDir();
+    writeManifest(dir, {
+      id: "slack",
+      channels: ["slack"],
+      configSchema: { type: "object" },
+    });
+
+    const registry = loadRegistry([
+      createPluginCandidate({
+        idHint: "slack",
+        rootDir: dir,
+        origin: "global",
+        packageName: "@openclaw/slack",
+      }),
+    ]);
+
+    const slackConfig = expectRecordFields(
+      registry.plugins[0]?.channelConfigs?.slack,
+      "slack config",
+      {
+        label: "Slack",
+        description: "Slack channel, DM, command, and app event integration.",
+      },
+    );
+    expectRecordFields(slackConfig.schema, "slack schema", {
+      type: "object",
+      additionalProperties: true,
+    });
     expectNoRegistryDiagnosticContains(registry, "without channelConfigs metadata");
   });
 

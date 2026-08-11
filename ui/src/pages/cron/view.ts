@@ -360,17 +360,23 @@ function renderCronSelect(
   field: CronStringFormField,
   options: CronSelectOptions,
 ) {
+  const selected = options.value ?? props.form[field];
   return html`
     <select
       id=${ifDefined(options.standalone ? undefined : inputIdForField(field))}
       class="settings-select"
-      .value=${options.value ?? props.form[field]}
+      .value=${selected}
       aria-label=${ifDefined(options.standalone ? options.label : undefined)}
       ?disabled=${options.disabled ?? false}
       @change=${(event: Event) =>
         props.onFormChange({ [field]: (event.currentTarget as HTMLSelectElement).value })}
     >
-      ${options.options.map(({ value, label }) => html`<option value=${value}>${label}</option>`)}
+      ${options.options.map(
+        // The .value property commits before these mapped options exist, so the
+        // browser falls back to the first option; ?selected marks the real one.
+        ({ value, label }) =>
+          html`<option value=${value} ?selected=${value === selected}>${label}</option>`,
+      )}
     </select>
   `;
 }
@@ -575,7 +581,11 @@ function renderJobsFilter(
         @change=${(event: Event) =>
           props.onJobsFiltersChange({ [field]: (event.currentTarget as HTMLSelectElement).value })}
       >
-        ${params.options.map(({ value, label }) => html`<option value=${value}>${label}</option>`)}
+        ${params.options.map(
+          // Same first-option fallback as renderCronSelect: mark the bound value.
+          ({ value, label }) =>
+            html`<option value=${value} ?selected=${value === params.value}>${label}</option>`,
+        )}
       </select>
     </label>
   `;
@@ -705,6 +715,7 @@ function renderJobsTable(props: CronProps, hasAnyJobsFilters: boolean) {
 }
 
 function renderJobRow(job: CronJob, props: CronProps) {
+  const description = job.description?.trim();
   const nextRunAtMs = job.state?.nextRunAtMs;
   const hasNextRun = typeof nextRunAtMs === "number" && Number.isFinite(nextRunAtMs);
   const dotVariant = isCronJobActiveFailure(job)
@@ -729,6 +740,16 @@ function renderJobRow(job: CronJob, props: CronProps) {
       <span class="cron-table__name">
         <span class="cron-table__dot ${dotVariant}" aria-hidden="true"></span>
         <span class="cron-table__name-text">${job.name}</span>
+        ${description
+          ? html`
+              <span
+                class="cron-table__description"
+                data-test-id=${`cron-row-description-${job.id}`}
+                title=${`${t("cron.form.description")}: ${description}`}
+                >· ${description}</span
+              >
+            `
+          : nothing}
         ${job.enabled
           ? nothing
           : html`<span class="muted cron-table__paused-note">${t("cron.list.paused")}</span>`}
@@ -918,6 +939,7 @@ function renderDetailView(props: CronProps, mode: CronPanelMode) {
 
 function renderDetailHeader(props: CronProps, mode: CronPanelMode, selectedJob?: CronJob) {
   const title = mode === "job" ? (selectedJob?.name ?? props.form.name) : t("cron.detail.newTitle");
+  const description = mode === "job" ? selectedJob?.description?.trim() : undefined;
   // Header describes the SAVED job (schedule + next run); the form's live
   // summary describes unsaved edits, so the two never contradict each other.
   const nextRunAtMs = selectedJob?.state?.nextRunAtMs;
@@ -933,6 +955,12 @@ function renderDetailHeader(props: CronProps, mode: CronPanelMode, selectedJob?:
     <div class="cron-detail-header">
       <div class="cron-detail-header__copy">
         <div class="cron-detail-title">${title}</div>
+        ${description
+          ? html`<div class="cron-detail-description" data-test-id="cron-detail-description">
+              <span class="cron-detail-description__label">${t("cron.form.description")}:</span>
+              ${description}
+            </div>`
+          : nothing}
         <div class="cron-detail-meta">
           ${mode === "job" && selectedJob && props.canManage
             ? renderEnabledSwitch(props, selectedJob)

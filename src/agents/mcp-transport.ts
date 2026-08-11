@@ -20,6 +20,7 @@ import {
   withSameOriginMcpHttpHeaders,
 } from "./mcp-http-fetch.js";
 import { withMcpOAuthBearer } from "./mcp-oauth-fetch.js";
+import { operatorMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { OpenClawStdioClientTransport } from "./mcp-stdio-transport.js";
 import { resolveMcpTransportConfig } from "./mcp-transport-config.js";
 
@@ -91,7 +92,7 @@ function buildSseEventSourceFetch(
 export function resolveMcpTransport(
   serverName: string,
   rawServer: unknown,
-  options?: { cfg?: OpenClawConfig; agentDir?: string },
+  options?: { cfg?: OpenClawConfig; agentDir?: string; prepareDataDir?: string },
 ): ResolvedMcpTransport | null {
   const resolved = resolveMcpTransportConfig(serverName, rawServer);
   if (!resolved) {
@@ -103,6 +104,7 @@ export function resolveMcpTransport(
       args: resolved.args,
       env: resolved.env,
       cwd: resolved.cwd,
+      prepareDataDir: options?.prepareDataDir,
       stderr: "pipe",
     });
     return {
@@ -116,6 +118,7 @@ export function resolveMcpTransport(
     };
   }
   const authProfileId = resolveMcpAuthProfileId(rawServer);
+  const oauthIdentity = operatorMcpOAuthIdentity(serverName, resolved.url);
   // The SDK reuses one fetch for OAuth and long-lived SSE/streamable bodies.
   // Per-RPC deadlines belong to client calls, not this transport fetch.
   const baseFetch = buildMcpHttpFetch({
@@ -149,8 +152,7 @@ export function resolveMcpTransport(
           // Protected-resource discovery lives at the resource origin and may
           // require the same routing headers. Cross-origin auth calls stay scrubbed.
           authFetchFn: resourceFetch,
-          serverName,
-          resourceUrl: resolved.url,
+          identity: oauthIdentity,
           config: resolved.oauth,
         })
       : baseFetch;

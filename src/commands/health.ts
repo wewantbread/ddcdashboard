@@ -6,13 +6,14 @@ import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { listReadOnlyChannelPluginsForConfig } from "../channels/plugins/read-only.js";
 import { probeGatewayStatus } from "../cli/daemon-cli/probe.js";
 import { withProgress } from "../cli/progress.js";
-import { resolveStorePath } from "../config/sessions/paths.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   buildGatewayConnectionDetails,
   buildGatewayProbeConnectionDetails,
   callGateway,
   formatGatewayAuthErrorJson,
+  formatGatewayClientRequestErrorJson,
   formatGatewayTransportErrorJson,
   isGatewayCredentialsRequiredError,
 } from "../gateway/call.js";
@@ -36,8 +37,11 @@ import { buildChannelAccountBindings, resolvePreferredAccountId } from "../routi
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import {
   buildCredentialsRequiredHealthDiagnostic,
+  buildRateLimitedHealthDiagnostic,
+  gatewayConnectErrorWasRateLimited,
   GATEWAY_HEALTH_REACHABLE_LINE,
   gatewayProbeResultSawGateway,
+  gatewayProbeResultWasRateLimited,
 } from "./gateway-health-auth-diagnostic.js";
 import { formatHealthChannelLines } from "./health-format.js";
 import { logGatewayConnectionDetails } from "./status.gateway-connection.js";
@@ -68,16 +72,30 @@ export async function emitReachableGatewayAuthDiagnostic(params: {
   timeoutMs?: number;
   token?: string;
   password?: string;
+  ignoreEnvUrlOverride?: boolean;
   localPortOverride?: number;
   json?: boolean;
 }): Promise<boolean> {
-  if (!isGatewayHealthAuthUnavailableError(params.error)) {
+  const directRateLimit = gatewayConnectErrorWasRateLimited(params.error);
+  if (!directRateLimit && !isGatewayHealthAuthUnavailableError(params.error)) {
     return false;
+  }
+  if (directRateLimit) {
+    const diagnostic = buildRateLimitedHealthDiagnostic(params.error);
+    if (params.json) {
+      writeRuntimeJson(params.runtime, diagnostic);
+    } else {
+      params.runtime.log(GATEWAY_HEALTH_REACHABLE_LINE);
+      params.runtime.log(diagnostic.error.message);
+    }
+    params.runtime.exit(1);
+    return true;
   }
   const details = await buildGatewayProbeConnectionDetails({
     config: params.config,
     token: params.token,
     password: params.password,
+    ignoreEnvUrlOverride: params.ignoreEnvUrlOverride,
     localPortOverride: params.localPortOverride,
   });
   const probe = await probeGatewayStatus({
@@ -93,7 +111,9 @@ export async function emitReachableGatewayAuthDiagnostic(params: {
   if (!gatewayProbeResultSawGateway(probe)) {
     return false;
   }
-  const diagnostic = buildCredentialsRequiredHealthDiagnostic();
+  const diagnostic = gatewayProbeResultWasRateLimited(probe)
+    ? buildRateLimitedHealthDiagnostic()
+    : buildCredentialsRequiredHealthDiagnostic();
   if (params.json) {
     writeRuntimeJson(params.runtime, diagnostic);
     params.runtime.exit(1);
@@ -208,6 +228,7 @@ export async function healthCommand(
     config?: OpenClawConfig;
     token?: string;
     password?: string;
+    ignoreEnvUrlOverride?: boolean;
     localPortOverride?: number;
   },
   runtime: RuntimeEnv,
@@ -230,6 +251,7 @@ export async function healthCommand(
           config: cfg,
           token: opts.token,
           password: opts.password,
+          ignoreEnvUrlOverride: opts.ignoreEnvUrlOverride,
           localPortOverride: opts.localPortOverride,
         }),
     );
@@ -242,6 +264,7 @@ export async function healthCommand(
         timeoutMs: opts.timeoutMs,
         token: opts.token,
         password: opts.password,
+        ignoreEnvUrlOverride: opts.ignoreEnvUrlOverride,
         localPortOverride: opts.localPortOverride,
         json: opts.json,
       })
@@ -249,7 +272,10 @@ export async function healthCommand(
       return;
     }
     if (opts.json) {
-      const payload = formatGatewayAuthErrorJson(error) ?? formatGatewayTransportErrorJson(error);
+      const payload =
+        formatGatewayAuthErrorJson(error) ??
+        formatGatewayClientRequestErrorJson(error) ??
+        formatGatewayTransportErrorJson(error);
       if (payload) {
         writeRuntimeJson(runtime, payload);
         runtime.exit(1);
@@ -269,6 +295,7 @@ export async function healthCommand(
     if (opts.verbose) {
       const details = buildGatewayConnectionDetails({
         config: cfg,
+        ignoreEnvUrlOverride: opts.ignoreEnvUrlOverride,
         localPortOverride: opts.localPortOverride,
       });
       logGatewayConnectionDetails({
@@ -285,7 +312,9 @@ export async function healthCommand(
         ? agents
         : await Promise.all(
             localAgents.ordered.map(async (entry) => {
-              const storePath = resolveStorePath(cfg.session?.store, { agentId: entry.id });
+              const storePath = resolveSessionStorePathCore(cfg.session?.store, {
+                agentId: entry.id,
+              });
               return {
                 agentId: entry.id,
                 name: entry.name,

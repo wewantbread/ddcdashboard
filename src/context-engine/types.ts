@@ -174,11 +174,19 @@ export type BootstrapResult = {
   reason?: string;
 };
 
+export type ContextEngineTurnAdvancementIdempotency =
+  | "atomic-idempotent-v1"
+  | "atomic-idempotent-turn-local-v1";
+
 export type ContextEngineInfo = {
   id: string;
   name: string;
   version?: string;
   acceptedHostParams?: string[];
+  transcriptSemantics?: {
+    currentTurnFence?: "before-current-turn-entry-v1";
+    turnAdvancementIdempotency?: ContextEngineTurnAdvancementIdempotency;
+  };
   /** True when the engine manages its own compaction lifecycle. */
   ownsCompaction?: boolean;
   /**
@@ -425,6 +433,43 @@ export interface ContextEngine {
   }): Promise<void>;
 
   /**
+   * Atomically and idempotently commit one accepted durable transcript turn.
+   * V1 messages contain transcript history through the accepted terminal entry.
+   * Hosts may retry the same advancement key after process or plugin failure.
+   */
+  commitTurn?(params: {
+    advancementKey: string;
+    admission: import("../config/sessions/transcript-entry-anchor.js").TranscriptTurnAdmission;
+    terminal: import("../config/sessions/transcript-entry-anchor.js").TranscriptEntryAnchor;
+    messages: AgentMessage[];
+    /** Number of messages that precede the admitted user entry. */
+    prePromptMessageCount: number;
+    sessionId: string;
+    sessionKey?: string;
+    sessionTarget?: ContextEngineSessionTarget;
+    runtimeSettings?: ContextEngineRuntimeSettings;
+    runtimeContext?: ContextEngineRuntimeContext;
+    isHeartbeat?: boolean;
+  }): Promise<{ status: "committed" | "duplicate" }>;
+
+  /**
+   * Atomically and idempotently commit one accepted turn-local transcript range.
+   * Messages span the admitted user entry through the accepted terminal entry.
+   */
+  commitTurnLocal?(params: {
+    advancementKey: string;
+    admission: import("../config/sessions/transcript-entry-anchor.js").TranscriptTurnAdmission;
+    terminal: import("../config/sessions/transcript-entry-anchor.js").TranscriptEntryAnchor;
+    messages: AgentMessage[];
+    sessionId: string;
+    sessionKey?: string;
+    sessionTarget?: ContextEngineSessionTarget;
+    runtimeSettings?: ContextEngineRuntimeSettings;
+    runtimeContext?: ContextEngineRuntimeContext;
+    isHeartbeat?: boolean;
+  }): Promise<{ status: "committed" | "duplicate" }>;
+
+  /**
    * Assemble model context under a token budget.
    * Returns an ordered set of messages ready for the model.
    */
@@ -443,6 +488,7 @@ export interface ContextEngine {
     /** The incoming user prompt for this turn (useful for retrieval-oriented engines). */
     prompt?: string;
     runtimeSettings?: ContextEngineRuntimeSettings;
+    runtimeContext?: ContextEngineRuntimeContext;
   }): Promise<AssembleResult>;
 
   /**

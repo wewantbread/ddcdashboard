@@ -52,6 +52,7 @@ import {
 } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import {
+  type AuthorizedGatewayHttpRequest,
   authorizeOpenAiCompatibleHttpModelOverride,
   getBearerToken,
   getHeader,
@@ -126,16 +127,15 @@ function normalizeResponseSessionScope(scope: ResponseSessionScope): ResponseSes
 function resolveResponseSessionAuthSubject(params: {
   req: IncomingMessage;
   auth: ResolvedGatewayAuth;
+  requestAuth: AuthorizedGatewayHttpRequest;
 }): string {
+  // Proxy-verified identity owns continuation; forwarded bearers are unverified.
+  if (params.requestAuth.authMethod === "trusted-proxy") {
+    return `trusted-proxy:${params.requestAuth.user}`;
+  }
   const bearer = getBearerToken(params.req);
   if (bearer) {
     return `bearer:${createHash("sha256").update(bearer).digest("hex")}`;
-  }
-  if (params.auth.mode === "trusted-proxy" && params.auth.trustedProxy?.userHeader) {
-    const user = getHeader(params.req, params.auth.trustedProxy.userHeader)?.trim();
-    if (user) {
-      return `trusted-proxy:${user}`;
-    }
   }
   return `gateway-auth:${params.auth.mode}`;
 }
@@ -143,10 +143,11 @@ function resolveResponseSessionAuthSubject(params: {
 function createResponseSessionScope(params: {
   req: IncomingMessage;
   auth: ResolvedGatewayAuth;
+  requestAuth: AuthorizedGatewayHttpRequest;
   agentId: string;
 }): ResponseSessionScope {
   return normalizeResponseSessionScope({
-    authSubject: resolveResponseSessionAuthSubject({ req: params.req, auth: params.auth }),
+    authSubject: resolveResponseSessionAuthSubject(params),
     agentId: params.agentId,
     requestedSessionKey: getHeader(params.req, "x-openclaw-session-key"),
   });
@@ -483,7 +484,9 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
 
-  // Extract images + files from input (Phase 2)
+  const prompt = buildAgentPrompt(payload.input);
+
+  // Count URL sources request-wide, but replay media only from the current user turn.
   let images: ImageContent[] = [];
   const fileContexts: string[] = [];
   let urlParts = 0;
@@ -500,31 +503,23 @@ export async function handleOpenResponsesHttpRequest(
       for (const item of payload.input) {
         if (item.type === "message" && typeof item.content !== "string") {
           for (const part of item.content) {
+            if (part.type !== "input_image" && part.type !== "input_file") {
+              continue;
+            }
+            if (part.source.type === "url") {
+              markUrlPart();
+            }
+            if (item !== prompt.activeUserMessage) {
+              continue;
+            }
             if (part.type === "input_image") {
-              const source = part.source as {
-                type?: string;
-                url?: string;
-                data?: string;
-                media_type?: string;
-              };
-              const sourceType =
-                source.type === "base64" || source.type === "url" ? source.type : undefined;
-              if (!sourceType) {
-                throw new Error("input_image must have 'source.url' or 'source.data'");
-              }
-              if (sourceType === "url") {
-                markUrlPart();
-              }
+              const source = part.source;
               const imageSource: InputImageSource =
-                sourceType === "url"
-                  ? {
-                      type: "url",
-                      url: source.url ?? "",
-                      mediaType: source.media_type,
-                    }
+                source.type === "url"
+                  ? { type: "url", url: source.url }
                   : {
                       type: "base64",
-                      data: source.data ?? "",
+                      data: source.data,
                       mediaType: source.media_type,
                     };
               const image = await extractImageContentFromSource(imageSource, limits.images);
@@ -532,67 +527,46 @@ export async function handleOpenResponsesHttpRequest(
               continue;
             }
 
-            if (part.type === "input_file") {
-              const source = part.source as {
-                type?: string;
-                url?: string;
-                data?: string;
-                media_type?: string;
-                filename?: string;
-              };
-              const sourceType =
-                source.type === "base64" || source.type === "url" ? source.type : undefined;
-              if (!sourceType) {
-                throw new Error("input_file must have 'source.url' or 'source.data'");
-              }
-              if (sourceType === "url") {
-                markUrlPart();
-              }
-              const file = await extractFileContentFromSource({
-                source:
-                  sourceType === "url"
-                    ? {
-                        type: "url",
-                        url: source.url ?? "",
-                        mediaType: source.media_type,
-                        filename: source.filename,
-                      }
-                    : {
-                        type: "base64",
-                        data: source.data ?? "",
-                        mediaType: source.media_type,
-                        filename: source.filename,
-                      },
-                limits: limits.files,
-              });
-              const rawText = file.text;
-              if (rawText?.trim()) {
-                fileContexts.push(
-                  renderFileContextBlock({
-                    filename: file.filename,
-                    content: wrapUntrustedFileContent(rawText),
-                  }),
-                );
-              } else if (file.images && file.images.length > 0) {
-                fileContexts.push(
-                  renderFileContextBlock({
-                    filename: file.filename,
-                    content: "[PDF content rendered to images]",
-                    surroundContentWithNewlines: false,
-                  }),
-                );
-              } else {
-                fileContexts.push(
-                  renderFileContextBlock({
-                    filename: file.filename,
-                    content: "[No extractable text]",
-                    surroundContentWithNewlines: false,
-                  }),
-                );
-              }
-              if (file.images && file.images.length > 0) {
-                images = images.concat(file.images);
-              }
+            const source = part.source;
+            const file = await extractFileContentFromSource({
+              source:
+                source.type === "url"
+                  ? { type: "url", url: source.url }
+                  : {
+                      type: "base64",
+                      data: source.data,
+                      mediaType: source.media_type,
+                      filename: source.filename,
+                    },
+              limits: limits.files,
+            });
+            const rawText = file.text;
+            if (rawText?.trim()) {
+              fileContexts.push(
+                renderFileContextBlock({
+                  filename: file.filename,
+                  content: wrapUntrustedFileContent(rawText),
+                }),
+              );
+            } else if (file.images && file.images.length > 0) {
+              fileContexts.push(
+                renderFileContextBlock({
+                  filename: file.filename,
+                  content: "[PDF content rendered to images]",
+                  surroundContentWithNewlines: false,
+                }),
+              );
+            } else {
+              fileContexts.push(
+                renderFileContextBlock({
+                  filename: file.filename,
+                  content: "[No extractable text]",
+                  surroundContentWithNewlines: false,
+                }),
+              );
+            }
+            if (file.images && file.images.length > 0) {
+              images = images.concat(file.images);
             }
           }
         }
@@ -647,6 +621,7 @@ export async function handleOpenResponsesHttpRequest(
   const responseSessionScope = createResponseSessionScope({
     req,
     auth: opts.auth,
+    requestAuth: handled.requestAuth,
     agentId: resolved.agentId,
   });
   // Resolve session key: reuse previous_response_id only when it matches the
@@ -657,9 +632,6 @@ export async function handleOpenResponsesHttpRequest(
   );
   const sessionKey = previousSessionKey ?? resolved.sessionKey;
   const messageChannel = resolved.messageChannel;
-
-  // Build prompt from input
-  const prompt = buildAgentPrompt(payload.input);
 
   const fileContext = fileContexts.length > 0 ? fileContexts.join("\n\n") : undefined;
   const toolChoiceContext = toolChoicePrompt?.trim();

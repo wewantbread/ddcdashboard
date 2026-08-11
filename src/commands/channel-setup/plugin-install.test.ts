@@ -1,6 +1,11 @@
 // Channel setup plugin install tests cover install decisions, registry reloads, scoped snapshots, and trust boundaries.
 import path from "node:path";
-import { bundledPluginRoot, bundledPluginRootAt } from "openclaw/plugin-sdk/test-fixtures";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  createRequireRecord,
+  bundledPluginRoot,
+  bundledPluginRootAt,
+} from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:fs", async () => {
@@ -310,16 +315,7 @@ function expectPluginLoadedFromLocalPath(
   expect(result.cfg.plugins?.load?.paths).toContain(expectedPath);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new Error(`expected ${label} to be an object`);
-  }
-  return value;
-}
+const requireRecord = createRequireRecord("record", "expected-label-object");
 
 function requireArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {

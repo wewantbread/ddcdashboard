@@ -16,11 +16,7 @@ import {
   resolveSessionMcpRuntimeIdleTtlMs,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
-import type {
-  SessionMcpRequesterScope,
-  SessionMcpRuntime,
-  SessionMcpRuntimeManager,
-} from "./agent-bundle-mcp-types.js";
+import type { SessionMcpRuntime, SessionMcpRuntimeManager } from "./agent-bundle-mcp-types.js";
 import { revokeMcpAppModelContext } from "./mcp-app-model-context.js";
 import {
   buildMcpRequesterRuntimeCacheKey,
@@ -53,6 +49,49 @@ export function createSessionMcpRuntimeManager(
   );
   const lifecycle = createSessionMcpRuntimeManagerLifecycle(store);
   const install = createSessionMcpRuntimeManagerInstall(lifecycle);
+  const materializeRequesterScopedRuntime = async (
+    params: Parameters<SessionMcpRuntimeManager["getOrCreate"]>[0] & {
+      idleTtlMs: number;
+      requesterScopedServerNames: readonly string[];
+      scopedNameSet: ReadonlySet<string>;
+      safeServerNamesByServer: ReadonlyMap<string, string>;
+      requesterSenderId: string;
+    },
+  ) => {
+    const agentAccountId = normalizeOptionalString(params.agentAccountId);
+    const messageChannel = normalizeOptionalString(params.messageChannel);
+    const runtimeKey = buildMcpRequesterRuntimeCacheKey({
+      sessionId: params.sessionId,
+      messageChannel,
+      agentAccountId,
+      requesterSenderId: params.requesterSenderId,
+    });
+    const fullScopedFingerprint = loadSessionMcpConfig({
+      workspaceDir: params.workspaceDir,
+      cfg: params.cfg,
+      logDiagnostics: false,
+      manifestRegistry: params.manifestRegistry,
+      includeServerNames: params.scopedNameSet,
+      redactConnectionServerNames: params.scopedNameSet,
+      safeServerNamesByServer: params.safeServerNamesByServer,
+      toolOverrides: params.toolOverrides,
+    }).fingerprint;
+    const runtime = await lifecycle.runExclusiveOnRuntimeKey(runtimeKey, () =>
+      install.resolveAndInstallRequesterRuntime({
+        ...params,
+        runtimeKey,
+        fullScopedFingerprint,
+        agentAccountId,
+        messageChannel,
+        requesterScope: {
+          requesterSenderId: params.requesterSenderId,
+          ...(agentAccountId ? { agentAccountId } : {}),
+          ...(messageChannel ? { messageChannel } : {}),
+        },
+      }),
+    );
+    return { runtimeKey, runtime };
+  };
 
   const manager: SessionMcpRuntimeManager = {
     async getOrCreate(params) {
@@ -134,52 +173,14 @@ export function createSessionMcpRuntimeManager(
 
       const requesterSenderId = normalizeOptionalString(params.requesterSenderId);
       if (requesterSenderId) {
-        const requesterScope: SessionMcpRequesterScope = {
-          requesterSenderId,
-          ...(normalizeOptionalString(params.agentAccountId)
-            ? { agentAccountId: normalizeOptionalString(params.agentAccountId) }
-            : {}),
-          ...(normalizeOptionalString(params.messageChannel)
-            ? { messageChannel: normalizeOptionalString(params.messageChannel) }
-            : {}),
-        };
-        const runtimeKey = buildMcpRequesterRuntimeCacheKey({
-          sessionId: params.sessionId,
-          messageChannel: params.messageChannel,
-          agentAccountId: params.agentAccountId,
-          requesterSenderId,
-        });
-        const { fingerprint: fullScopedFingerprint } = loadSessionMcpConfig({
-          workspaceDir: params.workspaceDir,
-          cfg: params.cfg,
-          logDiagnostics: false,
-          manifestRegistry: params.manifestRegistry,
-          includeServerNames: scopedNameSet,
-          redactConnectionServerNames: scopedNameSet,
+        const { runtimeKey, runtime: scopedRuntime } = await materializeRequesterScopedRuntime({
+          ...params,
+          idleTtlMs,
+          requesterScopedServerNames,
+          scopedNameSet,
           safeServerNamesByServer,
-          toolOverrides: params.toolOverrides,
+          requesterSenderId,
         });
-        const scopedRuntime = await lifecycle.runExclusiveOnRuntimeKey(runtimeKey, () =>
-          install.resolveAndInstallRequesterRuntime({
-            runtimeKey,
-            sessionId: params.sessionId,
-            sessionKey: params.sessionKey,
-            workspaceDir: params.workspaceDir,
-            agentDir: params.agentDir,
-            cfg: params.cfg,
-            manifestRegistry: params.manifestRegistry,
-            idleTtlMs,
-            requesterScopedServerNames,
-            scopedNameSet,
-            safeServerNamesByServer,
-            fullScopedFingerprint,
-            requesterSenderId,
-            agentAccountId: params.agentAccountId,
-            messageChannel: params.messageChannel,
-            requesterScope,
-            toolOverrides: params.toolOverrides,
-          }),
-        );
         if (scopedRuntime) {
           parts.push(scopedRuntime);
         }
@@ -214,8 +215,12 @@ export function createSessionMcpRuntimeManager(
       });
     },
     async getOrCreateRequesterScoped(params) {
-      // Scoped-only path for shared-thread harnesses: never open static transports
-      // (those stay harness-native) so we do not double-connect.
+      // Anonymous turns own no requester runtime; avoid leaking session keys or
+      // sweeping unrelated runtimes before confirming the requester exists.
+      const requesterSenderId = normalizeOptionalString(params.requesterSenderId);
+      if (!requesterSenderId) {
+        return undefined;
+      }
       const idleTtlMs = resolveSessionMcpRuntimeIdleTtlMs();
       await lifecycle.sweepIdleRuntimes();
       if (idleTtlMs > 0) {
@@ -223,10 +228,6 @@ export function createSessionMcpRuntimeManager(
       }
       if (params.sessionKey) {
         store.sessionIdBySessionKey.set(params.sessionKey, params.sessionId);
-      }
-      const requesterSenderId = normalizeOptionalString(params.requesterSenderId);
-      if (!requesterSenderId) {
-        return undefined;
       }
       const fullConfig = loadSessionMcpConfig({
         workspaceDir: params.workspaceDir,
@@ -245,56 +246,18 @@ export function createSessionMcpRuntimeManager(
         Object.keys(fullConfig.loaded.mcpServers),
       );
       const scopedNameSet = new Set(requesterScopedServerNames);
-      const requesterScope: SessionMcpRequesterScope = {
-        requesterSenderId,
-        ...(normalizeOptionalString(params.agentAccountId)
-          ? { agentAccountId: normalizeOptionalString(params.agentAccountId) }
-          : {}),
-        ...(normalizeOptionalString(params.messageChannel)
-          ? { messageChannel: normalizeOptionalString(params.messageChannel) }
-          : {}),
-      };
-      const runtimeKey = buildMcpRequesterRuntimeCacheKey({
-        sessionId: params.sessionId,
-        messageChannel: params.messageChannel,
-        agentAccountId: params.agentAccountId,
-        requesterSenderId,
-      });
-      const { fingerprint: fullScopedFingerprint } = loadSessionMcpConfig({
-        workspaceDir: params.workspaceDir,
-        cfg: params.cfg,
-        logDiagnostics: false,
-        manifestRegistry: params.manifestRegistry,
-        includeServerNames: scopedNameSet,
-        redactConnectionServerNames: scopedNameSet,
+      const { runtimeKey, runtime } = await materializeRequesterScopedRuntime({
+        ...params,
+        idleTtlMs,
+        requesterScopedServerNames,
+        scopedNameSet,
         safeServerNamesByServer,
-        toolOverrides: params.toolOverrides,
+        requesterSenderId,
       });
-      const scopedRuntime = await lifecycle.runExclusiveOnRuntimeKey(runtimeKey, () =>
-        install.resolveAndInstallRequesterRuntime({
-          runtimeKey,
-          sessionId: params.sessionId,
-          sessionKey: params.sessionKey,
-          workspaceDir: params.workspaceDir,
-          agentDir: params.agentDir,
-          cfg: params.cfg,
-          manifestRegistry: params.manifestRegistry,
-          idleTtlMs,
-          requesterScopedServerNames,
-          scopedNameSet,
-          safeServerNamesByServer,
-          fullScopedFingerprint,
-          requesterSenderId,
-          agentAccountId: params.agentAccountId,
-          messageChannel: params.messageChannel,
-          requesterScope,
-          toolOverrides: params.toolOverrides,
-        }),
-      );
-      if (scopedRuntime) {
+      if (runtime) {
         await lifecycle.enforceRequesterRuntimeCap(params.sessionId, runtimeKey);
       }
-      return scopedRuntime;
+      return runtime;
     },
     rememberAdvertisedScopedCatalog: lifecycle.rememberAdvertisedScopedCatalog,
     getAdvertisedScopedCatalog: lifecycle.getAdvertisedScopedCatalog,

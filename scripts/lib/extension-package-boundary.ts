@@ -1,7 +1,7 @@
 // Extension Package Boundary script supports OpenClaw repository automation.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
-import { privateLocalOnlyPluginSdkEntrypoints } from "./plugin-sdk-entries.mjs";
+import { privateLocalOnlyPluginSdkEntrypoints } from "./plugin-sdk-entries.mts";
 
 export const EXTENSION_PACKAGE_BOUNDARY_INCLUDE = ["./*.ts", "./src/**/*.ts"] as const;
 export const EXTENSION_PACKAGE_BOUNDARY_EXCLUDE = [
@@ -287,7 +287,6 @@ export const EXTENSION_PACKAGE_BOUNDARY_XAI_PATHS = {
   "@openclaw/anthropic-vertex/api.js": ["./.boundary-stubs/anthropic-vertex-api.d.ts"],
   "@openclaw/ollama/api.js": ["./.boundary-stubs/ollama-api.d.ts"],
   "@openclaw/ollama/runtime-api.js": ["./.boundary-stubs/ollama-runtime-api.d.ts"],
-  "@openclaw/speech-core/runtime-api.js": ["./.boundary-stubs/speech-core-runtime-api.d.ts"],
 } as const;
 
 type ExtensionPackageBoundaryTsConfigJson = {

@@ -8,14 +8,14 @@
  * this module stays framework-agnostic and self-contained.
  */
 
-import { getPlatformAdapter } from "../adapter/index.js";
 import {
-  asOptionalObjectRecord as asRecord,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
   normalizeStringifiedEntries,
-  readStringField as readString,
-} from "../utils/string-normalize.js";
+  readStringField,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
+import { getPlatformAdapter } from "../adapter/index.js";
+import { readQqbotObjectRecord as asOptionalObjectRecord } from "../object-record.js";
 
 /**
  * Default account ID, used for the unnamed top-level account.
@@ -73,7 +73,7 @@ function normalizeAccountConfig(
   if (!account) {
     return {};
   }
-  const audioPolicy = asRecord(account.audioFormatPolicy);
+  const audioPolicy = asOptionalObjectRecord(account.audioFormatPolicy);
   return {
     ...account,
     ...(audioPolicy ? { audioFormatPolicy: { ...audioPolicy } } : {}),
@@ -81,8 +81,29 @@ function normalizeAccountConfig(
 }
 
 function readQQBotSection(cfg: Record<string, unknown>): QQBotChannelConfig | undefined {
-  const channels = asRecord(cfg.channels);
-  return asRecord(channels?.qqbot) as QQBotChannelConfig | undefined;
+  const channels = asOptionalObjectRecord(cfg.channels);
+  return asOptionalObjectRecord(channels?.qqbot) as QQBotChannelConfig | undefined;
+}
+
+function readOwnAccounts(
+  qqbot: Record<string, unknown> | undefined,
+): QQBotChannelConfig["accounts"] | undefined {
+  if (!qqbot || !Object.hasOwn(qqbot, "accounts")) {
+    return undefined;
+  }
+  return asOptionalObjectRecord(qqbot.accounts) as QQBotChannelConfig["accounts"] | undefined;
+}
+
+function readOwnAccountConfig(
+  qqbot: Record<string, unknown> | undefined,
+  accountId: string,
+): Record<string, unknown> | undefined {
+  const accounts = readOwnAccounts(qqbot);
+  if (!accounts || !Object.hasOwn(accounts, accountId)) {
+    return undefined;
+  }
+  const account = asOptionalObjectRecord(accounts[accountId]);
+  return account ? { ...account } : undefined;
 }
 
 /**
@@ -97,9 +118,10 @@ export function listAccountIds(cfg: Record<string, unknown>): string[] {
     ids.add(DEFAULT_ACCOUNT_ID);
   }
 
-  if (qqbot?.accounts) {
-    for (const accountId of Object.keys(qqbot.accounts)) {
-      if (hasAppId(qqbot.accounts[accountId]?.appId)) {
+  const accounts = readOwnAccounts(qqbot);
+  if (accounts) {
+    for (const accountId of Object.keys(accounts)) {
+      if (hasAppId(readOwnAccountConfig(qqbot, accountId)?.appId)) {
         ids.add(accountId);
       }
     }
@@ -114,20 +136,21 @@ export function listAccountIds(cfg: Record<string, unknown>): string[] {
  */
 export function resolveDefaultAccountId(cfg: Record<string, unknown>): string {
   const qqbot = readQQBotSection(cfg);
+  const accounts = readOwnAccounts(qqbot);
   const configuredDefaultAccountId = normalizeOptionalLowercaseString(qqbot?.defaultAccount);
   if (
     configuredDefaultAccountId &&
     (configuredDefaultAccountId === DEFAULT_ACCOUNT_ID ||
-      hasAppId(qqbot?.accounts?.[configuredDefaultAccountId]?.appId))
+      hasAppId(readOwnAccountConfig(qqbot, configuredDefaultAccountId)?.appId))
   ) {
     return configuredDefaultAccountId;
   }
   if (hasAppId(qqbot?.appId) || hasAppId(process.env.QQBOT_APP_ID)) {
     return DEFAULT_ACCOUNT_ID;
   }
-  if (qqbot?.accounts) {
-    const ids = Object.keys(qqbot.accounts);
-    const firstId = ids.find((id) => hasAppId(qqbot.accounts?.[id]?.appId));
+  if (accounts) {
+    const ids = Object.keys(accounts);
+    const firstId = ids.find((id) => hasAppId(readOwnAccountConfig(qqbot, id)?.appId));
     if (firstId !== undefined) {
       return firstId;
     }
@@ -154,14 +177,14 @@ export function resolveAccountBase(
 
   if (resolvedAccountId === DEFAULT_ACCOUNT_ID) {
     accountConfig = normalizeAccountConfig({
-      ...asRecord(qqbot),
-      ...asRecord(qqbot?.accounts?.[DEFAULT_ACCOUNT_ID]),
+      ...asOptionalObjectRecord(qqbot),
+      ...readOwnAccountConfig(qqbot, DEFAULT_ACCOUNT_ID),
     });
     appId = normalizeAppId(accountConfig.appId);
   } else {
-    const account = qqbot?.accounts?.[resolvedAccountId];
-    accountConfig = normalizeAccountConfig(asRecord(account));
-    appId = normalizeAppId(asRecord(account)?.appId);
+    const account = readOwnAccountConfig(qqbot, resolvedAccountId);
+    accountConfig = normalizeAccountConfig(account);
+    appId = normalizeAppId(account?.appId);
   }
 
   if (!appId && hasAppId(process.env.QQBOT_APP_ID) && resolvedAccountId === DEFAULT_ACCOUNT_ID) {
@@ -170,10 +193,10 @@ export function resolveAccountBase(
 
   return {
     accountId: resolvedAccountId,
-    name: readString(accountConfig, "name"),
+    name: readStringField(accountConfig, "name"),
     enabled: accountConfig.enabled !== false,
     appId,
-    systemPrompt: readString(accountConfig, "systemPrompt"),
+    systemPrompt: readStringField(accountConfig, "systemPrompt"),
     markdownSupport: accountConfig.markdownSupport !== false,
     config: accountConfig,
   };
@@ -195,8 +218,8 @@ export function applyAccountConfig(
   input: ApplyAccountInput,
 ): Record<string, unknown> {
   const next = { ...cfg };
-  const channels = asRecord(cfg.channels) ?? {};
-  const existingQQBot = asRecord(channels.qqbot) ?? {};
+  const channels = asOptionalObjectRecord(cfg.channels) ?? {};
+  const existingQQBot = asOptionalObjectRecord(channels.qqbot) ?? {};
 
   if (accountId === DEFAULT_ACCOUNT_ID) {
     const allowFrom = (existingQQBot.allowFrom as unknown[]) ?? ["*"];
@@ -216,8 +239,8 @@ export function applyAccountConfig(
       },
     };
   } else {
-    const accounts = (existingQQBot.accounts ?? {}) as Record<string, Record<string, unknown>>;
-    const existingAccount = accounts[accountId] ?? {};
+    const accounts = readOwnAccounts(existingQQBot) ?? {};
+    const existingAccount = readOwnAccountConfig(existingQQBot, accountId) ?? {};
     const allowFrom = (existingAccount.allowFrom as unknown[]) ?? ["*"];
     next.channels = {
       ...channels,

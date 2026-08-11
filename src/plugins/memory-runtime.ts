@@ -9,12 +9,16 @@ import {
   resolveMemoryCapabilityRegistration,
   setStandaloneMemoryManagerActive,
 } from "./memory-state.js";
+import type { MemoryPluginRuntime } from "./registry-contribution-types.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
 
 type MemoryRuntime = NonNullable<
   PluginRegistry["memoryCapabilities"][number]["capability"]["runtime"]
 >;
+type MemorySearchAuthorization = Parameters<
+  NonNullable<MemoryPluginRuntime["authorizeSearchHits"]>
+>[0];
 type MemoryRuntimeOwner = { runtime: MemoryRuntime; registry?: PluginRegistry };
 let standaloneMemoryRegistrySlot:
   | { key: string; registry: PluginRegistry; retiredRuntimes: Map<MemoryRuntime, PluginRegistry> }
@@ -116,7 +120,7 @@ function ensureMemoryRuntime(params?: {
 }
 
 /** Returns the active plugin-backed memory search manager for an agent. */
-export async function getActiveMemorySearchManager(params: {
+export async function getActiveMemorySearchManagerCore(params: {
   cfg: OpenClawConfig;
   agentId: string;
   purpose?: "default" | "status" | "cli";
@@ -134,6 +138,24 @@ export async function getActiveMemorySearchManager(params: {
   );
 }
 
+/** Applies the selected memory plugin's authorization policy to raw search hits. */
+export async function authorizeActiveMemorySearchHits(
+  params: MemorySearchAuthorization,
+): Promise<MemorySearchAuthorization["hits"]> {
+  const owner = ensureMemoryRuntime(params);
+  if (!owner) {
+    // Session artifacts need plugin-owned identity mapping before they are safe
+    // to expose. Runtimes without that capability may still return memory hits.
+    return params.hits.filter((hit) => hit.source !== "sessions");
+  }
+  return await withMemoryRuntimeOwner(owner, async (runtime) => {
+    if (!runtime.authorizeSearchHits) {
+      return params.hits.filter((hit) => hit.source !== "sessions");
+    }
+    return await runtime.authorizeSearchHits(params);
+  });
+}
+
 /** Resolves current memory backend config without constructing a manager. */
 export function resolveActiveMemoryBackendConfig(params: { cfg: OpenClawConfig; agentId: string }) {
   const owner = ensureMemoryRuntime(params);
@@ -143,7 +165,7 @@ export function resolveActiveMemoryBackendConfig(params: { cfg: OpenClawConfig; 
 }
 
 /** Closes all active plugin-backed memory search managers. */
-export async function closeActiveMemorySearchManagers(cfg?: OpenClawConfig): Promise<void> {
+export async function closeActiveMemorySearchManagersCore(cfg?: OpenClawConfig): Promise<void> {
   void cfg;
   await Promise.all(
     listCurrentMemoryRuntimeOwners().map((owner) =>
@@ -157,7 +179,7 @@ export async function closeActiveMemorySearchManagers(cfg?: OpenClawConfig): Pro
 }
 
 /** Closes the plugin-backed memory search manager for one agent. */
-export async function closeActiveMemorySearchManager(params: {
+export async function closeActiveMemorySearchManagerCore(params: {
   cfg: OpenClawConfig;
   agentId: string;
 }): Promise<void> {

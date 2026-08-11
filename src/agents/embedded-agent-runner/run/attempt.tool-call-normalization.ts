@@ -2,7 +2,10 @@
  * Normalizes tool-call names, ids, and standalone text calls for providers.
  */
 import { randomUUID } from "node:crypto";
-import { normalizeLowercaseStringOrEmpty } from "../../../../packages/normalization-core/src/string-coerce.js";
+import {
+  hasNonEmptyString as replayToolCallNonEmptyString,
+  normalizeLowercaseStringOrEmpty,
+} from "../../../../packages/normalization-core/src/string-coerce.js";
 import { normalizeStringEntries } from "../../../../packages/normalization-core/src/string-normalization.js";
 import {
   createPromotedPlainTextToolCallEvents,
@@ -30,10 +33,13 @@ import {
   sanitizeToolCallIdsForCloudCodeAssist,
   type ToolCallIdMode,
 } from "../../tool-call-id.js";
-import { couldNormalizeToolNamePrefixToAllowedTool, normalizeToolName } from "../../tool-policy.js";
+import {
+  couldNormalizeToolNamePrefixToAllowedTool,
+  normalizeToolPolicyName,
+} from "../../tool-policy.js";
 import { shouldAllowProviderOwnedThinkingReplay } from "../../transcript-policy.js";
 import type { TranscriptPolicy } from "../../transcript-policy.js";
-import { isRunnerToolCallBlockType } from "./attempt.tool-call-block-type.js";
+import { isRunnerToolCallBlockType } from "./attempt-tool-call-block-type.js";
 import { wrapStreamObjectEvents } from "./stream-wrapper.js";
 
 const BLANK_TOOL_CALL_NAME_DESCRIPTION = "blank tool name";
@@ -76,7 +82,7 @@ function resolveExactAllowedToolName(
   if (allowedToolNames.has(rawName)) {
     return rawName;
   }
-  const normalized = normalizeToolName(rawName);
+  const normalized = normalizeToolPolicyName(rawName);
   if (allowedToolNames.has(normalized)) {
     return normalized;
   }
@@ -104,18 +110,35 @@ function buildStructuredToolNameCandidates(rawName: string): string[] {
   };
 
   addCandidate(trimmed);
-  addCandidate(normalizeToolName(trimmed));
+  addCandidate(normalizeToolPolicyName(trimmed));
+  const structuredSeeds = [trimmed];
 
-  const normalizedDelimiter = trimmed.replace(/\//g, ".");
-  addCandidate(normalizedDelimiter);
-  addCandidate(normalizeToolName(normalizedDelimiter));
+  const xmlFragmentOffset = ['"', "'", "<"]
+    .map((separator) => trimmed.indexOf(separator))
+    .filter((offset) => offset > 0)
+    .reduce<number | undefined>(
+      (earliest, offset) => (earliest === undefined || offset < earliest ? offset : earliest),
+      undefined,
+    );
+  if (xmlFragmentOffset !== undefined) {
+    const prefix = trimmed.slice(0, xmlFragmentOffset);
+    addCandidate(prefix);
+    addCandidate(normalizeToolPolicyName(prefix));
+    structuredSeeds.push(prefix);
+  }
 
-  const segments = normalizeStringEntries(normalizedDelimiter.split("."));
-  if (segments.length > 1) {
-    for (let index = 1; index < segments.length; index += 1) {
-      const suffix = segments.slice(index).join(".");
-      addCandidate(suffix);
-      addCandidate(normalizeToolName(suffix));
+  for (const seed of structuredSeeds) {
+    const normalizedDelimiter = seed.replace(/\//g, ".");
+    addCandidate(normalizedDelimiter);
+    addCandidate(normalizeToolPolicyName(normalizedDelimiter));
+
+    const segments = normalizeStringEntries(normalizedDelimiter.split("."));
+    if (segments.length > 1) {
+      for (let index = 1; index < segments.length; index += 1) {
+        const suffix = segments.slice(index).join(".");
+        addCandidate(suffix);
+        addCandidate(normalizeToolPolicyName(suffix));
+      }
     }
   }
 
@@ -334,10 +357,6 @@ function collectFollowingToolResults(
     sawNonToolResult = true;
   }
   return { ids, displaced };
-}
-
-function replayToolCallNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 function resolveReplayToolCallName(
@@ -753,7 +772,7 @@ function classifyToolCallMessage(
       sawAllowedToolCall = true;
       continue;
     }
-    const normalizedUnknownToolName = normalizeToolName(rawName);
+    const normalizedUnknownToolName = normalizeToolPolicyName(rawName);
     if (!unknownToolName) {
       unknownToolName = normalizedUnknownToolName;
       continue;

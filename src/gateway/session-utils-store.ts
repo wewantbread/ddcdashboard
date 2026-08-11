@@ -160,11 +160,14 @@ function loadSessionEntryWithMode(
   };
 }
 
-export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; clone?: boolean }) {
+export function loadGatewaySessionEntry(
+  sessionKey: string,
+  opts?: { agentId?: string; clone?: boolean },
+) {
   return loadSessionEntryWithMode(sessionKey, opts, false);
 }
 
-export function loadSessionEntryReadOnly(
+export function loadGatewaySessionEntryReadOnly(
   sessionKey: string,
   opts?: { agentId?: string; clone?: boolean; includeStoreChildEntries?: boolean },
 ) {
@@ -248,18 +251,6 @@ export function isGroupOrChannelDisplaySession(
     parsed?.kind === "group" ||
     parsed?.kind === "channel"
   );
-}
-
-function isStorePathTemplate(store?: string): boolean {
-  return typeof store === "string" && store.includes("{agentId}");
-}
-
-export function resolveConcreteSessionStorePath(storePath: string | undefined): string | undefined {
-  const trimmed = storePath?.trim();
-  if (!trimmed || trimmed === "(multiple)" || isStorePathTemplate(trimmed)) {
-    return undefined;
-  }
-  return trimmed;
 }
 
 function normalizeFallbackList(values: readonly string[]): string[] {

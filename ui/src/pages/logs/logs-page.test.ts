@@ -7,7 +7,6 @@ import "./logs-page.ts";
 
 type TestLogsPage = HTMLElement & {
   context: ApplicationContext;
-  connected: boolean;
   logsAutoFollow: boolean;
   logsEntries: unknown[];
   logsTruncated: boolean;
@@ -18,10 +17,15 @@ type TestLogsPage = HTMLElement & {
     schedule: (force?: boolean) => void;
   };
   readonly updateComplete: Promise<boolean>;
-  applyGatewaySnapshot: (snapshot: ApplicationGatewaySnapshot) => void;
   loadLogs: (opts?: { reset?: boolean; quiet?: boolean }) => Promise<boolean>;
   requestUpdate: () => void;
 };
+
+type TestGateway = ApplicationContext["gateway"] & {
+  publish: (snapshot: ApplicationGatewaySnapshot) => void;
+};
+
+type TestApplicationContext = ApplicationContext & { gateway: TestGateway };
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -31,16 +35,35 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function contextWithClient(client: GatewayBrowserClient): ApplicationContext {
+function contextWithClient(
+  client: GatewayBrowserClient,
+  connected = false,
+): TestApplicationContext {
+  let snapshot = {
+    client,
+    phase: connected ? "connected" : "stopped",
+  } as ApplicationGatewaySnapshot;
+  const listeners = new Set<(snapshot: ApplicationGatewaySnapshot) => void>();
   return {
     basePath: "",
     gateway: {
-      snapshot: { client, phase: "stopped" },
-      subscribe: () => () => undefined,
+      get snapshot() {
+        return snapshot;
+      },
+      subscribe: (listener: (snapshot: ApplicationGatewaySnapshot) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      publish: (next: ApplicationGatewaySnapshot) => {
+        snapshot = next;
+        for (const listener of listeners) {
+          listener(next);
+        }
+      },
     },
     navigate: vi.fn(),
     preload: vi.fn(async () => undefined),
-  } as unknown as ApplicationContext;
+  } as unknown as TestApplicationContext;
 }
 
 describe("LogsPage lifecycle", () => {
@@ -105,10 +128,13 @@ describe("LogsPage lifecycle", () => {
       request: vi.fn(() => pending.promise),
     } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client);
+    page.context = context;
+    page.logsEntries = [{ raw: "seed" }];
     document.body.append(page);
     await page.updateComplete;
-    page.connected = true;
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    page.logsEntries = [];
 
     const load = page.loadLogs({ reset: true });
     page.context = contextWithClient(client);
@@ -126,10 +152,13 @@ describe("LogsPage lifecycle", () => {
       request: vi.fn(() => pending.promise),
     } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client);
+    page.context = context;
+    page.logsEntries = [{ raw: "seed" }];
     document.body.append(page);
     await page.updateComplete;
-    page.connected = true;
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    page.logsEntries = [];
 
     const load = page.loadLogs({ reset: true });
     page.remove();
@@ -145,13 +174,16 @@ describe("LogsPage lifecycle", () => {
       request: vi.fn(() => pending.promise),
     } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client);
+    page.context = context;
+    page.logsEntries = [{ raw: "seed" }];
     document.body.append(page);
     await page.updateComplete;
-    page.connected = true;
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    page.logsEntries = [];
 
     const load = page.loadLogs({ reset: true });
-    page.applyGatewaySnapshot({ client, phase: "stopped" } as ApplicationGatewaySnapshot);
+    context.gateway.publish({ client, phase: "stopped" } as ApplicationGatewaySnapshot);
     pending.resolve({ cursor: 1, lines: ["stale"], reset: true });
     await load;
 
@@ -165,10 +197,12 @@ describe("LogsPage lifecycle", () => {
       request,
     } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client, true);
+    page.context = context;
+    page.logsEntries = [{ raw: "seed" }];
     document.body.append(page);
     await page.updateComplete;
-    page.connected = true;
+    page.logsEntries = [];
 
     const first = page.loadLogs({ quiet: true });
     const second = page.loadLogs({ quiet: true });
@@ -188,10 +222,13 @@ describe("LogsPage lifecycle", () => {
       .mockResolvedValueOnce({ cursor: 2, lines: ["fresh"], reset: true });
     const client = { request } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client);
+    page.context = context;
+    page.logsEntries = [{ raw: "seed" }];
     document.body.append(page);
     await page.updateComplete;
-    page.connected = true;
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    page.logsEntries = [];
 
     await page.loadLogs({ reset: true });
     await page.loadLogs({ reset: true });
@@ -254,16 +291,17 @@ describe("LogsPage lifecycle", () => {
       ),
     } as unknown as GatewayBrowserClient;
     const page = document.createElement("openclaw-logs-page") as TestLogsPage;
-    page.context = contextWithClient(client);
+    const context = contextWithClient(client);
+    page.context = context;
     const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     document.body.append(page);
     await page.updateComplete;
-    page.applyGatewaySnapshot({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
     requestFrame.mockClear();
 
     page.streamFollow.schedule();
-    page.applyGatewaySnapshot({ client, phase: "stopped" } as ApplicationGatewaySnapshot);
-    page.applyGatewaySnapshot({ client, phase: "connected" } as ApplicationGatewaySnapshot);
+    context.gateway.publish({ client, phase: "stopped" } as ApplicationGatewaySnapshot);
+    context.gateway.publish({ client, phase: "connected" } as ApplicationGatewaySnapshot);
     await Promise.resolve();
 
     expect(requestFrame).not.toHaveBeenCalled();

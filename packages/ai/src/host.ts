@@ -36,6 +36,8 @@ export interface AiProviderStreamHookContext {
   provider: string;
   modelId: string;
   model: Model;
+  /** Wire-format API before simple completion projects an internal transport alias. */
+  sourceApi?: Api;
 }
 
 /** Narrow plugin-runtime port used by package-owned transports. */
@@ -70,7 +72,16 @@ export interface AiTransportPluginHost {
         transport: "stream" | "websocket";
       };
     },
-  ): { headers?: Record<string, string>; metadata?: Record<string, string> } | undefined;
+  ):
+    | {
+        headers?: Record<string, string>;
+        metadata?: Record<string, string>;
+        websocket?: {
+          headers?: Record<string, string>;
+          degradeCooldownMs?: number;
+        };
+      }
+    | undefined;
   wrapSimpleCompletionStream(
     this: void,
     params: {
@@ -98,6 +109,7 @@ export type AiTransformTransportMessages = (
   options?: {
     normalizeSameModelToolCallIds?: boolean;
     preserveCrossModelToolCallThoughtSignature?: boolean;
+    preserveUnframedToolResults?: boolean;
   },
 ) => Context["messages"];
 
@@ -309,6 +321,11 @@ export function resolveAiTransportHeaderSentinels(
   const host = getAiTransportHost();
   let resolvedHeaders: Record<string, string> | undefined;
   for (const [name, value] of Object.entries(headers)) {
+    if (value === null) {
+      // applyLocalNoAuthHeaderOverride marks no-auth local providers with a
+      // runtime null marker outside the public string-only Model contract.
+      continue;
+    }
     const resolved = host.resolveSecretSentinel(value);
     if (resolved !== value) {
       resolvedHeaders ??= { ...headers };

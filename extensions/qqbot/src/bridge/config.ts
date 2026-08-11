@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveDefaultSecretProviderAlias } from "openclaw/plugin-sdk/provider-auth";
 import { tryReadSecretFileSync } from "openclaw/plugin-sdk/secret-file-runtime";
 import { coerceSecretRef, normalizeSecretInputString } from "openclaw/plugin-sdk/secret-input";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getPlatformAdapter } from "../engine/adapter/index.js";
 import {
   DEFAULT_ACCOUNT_ID as ENGINE_DEFAULT_ACCOUNT_ID,
@@ -11,15 +12,9 @@ import {
   resolveAccountBase,
   resolveDefaultAccountId,
 } from "../engine/config/resolve.js";
-import { normalizeOptionalString } from "../engine/utils/string-normalize.js";
 import type { ResolvedQQBotAccount, QQBotAccountConfig } from "../types.js";
 
 export const DEFAULT_ACCOUNT_ID = ENGINE_DEFAULT_ACCOUNT_ID;
-
-interface QQBotChannelConfig extends QQBotAccountConfig {
-  accounts?: Record<string, QQBotAccountConfig>;
-  defaultAccount?: string;
-}
 
 function assertNotLegacySecretRefMarker(value: unknown, path: string): void {
   const normalized = normalizeSecretInputString(value);
@@ -101,20 +96,9 @@ export function resolveQQBotAccount(
 ): ResolvedQQBotAccount {
   const raw = cfg as unknown as Record<string, unknown>;
   const base = resolveAccountBase(raw, accountId);
-
-  const qqbot = cfg.channels?.qqbot as QQBotChannelConfig | undefined;
-  /**
-   * Legacy top-level account uses `channels.qqbot` as the base, but per-account
-   * fields (allowFrom, streaming, …) often live under `accounts.default`.
-   * Merge that slice so runtime sees `config.streaming` etc.
-   */
-  const accountConfig: QQBotAccountConfig =
-    base.accountId === DEFAULT_ACCOUNT_ID
-      ? {
-          ...qqbot,
-          ...qqbot?.accounts?.[DEFAULT_ACCOUNT_ID],
-        }
-      : (qqbot?.accounts?.[base.accountId] ?? {});
+  // Identity, secret, and authorization fields must use the same own-container
+  // and own-entry projection as account discovery and default selection.
+  const accountConfig = base.config as QQBotAccountConfig;
 
   let clientSecret = "";
   let secretSource: "config" | "file" | "env" | "none" = "none";
