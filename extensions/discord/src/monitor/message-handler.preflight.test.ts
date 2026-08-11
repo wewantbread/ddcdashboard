@@ -1392,12 +1392,13 @@ describe("preflightDiscordMessage", () => {
     const channelId = "channel-bot-unresolved-mention";
     const guildId = "guild-bot-unresolved-mention";
     const botUserId = "123456789012345678";
+    const mentionedBotUser = { id: botUserId, username: "OpenClaw" };
     const message = Object.assign(
       createDiscordMessage({
         id: "m-bot-unresolved-mention",
         channelId,
         content: content(botUserId),
-        mentionedUsers: [{ id: botUserId, username: "OpenClaw" }],
+        mentionedUsers: [mentionedBotUser],
         type: MessageType.Reply,
         author: {
           id: "relay-bot-1",
