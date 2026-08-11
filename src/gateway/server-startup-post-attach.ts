@@ -778,6 +778,32 @@ export async function startGatewaySidecars(params: {
     });
   }
 
+  // These tasks may still be waiting when close begins. Keep their handles in
+  // the generation-owned registry so they cannot run into a replacement gateway.
+  postReadySidecars.push(
+    schedulePostReadySidecarTask({
+      startupTrace: params.startupTrace,
+      name: "sidecars.bundle-mcp-temp-sweep",
+      log: params.log,
+      waitForPostReadyWork: params.waitForPostReadyWork,
+      run: async (isStopped, signal) => {
+        try {
+          const { sweepOrphanedBundleMcpTempDirs } =
+            await import("../agents/cli-runner/bundle-mcp-sweep.js");
+          if (isStopped()) {
+            return;
+          }
+          // The signal is forwarded, not merely checked here: the sweep settles
+          // between its death verdict and its final scan, and a close arriving
+          // in that interval must cut the wait short and cancel the removal.
+          await sweepOrphanedBundleMcpTempDirs({ log: params.log, signal });
+        } catch (err) {
+          params.log.warn(`bundle MCP temp sweep failed on startup: ${String(err)}`);
+        }
+      },
+    }),
+  );
+
   let restartSentinelWake: GatewayPostReadySidecarHandle | undefined;
   postReadySidecars.push(
     schedulePostReadySidecarTask({

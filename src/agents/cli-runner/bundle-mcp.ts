@@ -40,6 +40,7 @@ import {
   writeGeminiWebSearchDisabledSettings,
 } from "./bundle-mcp-gemini.js";
 import { injectBundleMcpBackendArgs, writeTemporaryBundleMcpJson } from "./bundle-mcp-runtime.js";
+import { bundleMcpOwnedMkdtempPrefixName } from "./bundle-mcp-sweep.js";
 
 type PreparedCliBundleMcpConfig = {
   backend: CliBackendConfig;
@@ -48,6 +49,12 @@ type PreparedCliBundleMcpConfig = {
   mcpConfigHash?: string;
   mcpResumeHash?: string;
   env?: Record<string, string>;
+  /**
+   * Descriptor into the rendered config, to be inherited by the CLI child so
+   * the directory is provably claimed from `fork` onward (see the Claude
+   * preparation below). Undefined for backends that do not render one.
+   */
+  ownershipFd?: number;
 };
 
 async function readExternalMcpConfig(configPath: string): Promise<BundleMcpConfig> {
@@ -256,18 +263,27 @@ async function prepareModeSpecificBundleMcpConfig(params: {
       mcpResumeHash,
       env: settings.env,
       cleanup: settings.cleanup,
+      ...(settings.ownershipFd === undefined ? {} : { ownershipFd: settings.ownershipFd }),
     };
   }
 
-  const runtimeConfig = resolveOpenClawMcpEnvTemplates(
-    params.mergedConfig,
-    params.env,
-  ) as BundleMcpConfig;
+  // The temp dir name encodes the owning gateway (pid + boot-id prefix + process
+  // start time), so the prepared run carries durable ownership atomically — a
+  // concurrent gateway's startup sweep will not reclaim this dir while the run
+  // still waits in the serialization queue (its CLI child, which would put the
+  // path in argv, has not spawned yet). Reuse the shared temporary-config writer
+  // (which rolls the dir back on a failed write) so Claude cleanup stays in lock
+  // step with the Codex and Gemini backends.
+  // The ownership descriptor is opened here and inherited by the CLI child at
+  // `fork`, which closes the one window the name-encoded owner cannot cover: a
+  // child forked before its gateway died but not yet `exec`ed, whose argv is
+  // still the parent's and so references no config at all.
   const temporary = await writeTemporaryBundleMcpJson(
-    "openclaw-cli-mcp-",
-    runtimeConfig,
+    await bundleMcpOwnedMkdtempPrefixName(),
+    resolveOpenClawMcpEnvTemplates(params.mergedConfig, params.env) as BundleMcpConfig,
     "mcp.json",
     false,
+    { openOwnershipFd: true },
   );
   return {
     backend: injectBundleMcpBackendArgs(params.backend, (args) =>
@@ -277,6 +293,7 @@ async function prepareModeSpecificBundleMcpConfig(params: {
     mcpResumeHash,
     env: params.env,
     cleanup: temporary.cleanup,
+    ...(temporary.ownershipFd === undefined ? {} : { ownershipFd: temporary.ownershipFd }),
   };
 }
 
@@ -294,6 +311,7 @@ async function prepareCliWebSearchDisabled(params: {
       cleanup: settings.cleanup,
       mcpConfigHash: fingerprint,
       mcpResumeHash: fingerprint,
+      ...(settings.ownershipFd === undefined ? {} : { ownershipFd: settings.ownershipFd }),
     };
   }
   const backend = injectBundleMcpBackendArgs(params.backend, (args) =>
@@ -422,7 +440,16 @@ export async function prepareCliBundleMcpCaptureAttempt(params: {
   backend?: CliBackendConfig;
   env?: Record<string, string>;
   captureKey?: string;
-}): Promise<{ env?: Record<string, string>; cleanup?: () => Promise<void> }> {
+}): Promise<{
+  env?: Record<string, string>;
+  cleanup?: () => Promise<void>;
+  /**
+   * Descriptor on the attempt settings the child actually reads (Gemini). The
+   * spawn should inherit this in preference to the prepared backend's — the
+   * attempt env supersedes the prepared settings path for this child.
+   */
+  ownershipFd?: number;
+}> {
   if (!params.captureKey) {
     return { env: params.env };
   }

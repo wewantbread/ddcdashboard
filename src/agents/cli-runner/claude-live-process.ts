@@ -452,6 +452,12 @@ export async function spawnClaudeProcess(params: {
     env: params.env,
     captureKey: params.mcpCaptureKey,
   });
+  // Inherited at `fork`, so the child holds a claim on its MCP temp dir from
+  // before it `exec`s — the window in which argv cannot show one. A per-attempt
+  // descriptor (env-carried settings) supersedes the prepared one: it points at
+  // the settings this child's env actually names.
+  const inheritOwnershipFd =
+    mcpCaptureAttempt.ownershipFd ?? params.context.preparedBackend.ownershipFd;
   let managedRun: ManagedRun;
   try {
     managedRun = await params.supervisor.spawn({
@@ -465,6 +471,7 @@ export async function spawnClaudeProcess(params: {
       env: mcpCaptureAttempt.env ?? params.env,
       stdinMode: "pipe-open",
       secretInput: params.context.preparedBackend.secretInput,
+      ...(inheritOwnershipFd === undefined ? {} : { inheritFd: inheritOwnershipFd }),
       captureOutput: false,
       onStdout: (chunk) => {
         if (session) {
@@ -494,6 +501,17 @@ export async function spawnClaudeProcess(params: {
     await mcpCaptureAttempt.cleanup?.();
     throw error;
   }
+  // The live process, not the creating turn, owns the prepared backend
+  // resources: the rendered bundle-MCP config the child was spawned with (and
+  // its ownership descriptor), the skills plugin, and the MCP client grant.
+  // The spawn above succeeded, so adopt the prepared cleanup here — otherwise
+  // `runCliAgentInternal` invokes `preparedBackend.cleanup()` when the creating
+  // turn ends, deleting the `--mcp-config` directory out from under the
+  // persistent child and closing the grant it still uses. Later turns that
+  // reuse this process keep their own prepared cleanup: their freshly rendered
+  // config is never spawned, so removing it at turn end stays correct.
+  const adoptedPreparedCleanup = params.context.preparedBackend.cleanup;
+  delete params.context.preparedBackend.cleanup;
   session = {
     backend: params.context.preparedBackend.backend,
     key: params.key,
@@ -514,6 +532,9 @@ export async function spawnClaudeProcess(params: {
     cleanup: async () => {
       await mcpCaptureAttempt.cleanup?.();
       await params.cleanup();
+      // Released when the process itself closes — exactly once, guarded by
+      // cleanupProcess's promise latch.
+      await adoptedPreparedCleanup?.();
     },
     cleanupPromise: null,
     closing: false,
