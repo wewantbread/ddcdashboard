@@ -164,7 +164,7 @@ function exitWithFailure(failure: NonNullable<Awaited<ReturnType<typeof runCheck
   process.exit(failure.status);
 }
 
-async function runPreCommitFromTempVenv(hook: string, hookArgs: string[]): Promise<boolean> {
+async function runPreCommitFromTempVenv(hookArgs: string[]): Promise<boolean> {
   if (!(await commandExists("python3", ["--version"]))) {
     return false;
   }
@@ -226,7 +226,7 @@ async function runPreCommitHook(hook: string, files: string[]): Promise<void> {
     });
     return;
   }
-  if (await runPreCommitFromTempVenv(hook, hookArgs)) {
+  if (await runPreCommitFromTempVenv(hookArgs)) {
     return;
   }
 
