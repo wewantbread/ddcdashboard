@@ -26,6 +26,7 @@ export const GatewayErrorDetailCodes = {
   MISSING_SCOPE: "MISSING_SCOPE",
   MCP_APP_VIEW_EXPIRED: "MCP_APP_VIEW_EXPIRED",
   SESSION_COMPANION_BUSY: "SESSION_COMPANION_BUSY",
+  TASKS_LIST_CURSOR_STALE: "TASKS_LIST_CURSOR_STALE",
   UNKNOWN_AGENT_ID: "UNKNOWN_AGENT_ID",
   WIZARD_NOT_FOUND: "WIZARD_NOT_FOUND",
 } as const;
@@ -39,6 +40,10 @@ export type MissingScopeErrorDetails = {
 
 export type McpAppViewExpiredErrorDetails = {
   code: typeof GatewayErrorDetailCodes.MCP_APP_VIEW_EXPIRED;
+};
+
+export type TasksListCursorStaleErrorDetails = {
+  code: typeof GatewayErrorDetailCodes.TASKS_LIST_CURSOR_STALE;
 };
 
 /** Unknown agent details carried by agent-scoped method validation failures. */
@@ -56,6 +61,7 @@ export type WizardNotFoundErrorDetails = {
 export type GatewayErrorDetails =
   | MissingScopeErrorDetails
   | McpAppViewExpiredErrorDetails
+  | TasksListCursorStaleErrorDetails
   | UnknownAgentIdErrorDetails
   | WizardNotFoundErrorDetails;
 
