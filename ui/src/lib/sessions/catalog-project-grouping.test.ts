@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionCatalogSession } from "../../../../packages/gateway-protocol/src/index.ts";
+import { SessionOrganizerController as Organizer } from "../../components/session-organizer-controller.ts";
 import {
   groupCatalogSessionsByPerson,
   groupCatalogSessionsByProject,
   normalizeCatalogProjectGrouping,
 } from "./catalog-project-grouping.ts";
 
+afterEach(() => vi.unstubAllGlobals());
 describe("normalizeCatalogProjectGrouping", () => {
   it.each([
     ["project", "project"],
@@ -185,6 +187,13 @@ describe("groupCatalogSessionsByProject", () => {
 
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0]?.sessions.map((item) => item.threadId)).toEqual(["direct", "worktree"]);
+    const s = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: s.get.bind(s), setItem: s.set.bind(s) });
+    const host = { addController() {}, requestUpdate() {} } as never;
+    const owner = new Organizer(host);
+    owner.saveCollapsedSessionSections(new Set([String.raw`p:C:\R\.CLAUDE\WORKTREES\x`]));
+    owner.migrateCollapsedSection("p:", "p:windows:drive:c:/r");
+    expect([...new Organizer(host).collapsedSessionSections]).toEqual(["p:windows:drive:c:/r"]);
   });
 
   it("keeps POSIX cwd matching case-sensitive", () => {
