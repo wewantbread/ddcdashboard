@@ -4597,6 +4597,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           model: "gpt-5.5",
           agentHarnessId: "codex",
           modelSelectionLocked: true,
+          trigger: "budget",
           currentTokenCount: 333,
         }),
       );
@@ -4770,6 +4771,48 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         }),
         expect.objectContaining({ nativeCompactionRequest: "required_preflight" }),
       );
+      expect(contextEngineCompactMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["missing_thread_binding", "no codex app-server thread binding"],
+    ["stale_thread_binding", "thread not found"],
+  ])(
+    "surfaces a manual model-locked Codex compaction failure on %s instead of a safe skip",
+    async (failureReason, reason) => {
+      // #119977: manual /compact must not take the harness-owned safe-skip path. The
+      // operator asked to compact now, and the command UI renders an ok:true
+      // non-compacted result as "Compaction skipped", which would silently hide a dead
+      // binding. A manual trigger falls through to the ok:false binding failure so the
+      // UI reports "Compaction failed".
+      resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "openclaw" });
+      maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+
+      const result = await compactEmbeddedAgentSession(
+        wrappedCompactionArgs({
+          provider: "openai",
+          model: "gpt-5.5",
+          agentHarnessId: "codex",
+          modelSelectionLocked: true,
+          trigger: "manual",
+          currentTokenCount: 333,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+      expect(result.harnessCompactionDisposition).toBeUndefined();
+      expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
     },
   );

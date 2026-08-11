@@ -649,10 +649,17 @@ async function compactResolvedContextEngine(
     // codex-rs cannot resume a retired thread. The harness already cleared the dead
     // binding, so surface a harness-owned safe skip — the typed disposition core
     // recognizes structurally — so the turn continues and the next turn lazily rebinds
-    // instead of returning ok:false and dropping it (#119977). A required preflight that
-    // never used the native capability stays terminal so the honest failure is not
-    // laundered into a skip.
-    if (recoverableBinding && preparedParams.preflightRequired !== true) {
+    // instead of returning ok:false and dropping it (#119977). Manual /compact is
+    // excluded: the operator asked to compact now, so a dead binding must surface as a
+    // reported failure rather than a silent "skipped" (the command UI renders an ok:true
+    // non-compacted result as "Compaction skipped"). A required preflight that never used
+    // the native capability stays terminal so the honest failure is not laundered into a
+    // skip.
+    if (
+      recoverableBinding &&
+      preparedParams.preflightRequired !== true &&
+      params.trigger !== "manual"
+    ) {
       return {
         ok: true,
         compacted: false,

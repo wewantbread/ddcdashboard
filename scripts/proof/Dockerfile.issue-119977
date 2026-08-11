@@ -16,7 +16,10 @@ FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9
 # tsx bundles esbuild but honors ESBUILD_BINARY_PATH; install the linux
 # variant globally and point tsx/esbuild at it so a host-mounted node_modules
 # containing a darwin-arm64 binary does not get in the way.
-RUN npm install -g tsx@4.21.0 esbuild@0.28.1 --no-fund --no-audit \
+# --ignore-scripts neutralizes transitive install-script execution; a full
+# lockfile is intentionally omitted because this is a non-shipped proof image
+# built only locally/in CI.
+RUN npm install -g tsx@4.21.0 esbuild@0.28.1 --no-fund --no-audit --ignore-scripts \
  && ESBUILD_BIN="$(node -e 'console.log(require("esbuild").version && require.resolve("@esbuild/linux-arm64/bin/esbuild"))' 2>/dev/null || true)" \
  && if [ -z "$ESBUILD_BIN" ]; then ESBUILD_BIN="$(command -v esbuild)"; fi \
  && test -x "$ESBUILD_BIN" \

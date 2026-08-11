@@ -205,17 +205,32 @@ notifications and OpenClaw adapter state, not native Codex hook commands.
 adapter-level observations, not byte-for-byte captures of Codex's internal
 request or compaction payloads.
 
-Codex owns inline automatic compaction for a bound thread. When an automatic
-(non-manual) trigger cannot drive a native compaction — the sandbox/exec host
-blocks native execution, or the bound thread is dead and codex-rs cannot resume
-it — the harness reports a harness-owned safe skip on its
-`AgentHarnessCompactResult` via
-`harnessCompactionDisposition: "harness_owned_automatic_compaction"`. OpenClaw
-treats that disposition as a safe skip: it continues the turn instead of failing
-required preflight, and it never falls back to context-engine compaction (which
-would fight Codex's ownership and fail an OAuth-only session with no API key).
-For a dead thread the harness also clears the stale binding so the next turn
-lazily rebinds.
+Codex owns inline automatic compaction for a bound thread. What happens when an
+automatic (non-manual) trigger cannot drive a native compaction depends on why
+it failed and whether the session is model-locked:
+
+- **Native execution blocked (sandbox/exec host).** OpenClaw cannot drive a
+  native request, but codex-rs still owns inline automatic compaction for the
+  bound thread. The harness defers rather than failing the turn and reports a
+  harness-owned safe skip on its `AgentHarnessCompactResult` via
+  `harnessCompactionDisposition: "harness_owned_automatic_compaction"`.
+- **Dead bound thread on an unlocked session.** codex-rs cannot resume the
+  retired thread, so OpenClaw clears the stale binding and falls back to
+  context-engine compaction for this turn, then lazily rebinds a fresh thread on
+  the next turn.
+- **Dead bound thread on a model-locked session (OAuth-only, no API key).**
+  Context-engine fallback would fail with "No API key found", so the harness
+  clears the stale binding and reports the same typed
+  `harness_owned_automatic_compaction` safe skip instead.
+
+OpenClaw treats that disposition as a safe skip: it continues the turn instead
+of failing required preflight, and it never falls back to context-engine
+compaction (which would fight Codex's ownership and fail an OAuth-only session
+with no API key).
+
+Manual `/compact` does not take the safe-skip path. The operator asked to
+compact now, so a dead binding is reported as a compaction failure rather than a
+silent skip.
 
 Codex native `hook/started` and `hook/completed` app-server notifications are
 projected as `codex_app_server.hook` agent events for trajectory and
