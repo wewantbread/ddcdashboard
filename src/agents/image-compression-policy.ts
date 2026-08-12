@@ -14,7 +14,7 @@ const resolveModelAsyncDefault: ResolveModelAsync = async (...args) => {
   return await resolveModelAsync(...args);
 };
 
-export type ImageCompressionPolicyDeps = {
+type ImageCompressionPolicyDeps = {
   resolveModelAsync: ResolveModelAsync;
 };
 
