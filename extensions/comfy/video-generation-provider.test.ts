@@ -383,7 +383,6 @@ describe("comfy video-generation provider", () => {
   ])(
     "rejects a successful $name output download as generated video",
     async ({ contentType, body }) => {
-      setComfyFetchGuardForTesting(fetchWithSsrFGuardMock);
       mockLocalVideoResponses({
         promptId: "local-video-invalid-download",
         outputs: {
@@ -401,7 +400,6 @@ describe("comfy video-generation provider", () => {
   );
 
   it("releases a rejected video output download without draining its body", async () => {
-    setComfyFetchGuardForTesting(fetchWithSsrFGuardMock);
     let canceled = false;
     let bytesPulled = 0;
     const neverEndingJson = new Response(

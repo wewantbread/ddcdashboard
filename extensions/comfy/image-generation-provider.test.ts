@@ -466,7 +466,6 @@ describe("comfy image-generation provider", () => {
   ])(
     "rejects a successful $name output download as generated image",
     async ({ contentType, body }) => {
-      setComfyFetchGuardForTesting(fetchWithSsrFGuardMock);
       mockLocalImageResponses("local-image-invalid-download", { body, contentType });
 
       const provider = buildComfyImageGenerationProvider();
