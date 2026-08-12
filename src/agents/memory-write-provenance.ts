@@ -24,6 +24,7 @@ type ProvenanceWriteOperations = {
 export function withMemoryWriteProvenance<T extends ProvenanceWriteOperations>(
   operations: T,
   observer: MemoryWriteProvenanceObserver | undefined,
+  resolveObservedPath: (backendPath: string) => string = (backendPath) => backendPath,
 ): T {
   if (!observer) {
     return operations;
@@ -31,13 +32,14 @@ export function withMemoryWriteProvenance<T extends ProvenanceWriteOperations>(
   const remove = operations.remove;
   return {
     ...operations,
-    writeFile: async (absolutePath: string, content: string) => {
-      if (!observer.classifies(absolutePath)) {
-        await operations.writeFile(absolutePath, content);
+    writeFile: async (backendPath: string, content: string) => {
+      const observedPath = resolveObservedPath(backendPath);
+      if (!observer.classifies(observedPath)) {
+        await operations.writeFile(backendPath, content);
         return;
       }
       const contentBefore = await operations
-        .readFile(absolutePath)
+        .readFile(backendPath)
         .then((value) => (Buffer.isBuffer(value) ? value.toString("utf8") : value))
         .catch((error: unknown) => {
           if (!isMissingPathError(error)) {
@@ -46,17 +48,17 @@ export function withMemoryWriteProvenance<T extends ProvenanceWriteOperations>(
           return "";
         });
       await observer.write({
-        absolutePath,
+        absolutePath: observedPath,
         contentBefore,
         contentAfter: content,
-        commit: () => operations.writeFile(absolutePath, content),
+        commit: () => operations.writeFile(backendPath, content),
       });
     },
     ...(remove
       ? {
-          remove: async (absolutePath: string) => {
-            await remove(absolutePath);
-            await observer.clearAfterDelete(absolutePath);
+          remove: async (backendPath: string) => {
+            await remove(backendPath);
+            await observer.clearAfterDelete(resolveObservedPath(backendPath));
           },
         }
       : {}),

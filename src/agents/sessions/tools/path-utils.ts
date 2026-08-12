@@ -6,6 +6,7 @@
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expandHomePrefix, resolveOsHomeDir } from "../../../infra/home-dir.js";
+import { normalizeWindowsPosixDrivePath } from "./windows-posix-path.js";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const NARROW_NO_BREAK_SPACE = "\u202F";
@@ -59,8 +60,12 @@ export function resolveToCwd(filePath: string, cwd: string): string {
   return resolvePath(cwd, expanded);
 }
 
+export function resolveLocalToolPath(filePath: string, cwd: string): string {
+  return resolveToCwd(normalizeWindowsPosixDrivePath(filePath), cwd);
+}
+
 export function resolveReadPath(filePath: string, cwd: string): string {
-  const expanded = expandPath(filePath, false);
+  const expanded = expandPath(normalizeWindowsPosixDrivePath(filePath), false);
   return isAbsolute(expanded) ? expanded : resolvePath(cwd, expanded);
 }
 
