@@ -7,7 +7,11 @@ import { resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.j
 import type { OpenClawConfig } from "../config/types.js";
 import { readLocalFileSafely } from "../infra/fs-safe.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
-import { normalizeImageDescriptionInput } from "./image-input-normalize.js";
+import {
+  normalizeImageDescriptionInput,
+  optimizeImageDescriptionInput,
+  resolveImageDescriptionSourceMaxBytes,
+} from "./image-input-normalize.js";
 import { describeImageWithModel } from "./image-runtime.js";
 import {
   buildMediaUnderstandingRegistry,
@@ -279,7 +283,7 @@ export async function prepareImageDescriptionInput(params: PrepareImageDescripti
     buffer: image.buffer,
     fileName: image.fileName,
     mime: image.mime,
-    maxBytes: DEFAULT_MAX_BYTES.image,
+    maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
   });
   return {
     buffer: normalizedImage.buffer,
@@ -299,10 +303,19 @@ export async function describePreparedImageWithModel(params: DescribePreparedIma
     (params.agentId
       ? resolveAgentDir(params.cfg, params.agentId)
       : resolveDefaultAgentDir(params.cfg));
+  const image = await optimizeImageDescriptionInput({
+    ...params.image,
+    maxBytes: DEFAULT_MAX_BYTES.image,
+    cfg: params.cfg,
+    provider: params.provider,
+    model: params.model,
+    agentDir,
+    workspaceDir: params.workspaceDir,
+  });
   return await describeImage({
-    buffer: params.image.buffer,
-    fileName: params.image.fileName,
-    mime: params.image.mime,
+    buffer: image.buffer,
+    fileName: image.fileName ?? params.image.fileName,
+    mime: image.mime,
     provider: params.provider,
     model: params.model,
     prompt: params.prompt,
@@ -335,7 +348,10 @@ async function readImageDescriptionInput(params: {
     params.mediaUrl ??
     (isRemoteMediaReference(params.filePath) ? params.filePath.trim() : undefined);
   if (!remoteRef) {
-    const { buffer } = await readLocalFileSafely({ filePath: params.filePath });
+    const { buffer } = await readLocalFileSafely({
+      filePath: params.filePath,
+      maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
+    });
     return {
       buffer,
       fileName: basenameFromMediaReference(params.filePath),
@@ -355,7 +371,7 @@ async function readImageDescriptionInput(params: {
   try {
     const media = await cache.getBuffer({
       attachmentIndex: 0,
-      maxBytes: DEFAULT_MAX_BYTES.image,
+      maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
       timeoutMs: params.timeoutMs,
     });
     return {

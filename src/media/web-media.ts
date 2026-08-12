@@ -37,6 +37,8 @@ import { resolveUserPath } from "../utils.js";
 import { chunkItems } from "../utils/chunk-items.js";
 import { readOutboundMediaFile } from "./bounded-read-file.js";
 import { readRemoteMediaBuffer } from "./fetch.js";
+import { ImageOptimizationLimitError } from "./image-optimization-error.js";
+import { createImageProcessorWithPixelLimits } from "./image-processor.js";
 import type { OutboundMediaReadFile } from "./load-options.js";
 import {
   assertLocalMediaAllowed,
@@ -48,6 +50,7 @@ import {
 import { MediaReferenceError, resolveInboundMediaReference } from "./media-reference.js";
 import {
   createImageProcessor,
+  MAX_IMAGE_INPUT_PIXELS,
   readImageMetadataFromHeader,
   readImageProbeFromHeader,
 } from "./media-services.js";
@@ -915,7 +918,12 @@ async function optimizeImageWithFallback(params: {
 }): Promise<OptimizedImage> {
   const { buffer, cap } = params;
   const grid = resolveImageCompressionGrid(params.imageCompression);
-  const optimized = await createImageProcessor().encode(buffer, {
+  // Rastermill validates input dimensions before resizing. Admit 8K camera/display inputs only
+  // here; every encoded result stays under the shared output pixel limit.
+  const optimized = await createImageProcessorWithPixelLimits({
+    inputPixels: 40_000_000,
+    outputPixels: MAX_IMAGE_INPUT_PIXELS,
+  }).encode(buffer, {
     format: "auto",
     maxBytes: cap,
     opaque: { format: "jpeg" },
@@ -954,7 +962,7 @@ export async function optimizeImageBufferForWebMedia(params: {
   const cap = effectiveImageBytesCap(baseCap, params.imageCompression) ?? baseCap;
   if (params.contentType === "image/gif") {
     if (params.buffer.length > cap) {
-      throw new Error(formatCapLimit("GIF", cap, params.buffer.length));
+      throw new ImageOptimizationLimitError(formatCapLimit("GIF", cap, params.buffer.length));
     }
     assertImageSatisfiesHardDimensionPolicy(params.buffer, params.imageCompression);
     return {
@@ -988,7 +996,7 @@ export async function optimizeImageBufferForWebMedia(params: {
   });
   logOptimizedImage({ originalSize: params.buffer.length, optimized });
   if (optimized.buffer.length > cap) {
-    throw new Error(formatCapReduce("Media", cap, optimized.buffer.length));
+    throw new ImageOptimizationLimitError(formatCapReduce("Media", cap, optimized.buffer.length));
   }
   return {
     buffer: optimized.buffer,

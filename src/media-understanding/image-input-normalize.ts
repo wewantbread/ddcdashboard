@@ -1,11 +1,22 @@
 // Image input normalization converts HEIC/HEIF payloads through the shared
 // input-file media path before provider execution.
-import { normalizeMimeType } from "@openclaw/media-core/mime";
+import { mimeTypeFromFilePath, normalizeMimeType } from "@openclaw/media-core/mime";
+import { resolveImageCompressionModelPolicy } from "../agents/image-compression-policy.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
 import { extractImageContentFromSource } from "../media/input-files.js";
+import { readImageMetadataFromHeader } from "../media/media-services.js";
+import { optimizeImageBufferForWebMedia } from "../media/web-media.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 
 const HEIC_MIME_RE = /^image\/hei[cf]$/i;
 const HEIC_EXT_RE = /\.(heic|heif)$/i;
+// Bound pre-compression reads separately from the smaller provider payload target.
+const IMAGE_DESCRIPTION_SOURCE_MAX_BYTES = 50 * 1024 * 1024;
+
+export function resolveImageDescriptionSourceMaxBytes(maxBytes: number): number {
+  return Math.max(maxBytes, IMAGE_DESCRIPTION_SOURCE_MAX_BYTES);
+}
 
 function isHeicInput(params: { mime?: string; fileName?: string }): boolean {
   const mime = normalizeMimeType(params.mime);
@@ -45,5 +56,42 @@ export async function normalizeImageDescriptionInput(params: {
   return {
     buffer: Buffer.from(image.data, "base64"),
     mime: image.mimeType,
+  };
+}
+
+/** Applies the selected model's image policy before bytes cross the provider boundary. */
+export async function optimizeImageDescriptionInput(params: {
+  buffer: Buffer;
+  fileName?: string;
+  mime?: string;
+  maxBytes?: number;
+  cfg?: OpenClawConfig;
+  provider: string;
+  model: string;
+  agentDir?: string;
+  workspaceDir?: string;
+}): Promise<{ buffer: Buffer; fileName?: string; mime?: string }> {
+  const maxBytes = params.maxBytes ?? DEFAULT_MAX_BYTES.image;
+  // Unknown formats remain provider-owned; making Rastermill decode support a new plugin contract
+  // would regress custom providers that already accept their own image formats.
+  if (!readImageMetadataFromHeader(params.buffer)) {
+    if (params.buffer.length > maxBytes) {
+      throw new ImageOptimizationLimitError(`Image exceeds maxBytes ${maxBytes}`);
+    }
+    return { buffer: params.buffer, fileName: params.fileName, mime: params.mime };
+  }
+  const modelPolicy = await resolveImageCompressionModelPolicy(params);
+  const optimized = await optimizeImageBufferForWebMedia({
+    buffer: params.buffer,
+    contentType:
+      normalizeMimeType(params.mime) ?? mimeTypeFromFilePath(params.fileName) ?? params.mime,
+    fileName: params.fileName,
+    maxBytes,
+    imageCompression: { imageCount: 1, models: [modelPolicy] },
+  });
+  return {
+    buffer: optimized.buffer,
+    fileName: optimized.fileName ?? params.fileName,
+    mime: optimized.contentType ?? params.mime,
   };
 }

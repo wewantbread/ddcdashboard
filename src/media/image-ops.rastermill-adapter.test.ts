@@ -1,5 +1,15 @@
 // Raster image adapter tests cover image operation integration with RasterMill.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createTinyJpegBuffer } from "../../test/helpers/image-fixtures.js";
+
+function jpegWithDimensions(width: number, height: number): Buffer {
+  const buffer = createTinyJpegBuffer();
+  const startOfFrame = buffer.indexOf(Buffer.from([0xff, 0xc0]));
+  expect(startOfFrame).toBeGreaterThanOrEqual(0);
+  buffer.writeUInt16BE(height, startOfFrame + 5);
+  buffer.writeUInt16BE(width, startOfFrame + 7);
+  return buffer;
+}
 
 describe("image ops Rastermill adapter", () => {
   beforeEach(() => {
@@ -76,6 +86,53 @@ describe("image ops Rastermill adapter", () => {
     expect(options.env).toBeUndefined();
     expect(options.commandResolver("powershell")).toBe("/usr/bin/tool");
     expect(resolveSystemBin).toHaveBeenLastCalledWith("powershell", { trust: "strict" });
+  });
+
+  it("allows a bounded larger source only for explicit downscale processors", async () => {
+    const actualRastermill = await vi.importActual<typeof import("rastermill")>("rastermill");
+    const createRastermill = vi.fn(() => ({ encode: vi.fn() }));
+    vi.doMock("rastermill", () => ({
+      ...actualRastermill,
+      createRastermill,
+      readImageMetadataFromHeader: vi.fn(),
+      readImageProbeFromHeader: vi.fn(),
+    }));
+
+    const { MAX_IMAGE_INPUT_PIXELS } = await import("./image-ops.js");
+    const { createImageProcessorWithPixelLimits } = await import("./image-processor.js");
+    createImageProcessorWithPixelLimits({
+      inputPixels: 40_000_000,
+      outputPixels: MAX_IMAGE_INPUT_PIXELS,
+    });
+
+    expect(createRastermill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limits: {
+          inputPixels: 40_000_000,
+          outputPixels: MAX_IMAGE_INPUT_PIXELS,
+        },
+      }),
+    );
+  });
+
+  it("admits phone-sized JPEG headers only to the bounded downscale path", async () => {
+    const { createImageProcessor, MAX_IMAGE_INPUT_PIXELS } = await import("./image-ops.js");
+    const { createImageProcessorWithPixelLimits } = await import("./image-processor.js");
+    const phonePhoto = jpegWithDimensions(4536, 8064);
+    const createDownscaleProcessor = () =>
+      createImageProcessorWithPixelLimits({
+        inputPixels: 40_000_000,
+        outputPixels: MAX_IMAGE_INPUT_PIXELS,
+      });
+
+    await expect(createImageProcessor().probe(phonePhoto)).resolves.toBeNull();
+    await expect(createDownscaleProcessor().probe(phonePhoto)).resolves.toMatchObject({
+      width: 4536,
+      height: 8064,
+    });
+    await expect(
+      createDownscaleProcessor().probe(jpegWithDimensions(8000, 5001)),
+    ).resolves.toBeNull();
   });
 
   it.each([
