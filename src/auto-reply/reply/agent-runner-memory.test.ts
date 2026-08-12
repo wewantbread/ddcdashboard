@@ -1706,18 +1706,21 @@ describe("runMemoryFlushIfNeeded", () => {
       systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
       relativePath: "memory/2023-11-14.md",
     }));
-    // Exact locked recoverable-binding safe skip the core emits when a model-locked
-    // native-harness session hits a dead/stale thread binding (compact.queued.ts): the
-    // harness cleared the dead binding, so required preflight must continue the turn
-    // and let the next turn lazily rebind instead of throwing and dropping it (#119977).
-    // Uses the OpenClaw runtime so the token-triggered preflight path invokes compaction
-    // (the Codex runtime is gated to the transcript-byte fuse); the caller's safe-skip
-    // handling is harness-agnostic and keys only off harnessCompactionDisposition.
+    // #119971 safe-continue on a model-locked recoverable-binding failure. The queued
+    // layer now returns the honest ok:false stale-binding failure (compact.queued.ts): the
+    // harness already cleared the dead binding, so required preflight must continue the
+    // turn and let the next turn lazily rebind instead of throwing and dropping it
+    // (#119971 / #119977). This is the load-bearing regression: on an un-wired
+    // agent-runner-memory.ts (before the model-locked safe-continue branches were added)
+    // this failure would throw "Preflight compaction required but failed". Uses the
+    // OpenClaw runtime so the token-triggered preflight path invokes compaction (the Codex
+    // runtime is gated to the transcript-byte fuse); the caller's safe-continue keys off
+    // the model lock plus the recoverable-binding failure, not the harness identity.
     compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
-      ok: true,
+      ok: false,
       compacted: false,
-      harnessCompactionDisposition: "harness_owned_automatic_compaction",
       reason: "thread not found: thread-1",
+      failure: { reason: "stale_thread_binding" },
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",

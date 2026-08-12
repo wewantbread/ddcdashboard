@@ -644,38 +644,19 @@ async function compactResolvedContextEngine(
     requiredPreflightNativeCapabilityUsed &&
     recoverableBinding;
   if (lockedNativeHarness && !preflightAuthorizedContextEngineFallback) {
-    // Outside an authorized required-preflight fallback, a recoverable binding failure on
-    // a model-locked session cannot reach the context engine: there is no API key and
-    // codex-rs cannot resume a retired thread. The harness already cleared the dead
-    // binding, so surface a harness-owned safe skip — the typed disposition core
-    // recognizes structurally — so the turn continues and the next turn lazily rebinds
-    // instead of returning ok:false and dropping it (#119977). This safe skip is not a
-    // clean self-heal: the truly-dead-thread case is context loss — when the app-server
-    // thread was never persisted to ~/.codex/sessions and its owning client was retired,
-    // there is nothing on disk to resume, so the next turn rebinds to a FRESH thread and
-    // the prior in-memory transcript is gone. codex-rs rebinds and runs its pre-turn
-    // auto-compaction on that fresh binding, so the session keeps functioning — on the
-    // fresh binding, not the retired thread's history. Converting the failure to ok:true
-    // prevents the indefinite-defer bug and keeps required preflight from dropping the
-    // turn; it does not recover the lost context. Manual /compact is excluded: the
-    // operator asked to compact now, so a dead binding must surface as a reported failure
-    // rather than a silent "skipped" (the command UI renders an ok:true non-compacted
-    // result as "Compaction skipped"). A required preflight that never used the native
-    // capability stays terminal so the honest failure is not laundered into a skip.
-    if (
-      recoverableBinding &&
-      preparedParams.preflightRequired !== true &&
-      params.trigger !== "manual"
-    ) {
-      return {
-        ok: true,
-        compacted: false,
-        harnessCompactionDisposition: "harness_owned_automatic_compaction",
-        ...(harnessResult?.reason ? { reason: harnessResult.reason } : {}),
-      };
-    }
-    // The model lock forbids replacing native compaction with the context engine, so a
-    // locked session returns the (possibly recovered) native result directly.
+    // Outside the authorized required-preflight fallback, a model-locked native result is
+    // terminal: it cannot reach the context engine (no API key) and codex-rs cannot resume
+    // a retired thread. A recoverable binding failure is returned as-is (honest ok:false,
+    // e.g. failure.reason:"stale_thread_binding"), mirroring the CLI sibling (compact.ts /
+    // cli-compaction.ts). Callers that must continue the turn — required preflight in
+    // agent-runner-memory.ts — recognize the recoverable-binding failure and continue
+    // without dropping it (#119971/#119977). We do NOT synthesize an ok:true
+    // harness_owned_automatic_compaction disposition here: that disposition is reserved for
+    // a live harness compacting its own bound thread, and laundering a context-lost
+    // dead-binding recovery through it would conflate two distinct outcomes on the public
+    // Plugin SDK contract. The dead binding is already invalidated upstream by the codex
+    // plugin before this point, so #119977 stays fixed; manual /compact still surfaces the
+    // failure to the operator.
     return harnessResult
       ? { ...harnessResult, compactionKind: "native-harness" }
       : lockedCompactionRuntimeFailure(selectedHarnessRuntime);

@@ -19,6 +19,7 @@ import {
 } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import { createToolResultPromptProjectionState } from "../../agents/embedded-agent-runner/session-prompt-state.js";
+import { isRecoverableNativeHarnessBindingFailure } from "../../agents/harness/compaction-recovery.js";
 import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
@@ -1035,9 +1036,19 @@ export async function runSessionCompactionIfNeeded(params: {
     });
     assertActive();
 
+    const modelLocked = entry?.modelSelectionLocked === true;
     if (!result?.ok) {
       const reason = result?.reason ?? "not_compacted";
       if (result && isBenignCompactionSkipResult(result)) {
+        await notifyTerminalCompaction("skipped");
+        logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
+        return entry ?? params.sessionEntry;
+      }
+      if (modelLocked && result && isRecoverableNativeHarnessBindingFailure(result)) {
+        // A model-locked (e.g. OAuth) session cannot fall back to context-engine
+        // compaction, and codex-rs cannot resume a retired thread. The harness already
+        // cleared the dead binding, so the next turn lazily rebinds; failing here would
+        // drop the turn (#119971 / #119977). Mirrors the CLI sibling (cli-compaction.ts).
         await notifyTerminalCompaction("skipped");
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;
