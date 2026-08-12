@@ -219,14 +219,24 @@ it failed and whether the session is model-locked:
   context-engine compaction for this turn, then lazily rebinds a fresh thread on
   the next turn.
 - **Dead bound thread on a model-locked session (OAuth-only, no API key).**
-  Context-engine fallback would fail with "No API key found", so the harness
-  clears the stale binding and reports the same typed
-  `harness_owned_automatic_compaction` safe skip instead.
+  Context-engine fallback would fail with "No API key found", so the compaction
+  layer returns an honest `ok:false` recoverable-binding failure
+  (`failure.reason: "stale_thread_binding"` or `"missing_thread_binding"`)
+  rather than reusing the `harness_owned_automatic_compaction` disposition. The
+  stale binding is still cleared upstream in the codex plugin
+  (`clearDeadCodexThreadBinding`), so the next turn lazily rebinds a fresh
+  thread. Required preflight (`src/auto-reply/reply/agent-runner-memory.ts`) and
+  the CLI turn lifecycle (`src/agents/command/cli-compaction.ts`) recognize this
+  model-locked recoverable-binding failure and continue the turn (safe-continue)
+  instead of dropping it.
 
-OpenClaw treats that disposition as a safe skip: it continues the turn instead
-of failing required preflight, and it never falls back to context-engine
-compaction (which would fight Codex's ownership and fail an OAuth-only session
-with no API key).
+For the native-execution-blocked case (a live bound thread), OpenClaw treats the
+`harness_owned_automatic_compaction` disposition as a safe skip: it continues the
+turn instead of failing required preflight, and it never falls back to
+context-engine compaction (which would fight Codex's ownership and fail an
+OAuth-only session with no API key). The model-locked dead-binding case above
+reaches the same safe-continue outcome through a different path — a recoverable
+binding failure the caller recognizes — not through the disposition.
 
 Manual `/compact` does not take the safe-skip path. The operator asked to
 compact now, so a dead binding is reported as a compaction failure rather than a
