@@ -81,18 +81,13 @@ export async function optimizeImageDescriptionInput(params: {
     return { buffer: params.buffer, fileName: params.fileName, mime: params.mime };
   }
   const modelPolicy = await resolveImageCompressionModelPolicy(params);
-  const quality = params.cfg?.agents?.defaults?.imageQuality;
   const optimized = await optimizeImageBufferForWebMedia({
     buffer: params.buffer,
     contentType:
       normalizeMimeType(params.mime) ?? mimeTypeFromFilePath(params.fileName) ?? params.mime,
     fileName: params.fileName,
     maxBytes,
-    imageCompression: {
-      imageCount: 1,
-      models: [modelPolicy],
-      ...(quality ? { quality } : {}),
-    },
+    imageCompression: { imageCount: 1, models: [modelPolicy] },
   });
   return {
     buffer: optimized.buffer,

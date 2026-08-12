@@ -9,19 +9,16 @@ import type { ImageDescriptionRequest, MediaUnderstandingProvider } from "./type
 vi.mock("../agents/image-compression-policy.js", () => ({
   resolveImageCompressionModelPolicy: vi.fn(async () => ({
     maxSidePx: 1600,
-    preferredSidePx: 1600,
+    preferredSidePx: 1400,
   })),
 }));
 
 const { runProviderEntry } = await import("./runner.entries.js");
 
 describe("runProviderEntry image resize boundary", () => {
-  it.each([
-    { quality: "high" as const, expectedSide: 1600 },
-    { quality: "efficient" as const, expectedSide: 1280 },
-  ])(
-    "applies $quality quality before calling a custom provider",
-    async ({ quality, expectedSide }) => {
+  it.each(["high" as const, "efficient" as const])(
+    "does not apply the image-tool-only $quality preference to a custom provider",
+    async (quality) => {
       const source = createSolidPngBuffer(1600, 1200, { r: 24, g: 96, b: 208 });
       const observedDimensions: Array<{ width: number; height: number }> = [];
       const describeImage = vi.fn(async (request: ImageDescriptionRequest) => {
@@ -67,9 +64,7 @@ describe("runProviderEntry image resize boundary", () => {
           model: "vision-v1",
         }),
       );
-      expect(observedDimensions).toEqual([
-        expectedSide === 1600 ? { width: 1600, height: 1200 } : { width: 1280, height: 960 },
-      ]);
+      expect(observedDimensions).toEqual([{ width: 1400, height: 1050 }]);
     },
   );
 
