@@ -11,12 +11,6 @@ import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 
 const HEIC_MIME_RE = /^image\/hei[cf]$/i;
 const HEIC_EXT_RE = /\.(heic|heif)$/i;
-// Bound pre-compression reads separately from the smaller provider payload target.
-const IMAGE_DESCRIPTION_SOURCE_MAX_BYTES = 50 * 1024 * 1024;
-
-export function resolveImageDescriptionSourceMaxBytes(maxBytes: number): number {
-  return Math.max(maxBytes, IMAGE_DESCRIPTION_SOURCE_MAX_BYTES);
-}
 
 function isHeicInput(params: { mime?: string; fileName?: string }): boolean {
   const mime = normalizeMimeType(params.mime);

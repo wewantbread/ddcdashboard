@@ -15,10 +15,7 @@ vi.mock("../agents/image-compression-policy.js", () => ({
   resolveImageCompressionModelPolicy: mocks.resolveImageCompressionModelPolicy,
 }));
 
-import {
-  optimizeImageDescriptionInput,
-  resolveImageDescriptionSourceMaxBytes,
-} from "./image-input-normalize.js";
+import { optimizeImageDescriptionInput } from "./image-input-normalize.js";
 
 afterEach(() => {
   mocks.resolveImageCompressionModelPolicy.mockClear();
@@ -68,10 +65,5 @@ describe("image description input optimization", () => {
         maxBytes: buffer.length - 1,
       }),
     ).rejects.toBeInstanceOf(ImageOptimizationLimitError);
-  });
-
-  it("separates the bounded source read from the final image budget", () => {
-    expect(resolveImageDescriptionSourceMaxBytes(10 * 1024 * 1024)).toBe(50 * 1024 * 1024);
-    expect(resolveImageDescriptionSourceMaxBytes(64 * 1024 * 1024)).toBe(64 * 1024 * 1024);
   });
 });

@@ -588,6 +588,10 @@ describe("media-understanding runtime", () => {
       agentDir: "/tmp/agent",
     });
 
+    expect(mocks.readLocalFileSafely).toHaveBeenCalledWith({
+      filePath: "/tmp/sample.jpg",
+      maxBytes: 10 * 1024 * 1024,
+    });
     expect(mocks.describeImageWithModel).toHaveBeenCalledWith(
       expect.objectContaining({
         buffer: Buffer.concat([Buffer.from("optimized:"), PNG_1X1]),
@@ -706,7 +710,7 @@ describe("media-understanding runtime", () => {
     );
     expect(mocks.getBuffer).toHaveBeenCalledWith({
       attachmentIndex: 0,
-      maxBytes: 50 * 1024 * 1024,
+      maxBytes: 10 * 1024 * 1024,
       timeoutMs: 45_000,
     });
     expect(mocks.describeImageWithModel).toHaveBeenCalledWith(

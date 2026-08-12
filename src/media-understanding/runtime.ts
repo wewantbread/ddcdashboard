@@ -10,7 +10,6 @@ import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 import {
   normalizeImageDescriptionInput,
   optimizeImageDescriptionInput,
-  resolveImageDescriptionSourceMaxBytes,
 } from "./image-input-normalize.js";
 import { describeImageWithModel } from "./image-runtime.js";
 import {
@@ -283,7 +282,7 @@ export async function prepareImageDescriptionInput(params: PrepareImageDescripti
     buffer: image.buffer,
     fileName: image.fileName,
     mime: image.mime,
-    maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
+    maxBytes: DEFAULT_MAX_BYTES.image,
   });
   return {
     buffer: normalizedImage.buffer,
@@ -350,7 +349,7 @@ async function readImageDescriptionInput(params: {
   if (!remoteRef) {
     const { buffer } = await readLocalFileSafely({
       filePath: params.filePath,
-      maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
+      maxBytes: DEFAULT_MAX_BYTES.image,
     });
     return {
       buffer,
@@ -371,7 +370,7 @@ async function readImageDescriptionInput(params: {
   try {
     const media = await cache.getBuffer({
       attachmentIndex: 0,
-      maxBytes: resolveImageDescriptionSourceMaxBytes(DEFAULT_MAX_BYTES.image),
+      maxBytes: DEFAULT_MAX_BYTES.image,
       timeoutMs: params.timeoutMs,
     });
     return {

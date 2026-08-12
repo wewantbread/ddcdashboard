@@ -60,7 +60,6 @@ import {
 import {
   normalizeImageDescriptionInput,
   optimizeImageDescriptionInput,
-  resolveImageDescriptionSourceMaxBytes,
 } from "./image-input-normalize.js";
 import { describeImageWithModel } from "./image-runtime.js";
 import {
@@ -805,14 +804,14 @@ export async function runProviderEntry(params: {
     }
     const media = await params.cache.getBuffer({
       attachmentIndex: params.attachmentIndex,
-      maxBytes: resolveImageDescriptionSourceMaxBytes(maxBytes),
+      maxBytes,
       timeoutMs,
     });
     const normalizedMedia = await normalizeImageDescriptionInput({
       buffer: media.buffer,
       fileName: media.fileName,
       mime: media.mime,
-      maxBytes: resolveImageDescriptionSourceMaxBytes(maxBytes),
+      maxBytes,
     });
     let optimizedMedia: Awaited<ReturnType<typeof optimizeImageDescriptionInput>>;
     try {
