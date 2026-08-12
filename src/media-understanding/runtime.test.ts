@@ -548,6 +548,9 @@ describe("media-understanding runtime", () => {
     mocks.buildProviderRegistry.mockReturnValue(
       new Map([["zai", { id: "zai", capabilities: ["image"] }]]),
     );
+    const cfg = {
+      agents: { defaults: { imageQuality: "efficient" } },
+    } as OpenClawConfig;
 
     await expect(
       describeImageFileWithModel({
@@ -556,7 +559,7 @@ describe("media-understanding runtime", () => {
         provider: "zai",
         model: "glm-4.6v",
         prompt: "Describe it",
-        cfg: {} as OpenClawConfig,
+        cfg,
         agentDir: "/tmp/agent",
       }),
     ).resolves.toEqual({ text: "generic image ok", model: "vision" });
@@ -570,9 +573,12 @@ describe("media-understanding runtime", () => {
       prompt: "Describe it",
       maxTokens: undefined,
       timeoutMs: 30_000,
-      cfg: {},
+      cfg,
       agentDir: "/tmp/agent",
     });
+    expect(mocks.optimizeImageDescriptionInput).toHaveBeenCalledWith(
+      expect.objectContaining({ cfg, provider: "zai", model: "glm-4.6v" }),
+    );
   });
 
   it("prefers local image bytes over conflicting explicit MIME metadata", async () => {
