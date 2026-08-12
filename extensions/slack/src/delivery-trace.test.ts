@@ -20,6 +20,7 @@ import {
   type TraceNormalizer,
 } from "openclaw/plugin-sdk/channel-contract-testing";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { ReplyDispatchKind, ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterAll, afterEach, describe, it, vi } from "vitest";
 import type { PreparedSlackMessage } from "./monitor/message-handler/types.js";
@@ -50,14 +51,6 @@ type CapturedReplyOptions = {
 type TurnCounts = Record<ReplyDispatchKind, number>;
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
 
 type SlackTraceState = {
   recordWireCall: (call: RecordedWireCall) => void;
@@ -171,7 +164,8 @@ type SlackTraceScenarioName =
   | "stream-stop-first-network-call"
   | "final-blocks-and-text"
   | "cancel-mid-stream"
-  | "preview-edit-fallback";
+  | "preview-edit-fallback"
+  | "progress-session-card";
 
 const NATIVE_SCENARIOS = new Set<SlackTraceScenarioName>([
   "streaming-happy-native",
@@ -259,6 +253,13 @@ const slackTraceScenarios: Record<SlackTraceScenarioName, readonly DeliveryTrace
     { kind: "partial", text: PREVIEW_PARTIAL_TWO },
     { kind: "advance", ms: 1100 },
     { kind: "final", text: PREVIEW_FINAL_TEXT },
+    { kind: "idle" },
+  ],
+  "progress-session-card": [
+    { kind: "reply-start" },
+    { kind: "tool-progress", name: "read", phase: "start" },
+    { kind: "advance", ms: 2000 },
+    { kind: "final", text: "The session card is complete." },
     { kind: "idle" },
   ],
 };
@@ -428,7 +429,18 @@ function createRecordingSlackClient(): Record<string, unknown> {
 }
 
 function createPreparedTraceMessage(scenario: SlackTraceScenarioName): PreparedSlackMessage {
-  const cfg = { channels: { slack: { enabled: true } } } as OpenClawConfig;
+  const progressCard = scenario === "progress-session-card";
+  const cfg = {
+    channels: { slack: { enabled: true } },
+    ...(progressCard
+      ? {
+          gateway: {
+            publicOrigin: "https://team.openclaw.ai",
+            controlUi: { basePath: "/openclaw" },
+          },
+        }
+      : {}),
+  } as OpenClawConfig;
   const client = traceState.client;
   if (!client) {
     throw new Error("trace Slack client not initialized");
@@ -476,9 +488,14 @@ function createPreparedTraceMessage(scenario: SlackTraceScenarioName): PreparedS
     },
     account: {
       accountId: "default",
-      config: {
-        streaming: { mode: "partial", nativeTransport: NATIVE_SCENARIOS.has(scenario) },
-      },
+      config: progressCard
+        ? {}
+        : {
+            streaming: {
+              mode: "partial",
+              nativeTransport: NATIVE_SCENARIOS.has(scenario),
+            },
+          },
     },
     message: {
       type: "message",

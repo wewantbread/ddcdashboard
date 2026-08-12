@@ -117,9 +117,7 @@ export function createSlackDraftStream(params: {
         accountId: params.accountId,
         threadTs,
         identity: params.identity,
-        ...(params.eventScope
-          ? { client: params.eventScope.client, enterpriseEventScope: params.eventScope }
-          : {}),
+        eventScope: params.eventScope,
         ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(blocks ? { blocks } : {}),
       });
@@ -198,6 +196,8 @@ export function createSlackDraftStream(params: {
 
   const forceNewMessage = () => {
     stopTrackingConversationBoundary();
+    streamState.stopped = false;
+    streamState.final = false;
     streamMessageId = undefined;
     streamChannelId = undefined;
     lastVisibleUpdate = undefined;

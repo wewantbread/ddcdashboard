@@ -2,6 +2,7 @@
  * Activates curated Codex marketplace plugins and keeps require-active
  * marketplaces outside OpenClaw's install authority.
  */
+import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { CodexAppInventoryCache, CodexAppInventoryRequest } from "./app-inventory-cache.js";
 import {
   CODEX_PLUGINS_MARKETPLACE_NAME,
@@ -17,6 +18,7 @@ import {
 } from "./plugin-inventory.js";
 import type { CodexPluginMetadataCache } from "./plugin-metadata-cache.js";
 import type { CodexAppServerRequestResult, v2 } from "./protocol.js";
+import { CodexAppServerRpcError } from "./rpc-error.js";
 
 /** Terminal reason reported after trying to activate one Codex plugin policy. */
 type CodexPluginActivationReason =
@@ -25,6 +27,7 @@ type CodexPluginActivationReason =
   | "disabled"
   | "marketplace_missing"
   | "plugin_missing"
+  | "install_failed"
   | "auth_required"
   | "refresh_failed";
 
@@ -104,15 +107,43 @@ export async function ensureCodexPluginActivation(
     };
   }
 
-  const installResponse = (await params.request(
-    "plugin/install",
-    pluginReadParams(
-      resolved.marketplace,
-      resolved.marketplace.remoteMarketplaceName && resolved.summary.remotePluginId
-        ? resolved.summary.remotePluginId
-        : params.identity.pluginName,
-    ) satisfies v2.PluginInstallParams,
-  )) as v2.PluginInstallResponse;
+  const remotePluginId = resolved.marketplace.remoteMarketplaceName
+    ? resolved.summary.remotePluginId
+    : undefined;
+  let installResponse: v2.PluginInstallResponse;
+  try {
+    installResponse = (await params.request(
+      "plugin/install",
+      pluginReadParams(
+        resolved.marketplace,
+        remotePluginId ?? params.identity.pluginName,
+      ) satisfies v2.PluginInstallParams,
+    )) as v2.PluginInstallResponse;
+  } catch (error) {
+    if (
+      !(error instanceof CodexAppServerRpcError) ||
+      error.code !== -32600 ||
+      !remotePluginId ||
+      (error.message !== `remote plugin ${remotePluginId} is disabled by admin` &&
+        error.message !== `remote plugin ${remotePluginId} is not available for install`)
+    ) {
+      throw error;
+    }
+    // The catalog can be stale by install time. Isolate only Codex's exact
+    // terminal remote-install contract; unrelated RPC failures abort the turn.
+    return {
+      identity: params.identity,
+      ok: false,
+      reason: "install_failed",
+      installAttempted: true,
+      marketplace: resolved.marketplace,
+      diagnostics: [
+        {
+          message: `Codex plugin install failed: ${coerceErrorMessage(error)}`,
+        },
+      ],
+    };
+  }
   if (params.metadataCache && params.appCacheKey) {
     params.metadataCache.invalidate(params.appCacheKey);
   }
@@ -131,9 +162,7 @@ export async function ensureCodexPluginActivation(
   } catch (error) {
     refreshFailed = true;
     refreshDiagnostics.push({
-      message: `Codex plugin runtime refresh failed after install: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      message: `Codex plugin runtime refresh failed after install: ${coerceErrorMessage(error)}`,
     });
   }
   const authRequired = installResponse.appsNeedingAuth.length > 0;
@@ -180,7 +209,7 @@ async function refreshCodexPluginRuntimeState(params: {
     } satisfies v2.HooksListParams) as Promise<v2.HooksListResponse>);
   } catch (error) {
     diagnostics.push({
-      message: `Codex hooks refresh skipped: ${error instanceof Error ? error.message : String(error)}`,
+      message: `Codex hooks refresh skipped: ${coerceErrorMessage(error)}`,
     });
   }
   await params.request("config/mcpServer/reload", undefined);
@@ -208,9 +237,7 @@ async function refreshCodexPluginRuntimeState(params: {
       });
     } catch (error) {
       diagnostics.push({
-        message: `Codex app inventory refresh skipped: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        message: `Codex app inventory refresh skipped: ${coerceErrorMessage(error)}`,
       });
     }
   }

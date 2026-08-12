@@ -112,23 +112,6 @@ type ComfyWorkflowResult = {
   outputNodeIds: string[];
 };
 
-let comfyFetchGuard = fetchWithSsrFGuard;
-
-function setComfyFetchGuardForTesting(impl: typeof fetchWithSsrFGuard | null): void {
-  comfyFetchGuard = impl ?? fetchWithSsrFGuard;
-}
-
-if (process.env.VITEST === "true") {
-  Reflect.set(globalThis, Symbol.for("openclaw.comfyTestApi"), {
-    getConfig: getComfyConfig,
-    setFetchGuard: setComfyFetchGuardForTesting,
-  });
-}
-
-function readConfigBoolean(config: ComfyProviderConfig, key: string): boolean | undefined {
-  return asBoolean(config[key]);
-}
-
 function readConfigInteger(config: ComfyProviderConfig, key: string): number | undefined {
   const value = config[key];
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
@@ -332,7 +315,7 @@ async function readJsonResponse<T>(params: {
   auditContext: string;
   errorPrefix: string;
 }): Promise<T> {
-  const { response, release } = await comfyFetchGuard({
+  const { response, release } = await fetchWithSsrFGuard({
     url: params.url,
     init: params.init,
     timeoutMs: params.timeoutMs,
@@ -347,9 +330,6 @@ async function readJsonResponse<T>(params: {
     await release();
   }
 }
-
-/** @internal Test-only export. */
-export const readJsonResponseForTest = readJsonResponse;
 
 function resolveFileExtension(params: { fileName?: string; mimeType?: string }): string {
   const extension = extensionForMime(params.mimeType);
@@ -589,7 +569,7 @@ async function downloadOutputFile(params: {
   const viewPath = params.mode === "cloud" ? "/api/view" : "/view";
   const auditContext = `comfy-${params.capability}-download`;
 
-  const firstResponse = await comfyFetchGuard({
+  const firstResponse = await fetchWithSsrFGuard({
     url: `${params.baseUrl}${viewPath}?${query.toString()}`,
     init: {
       method: "GET",
@@ -723,8 +703,7 @@ export async function runComfyWorkflow(params: {
     throw new Error("Comfy Cloud API key missing");
   }
 
-  const explicitAllowPrivateNetwork =
-    readConfigBoolean(capabilityConfig, "allowPrivateNetwork") === true;
+  const explicitAllowPrivateNetwork = asBoolean(capabilityConfig.allowPrivateNetwork) === true;
   const { baseUrl, allowPrivateNetwork, headers, dispatcherPolicy } =
     resolveProviderHttpRequestConfig({
       baseUrl: normalizeOptionalString(capabilityConfig.baseUrl),

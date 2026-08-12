@@ -12,8 +12,12 @@ import { sweepStaleRunContexts } from "../infra/agent-run-registry.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { pruneOrphanedDeliveryQueueMedia } from "../infra/outbound/delivery-queue-media-spool.js";
 import { cleanOldMedia, prunePlaybackTranscodeCache } from "../media/store.js";
+import { isGatewayWorkAdmissionClosed } from "../process/gateway-work-admission.js";
 import { createLazyPromiseLoader } from "../shared/lazy-promise.js";
-import { startSkillCuratorMaintenance } from "../skills/workshop/curator.js";
+import {
+  runScheduledSkillCollectionReviews,
+  startSkillCollectionMaintenance,
+} from "../skills/workshop/collection-review.js";
 import {
   abortTrackedChatRunById,
   type ChatAbortControllerEntry,
@@ -23,6 +27,7 @@ import {
 import type { QueuedChatTurnMap } from "./chat-queued-turns.js";
 import { pruneStaleControlPlaneBuckets } from "./control-plane-rate-limit.js";
 import type { HealthSummary } from "./health/types.js";
+import { createHostThawRecovery } from "./host-thaw-recovery.js";
 import { chatAbortMarkerTimestampMs } from "./server-chat-state.js";
 import type { ChatRunState } from "./server-chat-state.js";
 import type { ChatRunEntry } from "./server-chat.js";
@@ -64,7 +69,10 @@ export function startGatewayMaintenanceTimers(params: {
     probe?: boolean;
     includeSensitive?: boolean;
   }) => Promise<HealthSummary>;
-  logHealth: { error: (msg: string) => void };
+  logHealth: { info: (msg: string) => void; error: (msg: string) => void };
+  restartRunningChannels: () => Promise<void>;
+  refreshPresence: () => void;
+  resetEventLoopHealth: () => void;
   dedupe: Map<string, DedupeEntry>;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   chatQueuedTurns: QueuedChatTurnMap;
@@ -83,8 +91,7 @@ export function startGatewayMaintenanceTimers(params: {
   runDeliveryQueueMediaGc?: () => Promise<unknown>;
   runManagedOutgoingMediaGc?: () => Promise<unknown>;
   enableSkillCurator?: boolean;
-  runSkillCuratorSweep?: () => Promise<unknown>;
-  registerSkillUsageTracking?: () => () => void;
+  runSkillCollectionReconcile?: () => Promise<unknown>;
 }): {
   tickInterval: ReturnType<typeof setInterval>;
   healthInterval: ReturnType<typeof setInterval>;
@@ -104,8 +111,21 @@ export function startGatewayMaintenanceTimers(params: {
     params.nodeSendToAllSubscribed("health", snap);
   });
 
+  const hostThawRecovery = createHostThawRecovery({
+    nowMs: Date.now,
+    restartChannels: params.restartRunningChannels,
+    refreshHealth: async () => {
+      await params.refreshGatewayHealthSnapshot({ probe: true });
+    },
+    refreshPresence: params.refreshPresence,
+    resetEventLoopHealth: params.resetEventLoopHealth,
+    isAdmissionClosed: isGatewayWorkAdmissionClosed,
+    logger: params.logHealth,
+  });
+
   // periodic keepalive
   const tickInterval = setInterval(() => {
+    void hostThawRecovery.tick();
     const payload = { ts: Date.now() };
     params.broadcast("tick", payload);
     params.nodeSendToAllSubscribed("tick", payload);
@@ -167,10 +187,19 @@ export function startGatewayMaintenanceTimers(params: {
 
   let skillCuratorCleanup = () => {};
   if (params.enableSkillCurator) {
-    skillCuratorCleanup = startSkillCuratorMaintenance({
-      onError: (err) => params.logHealth.error(`skill curator sweep failed: ${formatError(err)}`),
-      registerUsageTracking: params.registerSkillUsageTracking,
-      runSweep: params.runSkillCuratorSweep,
+    skillCuratorCleanup = startSkillCollectionMaintenance({
+      onError: (err) =>
+        params.logHealth.error(`skill collection review failed: ${formatError(err)}`),
+      run:
+        params.runSkillCollectionReconcile ??
+        (() =>
+          runScheduledSkillCollectionReviews({
+            config: params.getRuntimeConfig(),
+            onError: (err, workspaceDir) =>
+              params.logHealth.error(
+                `skill collection review failed for ${workspaceDir}: ${formatError(err)}`,
+              ),
+          })),
     });
   }
 
