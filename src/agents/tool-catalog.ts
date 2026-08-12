@@ -1,3 +1,4 @@
+import { resolvePluginToolProfileMode } from "./plugin-tool-profile.js";
 /**
  * Core tool catalog and profile defaults.
  * Drives built-in profile allowlists, group expansion, and UI section metadata
@@ -549,6 +550,11 @@ export function resolveCoreToolProfilePolicy(profile?: string): ToolProfilePolic
     allow: resolved.allow ? [...resolved.allow] : undefined,
     deny: resolved.deny ? [...resolved.deny] : undefined,
   };
+}
+
+/** Returns whether a built-in profile includes required plugin tools by default. */
+export function toolProfileAllowsDefaultPluginTools(profile?: string): boolean {
+  return resolvePluginToolProfileMode(profile) !== "none";
 }
 
 /** Lists core tools grouped into UI sections. */

@@ -28,10 +28,11 @@ import {
   registerMemoryCapability,
   type MemoryFlushPlan,
 } from "../plugins/memory-state.js";
+import { isPluginToolAllowed } from "../plugins/tool-grant-allowlist.js";
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
-import { isPluginToolAllowed } from "../plugins/tool-grant-allowlist.js";
+import { setPluginToolMeta } from "../plugins/tools.js";
 import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { filterToolsByMessageProvider } from "./agent-tools.message-provider-policy.js";
@@ -614,6 +615,51 @@ describe("createOpenClawCodingTools", () => {
     expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
     const options = latestCreateOpenClawToolsOptions();
     expectListIncludes(options.pluginToolAllowlist, ["memory_search", "memory_get"]);
+  });
+
+  it("does not use the coding profile to restrict plugin discovery", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+
+    createOpenClawCodingTools({
+      config: { tools: { profile: "coding" } },
+    });
+
+    expect(latestCreateOpenClawToolsOptions().pluginToolAllowlist).toEqual([]);
+  });
+
+  it("uses the full-profile wildcard for optional plugin discovery", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+
+    createOpenClawCodingTools({
+      config: { tools: { profile: "full" } },
+    });
+
+    expect(latestCreateOpenClawToolsOptions().pluginToolAllowlist).toEqual(["*"]);
+  });
+
+  it("applies a provider coding profile to optional tools discovered by global full", () => {
+    const requiredPluginTool = stubTool("required_plugin_tool") as unknown as OpenClawCodingTool;
+    const optionalPluginTool = stubTool("optional_plugin_tool") as unknown as OpenClawCodingTool;
+    setPluginToolMeta(requiredPluginTool, { pluginId: "proof", optional: false });
+    setPluginToolMeta(optionalPluginTool, { pluginId: "proof", optional: true });
+    vi.mocked(createOpenClawTools).mockReturnValueOnce([requiredPluginTool, optionalPluginTool]);
+
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          profile: "full",
+          byProvider: { openai: { profile: "coding" } },
+        },
+      },
+      modelProvider: "openai",
+      modelId: "gpt-5.5",
+    });
+
+    expect(latestCreateOpenClawToolsOptions().pluginToolAllowlist).toEqual(["*"]);
+    expect(tools.map((tool) => tool.name)).toContain("required_plugin_tool");
+    expect(tools.map((tool) => tool.name)).not.toContain("optional_plugin_tool");
   });
 
   it("does not inherit native-harness bridge runtime allowlists", () => {
@@ -1396,6 +1442,27 @@ describe("createOpenClawCodingTools", () => {
 
     createOpenClawCodingTools({
       config: { tools: { alsoAllow: ["lobster"] } },
+    });
+
+    expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
+    expect(latestCreateOpenClawToolsOptions().pluginToolAllowlist).toStrictEqual([
+      "lobster",
+      DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY,
+    ]);
+  });
+
+  it("derives plugin discovery from cloned prepared profiles", () => {
+    const createOpenClawToolsMock = vi.mocked(createOpenClawTools);
+    createOpenClawToolsMock.mockClear();
+    const config: OpenClawConfig = { tools: { alsoAllow: ["lobster"] } };
+    const resolvedProfile = resolveConversationCapabilityProfile({ config });
+
+    createOpenClawCodingTools({
+      config,
+      conversationCapabilityProfile: {
+        ...resolvedProfile,
+        policy: { ...resolvedProfile.policy },
+      },
     });
 
     expect(createOpenClawToolsMock).toHaveBeenCalledTimes(1);
