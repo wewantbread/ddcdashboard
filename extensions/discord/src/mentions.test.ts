@@ -5,6 +5,7 @@ import { clearDiscordDirectoryCacheForTest } from "./directory-cache.test-suppor
 import {
   discordTextHasBroadcastMention,
   formatMention,
+  hasRawDiscordUserMention,
   rewriteDiscordKnownMentions,
 } from "./mentions.js";
 
@@ -135,5 +136,26 @@ describe("discordTextHasBroadcastMention", () => {
   it("ignores targeted mentions and lookalikes", () => {
     expect(discordTextHasBroadcastMention("ping <@123>")).toBe(false);
     expect(discordTextHasBroadcastMention("mail me at a@everyones")).toBe(false);
+  });
+});
+
+describe("hasRawDiscordUserMention", () => {
+  const userId = "123456789";
+
+  it("detects plain user mention tokens", () => {
+    expect(hasRawDiscordUserMention(`ping <@${userId}>`, userId)).toBe(true);
+    expect(hasRawDiscordUserMention(`ping <@!${userId}>`, userId)).toBe(true);
+  });
+
+  it("ignores CommonMark code examples", () => {
+    expect(hasRawDiscordUserMention(`example \`<@${userId}>\``, userId)).toBe(false);
+    expect(hasRawDiscordUserMention(`\`\`\`\n<@${userId}>\n\`\`\``, userId)).toBe(false);
+    expect(hasRawDiscordUserMention(`~~~\n<@${userId}>\n~~~`, userId)).toBe(false);
+    expect(hasRawDiscordUserMention(`    <@${userId}>`, userId)).toBe(false);
+  });
+
+  it("ignores escaped tokens but accepts an even number of backslashes", () => {
+    expect(hasRawDiscordUserMention(`\\<@${userId}>`, userId)).toBe(false);
+    expect(hasRawDiscordUserMention(`\\\\<@${userId}>`, userId)).toBe(true);
   });
 });

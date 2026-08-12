@@ -126,6 +126,31 @@ describe("resolveDiscordMessageText", () => {
     expect(text).toBe("Hello @Alice Wonderland and @bob!");
   });
 
+  it("preserves indentation that keeps mention syntax inactive", () => {
+    const text = resolveDiscordMessageText(
+      asMessage({
+        content: "    <@123>",
+        mentionedUsers: [],
+      }),
+    );
+
+    expect(text).toBe("    <@123>");
+  });
+
+  it("resolves all mentions against the original Markdown context", () => {
+    const text = resolveDiscordMessageText(
+      asMessage({
+        content: "<@123> <@456>",
+        mentionedUsers: [
+          { id: "123", username: "`alice", discriminator: "0" },
+          { id: "456", username: "bob", discriminator: "0" },
+        ],
+      }),
+    );
+
+    expect(text).toBe("@`alice @bob");
+  });
+
   it("leaves content unchanged if no mentions present", () => {
     const text = resolveDiscordMessageText(
       asMessage({ content: "Hello world", mentionedUsers: [] }),

@@ -5,6 +5,7 @@ import {
   buildMentionRegexes,
   classifyChannelInboundEvent,
   logInboundDrop,
+  matchesMentionPatterns,
   recordChannelBotPairLoopAndCheckSuppression,
   resolveInboundMentionDecision,
   resolveUnmentionedGroupInboundPolicy,
@@ -23,6 +24,7 @@ import { getChildLogger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { resolveDefaultDiscordAccountId } from "../accounts.js";
 import { ChannelType, MessageType, type User } from "../internal/discord.js";
+import { hasRawDiscordUserMention } from "../mentions.js";
 import {
   resolveDiscordGuildEntry,
   resolveDiscordMemberAccessState,
@@ -39,7 +41,6 @@ import { resolveDiscordPreflightChannelAccess } from "./message-handler.prefligh
 import { resolveDiscordPreflightChannelContext } from "./message-handler.preflight-channel-context.js";
 import { buildDiscordMessagePreflightContext } from "./message-handler.preflight-context.js";
 import {
-  hasRawDiscordUserMention,
   isBoundThreadBotSystemMessage,
   isDiscordThreadChannelMessage,
   resolveDiscordMentionState,
@@ -65,6 +66,7 @@ import type {
 } from "./message-handler.preflight.types.js";
 import { resolveDiscordPreflightRoute } from "./message-handler.routing-preflight.js";
 import {
+  hasDiscordMessageUserMentionToken,
   resolveDiscordChannelInfo,
   resolveDiscordMessageChannelId,
   resolveDiscordMessageText,
@@ -711,7 +713,24 @@ export async function preflightDiscordMessage(
   }
 
   if (author.bot && !sender.isPluralKit && allowBotsMode === "mentions") {
-    const botMentioned = isDirectMessage || wasMentioned || mentionDecision.implicitMention;
+    // Discord includes the replied-to user in mentionedUsers when reply pings are
+    // enabled. Preserve canonical mention metadata generally, but for reply messages
+    // require a matching native token so a reply chip alone cannot wake this bot.
+    const isReplyMessage = message.type === MessageType.Reply;
+    const hasExplicitNativeBotMention = Boolean(
+      botId &&
+      explicitlyMentioned &&
+      (!isReplyMessage || hasDiscordMessageUserMentionToken(message, botId)),
+    );
+    const hasNonReplyImplicitMention = mentionDecision.matchedImplicitMentionKinds.some(
+      (kind) => kind !== "reply_to_bot",
+    );
+    const botMentioned =
+      isDirectMessage ||
+      hasExplicitNativeBotMention ||
+      hasNonReplyImplicitMention ||
+      matchesMentionPatterns(mentionText, mentionRegexes) ||
+      matchesMentionPatterns(preflightTranscript ?? "", mentionRegexes);
     if (!botMentioned) {
       logDebug(`[discord-preflight] drop: bot message missing mention (allowBots=mentions)`);
       logVerbose("discord: drop bot message (allowBots=mentions, missing mention)");

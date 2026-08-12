@@ -3,6 +3,11 @@ import { ComponentType } from "discord-api-types/v10";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Message } from "../internal/discord.js";
 import {
+  collectActiveDiscordUserMentionIds,
+  hasRawDiscordUserMention,
+  rewriteRawDiscordUserMentions,
+} from "../mentions.js";
+import {
   formatDiscordSnapshotAuthor,
   normalizeDiscordMessageSnapshots,
   resolveDiscordMessageSnapshots,
@@ -33,13 +38,14 @@ export function resolveDiscordMessageText(
       null,
   );
   const componentText = extractDiscordComponentsV2Text(resolveDiscordMessageComponents(message));
+  const contentText = normalizeOptionalString(message.content) ? message.content : "";
   const rawText =
-    normalizeOptionalString(message.content) ||
+    contentText ||
     embedText ||
     componentText ||
     normalizeOptionalString(options?.fallbackText) ||
     "";
-  const baseText = resolveDiscordMentions(rawText, message);
+  const baseText = normalizeResolvedDiscordMessageText(resolveDiscordMentions(rawText, message));
   if (!options?.includeForwarded) {
     return baseText;
   }
@@ -51,6 +57,14 @@ export function resolveDiscordMessageText(
     return forwardedText;
   }
   return `${baseText}\n${forwardedText}`;
+}
+
+export function hasDiscordMessageUserMentionToken(message: Message, userId: string): boolean {
+  const content = typeof message.content === "string" ? message.content : "";
+  if (hasRawDiscordUserMention(content, userId)) {
+    return true;
+  }
+  return hasDiscordComponentsV2UserMentionToken(resolveDiscordMessageComponents(message), userId);
 }
 
 /** Adds native media text only for history surfaces that cannot carry structured facts. */
@@ -74,12 +88,24 @@ function resolveDiscordMentions(text: string, message: Message): string {
   if (!Array.isArray(mentions) || mentions.length === 0) {
     return text;
   }
-  let out = text;
+  const replacements = new Map<string, string>();
   for (const user of mentions) {
     const label = user.globalName || user.username;
-    out = out.replace(new RegExp(`<@!?${user.id}>`, "g"), `@${label}`);
+    replacements.set(user.id, `@${label}`);
   }
-  return out;
+  return rewriteRawDiscordUserMentions(text, replacements);
+}
+
+function normalizeResolvedDiscordMessageText(text: string): string {
+  const normalized = normalizeOptionalString(text) ?? "";
+  if (!normalized || normalized === text) {
+    return normalized;
+  }
+  const activeUserIds = collectActiveDiscordUserMentionIds(text);
+  const trimmingActivatesMention = [...collectActiveDiscordUserMentionIds(normalized)].some(
+    (userId) => !activeUserIds.has(userId),
+  );
+  return trimmingActivatesMention ? text.trimEnd() : normalized;
 }
 
 function resolveDiscordForwardedMessagesText(message: Message): string {
@@ -142,6 +168,32 @@ function collectDiscordTextDisplayContent(value: unknown, parts: string[]): void
   }
   collectDiscordTextDisplayContent(component.components, parts);
   collectDiscordTextDisplayContent(component.component, parts);
+}
+
+function hasDiscordComponentsV2UserMentionToken(value: unknown, userId: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasDiscordComponentsV2UserMentionToken(entry, userId));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const component = value as {
+    type?: unknown;
+    content?: unknown;
+    components?: unknown;
+    component?: unknown;
+  };
+  if (
+    component.type === ComponentType.TextDisplay &&
+    typeof component.content === "string" &&
+    hasRawDiscordUserMention(component.content, userId)
+  ) {
+    return true;
+  }
+  return (
+    hasDiscordComponentsV2UserMentionToken(component.components, userId) ||
+    hasDiscordComponentsV2UserMentionToken(component.component, userId)
+  );
 }
 
 export function resolveDiscordForwardedMessagesTextFromSnapshots(snapshots: unknown): string {
