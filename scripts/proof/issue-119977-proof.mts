@@ -22,10 +22,10 @@
  *                                  failure.reason "stale_thread_binding"
  *                                  (OpenClaw orchestration, simulated client).
  *   (b) blocked-native deferral -> harnessCompactionDisposition set to
- *                                  "harness_owned_automatic_compaction",
- *                                  recognized by
- *                                  isHarnessOwnedAutomaticCompactionSkip, and
- *                                  NOT present on the public SDK type.
+ *                                  "harness_owned_automatic_compaction" and
+ *                                  recognized by the real core recognizer
+ *                                  isHarnessOwnedAutomaticCompactionSkip over
+ *                                  its typed disposition field.
  *   (c) primary/after stage     -> details.request "before_context_engine"
  *                                  and "after_context_engine".
  *   (d) dead-thread recovery    -> simulated client throws the real

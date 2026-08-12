@@ -649,12 +649,19 @@ async function compactResolvedContextEngine(
     // codex-rs cannot resume a retired thread. The harness already cleared the dead
     // binding, so surface a harness-owned safe skip — the typed disposition core
     // recognizes structurally — so the turn continues and the next turn lazily rebinds
-    // instead of returning ok:false and dropping it (#119977). Manual /compact is
-    // excluded: the operator asked to compact now, so a dead binding must surface as a
-    // reported failure rather than a silent "skipped" (the command UI renders an ok:true
-    // non-compacted result as "Compaction skipped"). A required preflight that never used
-    // the native capability stays terminal so the honest failure is not laundered into a
-    // skip.
+    // instead of returning ok:false and dropping it (#119977). This safe skip is not a
+    // clean self-heal: the truly-dead-thread case is context loss — when the app-server
+    // thread was never persisted to ~/.codex/sessions and its owning client was retired,
+    // there is nothing on disk to resume, so the next turn rebinds to a FRESH thread and
+    // the prior in-memory transcript is gone. codex-rs rebinds and runs its pre-turn
+    // auto-compaction on that fresh binding, so the session keeps functioning — on the
+    // fresh binding, not the retired thread's history. Converting the failure to ok:true
+    // prevents the indefinite-defer bug and keeps required preflight from dropping the
+    // turn; it does not recover the lost context. Manual /compact is excluded: the
+    // operator asked to compact now, so a dead binding must surface as a reported failure
+    // rather than a silent "skipped" (the command UI renders an ok:true non-compacted
+    // result as "Compaction skipped"). A required preflight that never used the native
+    // capability stays terminal so the honest failure is not laundered into a skip.
     if (
       recoverableBinding &&
       preparedParams.preflightRequired !== true &&
