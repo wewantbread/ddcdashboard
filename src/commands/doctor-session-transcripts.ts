@@ -19,6 +19,7 @@ import {
 } from "../config/sessions/transcript-tree.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HealthFinding, HealthRepairEffect } from "../flows/health-checks.js";
+import { replaceFileAtomic } from "../infra/replace-file.js";
 import { runPostSessionPluginDoctorStateRepairs } from "../infra/state-migrations.doctor.js";
 import { shortenHomePath } from "../utils.js";
 import {
@@ -253,6 +254,22 @@ function hasBrokenPromptRewriteBranch(entries: TranscriptEntry[], activePath: Tr
   return false;
 }
 
+/** Replaces a live transcript atomically so a failed repair never truncates the original. */
+async function writeRepairedTranscript(
+  filePath: string,
+  entries: TranscriptEntry[],
+): Promise<void> {
+  const content = `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+  await replaceFileAtomic({
+    filePath,
+    content,
+    preserveExistingMode: true,
+    syncTempFile: true,
+    syncParentDir: true,
+    tempPrefix: path.basename(filePath),
+  });
+}
+
 async function writeActiveTranscript(params: {
   filePath: string;
   entries: TranscriptEntry[];
@@ -278,10 +295,8 @@ async function writeActiveTranscript(params: {
     header,
     ...params.activePath.entriesToPersist,
     ...(terminalLeafControl ? [terminalLeafControl] : []),
-  ]
-    .map((entry) => JSON.stringify(entry))
-    .join("\n");
-  await fs.writeFile(params.filePath, `${next}\n`, "utf-8");
+  ];
+  await writeRepairedTranscript(params.filePath, next);
   return backupPath;
 }
 
@@ -293,8 +308,7 @@ async function writeTranscriptEntries(params: {
     .toISOString()
     .replace(/[:.]/g, "-")}.bak`;
   await fs.copyFile(params.filePath, backupPath);
-  const next = params.entries.map((entry) => JSON.stringify(entry)).join("\n");
-  await fs.writeFile(params.filePath, `${next}\n`, "utf-8");
+  await writeRepairedTranscript(params.filePath, params.entries);
   return backupPath;
 }
 
