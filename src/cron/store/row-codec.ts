@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeCronJobPrecheck } from "../job-precheck.js";
 import { normalizeCronJobIdentityFields } from "../normalize-job-identity.js";
 import { normalizeCronJobInput } from "../normalize.js";
 import { getInvalidPersistedCronJobReason } from "../persisted-shape.js";
@@ -159,6 +160,7 @@ function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronSt
     // Legacy destination-only config remains untouched for doctor; runtime defaults to announce.
     runtimeConfig.delivery = deliveryFromJson({ ...runtimeConfig.delivery, mode: "announce" });
   }
+  const precheck = normalizeCronJobPrecheck(runtimeConfig.precheck);
   return {
     ...runtimeConfig,
     id: row.job_id,
@@ -168,6 +170,7 @@ function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronSt
     updatedAtMs:
       normalizeNumber(row.runtime_updated_at_ms) ?? normalizeNumber(row.updated_at) ?? createdAtMs,
     state,
+    ...(precheck ? { precheck } : {}),
   } as CronStoredJob;
 }
 
