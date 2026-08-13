@@ -1010,11 +1010,12 @@ describe("Windows startup fallback", () => {
       const startupEntryPath = await writeStartupFallbackEntry(env);
       await writeGatewayScript(env);
       findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4242]);
-      let portInspections = 0;
       inspectPortUsageMock.mockImplementation(async (port) => {
-        schtasksResponses.length = 0;
-        schtasksResponses.push({ code: 1, stdout: "", stderr: "restart denied" });
-        return portInspections++ === 0
+        if (schtasksCalls.some((call) => call[0] === "/Run")) {
+          schtasksResponses.length = 0;
+          schtasksResponses.push({ code: 1, stdout: "", stderr: "restart denied" });
+        }
+        return killProcessTreeMock.mock.calls.length === 0
           ? {
               port,
               status: "busy",
@@ -1790,7 +1791,7 @@ describe("Windows startup fallback", () => {
     await withWindowsEnv("openclaw-win-startup-", async ({ env }) => {
       fastForwardTaskStartWait();
       // A foreground `openclaw gateway` already owns the managed port before `schtasks /Run`.
-      inspectPortUsage.mockResolvedValue({
+      inspectPortUsageMock.mockResolvedValue({
         port: 18789,
         status: "busy",
         listeners: [
@@ -1885,7 +1886,7 @@ describe("Windows startup fallback", () => {
         commandLine: "node gateway.js --port 18789",
       });
       let portInspections = 0;
-      inspectPortUsage.mockImplementation(async (port: number) => ({
+      inspectPortUsageMock.mockImplementation(async (port: number) => ({
         port,
         status: "busy" as const,
         // The task really starts and adds its own process next to the foreground gateway.
