@@ -26,6 +26,7 @@ import { resolveCliBackendConfig as resolveCliBackendConfigImpl } from "../cli-b
 import {
   isBenignCompactionSkipReason,
   isBenignCompactionSkipResult,
+  isHarnessClearedStaleBindingSkip,
   isHarnessOwnedAutomaticCompactionSkip,
 } from "../embedded-agent-runner/compact-reasons.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
@@ -535,12 +536,15 @@ async function compactNativeHarnessCliTranscript(params: {
     }
     const recoverableBindingFailure = isRecoverableNativeHarnessBindingFailure(result);
     const modelLocked = params.sessionEntry.modelSelectionLocked === true;
-    if (modelLocked && recoverableBindingFailure) {
+    if (modelLocked && result && isHarnessClearedStaleBindingSkip(result)) {
       // A model-locked (e.g. OAuth) session cannot fall back to context-engine
-      // compaction, and codex-rs cannot resume a retired thread. The harness already
-      // cleared the dead binding, so treat the stale binding as a harness-owned safe
-      // skip: the lifecycle keeps the session entry and the next turn lazily rebinds.
-      // Failing here dropped the turn (#119977). Mirrors the core locked branch.
+      // compaction, and codex-rs cannot resume a retired thread. The harness reported that
+      // it cleared its own dead binding and guarantees the next turn lazily rebinds, so
+      // treat this as a harness-owned safe skip: keep the session entry and let the next
+      // turn rebind. Failing here dropped the turn (#119977). A recoverable-binding failure
+      // WITHOUT this disposition (a harness that preserves its binding for host recovery)
+      // is NOT a safe skip: it falls through to the non-fallback failure return below.
+      // Mirrors the core locked branch (agent-runner-memory.ts).
       log.info(
         `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${reason ?? "stale thread binding"}`,
       );

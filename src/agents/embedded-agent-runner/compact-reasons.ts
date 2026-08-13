@@ -28,12 +28,38 @@ export const DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON =
 export function isHarnessOwnedAutomaticCompactionSkip(result: {
   ok: boolean;
   compacted: boolean;
-  harnessCompactionDisposition?: "harness_owned_automatic_compaction";
+  harnessCompactionDisposition?:
+    | "harness_owned_automatic_compaction"
+    | "harness_cleared_stale_binding";
 }): boolean {
   return (
     result.ok &&
     !result.compacted &&
     result.harnessCompactionDisposition === "harness_owned_automatic_compaction"
+  );
+}
+
+/**
+ * Returns whether a result is a native harness's cleared-stale-binding recovery: the
+ * harness cleared (or confirmed replacement of) its own dead thread binding and
+ * guarantees the next turn will lazily rebind. Unlike the automatic-ownership defer this
+ * is an honest ok:false failure, so ok is deliberately not part of the match — the sole
+ * signal is the typed harnessCompactionDisposition field, never a harness's reason text.
+ *
+ * A model-locked caller that cannot fall back to context-engine compaction MAY
+ * safe-continue on this disposition. A recoverable-binding failure WITHOUT it (a harness
+ * that preserves its binding for host-side recovery, e.g. Copilot) is not a safe skip and
+ * must surface as a visible failure.
+ */
+export function isHarnessClearedStaleBindingSkip(result: {
+  ok: boolean;
+  compacted: boolean;
+  harnessCompactionDisposition?:
+    | "harness_owned_automatic_compaction"
+    | "harness_cleared_stale_binding";
+}): boolean {
+  return (
+    !result.compacted && result.harnessCompactionDisposition === "harness_cleared_stale_binding"
   );
 }
 

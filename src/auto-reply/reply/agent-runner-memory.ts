@@ -15,11 +15,11 @@ import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
 import {
   isBenignCompactionSkipResult,
+  isHarnessClearedStaleBindingSkip,
   isHarnessOwnedAutomaticCompactionSkip,
 } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import { createToolResultPromptProjectionState } from "../../agents/embedded-agent-runner/session-prompt-state.js";
-import { isRecoverableNativeHarnessBindingFailure } from "../../agents/harness/compaction-recovery.js";
 import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
@@ -1044,11 +1044,14 @@ export async function runSessionCompactionIfNeeded(params: {
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;
       }
-      if (modelLocked && result && isRecoverableNativeHarnessBindingFailure(result)) {
+      if (modelLocked && result && isHarnessClearedStaleBindingSkip(result)) {
         // A model-locked (e.g. OAuth) session cannot fall back to context-engine
-        // compaction, and codex-rs cannot resume a retired thread. The harness already
-        // cleared the dead binding, so the next turn lazily rebinds; failing here would
-        // drop the turn (#119971 / #119977). Mirrors the CLI sibling (cli-compaction.ts).
+        // compaction, and codex-rs cannot resume a retired thread. The harness reported
+        // that it cleared its own dead binding and guarantees the next turn lazily
+        // rebinds, so continue rather than dropping the turn (#119971 / #119977). A
+        // recoverable-binding failure WITHOUT this disposition (a harness that preserves
+        // its binding for host recovery) falls through to the throw below — an owner-ruled
+        // visible failure. Mirrors the CLI sibling (cli-compaction.ts).
         await notifyTerminalCompaction("skipped");
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;

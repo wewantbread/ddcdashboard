@@ -646,6 +646,10 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("no codex app-server thread binding");
     expect(result.failure?.reason).toBe("missing_thread_binding");
     expect(result.result).toBeUndefined();
+    // A never-bound session cleared no dead binding, so it does not advertise the
+    // safe-continue disposition even on an automatic trigger: a model-locked caller
+    // surfaces this as a visible failure (matches Copilot's missing_thread_binding).
+    expect(harnessCompactionDisposition(result)).toBeUndefined();
   });
 
   it("starts native app-server compaction for post-context-engine budget requests", async () => {
@@ -950,6 +954,9 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
+    // A concurrent turn already rebound to a live thread, so no live stale binding remains
+    // and the guarded trigger advertises the safe-continue disposition.
+    expect(harnessCompactionDisposition(result)).toBe("harness_cleared_stale_binding");
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
       threadId: "thread-2",
       contextEngine: {
@@ -2000,6 +2007,9 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("thread not found: thread-1");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
+    // Manual /compact surfaces the failure for operator-driven recovery: it leaves the
+    // binding untouched and never advertises the safe-continue disposition.
+    expect(harnessCompactionDisposition(result)).toBeUndefined();
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
 
@@ -2038,11 +2048,12 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("thread not found: thread-1");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
-    // The ownership no-op disposition must not be set for a present-but-dead binding.
-    expect(harnessCompactionDisposition(result)).toBeUndefined();
     // The guarded (automatic) trigger owns recovery: the dead binding is cleared so the
     // next turn lazily rebinds instead of re-probing a thread codex-rs cannot resume.
     expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
+    // Because the dead binding was actually cleared, the result advertises the
+    // harness_cleared_stale_binding disposition so a model-locked caller may safe-continue.
+    expect(harnessCompactionDisposition(result)).toBe("harness_cleared_stale_binding");
   });
 
   it("retires the client before releasing an unconfirmed compaction start", async () => {

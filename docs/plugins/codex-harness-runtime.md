@@ -213,30 +213,43 @@ it failed and whether the session is model-locked:
   native request, but codex-rs still owns inline automatic compaction for the
   bound thread. The harness defers rather than failing the turn and reports a
   harness-owned safe skip on its `AgentHarnessCompactResult` via
-  `harnessCompactionDisposition: "harness_owned_automatic_compaction"`.
+  `harnessCompactionDisposition: "harness_owned_automatic_compaction"` (ok:true).
 - **Dead bound thread on an unlocked session.** codex-rs cannot resume the
   retired thread, so OpenClaw clears the stale binding and falls back to
   context-engine compaction for this turn, then lazily rebinds a fresh thread on
   the next turn.
 - **Dead bound thread on a model-locked session (OAuth-only, no API key).**
-  Context-engine fallback would fail with "No API key found", so the compaction
-  layer returns an honest `ok:false` recoverable-binding failure
-  (`failure.reason: "stale_thread_binding"` or `"missing_thread_binding"`)
-  rather than reusing the `harness_owned_automatic_compaction` disposition. The
-  stale binding is still cleared upstream in the codex plugin
-  (`clearDeadCodexThreadBinding`), so the next turn lazily rebinds a fresh
-  thread. Required preflight (`src/auto-reply/reply/agent-runner-memory.ts`) and
-  the CLI turn lifecycle (`src/agents/command/cli-compaction.ts`) recognize this
-  model-locked recoverable-binding failure and continue the turn (safe-continue)
-  instead of dropping it.
+  Context-engine fallback would fail with "No API key found", so the harness
+  returns an honest `ok:false` recoverable-binding failure
+  (`failure.reason: "stale_thread_binding"`). When it has actually cleared its
+  own dead binding (or confirmed a concurrent turn already replaced it), it also
+  sets `harnessCompactionDisposition: "harness_cleared_stale_binding"` to signal
+  that the next turn will lazily rebind. Required preflight
+  (`src/auto-reply/reply/agent-runner-memory.ts`) and the CLI turn lifecycle
+  (`src/agents/command/cli-compaction.ts`) safe-continue a model-locked session
+  **only** on that typed disposition, never on the recovery reason text alone.
+
+Safe-continue for a model-locked session is a typed opt-in the harness must
+grant. A harness that returns `missing_thread_binding` or `stale_thread_binding`
+_without_ the `harness_cleared_stale_binding` disposition — for example a harness
+that deliberately preserves its binding for host-side recovery — does not
+safe-continue: an unlocked session falls back to context-engine compaction, and
+a model-locked session surfaces a visible compaction failure rather than silently
+skipping. The Codex harness sets the disposition only after clearing (or
+confirming replacement of) its own dead binding under a non-manual trigger; a
+never-bound session (`missing_thread_binding`) and manual `/compact` never carry
+it. The disposition is `ok:false` and distinct from the `ok:true`
+`harness_owned_automatic_compaction` defer above.
 
 For the native-execution-blocked case (a live bound thread), OpenClaw treats the
 `harness_owned_automatic_compaction` disposition as a safe skip: it continues the
 turn instead of failing required preflight, and it never falls back to
 context-engine compaction (which would fight Codex's ownership and fail an
 OAuth-only session with no API key). The model-locked dead-binding case above
-reaches the same safe-continue outcome through a different path — a recoverable
-binding failure the caller recognizes — not through the disposition.
+reaches a safe-continue through the separate `harness_cleared_stale_binding`
+disposition — an honest `ok:false` result the caller recognizes only when the
+harness has cleared its own dead binding — not through the automatic-ownership
+disposition.
 
 Manual `/compact` does not take the safe-skip path. The operator asked to
 compact now, so a dead binding is reported as a compaction failure rather than a

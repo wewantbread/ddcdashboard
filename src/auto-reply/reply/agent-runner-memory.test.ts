@@ -1706,21 +1706,22 @@ describe("runMemoryFlushIfNeeded", () => {
       systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
       relativePath: "memory/2023-11-14.md",
     }));
-    // #119971 safe-continue on a model-locked recoverable-binding failure. The queued
-    // layer now returns the honest ok:false stale-binding failure (compact.queued.ts): the
-    // harness already cleared the dead binding, so required preflight must continue the
-    // turn and let the next turn lazily rebind instead of throwing and dropping it
-    // (#119971 / #119977). This is the load-bearing regression: on an un-wired
-    // agent-runner-memory.ts (before the model-locked safe-continue branches were added)
-    // this failure would throw "Preflight compaction required but failed". Uses the
-    // OpenClaw runtime so the token-triggered preflight path invokes compaction (the Codex
-    // runtime is gated to the transcript-byte fuse); the caller's safe-continue keys off
-    // the model lock plus the recoverable-binding failure, not the harness identity.
+    // #119971 / #119977 safe-continue on a model-locked cleared-stale-binding recovery.
+    // The Codex harness cleared its own dead binding and set the typed
+    // harness_cleared_stale_binding disposition (ok:false), so required preflight must
+    // continue the turn and let the next turn lazily rebind instead of throwing and
+    // dropping it. This is the load-bearing regression: on an un-wired
+    // agent-runner-memory.ts (before the model-locked safe-continue branch was added) this
+    // failure would throw "Preflight compaction required but failed". Uses the OpenClaw
+    // runtime so the token-triggered preflight path invokes compaction (the Codex runtime
+    // is gated to the transcript-byte fuse); the caller's safe-continue keys off the model
+    // lock plus the typed disposition, not the harness identity or the reason text.
     compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
       ok: false,
       compacted: false,
       reason: "thread not found: thread-1",
       failure: { reason: "stale_thread_binding" },
+      harnessCompactionDisposition: "harness_cleared_stale_binding",
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
@@ -1757,6 +1758,67 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(onCompactionNotice).toHaveBeenNthCalledWith(1, "start");
     expect(onCompactionNotice).toHaveBeenNthCalledWith(2, "skipped");
     expect(onCompactionNotice).not.toHaveBeenCalledWith("incomplete");
+  });
+
+  it("fails a model-locked turn on a recoverable binding failure without the cleared disposition", async () => {
+    const sessionFile = path.join(rootDir, "session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
+      "utf8",
+    );
+    registerMemoryFlushPlanResolverForTest(() => ({
+      softThresholdTokens: 1,
+      forceFlushTranscriptBytes: 1_000_000_000,
+      reserveTokensFloor: 0,
+      prompt: "Pre-compaction memory flush.\nNO_REPLY",
+      systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
+      relativePath: "memory/2023-11-14.md",
+    }));
+    // #119977 owner ruling: a harness that returns a recoverable-binding failure WITHOUT
+    // the harness_cleared_stale_binding disposition (e.g. Copilot's missing_thread_binding,
+    // which deliberately preserves its binding for host-side recovery) must NOT safe-continue
+    // on a model-locked session. It falls through to the visible required-preflight failure.
+    compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "missing_thread_binding",
+      failure: { reason: "missing_thread_binding" },
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 120,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      agentHarnessId: "openclaw",
+      modelSelectionLocked: true,
+    };
+    const onCompactionNotice = vi.fn();
+
+    await expect(
+      runPreflightCompactionIfNeeded({
+        cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
+        followupRun: createTestFollowupRun({
+          sessionId: "session",
+          sessionFile,
+          sessionKey: "agent:main:main",
+        }),
+        defaultModel: "anthropic/claude-opus-4-6",
+        agentCfgContextTokens: 100,
+        sessionEntry,
+        sessionStore: { "agent:main:main": sessionEntry },
+        sessionKey: "agent:main:main",
+        storePath: path.join(rootDir, "sessions.json"),
+        isHeartbeat: false,
+        replyOperation: createReplyOperation(),
+        onCompactionNotice,
+      }),
+    ).rejects.toThrow("Preflight compaction required but failed: missing_thread_binding");
+
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(onCompactionNotice).toHaveBeenCalledWith("incomplete");
   });
 
   it("fails when required preflight context-engine compaction is deferred to background maintenance", async () => {

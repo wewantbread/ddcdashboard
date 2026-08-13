@@ -5,6 +5,7 @@ import {
   formatUnknownCompactionReasonDetail,
   isBenignCompactionSkipResult,
   isBenignCompactionSkipReason,
+  isHarnessClearedStaleBindingSkip,
   isHarnessOwnedAutomaticCompactionSkip,
   resolveCompactionFailureReason,
 } from "./compact-reasons.js";
@@ -181,6 +182,52 @@ describe("isHarnessOwnedAutomaticCompactionSkip", () => {
         ok: true,
         compacted: false,
         reason: "codex app-server owns automatic compaction",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isHarnessClearedStaleBindingSkip", () => {
+  it("matches the ok:false cleared-stale-binding recovery disposition", () => {
+    // The harness cleared its own dead binding and guarantees the next turn rebinds; the
+    // recovery is an honest ok:false result, so ok is deliberately not part of the match.
+    expect(
+      isHarnessClearedStaleBindingSkip({
+        ok: false,
+        compacted: false,
+        harnessCompactionDisposition: "harness_cleared_stale_binding",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match a recoverable-binding failure without the disposition (Copilot shape)", () => {
+    // A harness that preserves its binding for host-side recovery reports the recovery
+    // reason but no disposition. A model-locked caller must surface this, not safe-continue.
+    expect(
+      isHarnessClearedStaleBindingSkip({
+        ok: false,
+        compacted: false,
+        failure: { reason: "missing_thread_binding" },
+      } as never),
+    ).toBe(false);
+  });
+
+  it("does not match the ok:true automatic-ownership defer", () => {
+    expect(
+      isHarnessClearedStaleBindingSkip({
+        ok: true,
+        compacted: false,
+        harnessCompactionDisposition: "harness_owned_automatic_compaction",
+      }),
+    ).toBe(false);
+  });
+
+  it("never treats an actual compaction as a stale-binding skip", () => {
+    expect(
+      isHarnessClearedStaleBindingSkip({
+        ok: false,
+        compacted: true,
+        harnessCompactionDisposition: "harness_cleared_stale_binding",
       }),
     ).toBe(false);
   });
