@@ -21,9 +21,22 @@ export function wrapGuardedBodyStream(params: {
   body: ReadableStream<Uint8Array>;
   cleanup: () => Promise<void> | void;
   refreshTimeout?: () => void;
+  /**
+   * Optional hard cap on total body bytes. When exceeded, the source is
+   * cancelled, cleanup runs, and the consumer sees `limitError` (or a
+   * default overflow Error). Chunks that would cross the cap are not enqueued.
+   */
+  maxBytes?: number;
+  /** Factory for the error surfaced when `maxBytes` is exceeded. */
+  limitError?: () => Error;
 }): ReadableStream<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let finalized = false;
+  let receivedBytes = 0;
+  const maxBytes =
+    params.maxBytes !== undefined && Number.isFinite(params.maxBytes) && params.maxBytes > 0
+      ? Math.floor(params.maxBytes)
+      : undefined;
   const cleanupRegistrationToken = {};
   const finalize = async (
     cancelReader: () => Promise<void> = async () => {
@@ -60,6 +73,16 @@ export function wrapGuardedBodyStream(params: {
           controller.close();
           await finalize();
           return;
+        }
+        if (maxBytes !== undefined) {
+          receivedBytes += chunk.value.byteLength;
+          if (receivedBytes > maxBytes) {
+            const error =
+              params.limitError?.() ?? new Error(`Response body exceeds ${maxBytes} bytes`);
+            controller.error(error);
+            await finalize();
+            return;
+          }
         }
         params.refreshTimeout?.();
         controller.enqueue(chunk.value);

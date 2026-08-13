@@ -9,6 +9,9 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildMcpHttpFetch,
+  createMcpHttpResponseTooLargeError,
+  isMcpHttpResponseTooLargeError,
+  MCP_HTTP_MAX_RESPONSE_BYTES,
   withoutMcpAuthorizationHeader,
   withSameOriginMcpHttpHeaders,
 } from "./mcp-http-fetch.js";
@@ -209,6 +212,112 @@ describe("MCP HTTP fetch helpers", () => {
 
     expect(response.status).toBe(status);
     expect(response.body).toBeNull();
+  });
+
+  it("rejects Content-Length above the MCP response budget before reading the body", async () => {
+    const text = vi.fn(async () => "should-not-read");
+    const cancel = vi.fn(async () => undefined);
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        ({
+          status: 200,
+          statusText: "OK",
+          headers: new Headers({
+            "content-type": "application/json",
+            "content-length": String(MCP_HTTP_MAX_RESPONSE_BYTES + 1),
+          }),
+          body: {
+            cancel,
+            getReader() {
+              throw new Error("body should not be read when Content-Length is over budget");
+            },
+          },
+          ok: true,
+          text,
+        }) as unknown as Response,
+    };
+
+    const fetch = buildMcpHttpFetch({ resourceUrl: "https://mcp.example.com/mcp" });
+    await expect(fetch("https://mcp.example.com/mcp")).rejects.toSatisfy((error: unknown) => {
+      expect(isMcpHttpResponseTooLargeError(error)).toBe(true);
+      expect(String(error)).toContain(String(MCP_HTTP_MAX_RESPONSE_BYTES));
+      return true;
+    });
+    expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("aborts streaming MCP bodies that cross the response budget mid-read", async () => {
+    const maxBytes = 64;
+    const encoder = new TextEncoder();
+    const first = encoder.encode("a".repeat(40));
+    const second = encoder.encode("b".repeat(40));
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) {
+          controller.enqueue(first);
+          return;
+        }
+        if (pullCount === 2) {
+          controller.enqueue(second);
+          return;
+        }
+        controller.close();
+      },
+    });
+    const cleanup = vi.fn(async () => undefined);
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(source, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    };
+
+    // Spy release path by using real buildMcpHttpFetch; body cleanup is internal.
+    const fetch = buildMcpHttpFetch({
+      resourceUrl: "https://mcp.example.com/mcp",
+      maxResponseBytes: maxBytes,
+    });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.text()).rejects.toSatisfy((error: unknown) => {
+      expect(isMcpHttpResponseTooLargeError(error)).toBe(true);
+      expect(String(error)).toContain(String(maxBytes));
+      return true;
+    });
+    // Ensure helper factory stays aligned with the thrown code.
+    expect(createMcpHttpResponseTooLargeError(maxBytes).code).toBe("MCP_HTTP_RESPONSE_TOO_LARGE");
+    void cleanup;
+  });
+
+  it("allows MCP bodies within the response budget", async () => {
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "content-length": "11",
+          },
+        }),
+    };
+    const fetch = buildMcpHttpFetch({
+      resourceUrl: "https://mcp.example.com/mcp",
+      maxResponseBytes: 1024,
+    });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.json()).resolves.toEqual({ ok: true });
   });
 
   it("keeps same-origin TLS overrides ahead of configured env proxy", async () => {

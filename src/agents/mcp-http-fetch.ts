@@ -1,7 +1,9 @@
 /**
  * MCP HTTP fetch wrappers.
  * Adds SSRF protection, scoped TLS/client-cert dispatchers, response cleanup,
- * and same-origin header handling around the MCP SDK fetch contract.
+ * same-origin header handling, and a pre-parse response body byte cap around
+ * the MCP SDK fetch contract (so tools/list JSON and SSE events cannot fully
+ * buffer past the catalog budget before OpenClaw measures them).
  */
 import fs from "node:fs";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -12,6 +14,44 @@ import {
   type PinnedDispatcherPolicy,
 } from "../infra/net/ssrf.js";
 import { loadUndiciRuntimeDeps } from "../infra/net/undici-runtime.js";
+
+/**
+ * Hard cap on a single MCP HTTP/SSE response body before the SDK parses it.
+ * Matches the bundle MCP tools/list catalog budget so transport cannot fully
+ * materialize a larger payload first.
+ */
+export const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+export const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
+
+export function createMcpHttpResponseTooLargeError(
+  maxBytes: number = MCP_HTTP_MAX_RESPONSE_BYTES,
+): Error & { code: string } {
+  return Object.assign(new Error(`MCP HTTP response exceeds ${maxBytes} bytes`), {
+    code: MCP_HTTP_RESPONSE_TOO_LARGE_CODE,
+  });
+}
+
+export function isMcpHttpResponseTooLargeError(error: unknown): error is Error & { code: string } {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === MCP_HTTP_RESPONSE_TOO_LARGE_CODE
+  );
+}
+
+function parseContentLengthBytes(headers: Headers): number | undefined {
+  const raw = headers.get("content-length");
+  if (raw == null || raw.trim() === "") {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
 
 /** Default MCP HTTP fetch backed by lazy-loaded undici runtime deps. */
 const fetchWithUndici: FetchLike = async (url, init) =>
@@ -72,7 +112,20 @@ async function buildManagedMcpResponse(
   response: Response,
   release: () => Promise<void>,
   refreshTimeout?: () => void,
+  maxResponseBytes: number = MCP_HTTP_MAX_RESPONSE_BYTES,
 ): Promise<Response> {
+  const maxBytes = Math.max(1, Math.floor(maxResponseBytes));
+  const contentLength = parseContentLengthBytes(response.headers);
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    // Reject before the SDK reads JSON / SSE event data into memory.
+    try {
+      await response.body?.cancel().catch(() => undefined);
+    } finally {
+      void release();
+    }
+    throw createMcpHttpResponseTooLargeError(maxBytes);
+  }
+
   if (!response.body) {
     void release();
     return await ensureGlobalFetchResponse(response);
@@ -82,6 +135,8 @@ async function buildManagedMcpResponse(
     body: response.body,
     cleanup: release,
     refreshTimeout,
+    maxBytes,
+    limitError: () => createMcpHttpResponseTooLargeError(maxBytes),
   });
   return await ensureGlobalFetchResponse(
     new Response(wrappedBody, {
@@ -99,6 +154,8 @@ export function buildMcpHttpFetch(params: {
   clientKey?: string;
   resourceUrl?: string;
   timeoutMs?: number;
+  /** Override the pre-parse response body cap (defaults to catalog budget). */
+  maxResponseBytes?: number;
 }): FetchLike {
   const needsCustomDispatcher =
     params.sslVerify === false || Boolean(params.clientCert || params.clientKey);
@@ -136,7 +193,12 @@ export function buildMcpHttpFetch(params: {
       ...(needsCustomDispatcher ? { resolveDispatcherPolicy: resolveCustomDispatcherPolicy } : {}),
     };
     const guarded = await fetchWithSsrFGuard(guardedFetchOptions);
-    return await buildManagedMcpResponse(guarded.response, guarded.release, guarded.refreshTimeout);
+    return await buildManagedMcpResponse(
+      guarded.response,
+      guarded.release,
+      guarded.refreshTimeout,
+      params.maxResponseBytes ?? MCP_HTTP_MAX_RESPONSE_BYTES,
+    );
   };
 }
 
