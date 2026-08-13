@@ -357,19 +357,26 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     const defaultAgent =
       agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
     const identityEmoji = getRecord(getRecord(defaultAgent)?.identity)?.emoji;
-    // WhatsApp trims the reaction emoji, so a whitespace-only legacy value is not
-    // effective — it falls back to identity or the default. Normalize before the
-    // receipt so the recovery record names the value WhatsApp would actually use.
+    // WhatsApp trims the reaction emoji at send time, so a whitespace-only
+    // legacy value is not effective there — it falls back to per-agent identity
+    // or the default. That normalization is for the receipt text ONLY: the
+    // written value must stay the raw legacy string (including blank/
+    // whitespace) so the same runtime trim-and-fallback still resolves through
+    // each routed agent's own identity. Normalizing the write would bake one
+    // agent's emoji into the global config and break every other agent's
+    // fallback in a multi-agent WhatsApp setup.
     const effectiveEmoji = (value: unknown): string | undefined => {
       const trimmed = typeof value === "string" ? value.trim() : "";
       return trimmed.length > 0 ? trimmed : undefined;
     };
-    const emoji = effectiveEmoji(ack.emoji) ?? effectiveEmoji(identityEmoji) ?? "👀";
+    const rawEmoji = typeof ack.emoji === "string" ? ack.emoji : undefined;
+    const writtenEmoji = rawEmoji ?? effectiveEmoji(identityEmoji) ?? "👀";
+    const receiptEmoji = effectiveEmoji(rawEmoji) ?? effectiveEmoji(identityEmoji) ?? "👀";
     if (messages.ackReaction === undefined) {
-      messages.ackReaction = emoji;
-      applied.push(`applied effective legacy emoji "${emoji}" to messages.ackReaction`);
-    } else if (emoji !== messages.ackReaction) {
-      kept.push(`kept existing messages.ackReaction over effective legacy emoji "${emoji}"`);
+      messages.ackReaction = writtenEmoji;
+      applied.push(`applied effective legacy emoji "${receiptEmoji}" to messages.ackReaction`);
+    } else if (receiptEmoji !== messages.ackReaction) {
+      kept.push(`kept existing messages.ackReaction over effective legacy emoji "${receiptEmoji}"`);
     }
     const direct = ack.direct !== false;
     const group = ack.group ?? "mentions";

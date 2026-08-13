@@ -743,6 +743,53 @@ describe("retired runtime config migrations", () => {
     );
   });
 
+  it("preserves a whitespace-only legacy emoji on write so multi-agent WhatsApp keeps the routed agent's fallback (#119501)", () => {
+    const result = applyAll({
+      messages: { ackReactionScope: "group-mentions" },
+      agents: {
+        list: [
+          { id: "routed", identity: { emoji: "🚀" } },
+          { default: true, id: "main", identity: { emoji: "🤖" } },
+        ],
+      },
+      channels: {
+        whatsapp: { ackReaction: { emoji: " ", direct: true, group: "never" } },
+      },
+    });
+
+    // The persisted value must stay the raw whitespace string, not the default
+    // agent's resolved emoji: resolveWhatsAppAckEmoji
+    // (extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts:7-24, proven by
+    // its own "falls back to the routed agent identity for an empty emoji"
+    // case) trims messages.ackReaction at send time and, once trimmed empty,
+    // falls through to the *routed* agent's own identity emoji — not the
+    // default agent's. Baking a concrete emoji into the write here (the
+    // pre-fix regression) would short-circuit that per-agent fallback for
+    // every non-default agent in a multi-agent WhatsApp setup. Normalization
+    // still names the effective "🤖" in the receipt text for readability.
+    expect(result.raw).toHaveProperty("messages.ackReaction", " ");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied effective legacy emoji "🤖" to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
+    );
+
+    // Mirrors the trim-then-identity-fallback contract of resolveWhatsAppAckEmoji
+    // as an oracle over the migrated config: with the raw whitespace value
+    // preserved, each routed agent still resolves its own identity emoji
+    // instead of the default agent's "🤖" getting baked in for everyone.
+    const resolveForAgent = (agentId: string): string => {
+      const configured = getPath(result.raw, "messages.ackReaction");
+      const trimmed = typeof configured === "string" ? configured.trim() : "";
+      if (trimmed) {
+        return trimmed;
+      }
+      const agentList = getPath(result.raw, "agents.list") as Array<Record<string, unknown>>;
+      const agent = agentList.find((candidate) => candidate.id === agentId);
+      return (getPath(agent, "identity.emoji") as string | undefined)?.trim() || "👀";
+    };
+    expect(resolveForAgent("routed")).toBe("🚀");
+    expect(resolveForAgent("main")).toBe("🤖");
+  });
+
   it("reports the default fallback emoji when no legacy emoji or identity exists", () => {
     const result = applyAll({
       messages: { ackReaction: "🔥" },
