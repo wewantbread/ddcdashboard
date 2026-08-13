@@ -58,7 +58,6 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
   sourceTurnId: string;
   storePath: string;
 }): Promise<SessionEntry | undefined> {
-  let didRetire = false;
   const retired = await updateSessionEntry(
     { storePath: params.storePath, sessionKey: params.sessionKey },
     (current) => {
@@ -70,11 +69,6 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
       ) {
         return null;
       }
-      didRetire = true;
-      diag.warn("retired stale terminal restart-recovery claim after gateway stall", {
-        sessionKey: params.sessionKey,
-        sourceTurnId: params.sourceTurnId,
-      });
       return {
         ...buildRestartRecoveryClaimCleanupPatch({
           entry: current,
@@ -86,7 +80,13 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
     },
     { skipMaintenance: true, takeCacheOwnership: true },
   );
-  return didRetire ? (retired ?? undefined) : undefined;
+  if (retired) {
+    diag.warn("retired stale terminal restart-recovery claim", {
+      sessionKey: params.sessionKey,
+      sourceTurnId: params.sourceTurnId,
+    });
+  }
+  return retired ?? undefined;
 }
 
 function buildExpectedSessionState(entry: SessionEntry): SessionTranscriptTurnExpectedState {
@@ -248,8 +248,8 @@ export function createReplyRestartRecoveryClaimController(params: {
         throw new Error("restart recovery claim changed before agent adoption");
       }
       // Drift tolerance: retire stale exact claims (session drifted to
-      // non-running during a gateway stall) and unwind as duplicate-source. If
-      // retirement is declined, throw to keep the claim visible for reconciliation.
+      // non-running between claim and admission) and unwind as duplicate-source.
+      // If retirement is declined, throw to keep the claim visible for reconciliation.
       if (entry.status !== "running") {
         const retired = await retireTerminalRestartRecoverySourceClaim({
           sessionId,
@@ -258,9 +258,6 @@ export function createReplyRestartRecoveryClaimController(params: {
           storePath: params.storePath,
         });
         if (retired) {
-          diag.warn(
-            `retired stale terminal restart-recovery claim: sessionKey=${params.sessionKey} status=${entry.status} sourceRunId=${normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) ?? "<none>"}`,
-          );
           params.setEntry(retired);
           return "duplicate-source";
         }
