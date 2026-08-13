@@ -9,14 +9,24 @@ import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildMcpHttpFetch,
-  createMcpHttpResponseTooLargeError,
-  isMcpHttpResponseTooLargeError,
-  MCP_HTTP_MAX_RESPONSE_BYTES,
   withoutMcpAuthorizationHeader,
   withSameOriginMcpHttpHeaders,
 } from "./mcp-http-fetch.js";
 import { withMcpOAuthBearer } from "./mcp-oauth-fetch.js";
 import { operatorMcpOAuthIdentity } from "./mcp-oauth-identity.js";
+
+/** Mirrors internal default budget (must stay aligned with mcp-http-fetch.ts). */
+const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
+
+function isMcpHttpResponseTooLargeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === MCP_HTTP_RESPONSE_TOO_LARGE_CODE
+  );
+}
 
 const testGlobal = globalThis as Record<string, unknown>;
 const TEST_UNDICI_RUNTIME_DEPS_KEY = "__OPENCLAW_TEST_UNDICI_RUNTIME_DEPS__";
@@ -293,8 +303,6 @@ describe("MCP HTTP fetch helpers", () => {
       expect(String(error)).toContain(String(maxBytes));
       return true;
     });
-    // Ensure helper factory stays aligned with the thrown code.
-    expect(createMcpHttpResponseTooLargeError(maxBytes).code).toBe("MCP_HTTP_RESPONSE_TOO_LARGE");
     void cleanup;
   });
 

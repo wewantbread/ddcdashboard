@@ -20,25 +20,16 @@ import { loadUndiciRuntimeDeps } from "../infra/net/undici-runtime.js";
  * Matches the bundle MCP tools/list catalog budget so transport cannot fully
  * materialize a larger payload first.
  */
-export const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
-export const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
+const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
 
-export function createMcpHttpResponseTooLargeError(
+function createMcpHttpResponseTooLargeError(
   maxBytes: number = MCP_HTTP_MAX_RESPONSE_BYTES,
 ): Error & { code: string } {
   return Object.assign(new Error(`MCP HTTP response exceeds ${maxBytes} bytes`), {
     code: MCP_HTTP_RESPONSE_TOO_LARGE_CODE,
   });
-}
-
-export function isMcpHttpResponseTooLargeError(error: unknown): error is Error & { code: string } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === MCP_HTTP_RESPONSE_TOO_LARGE_CODE
-  );
 }
 
 function parseContentLengthBytes(headers: Headers): number | undefined {
