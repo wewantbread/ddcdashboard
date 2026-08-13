@@ -391,6 +391,19 @@ function createDiscoveryResult(): PluginDiscoveryResult {
   };
 }
 
+function mergePluginCandidateInstallOwner(
+  target: PluginCandidate,
+  installOwner: string | undefined,
+  installOwnerAmbiguous = false,
+): void {
+  const targetOwner = resolvePluginCandidateInstallOwner(target);
+  const ambiguous =
+    isPluginCandidateInstallOwnerAmbiguous(target) ||
+    installOwnerAmbiguous ||
+    Boolean(targetOwner && installOwner && targetOwner !== installOwner);
+  recordPluginCandidateInstallOwner(target, ambiguous ? undefined : installOwner, ambiguous);
+}
+
 function mergeDiscoveryResult(
   target: PluginDiscoveryResult,
   source: PluginDiscoveryResult,
@@ -404,18 +417,11 @@ function mergeDiscoveryResult(
     const key = safeRealpathSync(candidate.source, realpathCache) ?? path.resolve(candidate.source);
     const existing = candidatesBySource.get(key);
     if (existing) {
-      const existingOwner = resolvePluginCandidateInstallOwner(existing);
-      const candidateOwner = resolvePluginCandidateInstallOwner(candidate);
-      const ownerConflict = existingOwner && candidateOwner && existingOwner !== candidateOwner;
-      if (
-        isPluginCandidateInstallOwnerAmbiguous(existing) ||
-        isPluginCandidateInstallOwnerAmbiguous(candidate) ||
-        ownerConflict
-      ) {
-        recordPluginCandidateInstallOwner(existing, undefined, true);
-      } else if (candidateOwner) {
-        recordPluginCandidateInstallOwner(existing, candidateOwner);
-      }
+      mergePluginCandidateInstallOwner(
+        existing,
+        resolvePluginCandidateInstallOwner(candidate),
+        isPluginCandidateInstallOwnerAmbiguous(candidate),
+      );
       continue;
     }
     candidatesBySource.set(key, candidate);
@@ -493,27 +499,29 @@ type InstalledPluginRecordPath = {
   installOwnerAmbiguous?: true;
 };
 
-function isLinkedLocalPluginRecord(params: {
+function resolveLinkedLocalPluginRecordPath(params: {
   record: PluginInstallRecord;
   env: NodeJS.ProcessEnv;
   realpathCache: Map<string, string>;
-}): boolean {
-  if (params.record.source !== "path") {
-    return false;
-  }
+}): string | undefined {
   if (
+    params.record.source !== "path" ||
     typeof params.record.sourcePath !== "string" ||
     !params.record.sourcePath.trim() ||
     typeof params.record.installPath !== "string" ||
     !params.record.installPath.trim()
   ) {
-    return false;
+    return undefined;
   }
-  return resolvesToSameDirectory(
+  const sourcePath = safeRealpathSync(
     resolveUserPath(params.record.sourcePath, params.env),
+    params.realpathCache,
+  );
+  const installPath = safeRealpathSync(
     resolveUserPath(params.record.installPath, params.env),
     params.realpathCache,
   );
+  return sourcePath && sourcePath === installPath ? installPath : undefined;
 }
 
 function collectInstalledPluginRecordPaths(
@@ -521,6 +529,7 @@ function collectInstalledPluginRecordPaths(
   env: NodeJS.ProcessEnv,
   realpathCache: Map<string, string>,
   diagnostics: PluginDiagnostic[],
+  candidates: PluginCandidate[],
 ): InstalledPluginRecordPath[] {
   const paths: InstalledPluginRecordPath[] = [];
   const byPath = new Map<string, InstalledPluginRecordPath>();
@@ -539,7 +548,21 @@ function collectInstalledPluginRecordPaths(
       continue;
     }
     const pathKey = safeRealpathSync(resolved, realpathCache) ?? path.resolve(resolved);
-    const requireBuiltRuntimeEntry = !isLinkedLocalPluginRecord({ record, env, realpathCache });
+    const linkedPath = resolveLinkedLocalPluginRecordPath({
+      record,
+      env,
+      realpathCache,
+    });
+    if (linkedPath) {
+      for (const candidate of candidates) {
+        if (
+          safeRealpathSync(candidate.packageDir ?? candidate.rootDir, realpathCache) === linkedPath
+        ) {
+          mergePluginCandidateInstallOwner(candidate, installOwner);
+        }
+      }
+    }
+    const requireBuiltRuntimeEntry = !linkedPath;
     const existing = byPath.get(pathKey);
     if (existing) {
       existing.requireBuiltRuntimeEntry ||= requireBuiltRuntimeEntry;
@@ -1641,6 +1664,7 @@ export function discoverOpenClawPlugins(params: {
           env,
           realpathCache,
           result.diagnostics,
+          result.candidates,
         );
         const installedPluginDirKeys = collectManagedPluginDirKeys(
           installedPaths.map((installedPath) => installedPath.path),
