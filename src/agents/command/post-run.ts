@@ -20,6 +20,7 @@ import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-mar
 import type { AgentRunSessionTarget } from "../run-session-target.js";
 import { throwAgentRunRestartAbortReason } from "../run-termination.js";
 import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
+import { persistAgentSession } from "./attempt-execution.shared.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
 import type { EmbeddedAgentAttempt } from "./run-embedded-attempt.js";
 import {
@@ -27,7 +28,7 @@ import {
   loadDeliveryRuntime,
   loadSessionStoreRuntime,
 } from "./runtime-loaders.js";
-import { clearPendingFinalDelivery, persistSessionEntry } from "./session-helpers.js";
+import { clearPendingFinalDelivery } from "./session-helpers.js";
 import type { EmbeddedSessionState } from "./session-preparation.js";
 import type { AgentCommandOpts } from "./types.js";
 
@@ -145,6 +146,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
       const { updateSessionStoreAfterAgentRun } = await loadSessionStoreRuntime();
       await updateSessionStoreAfterAgentRun({
         cfg,
+        agentDir,
         contextTokensOverride: agentCfg?.contextTokens,
         sessionId: effectiveSessionId,
         sessionKey,
@@ -164,6 +166,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
         touchActivity: !isHeartbeatLifecycleRun && !params.opts.internalEvents?.length,
         preserveRuntimeModel:
           fallbackExhausted ||
+          fallbackProvider !== provider ||
+          fallbackModel !== model ||
           isHeartbeatLifecycleRun ||
           params.preserveUserFacingSessionModelState,
         preserveUserFacingSessionModelState: params.preserveUserFacingSessionModelState,
@@ -400,7 +404,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
               : undefined;
       if (clearOwnedPendingFinal || clearStaleTransportOnly || recoveryClaimEntry) {
         const now = Date.now();
-        sessionEntry = await persistSessionEntry({
+        sessionEntry = await persistAgentSession({
           sessionStore,
           sessionKey,
           storePath,

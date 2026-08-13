@@ -13,7 +13,7 @@ import { setSessionPathBuilder } from "../app-session-path-builder.ts";
 import { createAgentIdentityCapability } from "../lib/agents/identity.ts";
 import { createAgentCapability } from "../lib/agents/index.ts";
 import { createChannelCapability } from "../lib/channels/index.ts";
-import { createRuntimeConfigCapability } from "../lib/config/index.ts";
+import { createRuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
 import { createSessionCapability } from "../lib/sessions/index.ts";
 import { parseAgentSessionKey } from "../lib/sessions/session-key.ts";
 import { createWorkboardCapability } from "../lib/workboard/capability.ts";
@@ -25,8 +25,8 @@ import {
 } from "../pages/model-setup/first-run.ts";
 import { createAgentSelectionCapability } from "./agent-selection.ts";
 import { resolveApprovalDocumentMode, type ApprovalDocumentMode } from "./approval-deep-link.ts";
-import { createBrowserAnnotationHandoff } from "./browser-annotation-handoff.ts";
 import { createBrowserHistory, resolveControlUiBasePath } from "./browser.ts";
+import { createChatAttachmentHandoff } from "./chat-attachment-handoff.ts";
 import { createApplicationCloudStartup } from "./cloud-session-startup.ts";
 import { createApplicationConfigCapability } from "./config.ts";
 import type {
@@ -76,6 +76,13 @@ function applyThemePresentation(settings: ReturnType<typeof loadSettings>): void
   root.style.colorScheme = root.dataset.themeMode;
   root.style.setProperty("--control-ui-text-scale", `${(settings.textScale ?? 100) / 100}`);
   syncCustomThemeStyleTag(settings.customTheme);
+  const background = getComputedStyle(root).getPropertyValue("--bg").trim();
+  if (background) {
+    for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+      meta.content = background;
+      meta.removeAttribute("media");
+    }
+  }
 }
 
 function createApplicationTheme(
@@ -356,7 +363,7 @@ export function bootstrapApplication(
   const skillWorkshopRevision = createSkillWorkshopRevisionHandoff();
   const initialUserMessage = createInitialUserMessageHandoff();
   const cloudStartup = createApplicationCloudStartup({ gateway, sessions, initialUserMessage });
-  const browserAnnotationHandoff = createBrowserAnnotationHandoff();
+  const chatAttachmentHandoff = createChatAttachmentHandoff();
   applyThemePresentation(settings);
   const router = createApplicationRouter();
   // /terminal is served by the Gateway's SPA fallback but renders before the
@@ -443,6 +450,18 @@ export function bootstrapApplication(
   const cancelPendingGatewayConnection = () => {
     pendingGatewayConnection = null;
   };
+  const navigateAndWait = (routeId: RouteId, options?: ApplicationNavigationOptions) => {
+    const location = routeLocation(routeId, options);
+    // Preserve pre-start navigation exactly as the fire-and-forget entry point does.
+    if (!routerStarted) {
+      pendingRouterStartNavigation = { routeId, location, mode: "push" };
+    }
+    const navigationPromise = router.navigate(routeId, context, { history: "push" }, location);
+    void navigationPromise.catch((error: unknown) => {
+      console.error("[openclaw] route navigation failed", error);
+    });
+    return navigationPromise;
+  };
   const context: ApplicationContext<RouteId> = {
     basePath,
     gateway,
@@ -463,18 +482,11 @@ export function bootstrapApplication(
     webPush,
     skillWorkshopRevision,
     initialUserMessage,
-    browserAnnotationHandoff,
+    chatAttachmentHandoff,
     navigate: (routeId, options) => {
-      const location = routeLocation(routeId, options);
-      if (!routerStarted) {
-        pendingRouterStartNavigation = { routeId, location, mode: "push" };
-      }
-      void router
-        .navigate(routeId, context, { history: "push" }, location)
-        .catch((error: unknown) => {
-          console.error("[openclaw] route navigation failed", error);
-        });
+      void navigateAndWait(routeId, options);
     },
+    navigateAndWait,
     replace: (routeId, options) => {
       const location = routeLocation(routeId, options);
       if (!routerStarted) {
@@ -487,7 +499,7 @@ export function bootstrapApplication(
         });
     },
     revalidate: (routeId) => router.revalidate(context, routeId),
-    preload: (routeId) => router.preloadRoute(routeId, context),
+    preload: (routeId, options) => router.preloadLocation(routeLocation(routeId, options), context),
   };
   return {
     context,
@@ -582,7 +594,7 @@ export function bootstrapApplication(
       webPush.dispose();
       skillWorkshopRevision.clear();
       initialUserMessage.clear();
-      browserAnnotationHandoff.dispose();
+      chatAttachmentHandoff.dispose();
     },
   };
 }

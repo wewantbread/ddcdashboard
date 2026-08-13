@@ -34,19 +34,6 @@
   min-height: 0;
 }
 
-.workboard-sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  border: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 .workboard-toolbar {
   display: flex;
   justify-content: space-between;
@@ -439,39 +426,6 @@
   box-shadow:
     0 16px 40px color-mix(in srgb, black 34%, transparent),
     inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
-}
-
-.workboard-select__option {
-  color: var(--text);
-}
-
-.workboard-select [slot="start"] {
-  display: inline-flex;
-  align-items: center;
-}
-
-.workboard-select__label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 650;
-}
-
-.workboard-select__copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.workboard-select__description {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.75rem;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: normal;
 }
 
 .workboard-field--wide {

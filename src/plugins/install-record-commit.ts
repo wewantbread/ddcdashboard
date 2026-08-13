@@ -45,6 +45,7 @@ import {
   resolveRetainedManagedNpmInstallMarkerPath,
 } from "./managed-npm-retention.js";
 import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
+import { recordPluginPackageUninstallPlan } from "./uninstall-package-plan.js";
 import { planPluginUninstall } from "./uninstall.js";
 
 function mergeUnsetPaths(
@@ -217,15 +218,20 @@ function resolveRetainedManagedNpmInstallMarkerTarget(params: {
   }
   const installs = createPluginInstallRecordMap<PluginInstallRecord>();
   setPluginInstallRecordMapEntry(installs, params.pluginId, params.previousRecord);
-  const plan = planPluginUninstall({
-    config: {
-      plugins: {
-        installs,
+  const plan = planPluginUninstall(
+    recordPluginPackageUninstallPlan(
+      {
+        config: {
+          plugins: {
+            installs,
+          },
+        } as OpenClawConfig,
+        pluginId: params.pluginId,
+        deleteFiles: true,
       },
-    } as OpenClawConfig,
-    pluginId: params.pluginId,
-    deleteFiles: true,
-  });
+      { runtimePluginIds: [] },
+    ),
+  );
   if (
     !plan.ok ||
     !plan.directoryRemoval ||

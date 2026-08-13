@@ -8,12 +8,13 @@ type DesktopSecurityFailureDetail = {
   status?: number;
 };
 
-export type DesktopConnectOptions = {
+type DesktopConnectOptions = {
+  background?: string;
+  credentials?: { username?: string; password?: string };
   gatewayUrl?: string;
   onConnect?: () => void;
   onDisconnect?: (detail: DesktopDisconnectDetail) => void;
   onSecurityFailure?: (detail: DesktopSecurityFailureDetail) => void;
-  password?: string;
   target: HTMLElement;
   viewOnly: boolean;
   wsUrl: string;
@@ -24,6 +25,7 @@ export type DesktopConnectionHandle = {
 };
 
 type RfbClient = EventTarget & {
+  background: string;
   disconnect(): void;
   scaleViewport: boolean;
   viewOnly: boolean;
@@ -32,7 +34,7 @@ type RfbClient = EventTarget & {
 type RfbConstructor = new (
   target: HTMLElement,
   channel: string | WebSocket,
-  options?: { credentials?: { password: string } },
+  options?: { credentials?: { username?: string; password?: string } },
 ) => RfbClient;
 
 type RfbLoader = () => Promise<RfbConstructor>;
@@ -83,8 +85,9 @@ export class DesktopClient {
     const rfb = new Rfb(
       options.target,
       socket,
-      options.password ? { credentials: { password: options.password } } : undefined,
+      options.credentials ? { credentials: options.credentials } : undefined,
     );
+    rfb.background = options.background ?? getComputedStyle(options.target).backgroundColor;
     rfb.viewOnly = options.viewOnly;
     rfb.scaleViewport = true;
     rfb.addEventListener("connect", () => options.onConnect?.());

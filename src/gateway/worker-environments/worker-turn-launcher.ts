@@ -9,18 +9,18 @@ import type {
 import { convertToLlm } from "../../agents/sessions/messages.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
-import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import { parseWorkerLaunchDescriptor } from "../../worker/launch-descriptor.js";
 import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "../../worker/transcript-message.js";
+import { supportsWorkerExecutionContextLaunch } from "./admission.js";
 import type {
   WorkerSessionPlacementRecord,
   WorkerSessionPlacementStore,
   WorkerSessionTurnClaim,
 } from "./placement-store.js";
 import type { WorkerEnvironmentService } from "./service.js";
-import { resolveWorkerToolAuthority } from "./worker-tool-authority.js";
+import { resolveWorkerBrowserLaunchPlan } from "./worker-browser-launch-plan.js";
 import {
   claimWorkerTurn,
   latestDurableWorkspaceConflict,
@@ -33,8 +33,10 @@ import {
   assertSupportedTurn,
   assistantText,
   buildWorkerAgentMeta,
-  fitLaunchDescriptor,
+  emitProviderReplayRejected,
+  fitLaunchDescriptorWithRuntimeIdentity,
   parseRuntimeResult,
+  prepareWorkerAgentRuntimeIdentity,
   windowInitialMessages,
 } from "./worker-turn-payload.js";
 import { resolveWorkerTurnTranscriptTarget } from "./worker-turn-transcript-target.js";
@@ -54,8 +56,6 @@ import {
   settleStagedWorkspaceResult,
 } from "./workspace-result-finalize.js";
 import { workerWorkspaceResultRef } from "./workspace-result-staging.js";
-
-const WORKER_LAUNCH_SCRIPT = 'exec node "$HOME/.openclaw-worker/$1/openclaw.mjs" worker';
 
 type WorkerTurnEnvironmentService = Pick<
   WorkerEnvironmentService,
@@ -82,20 +82,6 @@ type WorkerTurnLauncherOptions = {
 class WorkerTurnExecutionError extends Error {}
 class WorkerWorkspaceReconciliationError extends Error {}
 
-function emitProviderReplayRejected(
-  config: SessionPlacementTurnParams["config"],
-  details: { reason: string; bytes?: number; limitBytes?: number; count?: number },
-): void {
-  if (isDiagnosticsEnabled(config)) {
-    emitTrustedDiagnosticEvent({
-      type: "payload.large",
-      surface: "worker.provider-replay",
-      action: "rejected",
-      ...details,
-    });
-  }
-}
-
 async function executeLocalTurn<T>(params: {
   claim: LocalTurnPlacementClaim;
   placements: WorkerSessionPlacementStore;
@@ -111,7 +97,7 @@ async function executeLocalTurn<T>(params: {
   try {
     return await params.runLocal();
   } finally {
-    releaseClaimIfOwned(params.placements, turnClaim);
+    await releaseClaimIfOwned(params.placements, turnClaim);
   }
 }
 
@@ -146,7 +132,7 @@ async function failHandedOffTurn(params: {
   if (draining.state !== "draining") {
     return;
   }
-  releaseClaimIfOwned(params.placements, params.turnClaim);
+  await releaseClaimIfOwned(params.placements, params.turnClaim);
   try {
     await params.environments.stopTunnel(
       params.placement.environmentId,
@@ -202,6 +188,11 @@ async function executeWorkerTurn(params: {
     environment.attachedSessionIds[0] !== placement.sessionId
   ) {
     throw new Error("Active worker placement does not match its attached environment");
+  }
+  if (!supportsWorkerExecutionContextLaunch(environment.bootstrapReceipt)) {
+    throw new Error(
+      "Active worker bundle lacks the current execution-context capability; reprovision the worker before launch",
+    );
   }
   let manifestAccepted = false;
   let workspaceConflict:
@@ -315,12 +306,26 @@ async function executeWorkerTurn(params: {
     timeoutMs: turn.timeoutMs,
   });
   const reasoning = mapThinkingLevelForProvider(turn.thinkLevel);
-  const toolAuthority = resolveWorkerToolAuthority({ modelRef, turn });
-  const launchPlan = fitLaunchDescriptor(
-    (windowedMessages) =>
+  const { browser, toolAuthority } = resolveWorkerBrowserLaunchPlan({
+    desktop: environment.desktop,
+    modelRef,
+    turn,
+  });
+  params.placements.authorizeWorkerTurnTools(params.turnClaim, toolAuthority.allowedToolNames);
+  const { operationalRunInstance, runtimeIdentity } = await prepareWorkerAgentRuntimeIdentity({
+    agentId: placement.agentId,
+    runtimeInstanceId: placement.environmentId,
+    sessionKey: placement.sessionKey,
+    turn,
+    turnClaim: params.turnClaim,
+  });
+  const launchPlan = await fitLaunchDescriptorWithRuntimeIdentity({
+    runtimeIdentity,
+    messages: initialMessages,
+    build: (agentRuntimeIdentityToken, windowedMessages) =>
       parseWorkerLaunchDescriptor({
-        version: 2,
-        socketPath: tunnel.remoteSocketPath,
+        version: 3,
+        connectionEndpoint: tunnel.connectionEndpoint,
         admission: {
           environmentId: placement.environmentId,
           credential: credential.credential,
@@ -330,6 +335,9 @@ async function executeWorkerTurn(params: {
           handshake: environment.bootstrapReceipt,
         },
         assignment: {
+          agentId: placement.agentId,
+          operationalRunInstance,
+          agentRuntimeIdentityToken,
           runId: turn.runId,
           turnId: randomUUID(),
           prompt: turn.prompt,
@@ -348,10 +356,10 @@ async function executeWorkerTurn(params: {
             nextSeq: (placement.lastLiveEventAckCursor ?? 0) + 1,
           },
           toolAuthority,
+          ...(browser ? { browser } : {}),
         },
       }),
-    initialMessages,
-  );
+  });
   if (launchPlan.kind === "local-fallback") {
     emitProviderReplayRejected(turn.config, {
       bytes: launchPlan.bytes,
@@ -365,10 +373,8 @@ async function executeWorkerTurn(params: {
   turn.onExecutionPhase?.({ phase: "attempt_dispatch", backend: "cloud-worker" });
   const handoffAbort = new AbortController();
   params.onHandoff();
-  const processPromise = tunnel.runWorkspaceCommand({
-    transportRetry: "never",
-    argv: ["sh", "-c", WORKER_LAUNCH_SCRIPT, "openclaw-worker", placement.workerBundleHash],
-    input: JSON.stringify(descriptor),
+  const processPromise = tunnel.launchTurn({
+    descriptor,
     timeoutMs: turn.timeoutMs,
     signal: turn.abortSignal
       ? AbortSignal.any([turn.abortSignal, handoffAbort.signal])
@@ -679,12 +685,12 @@ export function createWorkerSessionTurnPlacementProvider(
         if (error instanceof WorkerWorkspaceReconciliationError && !handedOff) {
           // Recovery runs before remote launch. Preserve the journal's active
           // generation; only the new admission claim belongs to this attempt.
-          releaseClaimIfOwned(options.placements, turnClaim);
+          await releaseClaimIfOwned(options.placements, turnClaim);
           throw error;
         }
         if (error instanceof WorkerTurnExecutionError) {
           if (options.placements.validateTurnClaim(turnClaim)) {
-            options.placements.releaseTurn(turnClaim);
+            await releaseClaimIfOwned(options.placements, turnClaim);
             throw error;
           }
           const settledPlacement = options.placements.get(turnClaim.sessionId);
@@ -708,7 +714,7 @@ export function createWorkerSessionTurnPlacementProvider(
             error,
           });
         } else {
-          releaseClaimIfOwned(options.placements, turnClaim);
+          await releaseClaimIfOwned(options.placements, turnClaim);
         }
         throw error;
       }

@@ -82,6 +82,28 @@ function renderControl(
   return container;
 }
 
+function modelSelect(container: Element) {
+  return container.querySelector<HTMLElement & { value: string }>(
+    "wa-select.chat-controls__model-picker",
+  );
+}
+
+function modelOptions(container: Element) {
+  return container.querySelectorAll("wa-select.chat-controls__model-picker wa-option");
+}
+
+function modelOption(container: Element, value: string) {
+  return container.querySelector(
+    `wa-select.chat-controls__model-picker wa-option[value="${value}"]`,
+  );
+}
+
+function changePicker(select: HTMLElement & { value: string }, value: string) {
+  Object.defineProperty(select, "value", { configurable: true, value });
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  Reflect.deleteProperty(select, "value");
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -99,7 +121,7 @@ describe("new-session model runtime", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     expect(request).not.toHaveBeenCalledWith("sessions.catalog.list", expect.anything());
     expect(
-      renderControl(control, context).querySelector("[data-chat-model-target-group]"),
+      renderControl(control, context).querySelector("wa-select.new-session-page__target-picker"),
     ).toBeNull();
   });
 
@@ -150,14 +172,22 @@ describe("new-session model runtime", () => {
     );
     await vi.waitFor(() => {
       const container = renderControl(control, context);
-      expect(container.querySelector('[data-chat-model-target-group="cliAgents"]')).not.toBeNull();
-      expect(container.querySelector('[data-chat-model-target="anthropic"]')).not.toBeNull();
+      expect(container.querySelector("wa-select.new-session-page__target-picker")).not.toBeNull();
+      expect(
+        container.querySelector(
+          'wa-select.new-session-page__target-picker wa-option[value="anthropic"]',
+        ),
+      ).not.toBeNull();
       expect(container.textContent).not.toContain("History only");
     });
 
-    renderControl(control, context)
-      .querySelector<HTMLButtonElement>('[data-chat-model-target="anthropic"]')
-      ?.click();
+    const target = renderControl(control, context).querySelector<HTMLElement & { value: string }>(
+      "wa-select.new-session-page__target-picker",
+    );
+    expect(target).not.toBeNull();
+    if (target) {
+      changePicker(target, "anthropic");
+    }
 
     expect(onCatalogTargetSelect).toHaveBeenCalledExactlyOnceWith("anthropic");
   });
@@ -174,7 +204,7 @@ describe("new-session model runtime", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("restores a browser preference only after the model and thinking level validate", async () => {
+  it("preserves a browser preference when an older server omits thinking profiles", async () => {
     const { context } = contextWith([
       {
         id: "gpt-5.6-sol",
@@ -217,13 +247,10 @@ describe("new-session model runtime", () => {
 
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     const container = renderControl(control, context);
-    expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-      "Loading models",
-    );
-    expect(
-      container.querySelector('[data-chat-model-select="true"]')?.getAttribute("aria-disabled"),
-    ).toBe("true");
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(0);
+    expect(modelSelect(container)?.textContent).toContain("Loading models");
+    expect(modelSelect(container)?.hasAttribute("disabled")).toBe(true);
+    expect(modelOptions(container)).toHaveLength(1);
+    expect(modelOptions(container)[0]?.hasAttribute("disabled")).toBe(true);
     pending.resolve({ models: [] });
   });
 
@@ -242,7 +269,7 @@ describe("new-session model runtime", () => {
     });
 
     let container = renderControl(control, context, "main", null);
-    const loadingModelTrigger = container.querySelector('[data-chat-model-select="true"]');
+    const loadingModelTrigger = modelSelect(container);
     expect(loadingModelTrigger?.textContent).toContain("Loading models");
     expect(loadingModelTrigger?.textContent).not.toContain("Default model");
     expect(container.querySelector('[data-chat-thinking-select="true"]')?.textContent).toContain(
@@ -256,12 +283,16 @@ describe("new-session model runtime", () => {
       model: { primary: "openai/gpt-5.6-sol" },
       thinkingDefault: "high",
     });
-    expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-      "GPT-5.6 Sol",
-    );
-    expect(container.querySelector('[data-chat-thinking-select="true"]')?.textContent).toContain(
-      "High",
-    );
+    expect(modelOption(container, "")?.textContent).toContain("GPT-5.6 Sol");
+    expect(modelSelect(container)?.textContent).toContain("GPT-5.6 Sol");
+    const thinkingPicker = container.querySelector('[data-chat-thinking-select="true"]');
+    expect(thinkingPicker).not.toBeNull();
+    expect(thinkingPicker?.textContent).toContain("High");
+    expect(
+      container
+        .querySelector('[data-chat-thinking-slider="true"]')
+        ?.getAttribute("data-chat-thinking-values"),
+    ).toContain("high");
     expect(control.selected).toBe("");
     expect(control.thinkingLevel).toBe("");
   });
@@ -283,9 +314,7 @@ describe("new-session model runtime", () => {
       id: "main",
       model: { primary: "openai/gpt-5.6-sol" },
     });
-    expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-      "GPT-5.6 Sol",
-    );
+    expect(modelSelect(container)?.textContent).toContain("GPT-5.6 Sol");
     expect(container.querySelector('[data-chat-thinking-select="true"]')?.textContent).toContain(
       "Medium",
     );
@@ -336,10 +365,8 @@ describe("new-session model runtime", () => {
       ).toBe("error");
     });
     const container = renderControl(control, context);
-    expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-      "Models unavailable",
-    );
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(0);
+    expect(modelSelect(container)?.textContent).toContain("Models unavailable");
+    expect(modelOptions(container)).toHaveLength(1);
     expect(container.querySelector('[data-chat-model-catalog-retry="true"]')).not.toBeNull();
   });
 
@@ -365,11 +392,7 @@ describe("new-session model runtime", () => {
       ?.click();
 
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() =>
-      expect(
-        renderControl(control, context).querySelectorAll("[data-chat-model-option]"),
-      ).toHaveLength(3),
-    );
+    await vi.waitFor(() => expect(modelOptions(renderControl(control, context))).toHaveLength(3));
   });
 
   it("renders a successful empty catalog as an explicit empty result", async () => {
@@ -386,12 +409,10 @@ describe("new-session model runtime", () => {
           .querySelector("[data-chat-model-catalog-state]")
           ?.getAttribute("data-chat-model-catalog-state"),
       ).toBe("ready");
-      expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-        "No models available",
-      );
+      expect(modelSelect(container)?.textContent).toContain("No models available");
     });
     const container = renderControl(control, context);
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(0);
+    expect(modelOptions(container)).toHaveLength(1);
     expect(container.querySelector('[data-chat-model-catalog-retry="true"]')).toBeNull();
   });
 
@@ -418,10 +439,8 @@ describe("new-session model runtime", () => {
       ).not.toBeNull(),
     );
     const container = renderControl(control, context);
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(0);
-    expect(container.querySelector('[data-chat-model-select="true"]')?.textContent).toContain(
-      "No models available",
-    );
+    expect(modelOptions(container)).toHaveLength(1);
+    expect(modelSelect(container)?.textContent).toContain("No models available");
     expect(container.textContent).not.toContain("GPT-5.6 Luna");
   });
 
@@ -473,18 +492,14 @@ describe("new-session model runtime", () => {
     const control = new NewSessionModelControl(() => undefined);
 
     control.load(context, "main", true);
-    await vi.waitFor(() =>
-      expect(
-        renderControl(control, context).querySelectorAll("[data-chat-model-option]"),
-      ).toHaveLength(2),
-    );
+    await vi.waitFor(() => expect(modelOptions(renderControl(control, context))).toHaveLength(2));
     request.mockReturnValueOnce(refresh.promise);
 
     control.load(context, "main", true);
 
     let container = renderControl(control, context);
     expect(container.querySelector('[data-chat-model-catalog-state="refreshing"]')).not.toBeNull();
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(2);
+    expect(modelOptions(container)).toHaveLength(2);
 
     refresh.reject(new Error("refresh failed"));
     await vi.waitFor(() =>
@@ -493,7 +508,7 @@ describe("new-session model runtime", () => {
       ).not.toBeNull(),
     );
     container = renderControl(control, context);
-    expect(container.querySelectorAll("[data-chat-model-option]")).toHaveLength(2);
+    expect(modelOptions(container)).toHaveLength(2);
     expect(container.textContent).toContain("Couldn’t refresh models");
 
     container.querySelector<HTMLButtonElement>('[data-chat-model-catalog-retry="true"]')?.click();
@@ -503,9 +518,7 @@ describe("new-session model runtime", () => {
         renderControl(control, context).querySelector("[data-chat-model-catalog-state]"),
       ).toBeNull(),
     );
-    expect(
-      renderControl(control, context).querySelectorAll("[data-chat-model-option]"),
-    ).toHaveLength(2);
+    expect(modelOptions(renderControl(control, context))).toHaveLength(2);
   });
 
   it("keeps stale same-agent data across reconnect invalidation until replacement arrives", async () => {
@@ -521,32 +534,18 @@ describe("new-session model runtime", () => {
     const control = new NewSessionModelControl(() => undefined);
 
     control.load(context, "main", true);
-    await vi.waitFor(() =>
-      expect(
-        renderControl(control, context).querySelector(
-          '[data-chat-model-option="openai/gpt-5.6-luna"]',
-        ),
-      ).not.toBeNull(),
-    );
+    await vi.waitFor(() => expect(modelOption(renderControl(control, context), "")).not.toBeNull());
 
     control.invalidate(false);
     request.mockReturnValueOnce(reconnect.promise);
     control.load(context, "main", true);
 
-    expect(
-      renderControl(control, context).querySelector(
-        '[data-chat-model-option="openai/gpt-5.6-luna"]',
-      ),
-    ).not.toBeNull();
+    expect(modelOption(renderControl(control, context), "")).not.toBeNull();
     reconnect.resolve({ models: newModels });
-    await vi.waitFor(() =>
-      expect(
-        renderControl(control, context).querySelectorAll("[data-chat-model-option]"),
-      ).toHaveLength(2),
-    );
+    await vi.waitFor(() => expect(modelOptions(renderControl(control, context))).toHaveLength(3));
     const container = renderControl(control, context);
-    expect(container.querySelector('[data-chat-model-option="openai/gpt-5.6-luna"]')).toBeNull();
-    expect(container.querySelector('[data-chat-model-option="openai/gpt-5.6-sol"]')).not.toBeNull();
+    expect(modelSelect(container)?.textContent).not.toContain("GPT-5.6 Luna");
+    expect(modelOption(container, "openai/gpt-5.6-sol")).not.toBeNull();
   });
 
   it("clears the old catalog on agent switch and ignores the late old-agent result", async () => {
@@ -573,9 +572,7 @@ describe("new-session model runtime", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     await vi.waitFor(() =>
       expect(
-        renderControl(control, context, "research").querySelector(
-          '[data-chat-model-option="anthropic/claude-sonnet-5"]',
-        ),
+        modelOption(renderControl(control, context, "research"), "anthropic/claude-sonnet-5"),
       ).not.toBeNull(),
     );
 
@@ -586,10 +583,8 @@ describe("new-session model runtime", () => {
     await Promise.resolve();
 
     const container = renderControl(control, context, "research");
-    expect(
-      container.querySelector('[data-chat-model-option="anthropic/claude-sonnet-5"]'),
-    ).not.toBeNull();
-    expect(container.querySelector('[data-chat-model-option="openai/gpt-5.6-luna"]')).toBeNull();
+    expect(modelOption(container, "anthropic/claude-sonnet-5")).not.toBeNull();
+    expect(modelSelect(container)?.textContent).not.toContain("GPT-5.6 Luna");
   });
 
   it("coalesces equivalent concurrent metadata loads", async () => {
@@ -631,7 +626,17 @@ describe("new-session model runtime", () => {
 
   it("drops a stored reasoning override when its option is no longer available", async () => {
     const { context, request } = contextWith([
-      { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai", reasoning: true },
+      {
+        id: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        provider: "openai",
+        reasoning: true,
+        thinkingLevels: [
+          { id: "off", label: "off" },
+          { id: "high", label: "high" },
+        ],
+        thinkingDefault: "high",
+      },
     ]);
     const onSelectionChange = vi.fn();
     const control = new NewSessionModelControl(() => undefined, onSelectionChange);
@@ -650,6 +655,50 @@ describe("new-session model runtime", () => {
     expect(control.selected).toBe("openai/gpt-5.6-sol");
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       model: "openai/gpt-5.6-sol",
+      thinkingLevel: "",
+    });
+  });
+
+  it("clears xhigh when an interactive model switch targets a profile ending at high", async () => {
+    const levels = (ids: string[]) => ids.map((id) => ({ id, label: id }));
+    const { context, request } = contextWith([
+      {
+        id: "k3",
+        name: "Kimi K3",
+        provider: "kimi",
+        reasoning: true,
+        thinkingLevels: levels(["off", "low", "medium", "high", "xhigh"]),
+        thinkingDefault: "high",
+      },
+      {
+        id: "limited",
+        name: "Limited",
+        provider: "demo",
+        reasoning: true,
+        thinkingLevels: levels(["off", "low", "medium", "high"]),
+        thinkingDefault: "medium",
+      },
+    ]);
+    const onSelectionChange = vi.fn();
+    const control = new NewSessionModelControl(() => undefined, onSelectionChange);
+    control.load(context, "main", true);
+    await vi.waitFor(() => {
+      expect(request).toHaveBeenCalledOnce();
+      expect(modelOption(renderControl(control, context), "demo/limited")).not.toBeNull();
+    });
+    control.selected = "kimi/k3";
+    control.thinkingLevel = "xhigh";
+
+    const picker = modelSelect(renderControl(control, context));
+    expect(picker).not.toBeNull();
+    if (picker) {
+      changePicker(picker, "demo/limited");
+    }
+
+    expect(control.selected).toBe("demo/limited");
+    expect(control.thinkingLevel).toBe("");
+    expect(onSelectionChange).toHaveBeenLastCalledWith({
+      model: "demo/limited",
       thinkingLevel: "",
     });
   });

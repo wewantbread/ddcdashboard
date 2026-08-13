@@ -1,4 +1,5 @@
 /** Lifecycle-owned auth/model discovery snapshots for agent runs. */
+import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isReservedSystemAgentId } from "../system-agent/agent-id.js";
@@ -22,7 +23,6 @@ import {
   publishModelRuntimeSnapshot,
   rebindInputToCommittedConfiguredOwner,
   resolvePublishedOwner,
-  toError,
   type PreparedModelRuntimeOwner,
   type PreparedModelRuntimeInput,
   type PreparedModelRuntimePublicationOptions,
@@ -36,6 +36,7 @@ import {
   notifyPreparedModelRuntimePublication,
   resetPreparedModelRuntimePublicationListenersForTest,
 } from "./prepared-model-runtime.publication-events.js";
+import type { PreparedModelRuntimeCatalogMode } from "./prepared-model-runtime.types.js";
 import { PreparedReplyDispatchPublicationOwner } from "./prepared-reply-dispatch-runtime.js";
 export {
   PreparedModelRuntimeOwnerNotPublishedError,
@@ -271,7 +272,10 @@ async function activateStandalonePreparedModelRuntimeNow(
 async function acquirePreparedModelRuntimeLease(
   rawInput: PreparedModelRuntimeInput,
   provenance: "run" | "ephemeral",
-  options: { retainIdleRunOwner?: boolean } = {},
+  options: {
+    retainIdleRunOwner?: boolean;
+    catalogMode?: PreparedModelRuntimeCatalogMode;
+  } = {},
 ): Promise<PreparedModelRuntimeLease> {
   let input = normalizePreparedModelRuntimeInput({
     ...rawInput,
@@ -337,11 +341,15 @@ async function acquirePreparedModelRuntimeLease(
           modelRuntimeBuildTimeoutMs,
           undefined,
           provenance,
+          options.catalogMode,
         );
       } else if (existing) {
         snapshot = await prepareModelRuntimeSnapshot(input);
       } else {
-        snapshot = await publishPreparedModelRuntimeSnapshot(input, { provenance });
+        snapshot = await publishPreparedModelRuntimeSnapshot(input, {
+          provenance,
+          catalogMode: options.catalogMode,
+        });
       }
     } catch (error) {
       if (error instanceof PreparedModelRuntimePublicationSupersededError) {
@@ -394,7 +402,10 @@ async function acquirePreparedModelRuntimeLease(
 /** Acquires the exact writable workspace generation at agent-run admission. */
 export async function acquireAgentRunPreparedModelRuntime(
   rawInput: PreparedModelRuntimeInput,
-  options: { retainIdleRunOwner?: boolean } = {},
+  options: {
+    retainIdleRunOwner?: boolean;
+    catalogMode?: PreparedModelRuntimeCatalogMode;
+  } = {},
 ): Promise<PreparedModelRuntimeLease> {
   return await acquirePreparedModelRuntimeLease(rawInput, "run", options);
 }
@@ -502,7 +513,7 @@ export function rejectPendingPreparedModelRuntimeReplacement(
     return;
   }
   pendingModelRuntimeReplacement = undefined;
-  const replacementError = toError(error);
+  const replacementError = toStringifiedError(error);
   replacement.reject(replacementError);
   notifyPreparedModelRuntimePublication({ phase: "failed", error: replacementError });
 }
@@ -622,7 +633,7 @@ export function refreshPreparedModelRuntimeSnapshots(
       }
     },
     (error: unknown) => {
-      const refreshError = toError(error);
+      const refreshError = toStringifiedError(error);
       if (requestEpoch === refreshRequestEpoch) {
         // Candidate and queued auth builds may finish independently. A failed transaction must
         // leave no owner from its partially published generation request-visible.
@@ -728,7 +739,7 @@ function invalidateForAuthMutation(event: AuthMutationEvent): void {
     if (error instanceof PreparedModelRuntimePublicationSupersededError) {
       return;
     }
-    const refreshError = toError(error);
+    const refreshError = toStringifiedError(error);
     notifyPreparedModelRuntimePublication({ phase: "failed", error: refreshError });
     log.warn(`auth-triggered model runtime refresh failed: ${String(refreshError)}`);
   });

@@ -20,11 +20,13 @@ import { logDebug } from "../logger.js";
 import type { OpenClawPluginNodeHostCommandIo } from "../plugins/types.js";
 import type { OpenClawPluginNodeHostCommandContext } from "../plugins/types.node-host.js";
 import { BoundedBuffer } from "../shared/bounded-buffer.js";
+import { NODE_DESKTOP_STREAM_COMMAND } from "../shared/node-desktop-stream.js";
 import type { NodeHostClient } from "./client.js";
 import { handleInvoke, type NodeInvokeRequestPayload, type SkillBinsProvider } from "./invoke.js";
 import { startNodeHostMcpManager, type NodeHostMcpManager } from "./mcp.js";
 import { buildNodeEventParams } from "./node-event-params.js";
 import { createNodeInvokeProgressWriter } from "./node-invoke-progress.js";
+import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import {
   ensureNodeHostPluginRegistry,
   isRegisteredNodeHostCommandDuplex,
@@ -61,6 +63,7 @@ type ActiveNodeHostRuntime = {
   handleInput(invokeId: string, seq: number, payloadJSON: string): void;
   cancel(invokeId: string): void;
   cancelAll(): void;
+  updateGatewayConnection(connection?: { url: string; tlsFingerprint?: string }): void;
   close(): Promise<void>;
 };
 
@@ -252,6 +255,9 @@ export async function prepareNodeHostRuntime(params?: {
   const platform = params?.platform ?? process.platform;
   const installedAppsSharingEnabled =
     platform === "darwin" && params?.installedAppsSharingEnabled === true;
+  const desktopStreamingEnabled =
+    (platform === "darwin" || platform === "linux" || platform === "win32") &&
+    config.desktop?.host?.enabled === true;
   const availabilityContext = { config, env };
   const resolvePluginNodeHost = () =>
     listRegisteredNodeHostCapsAndCommands(availabilityContext, {
@@ -281,6 +287,7 @@ export async function prepareNodeHostRuntime(params?: {
         NODE_FS_LIST_DIR_COMMAND,
         NODE_TERMINAL_UPLOAD_COMMAND,
         NODE_MCP_TOOLS_CALL_COMMAND,
+        ...(desktopStreamingEnabled ? [NODE_DESKTOP_STREAM_COMMAND] : []),
         ...(installedAppsSharingEnabled ? [NODE_DEVICE_APPS_COMMAND] : []),
         ...(claudePath ? [NODE_AGENT_CLI_CLAUDE_RUN_COMMAND] : []),
         ...pluginManifest.commands,
@@ -299,6 +306,7 @@ export async function prepareNodeHostRuntime(params?: {
     initialInventory,
     start({ client, onInventoryChanged, onManifestChanged }) {
       const mcpAbort = new AbortController();
+      const workerSupervisor = createNodeWorkerSupervisor({ env });
       const skillBins = new SkillBinsCache(client, pathEnv);
       const activeInvokes = new Map<string, ActiveNodeInvoke>();
       const pluginCommandContext: OpenClawPluginNodeHostCommandContext = {
@@ -307,18 +315,23 @@ export async function prepareNodeHostRuntime(params?: {
       };
       let currentPluginNodeHost = pluginNodeHost;
       let currentManifest = manifest;
+      let gatewayConnection: { url: string; tlsFingerprint?: string } | undefined;
       let manager: NodeHostMcpManager | undefined;
+      let closing = false;
+      let closePromise: Promise<void> | undefined;
       const startup = startNodeHostMcpManager(config.nodeHost?.mcp?.servers, {
         signal: mcpAbort.signal,
       }).then((resolved) => {
         manager = resolved;
-        onInventoryChanged?.(
-          createInventory({
-            skills,
-            pluginTools: currentPluginNodeHost.nodePluginTools,
-            mcpManager: manager,
-          }),
-        );
+        if (!closing) {
+          onInventoryChanged?.(
+            createInventory({
+              skills,
+              pluginTools: currentPluginNodeHost.nodePluginTools,
+              mcpManager: manager,
+            }),
+          );
+        }
         return resolved;
       });
       const refreshAvailability = () => {
@@ -348,6 +361,7 @@ export async function prepareNodeHostRuntime(params?: {
       return {
         async invoke(frame) {
           const duplexCommand = duplexEnabled && isRegisteredNodeHostCommandDuplex(frame.command);
+          const progressEnabled = duplexCommand || frame.command === NODE_DESKTOP_STREAM_COMMAND;
           const controller = new AbortController();
           // Every command must remain cancellable after dispatch; only duplex
           // commands own ordered input and its pre-spawn buffer.
@@ -373,7 +387,7 @@ export async function prepareNodeHostRuntime(params?: {
           // let its cleanup unregister the replacement invocation.
           activeInvokes.get(frame.id)?.controller.abort();
           activeInvokes.set(frame.id, active);
-          const progress = duplexCommand
+          const progress = progressEnabled
             ? createNodeInvokeProgressWriter({
                 client,
                 frame,
@@ -381,7 +395,9 @@ export async function prepareNodeHostRuntime(params?: {
                 onError: () => controller.abort(),
               })
             : undefined;
-          progress?.startHeartbeats();
+          if (duplexCommand) {
+            progress?.startHeartbeats();
+          }
           const pluginCommandIo: OpenClawPluginNodeHostCommandIo | undefined =
             input && progress
               ? {
@@ -399,9 +415,16 @@ export async function prepareNodeHostRuntime(params?: {
               ...(claudePath ? { claudePath } : {}),
               signal: controller.signal,
               ...(pluginCommandIo ? { pluginCommandIo } : {}),
+              ...(gatewayConnection?.url ? { gatewayUrl: gatewayConnection.url } : {}),
+              ...(gatewayConnection?.tlsFingerprint
+                ? { gatewayTlsFingerprint: gatewayConnection.tlsFingerprint }
+                : {}),
+              ...(config.desktop?.host ? { desktopHostConfig: config.desktop.host } : {}),
+              ...(progress ? { emitProgress: (text) => progress.write(text) } : {}),
               installedAppsSharingEnabled,
               installedAppsPlatform: platform,
               pluginCommandContext,
+              workerSupervisor,
             });
           } finally {
             progress?.stop();
@@ -426,12 +449,38 @@ export async function prepareNodeHostRuntime(params?: {
           }
           activeInvokes.clear();
         },
-        async close() {
+        updateGatewayConnection(connection) {
+          gatewayConnection = connection;
+        },
+        close() {
+          if (closePromise) {
+            return closePromise;
+          }
+          closing = true;
           this.cancelAll();
-          stopAvailabilityWatch();
+          const preludeErrors: unknown[] = [];
+          try {
+            stopAvailabilityWatch();
+          } catch (error) {
+            preludeErrors.push(error);
+          }
+          // Startup observes this signal before either independent owner is joined.
           mcpAbort.abort();
-          const resolved = manager ?? (await startup.catch(() => undefined));
-          await resolved?.close();
+          const supervisorClose = Promise.resolve().then(() => workerSupervisor.close());
+          const mcpClose = startup.then((resolved) => resolved.close());
+          closePromise = Promise.allSettled([supervisorClose, mcpClose]).then((results) => {
+            const errors = [
+              ...preludeErrors,
+              ...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+            ];
+            if (errors.length === 1) {
+              throw errors[0];
+            }
+            if (errors.length > 1) {
+              throw new AggregateError(errors, "node-host runtime close failed");
+            }
+          });
+          return closePromise;
         },
       };
     },

@@ -1,11 +1,14 @@
 import { resolveStateDir } from "../../config/paths.js";
-import { FILE_LOCK_TIMEOUT_ERROR_CODE } from "../../infra/file-lock.js";
-import { withSetupMigrationTargetLock } from "../../wizard/setup.migration-snapshot.js";
+import {
+  SetupTargetLockedError,
+  withSetupMigrationTargetLock,
+} from "../../wizard/setup.migration-snapshot.js";
 
 export const SETUP_ADMISSION_BUSY_MESSAGE =
   "OpenClaw setup is already in progress; try again when it finishes.";
 
 let wizardSessionInProgress = false;
+const wizardSessionAdmissionSettlements = new WeakMap<object, Promise<unknown>>();
 
 export class SetupAdmissionBusyError extends Error {}
 
@@ -18,13 +21,20 @@ export async function runExclusiveSystemAgentSetupActivation<T>(
     return await task();
   };
   try {
-    return await withSetupMigrationTargetLock(resolveStateDir(), admittedTask, { wait: false });
+    return await withSetupMigrationTargetLock(resolveStateDir(), admittedTask);
   } catch (error) {
-    if (!admitted && (error as { code?: unknown }).code === FILE_LOCK_TIMEOUT_ERROR_CODE) {
+    if (!admitted && error instanceof SetupTargetLockedError) {
       throw new SetupAdmissionBusyError(SETUP_ADMISSION_BUSY_MESSAGE);
     }
     throw error;
   }
+}
+
+/** Resolves after both the wizard runner and its setup-target admission have settled. */
+export function whenAdmittedWizardSessionSettled(session: {
+  whenSettled(): Promise<unknown>;
+}): Promise<unknown> {
+  return wizardSessionAdmissionSettlements.get(session) ?? session.whenSettled();
 }
 
 export async function createAdmittedWizardSession<T extends { whenSettled(): Promise<unknown> }>(
@@ -39,16 +49,20 @@ export async function createAdmittedWizardSession<T extends { whenSettled(): Pro
     wizardSessionInProgress = false;
   };
   try {
+    let admissionSettled: Promise<unknown> | undefined;
     const session = lockSetupTarget
       ? await new Promise<T>((resolve, reject) => {
-          void runExclusiveSystemAgentSetupActivation(async () => {
+          admissionSettled = runExclusiveSystemAgentSetupActivation(async () => {
             const createdSession = createSession();
             resolve(createdSession);
             await createdSession.whenSettled();
-          }).catch(reject);
+          });
+          void admissionSettled.catch(reject);
         })
       : createSession();
-    void session.whenSettled().then(releaseSession, releaseSession);
+    const settled = admissionSettled ?? session.whenSettled();
+    wizardSessionAdmissionSettlements.set(session, settled);
+    void settled.then(releaseSession, releaseSession);
     return session;
   } catch (error) {
     releaseSession();

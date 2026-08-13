@@ -1,8 +1,9 @@
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import { createUsageAccumulator } from "../usage-accumulator.js";
+import type { EmbeddedRunAttemptWithReceiptEvidence } from "./attempt-result.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
-import type { EmbeddedRunAttemptResult } from "./types.js";
 
 vi.mock("./payloads.js", () => ({
   buildEmbeddedRunPayloads: () => [],
@@ -42,8 +43,8 @@ function assistantMessage(stopReason: AssistantMessage["stopReason"] = "stop"): 
 }
 
 function attemptResult(
-  overrides: Partial<EmbeddedRunAttemptResult> = {},
-): EmbeddedRunAttemptResult {
+  overrides: Partial<EmbeddedRunAttemptWithReceiptEvidence> = {},
+): EmbeddedRunAttemptWithReceiptEvidence {
   const assistant = assistantMessage("error");
   return {
     terminal: { kind: "ok" },
@@ -73,6 +74,7 @@ describe("prepareEmbeddedRunTerminal", () => {
       const assistant = assistantMessage(stopReason);
       const prepared = prepareEmbeddedRunTerminal({
         runParams: {
+          admittedRunContext: createTestAdmittedRunContext("run-1"),
           sessionId: "session-1",
           runId: "run-1",
           workspaceDir: "/tmp/openclaw-test",
@@ -112,7 +114,7 @@ describe("prepareEmbeddedRunTerminal", () => {
 
 describe("prepareEmbeddedRunTerminal run stats", () => {
   type StatsInput = {
-    attempt?: Partial<EmbeddedRunAttemptResult> & {
+    attempt?: Partial<EmbeddedRunAttemptWithReceiptEvidence> & {
       terminalTurnId?: string;
     };
     assistantTurns?: number;
@@ -145,6 +147,7 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
     usageAccumulator.bridgeCalls = statsInput.bridgeCalls;
     return prepareEmbeddedRunTerminal({
       runParams: {
+        admittedRunContext: createTestAdmittedRunContext("run-1"),
         sessionId: "session-1",
         runId: "run-1",
         workspaceDir: "/tmp/openclaw-test",
@@ -248,18 +251,19 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
     expect(prepared.agentMeta).not.toHaveProperty("costUsd");
   });
 
-  it("builds exact terminal model and successful-tool evidence", async () => {
+  it("keeps response identity in the terminal receipt without replacing the run model", async () => {
     const prepared = await prepareStats({
       responseModel: "cost-model-rerouted",
       attempt: {
         terminalTurnId: "turn-7",
         toolMetas: [
-          { toolName: "started" },
+          { toolName: "exec", isError: false },
           { toolName: "unknown" },
           { toolName: "write", isError: true },
           { toolName: "read", isError: false },
-          { toolName: "read", isError: false },
+          { toolName: "exec", isError: false },
         ],
+        successfulNestedToolNames: ["read", "zeta", "alpha", "Zeta", " exec ", "alpha", " "],
       },
     });
 
@@ -272,14 +276,16 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
       requested: { provider: "cost-test-provider", model: "cost-model" },
       effective: {
         provider: "cost-test-provider",
-        model: "cost-model-rerouted",
+        model: "cost-model",
         responseModel: "cost-model-rerouted",
       },
-      successfulToolNames: ["read"],
+      successfulToolNames: ["exec", "read", "Zeta", "alpha", "zeta"],
       rerouted: true,
     });
     expect(
       (prepared.agentMeta as { terminalReceipt?: Record<string, unknown> }).terminalReceipt,
     ).not.toHaveProperty("terminalDisposition");
+    expect(prepared.agentMeta.model).toBe("cost-model");
+    expect(prepared.reportedModelRef.model).toBe("cost-model");
   });
 });
