@@ -8,23 +8,27 @@
 # read-only, so openclaw/plugin-sdk/* resolves to the compiled dist bytes.
 #
 # Pinned to the same node:24-bookworm-slim digest as scripts/e2e/Dockerfile.
-# This image runs no apt, only sh/node/npm plus a global tsx/esbuild install,
-# so the slim variant is sufficient.
+# This image runs no apt, only sh/node/npm plus the pinned tsx/esbuild
+# toolchain, so the slim variant is sufficient.
 
 FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
 
-# tsx bundles esbuild but honors ESBUILD_BINARY_PATH; install esbuild globally
-# and point tsx/esbuild at the platform binary for the container's own arch so a
-# host-mounted node_modules (e.g. a darwin-arm64 binary) does not get in the way.
+# tsx bundles esbuild but honors ESBUILD_BINARY_PATH; install the pinned tsx +
+# esbuild toolchain and point tsx/esbuild at the platform binary for the
+# container's own arch so a host-mounted node_modules (e.g. a darwin-arm64
+# binary) does not get in the way.
 # The arch comes from node's process.arch, so the image resolves correctly on
 # linux-x64 and linux-arm64 builders instead of hardcoding one; if neither the
 # @esbuild/linux-<arch> package nor an esbuild on PATH resolves, the build fails
 # loudly rather than baking an empty binary path.
-# --ignore-scripts neutralizes transitive install-script execution; a full
-# lockfile is intentionally omitted because this is a non-shipped proof image
-# built only locally/in CI.
-RUN npm install -g tsx@4.21.0 esbuild@0.28.1 --no-fund --no-audit --ignore-scripts \
- && ESBUILD_BIN="$(node -e 'const s={x64:"linux-x64",arm64:"linux-arm64"}[process.arch]; if(!s)process.exit(0); try{console.log(require.resolve("@esbuild/"+s+"/bin/esbuild"))}catch{process.exit(0)}' 2>/dev/null || true)" \
+# The toolchain is pinned via the committed scripts/proof/package-lock.json and
+# installed with `npm ci --ignore-scripts`, so transitive deps are reproducible
+# across builds; --ignore-scripts neutralizes transitive install-script
+# execution. tsx is pinned to 4.23.1 and esbuild to 0.28.1, matching the repo.
+WORKDIR /opt/proof-toolchain
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-fund --no-audit \
+ && ESBUILD_BIN="$(cd /opt/proof-toolchain && node -e 'const s={x64:"linux-x64",arm64:"linux-arm64"}[process.arch]; if(!s)process.exit(0); try{console.log(require.resolve("@esbuild/"+s+"/bin/esbuild"))}catch{process.exit(0)}' 2>/dev/null || true)" \
  && if [ -z "$ESBUILD_BIN" ]; then ESBUILD_BIN="$(command -v esbuild || true)"; fi \
  && if [ -z "$ESBUILD_BIN" ] || [ ! -x "$ESBUILD_BIN" ]; then \
       echo "issue-119977 proof image: no usable Linux esbuild binary for arch $(node -e 'console.log(process.arch)')" >&2; \
@@ -35,8 +39,11 @@ RUN npm install -g tsx@4.21.0 esbuild@0.28.1 --no-fund --no-audit --ignore-scrip
  && echo "$ESBUILD_BIN" > /etc/esbuild-binary-path
 
 ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
+# Put the pinned toolchain's bin on PATH so `tsx` resolves to the lockfile-installed
+# version regardless of the host-mounted /app/node_modules contents.
+ENV PATH="/opt/proof-toolchain/node_modules/.bin:${PATH}"
 WORKDIR /app
 
 # Force tsx/esbuild to use the linux binary regardless of what the mounted
-# node_modules contains.
-CMD ["/bin/sh","-c","export ESBUILD_BINARY_PATH=\"$(cat /etc/esbuild-binary-path)\" && node --import tsx scripts/proof/issue-119977-proof.mts"]
+# node_modules contains, and run the pinned tsx from PATH.
+CMD ["/bin/sh","-c","export ESBUILD_BINARY_PATH=\"$(cat /etc/esbuild-binary-path)\" && exec tsx scripts/proof/issue-119977-proof.mts"]

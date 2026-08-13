@@ -42,9 +42,10 @@ export function isHarnessOwnedAutomaticCompactionSkip(result: {
 /**
  * Returns whether a result is a native harness's cleared-stale-binding recovery: the
  * harness cleared (or confirmed replacement of) its own dead thread binding and
- * guarantees the next turn will lazily rebind. Unlike the automatic-ownership defer this
- * is an honest ok:false failure, so ok is deliberately not part of the match — the sole
- * signal is the typed harnessCompactionDisposition field, never a harness's reason text.
+ * guarantees the next turn will lazily rebind. The disposition is honored ONLY on an
+ * honest ok:false failure, so a malformed ok:true result carrying it is ignored and falls
+ * through to a visible failure rather than silently safe-continuing. The remaining signal
+ * is the typed harnessCompactionDisposition field, never a harness's reason text.
  *
  * A model-locked caller that cannot fall back to context-engine compaction MAY
  * safe-continue on this disposition. A recoverable-binding failure WITHOUT it (a harness
@@ -59,7 +60,9 @@ export function isHarnessClearedStaleBindingSkip(result: {
     | "harness_cleared_stale_binding";
 }): boolean {
   return (
-    !result.compacted && result.harnessCompactionDisposition === "harness_cleared_stale_binding"
+    !result.ok &&
+    !result.compacted &&
+    result.harnessCompactionDisposition === "harness_cleared_stale_binding"
   );
 }
 

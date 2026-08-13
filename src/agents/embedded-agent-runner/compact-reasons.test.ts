@@ -190,7 +190,7 @@ describe("isHarnessOwnedAutomaticCompactionSkip", () => {
 describe("isHarnessClearedStaleBindingSkip", () => {
   it("matches the ok:false cleared-stale-binding recovery disposition", () => {
     // The harness cleared its own dead binding and guarantees the next turn rebinds; the
-    // recovery is an honest ok:false result, so ok is deliberately not part of the match.
+    // recovery is an honest ok:false result, which is the only shape allowed to safe-continue.
     expect(
       isHarnessClearedStaleBindingSkip({
         ok: false,
@@ -198,6 +198,18 @@ describe("isHarnessClearedStaleBindingSkip", () => {
         harnessCompactionDisposition: "harness_cleared_stale_binding",
       }),
     ).toBe(true);
+  });
+
+  it("does not safe-continue on a malformed ok:true result carrying the disposition", () => {
+    // The disposition is honored only on an honest ok:false failure. An ok:true result
+    // carrying it is malformed and must fall through to a visible failure, not skip.
+    expect(
+      isHarnessClearedStaleBindingSkip({
+        ok: true,
+        compacted: false,
+        harnessCompactionDisposition: "harness_cleared_stale_binding",
+      }),
+    ).toBe(false);
   });
 
   it("does not match a recoverable-binding failure without the disposition (Copilot shape)", () => {
