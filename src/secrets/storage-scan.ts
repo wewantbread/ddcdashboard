@@ -2,7 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isRecord as isJsonObject } from "@openclaw/normalization-core/record-coerce";
-import { listAgentIds, resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.js";
+import {
+  listAgentIds,
+  resolveAgentDir,
+  tryResolveLegacyCompatibilityAgentId,
+} from "../agents/agent-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveUserPath } from "../utils.js";
@@ -22,21 +26,6 @@ export function listSecretsDotEnvPaths(params: { configPath: string; stateDir: s
   return [...new Map(candidates.map((candidate) => [path.resolve(candidate), candidate])).values()];
 }
 
-function resolveActiveAgentDir(
-  config: OpenClawConfig,
-  stateDir: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const override = env.OPENCLAW_AGENT_DIR?.trim() || env.PI_CODING_AGENT_DIR?.trim();
-  if (override) {
-    return resolveUserPath(override, env);
-  }
-  return resolveUserPath(
-    resolveDefaultAgentDir(config, { ...env, OPENCLAW_STATE_DIR: stateDir }),
-    env,
-  );
-}
-
 /**
  * Lists deduplicated models.json paths that may contain materialized provider credentials.
  * Includes active env override, configured default agent, discovered state dirs, and configured agents.
@@ -49,8 +38,14 @@ export function listAgentModelsJsonPaths(
   const resolvedStateDir = resolveUserPath(stateDir);
   const scopedEnv = { ...env, OPENCLAW_STATE_DIR: stateDir };
   const paths = new Set<string>();
-  paths.add(path.join(resolveDefaultAgentDir(config, scopedEnv), "models.json"));
-  paths.add(path.join(resolveActiveAgentDir(config, stateDir, env), "models.json"));
+  const defaultAgentId = tryResolveLegacyCompatibilityAgentId(config);
+  if (defaultAgentId) {
+    paths.add(path.join(resolveAgentDir(config, defaultAgentId, scopedEnv), "models.json"));
+  }
+  const activeAgentDir = env.OPENCLAW_AGENT_DIR?.trim() || env.PI_CODING_AGENT_DIR?.trim();
+  if (activeAgentDir) {
+    paths.add(path.join(resolveUserPath(activeAgentDir, scopedEnv), "models.json"));
+  }
 
   const agentsRoot = path.join(resolvedStateDir, "agents");
   if (fs.existsSync(agentsRoot)) {

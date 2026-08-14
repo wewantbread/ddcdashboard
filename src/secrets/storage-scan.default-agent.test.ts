@@ -56,4 +56,33 @@ describe("storage scan default agent paths", () => {
       ]),
     );
   });
+
+  it("scans explicitly owned agents without requiring a default", () => {
+    const externalAgentDir = path.join(rootDir, "external-agent");
+    const activeAgentDir = path.join(rootDir, "active-agent");
+    fs.mkdirSync(path.join(stateDir, "agents", "discovered", "agent"), { recursive: true });
+    const config = {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          utility: {},
+          external: { agentDir: externalAgentDir },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const paths = listAgentModelsJsonPaths(config, stateDir, {
+      OPENCLAW_AGENT_DIR: activeAgentDir,
+    });
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        path.join(stateDir, "agents", "utility", "agent", "models.json"),
+        path.join(stateDir, "agents", "discovered", "agent", "models.json"),
+        path.join(externalAgentDir, "models.json"),
+        path.join(activeAgentDir, "models.json"),
+      ]),
+    );
+    expect(paths).not.toContain(path.join(stateDir, "agents", "main", "agent", "models.json"));
+  });
 });
