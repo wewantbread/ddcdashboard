@@ -18,6 +18,12 @@ import { createTestWebInboundMessage } from "./inbound/test-message.test-helper.
 
 installWebAutoReplyTestHomeHooks();
 
+const whatsappAccountOwner = (accountId = "default") =>
+  ({
+    agentId: "alfred",
+    match: { channel: "whatsapp", accountId },
+  }) satisfies NonNullable<OpenClawConfig["bindings"]>[number];
+
 describe("broadcast groups", () => {
   installWebAutoReplyUnitTestHooks();
 
@@ -47,6 +53,7 @@ describe("broadcast groups", () => {
         defaults: { maxConcurrent: 10 },
         list: [{ id: "alfred" }, { id: "baerbel" }],
       },
+      bindings: [whatsappAccountOwner()],
       broadcast: {
         strategy: "sequential",
         "+1000": ["alfred", "baerbel"],
@@ -68,6 +75,7 @@ describe("broadcast groups", () => {
         defaults: { maxConcurrent: 10 },
         list: [{ id: "alfred" }, { id: "baerbel" }],
       },
+      bindings: [whatsappAccountOwner()],
       broadcast: {
         strategy: "sequential",
         "123@g.us": ["alfred", "baerbel"],
@@ -157,6 +165,7 @@ describe("broadcast groups", () => {
         defaults: { maxConcurrent: 10 },
         list: [{ id: "alfred" }, { id: "baerbel" }],
       },
+      bindings: [whatsappAccountOwner("work")],
       broadcast: {
         strategy: "sequential",
         "123@g.us": ["alfred", "baerbel"],
@@ -199,6 +208,7 @@ describe("broadcast groups", () => {
         defaults: { maxConcurrent: 10 },
         list: [{ id: "alfred" }, { id: "baerbel" }],
       },
+      bindings: [whatsappAccountOwner()],
       broadcast: {
         strategy: "parallel",
         "+1000": ["alfred", "baerbel"],
