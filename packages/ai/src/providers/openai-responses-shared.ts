@@ -24,6 +24,7 @@ import {
 import type { OpenAIResponsesRequestParams } from "../transports/openai-responses-contracts.js";
 import {
   createResponsesStreamWithEncryptedContentRetry,
+  isTransientOpenAICodexReasoningItem,
   prepareOpenAIResponsesReasoningItemForReplay,
   readOpenAIResponsesReasoningReplayBlockMetadata,
 } from "../transports/openai-responses-replay-internal.js";
@@ -336,6 +337,9 @@ export function convertResponsesMessages<TApi extends Api>(
             const reasoningItem = JSON.parse(
               block.thinkingSignature,
             ) as ReplayableResponseReasoningItem;
+            if (isTransientOpenAICodexReasoningItem(reasoningItem, model)) {
+              continue;
+            }
             const blockMetadata = readOpenAIResponsesReasoningReplayBlockMetadata(
               block as unknown as Record<string, unknown>,
             );
