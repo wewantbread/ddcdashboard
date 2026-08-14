@@ -1,4 +1,5 @@
 // Feishu plugin module implements presentation card behavior.
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
 import {
   normalizeMessagePresentation,
   renderMessagePresentationChartFallbackText,
@@ -13,6 +14,27 @@ type NormalizedMessagePresentation = NonNullable<ReturnType<typeof normalizeMess
 
 const FEISHU_CARD_MAX_BYTES = 30 * 1024;
 const FEISHU_CARD_MAX_ELEMENTS = 200;
+
+export const FEISHU_PRESENTATION_CAPABILITIES = {
+  supported: true,
+  buttons: true,
+  selects: false,
+  context: true,
+  divider: true,
+  limits: {
+    actions: {
+      maxActions: 20,
+      maxActionsPerRow: 5,
+      maxLabelLength: 40,
+      maxValueBytes: 1024,
+    },
+    text: {
+      maxLength: 4000,
+      encoding: "characters",
+      markdownDialect: "markdown",
+    },
+  },
+} satisfies NonNullable<ChannelOutboundAdapter["presentationCapabilities"]>;
 
 function countFeishuCardElements(value: unknown, ancestors = new Set<object>()): number {
   if (Array.isArray(value)) {
