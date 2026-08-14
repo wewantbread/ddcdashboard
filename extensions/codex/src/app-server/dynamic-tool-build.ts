@@ -37,6 +37,10 @@ import {
 } from "./native-execution-policy.js";
 import type { CodexSandboxPolicy, CodexTurnEnvironmentParams } from "./protocol.js";
 import { mapCodexAppServerRemoteWorkspacePath } from "./remote-workspace-path.js";
+import {
+  isCodexNativeContainmentCapability,
+  type CodexNativeContainmentCapability,
+} from "./runtime-artifact.js";
 import type { CodexSandboxExecEnvironment } from "./sandbox-exec-server.js";
 import {
   CODEX_NODE_EXEC_DYNAMIC_TOOL_NAME,
@@ -90,6 +94,8 @@ type DynamicToolBuildParams = {
   sandboxSessionKey: string;
   sandbox: OpenClawSandboxContext;
   nativeToolSurfaceEnabled?: boolean;
+  /** Must be minted by runtime-artifact validation; never accept a caller boolean. */
+  nativeContainmentCapability?: CodexNativeContainmentCapability;
   nativeProviderWebSearchSupport?: CodexNativeWebSearchSupport;
   runAbortController: AbortController;
   sessionAgentId: string;
@@ -155,6 +161,15 @@ type CodexDynamicToolBuildStageSummary = {
   totalMs: number;
   stages: CodexDynamicToolBuildStageTiming[];
 };
+function resolveEffectiveNativeToolSurfaceEnabled(input: {
+  nativeToolSurfaceEnabled?: boolean;
+  nativeContainmentCapability?: CodexNativeContainmentCapability;
+}): boolean {
+  return (
+    input.nativeToolSurfaceEnabled === true &&
+    isCodexNativeContainmentCapability(input.nativeContainmentCapability)
+  );
+}
 const CODEX_DYNAMIC_TOOL_BUILD_WARN_TOTAL_MS = 1_000;
 const CODEX_DYNAMIC_TOOL_BUILD_WARN_STAGE_MS = 500;
 /** Creates cheap optional timing instrumentation for the dynamic-tool hot path. */
@@ -214,6 +229,10 @@ export function formatCodexDynamicToolBuildStageSummary(
 /** Builds, filters, and normalizes Codex-compatible runtime tools for a single turn. */
 export async function buildDynamicTools(input: DynamicToolBuildParams) {
   const { params } = input;
+  // One effective value controls native exposure, sandbox selection, and all
+  // fallback branches. The current runtime has no minted capability, so this
+  // remains false even if an upstream caller requests native Code Mode.
+  const nativeToolSurfaceEnabled = resolveEffectiveNativeToolSurfaceEnabled(input);
   const messagePolicyParams = input.ignoreDisableMessageTool
     ? { ...params, disableMessageTool: false }
     : params;
@@ -369,16 +388,15 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
   const webSearchPlan = resolveCodexWebSearchPlan({
     config: params.config,
     disableTools: params.disableTools,
-    nativeToolSurfaceEnabled: input.nativeToolSurfaceEnabled,
+    nativeToolSurfaceEnabled,
     nativeProviderWebSearchSupport: input.nativeProviderWebSearchSupport,
   });
   const readableAllTools = [...readableAllToolProjection.tools];
-  const normallyProfiledTools =
-    input.nativeToolSurfaceEnabled === false
-      ? filterCodexDynamicToolsForDisabledNativeSurface(readableAllTools, input.pluginConfig, {
-          preserveShell: shouldKeepOpenClawShellDynamicTools(input, nativeExecutionPolicy),
-        })
-      : filterCodexDynamicTools(readableAllTools, input.pluginConfig);
+  const normallyProfiledTools = !nativeToolSurfaceEnabled
+    ? filterCodexDynamicToolsForDisabledNativeSurface(readableAllTools, input.pluginConfig, {
+        preserveShell: shouldKeepOpenClawShellDynamicTools(input, nativeExecutionPolicy),
+      })
+    : filterCodexDynamicTools(readableAllTools, input.pluginConfig);
   const hostSystemAgentActive =
     input.isHostScopedToolActive?.("openclaw") ?? isHostScopedAgentToolActive("openclaw");
   const profileFilteredTools =
@@ -504,7 +522,7 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
         normalizedToolCount: exposedTools.length,
         forceHeartbeatTool: input.forceHeartbeatTool === true,
         ignoreRuntimePlan: input.ignoreRuntimePlan === true,
-        nativeToolSurfaceEnabled: input.nativeToolSurfaceEnabled === true,
+        nativeToolSurfaceEnabled,
       },
     );
   }
@@ -569,6 +587,7 @@ function isCodexNativeExecutionBlockedByNodeExecHost(
     agentId?: string;
     runtimeSessionKey?: string;
     sandbox?: OpenClawSandboxContext;
+    nativeContainmentCapability?: CodexNativeContainmentCapability;
   } = {},
 ): boolean {
   return !resolveCodexNativeExecutionPolicy({
@@ -578,6 +597,7 @@ function isCodexNativeExecutionBlockedByNodeExecHost(
     agentId: options.agentId,
     execOverrides: params.execOverrides,
     sandboxAvailable: options.sandbox?.enabled,
+    nativeContainmentCapability: options.nativeContainmentCapability,
     readRuntimeSessionEntry: true,
   }).nativeToolSurfaceAllowed;
 }
@@ -759,12 +779,13 @@ function shouldExposeSandboxExecDynamicTool(input: DynamicToolBuildParams): bool
       agentId: input.sessionAgentId,
       runtimeSessionKey: input.sandboxSessionKey,
       sandbox: input.sandbox,
+      nativeContainmentCapability: input.nativeContainmentCapability,
     })
   ) {
     return false;
   }
   const backendId = input.sandbox?.enabled ? input.sandbox.backendId.trim().toLowerCase() : "";
-  return Boolean(backendId && input.nativeToolSurfaceEnabled === false);
+  return Boolean(backendId && !resolveEffectiveNativeToolSurfaceEnabled(input));
 }
 function isSandboxShellDynamicToolExcluded(config: CodexPluginConfig): boolean {
   return isCodexDynamicToolExcluded(config, ["exec", "sandbox_exec", "process", "sandbox_process"]);
@@ -821,7 +842,7 @@ function shouldKeepOpenClawShellDynamicTools(
     !isCodexMemoryFlushRun(input.params) &&
     // Disabled native Code Mode sends `environments: []`, so Codex cannot
     // advertise a shell. Preserve OpenClaw's policy-filtered direct shell.
-    input.nativeToolSurfaceEnabled === false &&
+    !resolveEffectiveNativeToolSurfaceEnabled(input) &&
     input.sandbox?.enabled !== true &&
     nodePolicy.effectiveExecHost !== "node"
   );
@@ -836,6 +857,7 @@ function resolveCodexNativeExecutionPolicyForDynamicTools(
     agentId: input.sessionAgentId,
     execOverrides: input.params.execOverrides,
     sandboxAvailable: input.sandbox?.enabled,
+    nativeContainmentCapability: input.nativeContainmentCapability,
     readRuntimeSessionEntry: true,
   });
 }

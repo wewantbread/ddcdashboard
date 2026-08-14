@@ -62,6 +62,7 @@ import type {
   CodexTurnEnvironmentParams,
   JsonObject,
 } from "./protocol.js";
+import { isCodexNativeContainmentCapability } from "./runtime-artifact.js";
 import {
   ensureCodexSandboxExecServerEnvironment,
   releaseCodexSandboxExecServerEnvironment,
@@ -159,6 +160,8 @@ export async function startCodexAttemptThread(params: {
   /** OpenClaw owns configured MCP dynamically for this scheduled turn. */
   configuredMcpOwnershipVersion?: 1;
   nativeToolSurfaceEnabled: boolean;
+  /** Must be minted by runtime-artifact validation; never accept a caller boolean. */
+  nativeContainmentCapability?: Parameters<typeof isCodexNativeContainmentCapability>[0];
   nativeProviderWebSearchSupport: CodexNativeWebSearchSupport;
   sandboxExecServerEnabled: boolean;
   sandbox: CodexSandboxContext;
@@ -168,6 +171,11 @@ export async function startCodexAttemptThread(params: {
   onStartupTimeout: () => void | Promise<void>;
   spawnedBy: EmbeddedRunAttemptParams["spawnedBy"];
 }): Promise<StartCodexAttemptThreadResult> {
+  // Keep native Code Mode disabled unless a non-forgeable runtime-artifact
+  // capability was minted after digest validation. No current caller has one.
+  const nativeToolSurfaceEnabled =
+    params.nativeToolSurfaceEnabled &&
+    isCodexNativeContainmentCapability(params.nativeContainmentCapability);
   let pluginAppServer = params.appServer;
   const startupRuntimeAuthProfileId =
     params.startupPreparedAuth?.kind === "profile"
@@ -204,7 +212,7 @@ export async function startCodexAttemptThread(params: {
         );
         const pluginStartupPolicy = resolveCodexPluginThreadConfigStartupPolicy({
           pluginConfig: params.pluginConfig,
-          nativeToolSurfaceEnabled: params.nativeToolSurfaceEnabled,
+          nativeToolSurfaceEnabled,
           scheduledRuntimeAuthority: params.buildAttemptParams().scheduledRuntimeAuthority,
         });
         const {
@@ -392,7 +400,7 @@ export async function startCodexAttemptThread(params: {
             try {
               startupSandboxEnvironment = shouldRequireCodexSandboxExecServerEnvironment({
                 sandbox: params.sandbox,
-                nativeToolSurfaceEnabled: params.nativeToolSurfaceEnabled,
+                nativeToolSurfaceEnabled,
                 sandboxExecServerEnabled: params.sandboxExecServerEnabled,
               })
                 ? await ensureCodexSandboxExecServerEnvironment({
@@ -410,7 +418,7 @@ export async function startCodexAttemptThread(params: {
               }
               if (
                 params.sandbox?.enabled &&
-                params.nativeToolSurfaceEnabled &&
+                nativeToolSurfaceEnabled &&
                 params.sandboxExecServerEnabled &&
                 !startupSandboxEnvironment
               ) {
@@ -424,13 +432,13 @@ export async function startCodexAttemptThread(params: {
             }
             const startupEnvironmentSelection = resolveCodexSandboxEnvironmentSelection(
               startupSandboxEnvironment,
-              params.nativeToolSurfaceEnabled,
+              nativeToolSurfaceEnabled,
             );
             const startupExecutionCwd = resolveCodexAppServerExecutionCwd({
               effectiveCwd: params.effectiveCwd,
               localWorkspaceRoot: params.effectiveWorkspace,
               environment: startupSandboxEnvironment,
-              nativeToolSurfaceEnabled: params.nativeToolSurfaceEnabled,
+              nativeToolSurfaceEnabled,
               remoteWorkspaceRoot: params.appServer.remoteWorkspaceRoot,
             });
             const startupSandboxPolicy = startupSandboxEnvironment
@@ -480,13 +488,11 @@ export async function startCodexAttemptThread(params: {
                 finalConfigPatch: params.finalConfigPatch,
                 buildFinalConfigPatch: params.buildFinalConfigPatch,
                 nativeHookRelayGeneration: params.nativeHookRelayGeneration,
-                nativeCodeModeEnabled: params.nativeToolSurfaceEnabled,
+                nativeCodeModeEnabled: nativeToolSurfaceEnabled,
                 nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
                 nativeCodeModeOnlyEnabled: params.appServer.codeModeOnly,
                 userMcpServersEnabled:
-                  params.configuredMcpOwnershipVersion === 1
-                    ? false
-                    : params.nativeToolSurfaceEnabled,
+                  params.configuredMcpOwnershipVersion === 1 ? false : nativeToolSurfaceEnabled,
                 mcpServersFingerprint:
                   params.configuredMcpOwnershipVersion === 1
                     ? undefined
@@ -690,7 +696,7 @@ export async function startCodexAttemptThread(params: {
       releaseSharedClientLease,
     };
   } catch (error) {
-    if (params.signal.aborted || shouldClearSharedClientAfterStartupAbandon(error)) {
+    if (params.signal.aborted || shouldClearStartupAbandon(error)) {
       releaseSharedClientLease?.();
       releaseSharedClientLease = undefined;
       await closeCodexStartupClientBestEffort(startupClientForAbandonedRequestCleanup);
@@ -714,14 +720,12 @@ export async function startCodexAttemptThread(params: {
   }
 }
 
-function shouldClearSharedClientAfterStartupAbandon(error: unknown): boolean {
+function shouldClearStartupAbandon(error: unknown): boolean {
   return isCodexAppServerStartupError(error);
 }
 
 function shouldClearSharedClientAfterStartupRace(error: unknown): boolean {
-  return (
-    shouldClearSharedClientAfterStartupAbandon(error) || isCodexAppServerRequestTimeoutError(error)
-  );
+  return shouldClearStartupAbandon(error) || isCodexAppServerRequestTimeoutError(error);
 }
 
 function shouldClearSharedClientAfterStartupFailure(params: {
