@@ -1,3 +1,4 @@
+import { dispatchChannelInboundTurn } from "openclaw/plugin-sdk/channel-inbound";
 // Zalouser helpers support monitor group-gating tests.
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import { vi } from "vitest";
@@ -37,12 +38,14 @@ export function installRuntime(params: {
   commandAuthorized?: boolean;
   replyPayload?: { text?: string; mediaUrl?: string; mediaUrls?: string[] };
   replyKind?: "block" | "tool";
+  useActualKernel?: boolean;
   resolveCommandAuthorizedFromAuthorizers?: (params: {
     useAccessGroups: boolean;
     authorizers: Array<{ configured: boolean; allowed: boolean }>;
   }) => boolean;
 }) {
   const deliveryErrors: unknown[] = [];
+  const actualKernelDispatchResults: Awaited<ReturnType<typeof dispatchChannelInboundTurn>>[] = [];
   const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async ({ dispatcherOptions, ctx }) => {
     await dispatcherOptions.typingCallbacks?.onReplyStart?.();
     if (params.replyPayload) {
@@ -86,6 +89,30 @@ export function installRuntime(params: {
   type TurnPlan = Parameters<PluginRuntime["channel"]["inbound"]["dispatch"]>[0];
   const recordInboundSession = vi.fn(async (_params: unknown) => {});
   const dispatch = vi.fn(async (plan: TurnPlan) => {
+    if (params.useActualKernel) {
+      const sessionMetaTasks: Promise<unknown>[] = [];
+      const result = await dispatchChannelInboundTurn({
+        ...plan,
+        record: {
+          ...plan.record,
+          trackSessionMetaTask: (task) => {
+            sessionMetaTasks.push(task);
+            plan.record?.trackSessionMetaTask?.(task);
+          },
+        },
+        replyResolver: async (_ctx, options) => {
+          if (params.replyKind === "tool") {
+            await options?.onToolResult?.(params.replyPayload ?? {});
+          } else {
+            await options?.onBlockReply?.(params.replyPayload ?? {});
+          }
+          return undefined;
+        },
+      });
+      await Promise.all(sessionMetaTasks);
+      actualKernelDispatchResults.push(result);
+      return result;
+    }
     const turn = {
       ...plan,
       agentId: plan.route.agentId,
@@ -242,6 +269,7 @@ export function installRuntime(params: {
   } as unknown as PluginRuntime);
 
   return {
+    actualKernelDispatchResults,
     deliveryErrors,
     dispatchReplyWithBufferedBlockDispatcher,
     resolveAgentRoute,

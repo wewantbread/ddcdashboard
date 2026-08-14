@@ -1,6 +1,9 @@
 // Zalouser tests cover monitor.group gating plugin behavior.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
 import "./monitor.send.test-mocks.js";
 import "./zalo-js.test-mocks.js";
@@ -62,6 +65,17 @@ function createConfig(): OpenClawConfig {
         },
       },
     },
+  };
+}
+
+const kernelProofTempDirs = new Set<string>();
+
+async function createKernelProofConfig(): Promise<OpenClawConfig> {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "openclaw-zalouser-kernel-proof-"));
+  kernelProofTempDirs.add(tempDir);
+  return {
+    ...createConfig(),
+    session: { store: path.join(tempDir, "sessions.json") },
   };
 }
 
@@ -178,6 +192,13 @@ describe("zalouser monitor group mention gating", () => {
     listZaloGroupsMock.mockResolvedValue([]);
     startZaloListenerMock.mockReset();
     startZaloListenerMock.mockResolvedValue({ stop: vi.fn() });
+  });
+
+  afterEach(async () => {
+    await Promise.all(
+      Array.from(kernelProofTempDirs, (tempDir) => rm(tempDir, { recursive: true, force: true })),
+    );
+    kernelProofTempDirs.clear();
   });
 
   async function processMessageWithDefaults(params: {
@@ -503,24 +524,28 @@ describe("zalouser monitor group mention gating", () => {
   });
 
   it("sanitizes custom inbound replies while preserving media delivery", async () => {
-    installRuntime({
+    const { actualKernelDispatchResults } = installRuntime({
       commandAuthorized: false,
       replyPayload: {
         text: "Done.\n⚠️ 🛠️ `search repos (agent)` failed",
         mediaUrl: "https://example.com/a.png",
       },
+      useActualKernel: true,
     });
 
     await processMessageThroughMonitor({
-      message: createDmMessage(),
+      message: createDmMessage({ threadId: "u-mixed", msgId: "dm-mixed" }),
       account: createAccount(),
-      config: createConfig(),
+      config: await createKernelProofConfig(),
       runtime: createRuntimeEnv(),
     });
 
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
     expect(sendMessageZalouserMock).toHaveBeenCalledOnce();
     expect(sendMessageZalouserMock).toHaveBeenCalledWith(
-      "u-1",
+      "u-mixed",
       "Done.",
       expect.objectContaining({
         isGroup: false,
@@ -534,19 +559,86 @@ describe("zalouser monitor group mention gating", () => {
   });
 
   it("suppresses trace-only custom inbound replies", async () => {
-    installRuntime({
+    const { actualKernelDispatchResults } = installRuntime({
       commandAuthorized: false,
       replyPayload: { text: "⚠️ 🛠️ `search repos (agent)` failed" },
+      useActualKernel: true,
     });
 
     await processMessageThroughMonitor({
-      message: createDmMessage(),
+      message: createDmMessage({ threadId: "u-trace", msgId: "dm-trace" }),
       account: createAccount(),
-      config: createConfig(),
+      config: await createKernelProofConfig(),
       runtime: createRuntimeEnv(),
     });
 
+    expect(actualKernelDispatchResults).toHaveLength(1);
     expect(sendMessageZalouserMock).not.toHaveBeenCalled();
+  });
+
+  it("passes ordinary markdown through the actual inbound turn kernel", async () => {
+    const replyText = "**Done.**\n\n- first\n- second";
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyPayload: { text: replyText },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-markdown", msgId: "dm-markdown" }),
+      account: createAccount(),
+      config: await createKernelProofConfig(),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
+    expect(sendMessageZalouserMock).toHaveBeenCalledOnce();
+    expect(sendMessageZalouserMock).toHaveBeenCalledWith(
+      "u-markdown",
+      replyText,
+      expect.objectContaining({ textMode: "markdown" }),
+    );
+  });
+
+  it("sanitizes a tool-result caption once across multi-media delivery", async () => {
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyKind: "tool",
+      replyPayload: {
+        text: "Caption.\n⚠️ 🛠️ `search repos (agent)` failed",
+        mediaUrls: ["https://example.com/a.png", "https://example.com/b.png"],
+      },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-tool", msgId: "dm-tool" }),
+      account: createAccount(),
+      config: {
+        ...(await createKernelProofConfig()),
+        agents: { defaults: { verboseDefault: "on" } },
+      },
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
+    expect(sendMessageZalouserMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZalouserMock).toHaveBeenNthCalledWith(
+      1,
+      "u-tool",
+      "Caption.",
+      expect.objectContaining({ mediaUrl: "https://example.com/a.png" }),
+    );
+    expect(sendMessageZalouserMock).toHaveBeenNthCalledWith(
+      2,
+      "u-tool",
+      "",
+      expect.objectContaining({ mediaUrl: "https://example.com/b.png" }),
+    );
   });
 
   it("allows DM senders from static access groups", async () => {
