@@ -14,7 +14,7 @@ import {
   registerWorkboardWorkspaceCardMethods,
   registerWorkboardWorkspaceWorkflowMethods,
 } from "./gateway-workspace-methods.js";
-import { WorkboardStore } from "./store.js";
+import type { WorkboardStore } from "./store.js";
 
 const READ_SCOPE = "operator.read" as const;
 const WRITE_SCOPE = "operator.write" as const;
@@ -31,10 +31,25 @@ function redactDiagnosticsRows(result: Awaited<ReturnType<WorkboardStore["diagno
 
 export function registerWorkboardGatewayMethods(params: {
   api: OpenClawPluginApi;
-  store?: WorkboardStore;
+  store: WorkboardStore;
 }) {
-  const { api } = params;
-  const store = params.store ?? WorkboardStore.openSqlite();
+  const { api: hostApi, store } = params;
+  const api: OpenClawPluginApi = {
+    ...hostApi,
+    registerGatewayMethod: (method, handler, options) =>
+      hostApi.registerGatewayMethod(
+        method,
+        async (request) => {
+          try {
+            // Registry cleanup fences new requests while preserving ones already admitted here.
+            await store.runOperation(async () => await handler(request));
+          } catch (error) {
+            respondError(request.respond, error);
+          }
+        },
+        options,
+      ),
+  };
   const dispatchCards = createWorkboardDispatchHandler({
     api,
     store,

@@ -1,5 +1,6 @@
 // Workboard tests cover tools plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "../api.js";
 import type { PersistedWorkboardCard, WorkboardKeyedStore } from "./persistence-types.js";
@@ -30,6 +31,37 @@ function readPayload(result: unknown): Record<string, unknown> {
 }
 
 describe("workboard tools", () => {
+  it("drains an admitted multi-step tool call before closing the store", async () => {
+    const store = new WorkboardStore(createMemoryStore());
+    const refreshEntered = createDeferred<void>();
+    const releaseRefresh = createDeferred<void>();
+    vi.spyOn(store, "refreshDiagnostics").mockImplementation(async () => {
+      refreshEntered.resolve();
+      await releaseRefresh.promise;
+      return { diagnostics: [], count: 0 };
+    });
+    const tools = createWorkboardTools({
+      api: { runtime: {} } as unknown as OpenClawPluginApi,
+      store,
+    });
+    const list = tools.find((tool) => tool.name === "workboard_list");
+    expect(list).toBeDefined();
+
+    const request = list?.execute("in-flight", { refreshDiagnostics: true });
+    await refreshEntered.promise;
+    let closed = false;
+    const closing = store.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseRefresh.resolve();
+    await expect(request).resolves.toBeDefined();
+    await closing;
+    await expect(list?.execute("late", {})).rejects.toThrow("workboard store is closed.");
+  });
+
   it("inherits the active tool filesystem boundary for workspace metadata", async () => {
     const store = new WorkboardStore(createMemoryStore());
     const api = { runtime: {} } as unknown as OpenClawPluginApi;

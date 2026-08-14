@@ -19,6 +19,7 @@ describe("createWorkboardChangeEventService", () => {
     });
     const announceChangeEpoch = vi.fn();
     const store = {
+      runOperationIfOpen: async (run: () => unknown) => await run(),
       subscribeChanges,
       announceChangeEpoch,
       reconcileExternalChanges,
@@ -62,6 +63,7 @@ describe("createWorkboardChangeEventService", () => {
     const unsubscribe = vi.fn();
     const reconcileExternalChanges = vi.fn();
     const store = {
+      runOperationIfOpen: async (run: () => unknown) => await run(),
       subscribeChanges: vi.fn((next) => {
         listener = next;
         return unsubscribe;
@@ -101,6 +103,7 @@ describe("createWorkboardChangeEventService", () => {
       throw new Error("database unavailable");
     });
     const store = {
+      runOperationIfOpen: async (run: () => unknown) => await run(),
       subscribeChanges: vi.fn(() => vi.fn()),
       announceChangeEpoch: vi.fn(),
       reconcileExternalChanges,
@@ -118,6 +121,34 @@ describe("createWorkboardChangeEventService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(reconcileExternalChanges).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledTimes(2);
+    await service.stop?.(context);
+  });
+
+  it("ignores reconciliation ticks after the store starts closing", async () => {
+    vi.useFakeTimers();
+    let closing = false;
+    const reconcileExternalChanges = vi.fn();
+    const store = {
+      runOperationIfOpen: async (run: () => unknown) => (closing ? undefined : await run()),
+      subscribeChanges: vi.fn(() => vi.fn()),
+      announceChangeEpoch: vi.fn(),
+      reconcileExternalChanges,
+    } as unknown as WorkboardStore;
+    const warn = vi.fn();
+    const service = createWorkboardChangeEventService(store);
+    const context = {
+      config: {},
+      stateDir: "/tmp/workboard-change-events-test",
+      gatewayEvents: { emit: vi.fn(), onSessionsChanged: () => () => undefined },
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    } satisfies Parameters<typeof service.start>[0];
+
+    await service.start(context);
+    closing = true;
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(reconcileExternalChanges).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     await service.stop?.(context);
   });
 });

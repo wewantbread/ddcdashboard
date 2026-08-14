@@ -2,6 +2,7 @@ import { PluginLoaderCacheState } from "./loader-cache-state.js";
 import { resolvePluginLoadCacheContext } from "./loader-load-context.js";
 import type { PluginLoadOptions } from "./loader-types.js";
 import { clearPluginRuntimeArtifactResolutionMemo } from "./plugin-runtime-artifact-resolution.js";
+import { isPluginRegistryRetired } from "./registry-lifecycle.js";
 import type { PluginRegistry } from "./registry-types.js";
 
 const MAX_PLUGIN_REGISTRY_CACHE_ENTRIES = 128;
@@ -15,7 +16,10 @@ export function setCachedPluginRegistry(cacheKey: string, registry: PluginRegist
 }
 
 export function getReusableCachedPluginRegistry(cacheKey: string): PluginRegistry | undefined {
-  return pluginLoaderCacheState.get(cacheKey);
+  const registry = pluginLoaderCacheState.get(cacheKey);
+  // Retirement starts host cleanup. Reusing that generation can reactivate resources
+  // whose asynchronous cleanup is already irreversible.
+  return registry && !isPluginRegistryRetired(registry) ? registry : undefined;
 }
 
 export function clearPluginRegistryLoadCache(): void {

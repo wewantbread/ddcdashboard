@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
   WorkboardBoardMetadata,
@@ -68,9 +69,13 @@ import {
 } from "./store-normalizers.js";
 
 export class WorkboardCoreStore {
+  private readonly operationScope = new AsyncLocalStorage<{ active: boolean }>();
+  private readonly activeOperations = new Set<Promise<unknown>>();
   private mutationQueue: Promise<unknown> = Promise.resolve();
+  private closePromise: Promise<void> | undefined;
   private lastNotificationSequence = 0;
   private readonly changes: WorkboardChangeTracker;
+  private readonly closePersistence: (() => void | Promise<void>) | undefined;
   protected readonly store: WorkboardKeyedStore;
   protected readonly boardStore: WorkboardKeyedStore<PersistedWorkboardBoard>;
   protected readonly subscriptionStore: WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>;
@@ -83,18 +88,74 @@ export class WorkboardCoreStore {
       subscriptions?: WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>;
       attachments?: WorkboardKeyedStore<PersistedWorkboardAttachment>;
       dataVersion?: () => number;
+      close?: () => void | Promise<void>;
     } = {},
   ) {
+    this.closePersistence = stores.close;
     this.changes = new WorkboardChangeTracker(stores.dataVersion);
-    this.store = this.changes.track(store);
+    this.store = this.changes.track(this.trackPersistence(store));
     this.boardStore = this.changes.track(
-      stores.boards ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardBoard>),
+      this.trackPersistence(
+        stores.boards ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardBoard>),
+      ),
     );
-    this.subscriptionStore =
+    this.subscriptionStore = this.trackPersistence(
       stores.subscriptions ??
-      (store as unknown as WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>);
-    this.attachmentStore =
-      stores.attachments ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardAttachment>);
+        (store as unknown as WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>),
+    );
+    this.attachmentStore = this.trackPersistence(
+      stores.attachments ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardAttachment>),
+    );
+  }
+
+  async runOperation<T>(run: () => T | Promise<T>): Promise<T> {
+    const active = this.operationScope.getStore();
+    if (active?.active) {
+      return await run();
+    }
+    this.assertOpen();
+    const context = { active: true };
+    const operation = this.operationScope.run(context, async () => await run());
+    this.activeOperations.add(operation);
+    try {
+      return await operation;
+    } finally {
+      context.active = false;
+      this.activeOperations.delete(operation);
+    }
+  }
+
+  async runOperationIfOpen<T>(run: () => T | Promise<T>): Promise<T | undefined> {
+    return this.closePromise ? undefined : await this.runOperation(run);
+  }
+
+  bindOperation<Args extends unknown[], T>(run: (...args: Args) => T | Promise<T>) {
+    return async (...args: Args): Promise<T> =>
+      await this.runOperation(async () => await run(...args));
+  }
+
+  async close(): Promise<void> {
+    this.closePromise ??= Promise.resolve().then(async () => {
+      await Promise.allSettled([...this.activeOperations]);
+      await this.closePersistence?.();
+    });
+    await this.closePromise;
+  }
+
+  private assertOpen(): void {
+    if (this.closePromise) {
+      throw new Error("workboard store is closed.");
+    }
+  }
+
+  private trackPersistence<T>(store: WorkboardKeyedStore<T>): WorkboardKeyedStore<T> {
+    return {
+      register: async (key, value) =>
+        await this.runOperation(async () => await store.register(key, value)),
+      lookup: async (key) => await this.runOperation(async () => await store.lookup(key)),
+      delete: async (key) => await this.runOperation(async () => await store.delete(key)),
+      entries: async () => await this.runOperation(async () => await store.entries()),
+    };
   }
 
   subscribeChanges(listener: (change: WorkboardChange) => void): () => void {
@@ -110,13 +171,15 @@ export class WorkboardCoreStore {
   }
 
   protected async enqueueMutation<T>(run: () => Promise<T>): Promise<T> {
-    const runAndNotify = async () => await this.changes.runMutation(run);
-    const result = this.mutationQueue.then(runAndNotify, runAndNotify);
-    this.mutationQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return await result;
+    return await this.runOperation(async () => {
+      const runAndNotify = async () => await this.changes.runMutation(run);
+      const result = this.mutationQueue.then(runAndNotify, runAndNotify);
+      this.mutationQueue = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await result;
+    });
   }
 
   protected async updateMetadata(

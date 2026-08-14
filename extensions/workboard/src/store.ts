@@ -298,6 +298,7 @@ export class WorkboardStore extends WorkboardNotificationStore {
       subscriptions: stores.subscriptions,
       attachments: stores.attachments,
       dataVersion: stores.dataVersion,
+      close: stores.close,
     });
   }
 }

@@ -9,6 +9,7 @@ import {
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withPluginHostCleanupTimeout } from "./host-hook-cleanup-timeout.js";
+import { cleanupPluginRuntimeLifecycles } from "./host-hook-runtime-lifecycle-cleanup.js";
 import {
   cleanupPluginSessionSchedulerJobs,
   clearPluginRunContext,
@@ -282,34 +283,18 @@ export async function runPluginHostCleanup(params: {
         });
       }
     }
-    for (const registration of registry.runtimeLifecycles) {
-      if (!shouldCleanup()) {
-        return { cleanupCount, failures };
-      }
-      if (!shouldCleanPlugin(registration.pluginId, params.pluginId)) {
-        continue;
-      }
-      const cleanup = registration.lifecycle.cleanup;
-      if (!cleanup) {
-        continue;
-      }
-      const hookId = `runtime:${registration.lifecycle.id}`;
-      try {
-        await withPluginHostCleanupTimeout(hookId, () =>
-          cleanup({
-            reason: params.reason,
-            sessionKey: params.sessionKey,
-            runId: params.runId,
-          }),
-        );
-        cleanupCount += 1;
-      } catch (error) {
-        failures.push({
-          pluginId: registration.pluginId,
-          hookId,
-          error,
-        });
-      }
+    const lifecycleResult = await cleanupPluginRuntimeLifecycles({
+      registrations: registry.runtimeLifecycles,
+      pluginId: params.pluginId,
+      reason: params.reason,
+      sessionKey: params.sessionKey,
+      runId: params.runId,
+      shouldCleanup,
+    });
+    cleanupCount += lifecycleResult.cleanupCount;
+    failures.push(...lifecycleResult.failures);
+    if (!shouldCleanup()) {
+      return { cleanupCount, failures };
     }
     const schedulerFailures = await cleanupPluginSessionSchedulerJobs({
       pluginId: params.pluginId,

@@ -1,4 +1,5 @@
 /** In-memory plugin registry builder and mutation API for plugin runtime registration. */
+import { cleanupPluginRuntimeLifecycles } from "./host-hook-runtime-lifecycle-cleanup.js";
 import { cleanupPluginSessionSchedulerJobs } from "./host-hook-runtime.js";
 import { createPluginApiFactory } from "./registry-api.js";
 import { createPluginRegistrars } from "./registry-registrars.js";
@@ -47,9 +48,24 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     registrationRecordSnapshots.set(record, clonePluginRecord(record));
     return createPluginApi(record, params);
   };
+  const recordCleanupFailures = (
+    kind: string,
+    failures: readonly { pluginId: string; hookId: string }[],
+  ) => {
+    for (const failure of failures) {
+      state.pushDiagnostic({
+        level: "warn",
+        pluginId: failure.pluginId,
+        message: `${kind} cleanup failed during rollback: ${failure.hookId}`,
+      });
+    }
+  };
 
   const rollbackPluginGlobalSideEffects = (pluginId: string, record?: RegistryPluginRecord) => {
     deactivatePluginSideEffectGuards(pluginId);
+    const runtimeLifecycleRecords = state.registry.runtimeLifecycles.filter(
+      (registration) => registration.pluginId === pluginId,
+    );
     const schedulerRecords = state.registry.sessionSchedulerJobs.filter(
       (r) => r.pluginId === pluginId,
     );
@@ -93,6 +109,16 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       registrationRecordSnapshots.delete(record);
     }
 
+    // Runtime lifecycle callbacks own resources created synchronously during register().
+    // Run their bounded cleanup after removing the failed registry contributions.
+    if (runtimeLifecycleRecords.length > 0) {
+      void cleanupPluginRuntimeLifecycles({
+        registrations: runtimeLifecycleRecords,
+        pluginId,
+        reason: "disable",
+      }).then(({ failures }) => recordCleanupFailures("runtime lifecycle", failures));
+    }
+
     // Scheduler jobs still have a live process registration; contribution rollback
     // drops registry rows above, then cancels external work created before register threw.
     if (registryParams.activateGlobalSideEffects !== false && schedulerRecords.length > 0) {
@@ -101,15 +127,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
         reason: "disable",
         records: schedulerRecords,
         cleanupOwnerRegistry: state.registry,
-      }).then((failures) => {
-        for (const failure of failures) {
-          state.pushDiagnostic({
-            level: "warn",
-            pluginId: failure.pluginId,
-            message: `scheduler job cleanup failed during rollback: ${failure.hookId}`,
-          });
-        }
-      });
+      }).then((failures) => recordCleanupFailures("scheduler job", failures));
     }
   };
 

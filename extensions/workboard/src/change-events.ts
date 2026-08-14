@@ -23,11 +23,11 @@ export function createWorkboardChangeEventService(store: WorkboardStore): OpenCl
       unsubscribe = store.subscribeChanges(emit);
       store.announceChangeEpoch();
       timer = setInterval(() => {
-        try {
-          store.reconcileExternalChanges();
-        } catch (error) {
-          ctx.logger.warn(`workboard external change check failed: ${String(error)}`);
-        }
+        void store
+          .runOperationIfOpen(() => store.reconcileExternalChanges())
+          .catch((error) =>
+            ctx.logger.warn(`workboard external change check failed: ${String(error)}`),
+          );
       }, WORKBOARD_EXTERNAL_CHANGE_CHECK_MS);
       timer.unref?.();
     },

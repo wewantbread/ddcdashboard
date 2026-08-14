@@ -78,6 +78,34 @@ afterEach(globalAfterEach0);
 afterAll(globalAfterAll1);
 
 describe("loadOpenClawPlugins", () => {
+  it("rebuilds a retired cached registry before activation", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "retired-cache-generation",
+      filename: "retired-cache-generation.cjs",
+      body: `module.exports = { id: "retired-cache-generation", register() {} };`,
+    });
+    const loadOptions = {
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["retired-cache-generation"],
+        },
+      },
+      onlyPluginIds: ["retired-cache-generation"],
+    } satisfies Parameters<typeof loadOpenClawPlugins>[0];
+
+    const first = loadOpenClawPlugins(loadOptions);
+    setActivePluginRegistry(createEmptyPluginRegistry());
+    expect(isPluginRegistryRetired(first)).toBe(true);
+
+    const second = loadOpenClawPlugins(loadOptions);
+
+    expect(second).not.toBe(first);
+    expect(getActivePluginRegistry()).toBe(second);
+  });
+
   it("rejects a repeated named legacy hook before adding another executable handler", () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
@@ -343,11 +371,21 @@ describe("loadOpenClawPlugins", () => {
               ingest: async () => {},
               assemble: async () => ({ messages: [] }),
             }));
+            api.lifecycle.registerRuntimeLifecycle({
+              id: "failing-side-effects-cleanup",
+              cleanup() {
+                globalThis.failingSideEffectsCleanupCount += 1;
+              },
+            });
             throw new Error("boom");
           },
         };`,
     });
 
+    const globalState = globalThis as typeof globalThis & {
+      failingSideEffectsCleanupCount: number;
+    };
+    globalState.failingSideEffectsCleanupCount = 0;
     clearInternalHooks();
     clearPluginCommands();
     clearPluginInteractiveHandlers();
@@ -380,6 +418,8 @@ describe("loadOpenClawPlugins", () => {
     const event = createInternalHookEvent("gateway", "startup", "gateway:startup");
     await triggerInternalHook(event);
     expect(event.messages).toStrictEqual([]);
+    await vi.waitFor(() => expect(globalState.failingSideEffectsCleanupCount).toBe(1));
+    Reflect.deleteProperty(globalState, "failingSideEffectsCleanupCount");
 
     clearInternalHooks();
     clearPluginCommands();

@@ -17,6 +17,10 @@ export default definePluginEntry({
   description: "Dashboard workboard for agent-owned issues and sessions.",
   register(api) {
     const store = WorkboardStore.openSqlite();
+    api.lifecycle.registerRuntimeLifecycle({
+      id: "workboard-sqlite-store",
+      cleanup: () => store.close(),
+    });
     api.session.controls.registerControlUiDescriptor({
       surface: "widget",
       id: "card",
@@ -33,12 +37,16 @@ export default definePluginEntry({
     registerWorkboardCommand({ api, store });
     api.registerService(createWorkboardChangeEventService(store));
     api.on("subagent_ended", async (event) => {
-      if (event.runId) {
-        await cleanupWorkboardRunWorktree({
-          store,
-          worktrees: api.runtime.worktrees,
-          runId: event.runId,
-        });
+      const { runId } = event;
+      if (runId) {
+        await store.runOperationIfOpen(
+          async () =>
+            await cleanupWorkboardRunWorktree({
+              store,
+              worktrees: api.runtime.worktrees,
+              runId,
+            }),
+        );
       }
     });
     api.registerCli(

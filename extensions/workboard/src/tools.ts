@@ -6,7 +6,7 @@ import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry
 import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import { Type } from "typebox";
 import { redactClaimToken } from "./card-redaction.js";
-import { WorkboardStore } from "./store.js";
+import type { WorkboardStore } from "./store.js";
 import { cardIdField, claimTokenField, createWorkboardMoveTool } from "./tools-card-mutations.js";
 
 function contextOwner(ctx: OpenClawPluginToolContext | undefined): string {
@@ -174,9 +174,9 @@ const CardIdSchema = Type.Object(
 export function createWorkboardTools(params: {
   api: OpenClawPluginApi;
   context?: OpenClawPluginToolContext;
-  store?: WorkboardStore;
+  store: WorkboardStore;
 }): AnyAgentTool[] {
-  const store = params.store ?? WorkboardStore.openSqlite();
+  const { store } = params;
   const ownerId = contextOwner(params.context);
   const readScopedCardToolParams = async (rawParams: unknown): Promise<WorkboardToolCardParams> => {
     const input = readCardToolParams(rawParams, ownerId);
@@ -202,7 +202,7 @@ export function createWorkboardTools(params: {
     runCardMutation(rawParams, readScopedCardToolParams, mutate);
   const runClaimedCardMutation = (rawParams: unknown, mutate: WorkboardCardMutation) =>
     runCardMutation(rawParams, readClaimedCardToolParams, mutate);
-  return [
+  const tools: AnyAgentTool[] = [
     {
       name: "workboard_list",
       label: "Workboard List",
@@ -1031,6 +1031,7 @@ export function createWorkboardTools(params: {
       },
     },
   ];
+  return tools.map((tool) => ({ ...tool, execute: store.bindOperation(tool.execute) }));
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
 import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
