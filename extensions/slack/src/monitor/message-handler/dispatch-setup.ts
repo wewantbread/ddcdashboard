@@ -320,7 +320,11 @@ export async function createSlackDispatchSetup(prepared: PreparedSlackMessage) {
     threadTs: streamThreadHint,
   });
   const shouldUseDraftStream = previewStreamingEnabled && !useStreaming;
-  const blockStreamingEnabled = resolveChannelStreamingBlockEnabled(account.config);
+  const blockStreamingEnabled = resolveChannelStreamingBlockEnabled(account.config, {
+    previewAvailable: previewStreamingEnabled || streamingEnabled,
+    blockStreamingDefault: cfg.agents?.defaults?.blockStreamingDefault,
+    sessionStreamingMode,
+  });
   const disableBlockStreaming = sourceRepliesAreToolOnly
     ? true
     : resolveSlackDisableBlockStreaming({

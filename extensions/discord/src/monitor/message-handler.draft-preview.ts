@@ -68,6 +68,7 @@ export function createDiscordDraftPreviewController(params: {
   const accountBlockStreamingEnabled = resolveChannelStreamingBlockEnabled(params.discordConfig, {
     previewAvailable,
     blockStreamingDefault: params.cfg.agents?.defaults?.blockStreamingDefault,
+    sessionStreamingMode: params.sessionStreamingMode,
   });
   const canStreamDraft = previewAvailable && !accountBlockStreamingEnabled;
   const draftStream = canStreamDraft

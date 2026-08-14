@@ -68,6 +68,7 @@ export function createDraftState(params: TurnConfig): TelegramDraftStateSlice {
   const accountBlockStreamingEnabled = resolveChannelStreamingBlockEnabled(params.telegramCfg, {
     previewAvailable,
     blockStreamingDefault: params.cfg.agents?.defaults?.blockStreamingDefault,
+    sessionStreamingMode: params.streamMode,
   });
   const canStreamAnswerDraft = previewAvailable && !accountBlockStreamingEnabled;
   const streamReasoningDraft = params.resolvedReasoningLevel === "stream";
