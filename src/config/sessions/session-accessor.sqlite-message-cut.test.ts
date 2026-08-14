@@ -193,6 +193,69 @@ describe("SQLite session message cuts", () => {
     expect(fullTranscriptLoads()).toBe(1);
   });
 
+  it("retains branch summaries for a reachable suffix after a missing ancestor", async () => {
+    const stateDir = tempDirs.make("openclaw-missing-parent-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const sessionId = "missing-parent-source";
+    const scope = { agentId, env, sessionId, sessionKey };
+    await upsertSessionEntryCore(scope, { sessionId, updatedAt: Date.now() });
+    await appendTranscriptEvent(scope, {
+      type: "session",
+      id: sessionId,
+      version: 3,
+      timestamp: "2026-07-18T00:00:00.000Z",
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "user-1",
+      message: { role: "user", content: "first prompt" },
+      now: Date.parse("2026-07-18T00:00:01.000Z"),
+      parentId: null,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "assistant-1",
+      message: { role: "assistant", content: "first answer" },
+      now: Date.parse("2026-07-18T00:00:02.000Z"),
+      parentId: "user-1",
+    });
+    // The suffix below hangs off an ancestor ("missing-ancestor") that is
+    // absent from the transcript. selectSessionTranscriptTreePathNodes keeps
+    // reachable suffixes after missing ancestors, so the branch summaries must
+    // keep listing this suffix with its own headline and message count.
+    await appendTranscriptMessage(scope, {
+      eventId: "orphan-user",
+      message: { role: "user", content: "orphan prompt" },
+      now: Date.parse("2026-07-18T00:00:03.000Z"),
+      parentId: "missing-ancestor",
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "orphan-assistant",
+      message: { role: "assistant", content: "orphan answer" },
+      now: Date.parse("2026-07-18T00:00:04.000Z"),
+      parentId: "orphan-user",
+    });
+    await appendTranscriptEvent(scope, {
+      type: "leaf",
+      id: "orphan-leaf",
+      parentId: "orphan-assistant",
+      timestamp: "2026-07-18T00:00:05.000Z",
+      targetId: "orphan-assistant",
+    });
+
+    const result = await listSessionBranches({ agentId, env, sessionKey });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") {
+      throw new Error("expected branch list result");
+    }
+    const orphan = result.branches.find((branch) => branch.leafEntryId === "orphan-assistant");
+    expect(orphan).toMatchObject({
+      leafEntryId: "orphan-assistant",
+      headline: "orphan answer",
+      // Full path count from the root through the retained suffix: user-1,
+      // assistant-1, orphan-user, orphan-assistant.
+      messageCount: 4,
+    });
+  });
+
   it("recomputes branch summaries after an append advances the watermark", async () => {
     const { env, scope } = await createSession();
     const fullTranscriptLoads = trackFullTranscriptLoads(env);

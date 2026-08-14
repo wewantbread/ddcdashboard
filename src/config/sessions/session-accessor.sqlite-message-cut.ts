@@ -428,7 +428,16 @@ function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBr
   const headlines = new Map<string, string>();
   const stack: Array<{ node: TreeNode; count: number; headline: string | undefined }> = [];
   for (const node of tree.nodes) {
-    if (node.parentId === null) stack.push({ node, count: 0, headline: undefined });
+    // Seed every root of the traversal: top-level roots (parentId === null) and
+    // retained suffixes whose ancestor is absent from the tree (parentId not in
+    // byId). selectSessionTranscriptTreePathNodes deliberately keeps a reachable
+    // suffix after a missing ancestor, so branch summaries must preserve that
+    // behavior; leaving such suffixes unseeded would turn their formerly valid
+    // summaries into empty headlines with zero counts. Cycles stay unseeded
+    // because every node in a cycle has its parent present in byId.
+    if (node.parentId === null || !tree.byId.has(node.parentId)) {
+      stack.push({ node, count: 0, headline: undefined });
+    }
   }
   while (stack.length > 0) {
     const { node, count, headline } = stack.pop()!;
