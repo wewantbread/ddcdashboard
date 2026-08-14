@@ -71,6 +71,7 @@ export type RegisterSubagentRunParams = {
   workspaceDir?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
+  completionTarget?: "parent";
   spawnMode?: "run" | "session";
   attachmentsDir?: string;
   attachmentsRootDir?: string;
@@ -134,6 +135,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       taskName: registerParams.taskName,
       cleanup: registerParams.cleanup,
       expectsCompletionMessage: registerParams.expectsCompletionMessage,
+      completionTarget: registerParams.completionTarget,
       spawnMode,
       label: registerParams.label,
       model: registerParams.model,

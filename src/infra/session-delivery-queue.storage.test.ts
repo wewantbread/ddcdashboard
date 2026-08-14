@@ -274,6 +274,7 @@ describe("session-delivery queue storage", () => {
             sourceTool: "image_generate",
           },
           sourceReplyDeliveryMode: "message_tool_only",
+          completionTarget: "parent",
           expectedMediaUrls: ["/tmp/proof.png"],
         },
         tempDir,
@@ -284,6 +285,7 @@ describe("session-delivery queue storage", () => {
           route: expect.objectContaining({ channel: "discord", to: "channel:123" }),
           inputProvenance: expect.objectContaining({ sourceTool: "image_generate" }),
           sourceReplyDeliveryMode: "message_tool_only",
+          completionTarget: "parent",
           expectedMediaUrls: ["/tmp/proof.png"],
         }),
       ]);

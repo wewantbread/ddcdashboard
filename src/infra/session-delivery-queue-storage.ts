@@ -73,6 +73,7 @@ export type QueuedSessionDeliveryPayload =
       deliveryContext?: SessionDeliveryContext;
       inputProvenance?: InputProvenance;
       sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+      completionTarget?: "parent";
       expectedMediaUrls?: string[];
       suppressTextDelivery?: true;
       idempotencyKey?: string;

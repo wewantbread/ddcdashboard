@@ -350,7 +350,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
           terminal.metadata.terminalDelivery = terminalDelivery;
         }
         params.onTerminalDeliveryEvidenceChanged(
-          buildRestartRecoveryTerminalDeliveryEvidence(deliveryResult),
+          buildRestartRecoveryTerminalDeliveryEvidence({ ...result, ...deliveryResult }),
         );
       },
     };
@@ -414,9 +414,10 @@ export async function finalizeEmbeddedAgentCommand(params: {
                     restartRecoveryTerminalRunIds: entry.restartRecoveryTerminalRunIds,
                   },
                   recordTerminalSource: true,
-                  terminalDeliveryEvidence: buildRestartRecoveryTerminalDeliveryEvidence(
-                    deliveryResult ?? result,
-                  ),
+                  terminalDeliveryEvidence: buildRestartRecoveryTerminalDeliveryEvidence({
+                    ...result,
+                    ...deliveryResult,
+                  }),
                   terminalRunId: runId,
                 })
               : {}),
