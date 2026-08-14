@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /** Normalizes plugin config and resolves effective enablement, slots, and activation sources. */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readBundledDiscoveryModeMemoized } from "./bundled-discovery-state.js";
 import {
   createEffectiveEnableStateResolver,
   createPluginEnableStateResolver,
@@ -218,6 +219,8 @@ export function resolvePluginActivationState(params: {
           plugins: params.config,
         }),
       allowBundledChannelExplicitBypassesAllowlist: true,
+      bundledDiscoveryMode:
+        params.origin === "bundled" ? readBundledDiscoveryModeMemoized() : undefined,
       isBundledChannelEnabledByChannelConfig: isBundledChannelEnabledByChannelConfigShared,
     }),
   );

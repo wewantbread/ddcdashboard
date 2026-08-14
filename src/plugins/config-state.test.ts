@@ -1,5 +1,5 @@
 // Covers plugin config state normalization and reset behavior.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createPluginActivationSource,
   normalizePluginsConfig,
@@ -10,6 +10,14 @@ import {
 } from "./config-state.js";
 import * as discovery from "./discovery.js";
 import * as manifest from "./manifest.js";
+
+const bundledDiscoveryState = vi.hoisted(() => ({
+  mode: undefined as "compat" | "allowlist" | undefined,
+}));
+vi.mock("./bundled-discovery-state.js", () => ({
+  readBundledDiscoveryMode: () => bundledDiscoveryState.mode,
+  readBundledDiscoveryModeMemoized: () => bundledDiscoveryState.mode,
+}));
 
 function normalizeVoiceCallEntry(entry: Record<string, unknown>) {
   return normalizePluginsConfig({
@@ -694,6 +702,85 @@ describe("resolveEnableState", () => {
         enabled: true,
       },
     });
+  });
+});
+
+describe("resolveEnableState under bundledDiscovery modes", () => {
+  afterEach(() => {
+    bundledDiscoveryState.mode = undefined;
+  });
+
+  const allowlistConfig = { allow: ["rollover", "brave"] };
+
+  it.each([
+    {
+      name: "compat exempts a default-enabled bundled plugin from the allowlist",
+      mode: "compat" as const,
+      id: "telegram",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: true,
+      config: allowlistConfig,
+      expected: { enabled: true },
+    },
+    {
+      name: "compat restores defaults, not blanket enablement",
+      mode: "compat" as const,
+      id: "qa-lab",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: undefined,
+      config: allowlistConfig,
+      expected: { enabled: false, reason: "bundled (disabled by default)" },
+    },
+    {
+      name: "allowlist mode keeps the strict gate for bundled plugins",
+      mode: "allowlist" as const,
+      id: "telegram",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: true,
+      config: allowlistConfig,
+      expected: { enabled: false, reason: "not in allowlist" },
+    },
+    {
+      name: "no recorded mode keeps the strict gate for bundled plugins",
+      mode: undefined,
+      id: "telegram",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: true,
+      config: allowlistConfig,
+      expected: { enabled: false, reason: "not in allowlist" },
+    },
+    {
+      name: "compat does not leak to non-bundled origins",
+      mode: "compat" as const,
+      id: "workspace-helper",
+      origin: "workspace" as const,
+      manifestEnabledByDefault: true,
+      config: allowlistConfig,
+      expected: { enabled: false, reason: "workspace plugin (disabled by default)" },
+    },
+    {
+      name: "denylist still wins over compat",
+      mode: "compat" as const,
+      id: "telegram",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: true,
+      config: { ...allowlistConfig, deny: ["telegram"] },
+      expected: { enabled: false, reason: "blocked by denylist" },
+    },
+    {
+      name: "explicit per-entry disable still wins over compat",
+      mode: "compat" as const,
+      id: "telegram",
+      origin: "bundled" as const,
+      manifestEnabledByDefault: true,
+      config: { ...allowlistConfig, entries: { telegram: { enabled: false } } },
+      expected: { enabled: false, reason: "disabled in config" },
+    },
+  ])("$name", ({ mode, id, origin, manifestEnabledByDefault, config, expected }) => {
+    bundledDiscoveryState.mode = mode;
+    expect(
+      resolveEnableState(id, origin, normalizePluginsConfig(config), manifestEnabledByDefault),
+    ).toEqual(expected);
   });
 });
 
