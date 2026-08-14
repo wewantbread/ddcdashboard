@@ -380,7 +380,9 @@ describeLive("codex final close live proof", () => {
         onMessageToolReturned: ({ sessionId }) => {
           setTimeout(() => {
             queuedAt = Date.now();
-            queueActiveRunMessageForTest(sessionId, "Follow-up question: what is 2+2?");
+            queueActiveRunMessageForTest(sessionId, "Follow-up question: what is 2+2?", {
+              isInboundUserMessage: true,
+            });
           }, 2_000);
         },
       });

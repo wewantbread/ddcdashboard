@@ -201,7 +201,9 @@ describe("Codex terminal dynamic-tool release", () => {
     expect(harness.resolveCompletion).toHaveBeenCalledOnce();
 
     harness.completeTurn();
-    harness.controller.scheduleTurnReleaseAfterTerminalDynamicTool(terminalYieldResult(true));
+    harness.controller.scheduleTurnReleaseAfterTerminalDynamicTool(
+      terminalResult(true, "sessions_yield"),
+    );
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });

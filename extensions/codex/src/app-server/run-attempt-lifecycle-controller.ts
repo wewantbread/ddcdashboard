@@ -67,15 +67,12 @@ export function createCodexAttemptLifecycleController(
         durationMs: value.durationMs,
         mode: "interrupt_and_complete_locally",
       });
-      embeddedAgentLog.info(
-        "codex app-server turn released immediately after sessions_yield",
-        {
-          threadId: value.call.threadId,
-          turnId: value.call.turnId,
-          toolCallId: value.call.callId,
-          durationMs: value.durationMs,
-        },
-      );
+      embeddedAgentLog.info("codex app-server turn released immediately after sessions_yield", {
+        threadId: value.call.threadId,
+        turnId: value.call.turnId,
+        toolCallId: value.call.callId,
+        durationMs: value.durationMs,
+      });
       // sessions_yield must release the requester immediately so settled
       // subagents can resume it. Keep the merged #123124 ownership contract:
       // interrupt native work in the background, but complete locally now.
