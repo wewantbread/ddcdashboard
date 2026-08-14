@@ -56,6 +56,7 @@ import {
   resolveModelSelection,
   type ProviderInfo,
 } from "./model-buttons.js";
+import { isTelegramRoutedModelSelectionAllowed } from "./model-callback-policy.js";
 import {
   hasTelegramOpaqueCallbackPrefix,
   parseTelegramNativeCommandCallbackData,
@@ -601,6 +602,20 @@ async function handleTelegramModelCallback(params: {
         `❌ Model "${selection.provider}/${selection.model}" is not allowed.`,
         [],
       ),
+    );
+    return true;
+  }
+  const selectedModelRef = `${selection.provider}/${selection.model}`;
+  if (
+    !isTelegramRoutedModelSelectionAllowed({
+      cfg: runtimeCfg,
+      agentId: sessionState.agentId,
+      selectedModelRef,
+      configuredDefaultRef: `${activeResolvedDefault.provider}/${activeResolvedDefault.model}`,
+    })
+  ) {
+    await retryModelAction(() =>
+      editMessageWithButtons(`❌ Model "${selectedModelRef}" is not allowed.`, []),
     );
     return true;
   }

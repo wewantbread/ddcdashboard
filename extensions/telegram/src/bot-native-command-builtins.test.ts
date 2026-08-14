@@ -357,7 +357,7 @@ describe("Telegram native command built-ins", () => {
     });
   });
 
-  it("falls back to model browse controls when a /model callback exceeds Telegram limits", async () => {
+  it("keeps routed model choices when a /model callback needs compact encoding", async () => {
     const longModel = "openrouter/hermes-3-llama-3.1-405b-extended-build-v1";
     commandAuthMocks.resolveCommandArgMenu.mockImplementation(({ command }) => {
       if (command.key !== "model") {
@@ -392,7 +392,18 @@ describe("Telegram native command built-ins", () => {
       label: "oversized model menu",
     });
     expect(options.reply_markup).toEqual({
-      inline_keyboard: [[{ text: "Browse providers", callback_data: "mdl_prov" }]],
+      inline_keyboard: [
+        [
+          {
+            text: "Short Model",
+            callback_data: "tgcmd:/model openrouter/short-model",
+          },
+          {
+            text: "Hermes 405B Extended",
+            callback_data: "mdl_sel_openrouter/hermes-3-llama-3.1-405b-extended-build-v1",
+          },
+        ],
+      ],
     });
   });
 

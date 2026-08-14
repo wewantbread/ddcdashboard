@@ -33,7 +33,7 @@ import {
   type TelegramCommandExecutorParams,
 } from "./bot-native-command-dispatch.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
-import { buildBrowseProvidersButton } from "./model-buttons.js";
+import { buildModelSelectionCallbackData } from "./model-buttons.js";
 import { sanitizeTelegramNativeCommandCallbackData } from "./native-command-callback-data.js";
 
 const loadTelegramLoginCommandExecutor = createLazyRuntimeModule(
@@ -349,16 +349,23 @@ export async function executeTelegramBuiltinCommand(
           : undefined,
     });
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-    let allChoicesFitCallbackData = true;
     for (let index = 0; index < menu.choices.length; index += 2) {
       const row = menu.choices.slice(index, index + 2).flatMap((choice) => {
-        const callbackData = sanitizeTelegramNativeCommandCallbackData(
+        const nativeCallbackData = sanitizeTelegramNativeCommandCallbackData(
           buildCommandTextFromArgs(commandDefinition, {
             values: { [menu.arg.name]: choice.value },
           }),
         );
+        const separatorIndex = choice.value.indexOf("/");
+        const callbackData =
+          nativeCallbackData ??
+          (commandDefinition.key === "model" && separatorIndex > 0
+            ? buildModelSelectionCallbackData({
+                provider: choice.value.slice(0, separatorIndex),
+                model: choice.value.slice(separatorIndex + 1),
+              })
+            : null);
         if (!callbackData) {
-          allChoicesFitCallbackData = false;
           return [];
         }
         return { text: choice.label, callback_data: callbackData };
@@ -367,12 +374,7 @@ export async function executeTelegramBuiltinCommand(
         rows.push(row);
       }
     }
-    const menuRows = allChoicesFitCallbackData
-      ? rows
-      : commandDefinition.key === "model"
-        ? buildBrowseProvidersButton()
-        : [];
-    const replyMarkup = buildInlineKeyboard(menuRows);
+    const replyMarkup = buildInlineKeyboard(rows);
     if (replyMarkup) {
       await withTelegramApiErrorLogging({
         operation: "sendMessage",

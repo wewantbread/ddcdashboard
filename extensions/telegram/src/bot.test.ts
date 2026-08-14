@@ -2611,6 +2611,34 @@ describe("createTelegramBot", () => {
     },
   );
 
+  it("rejects compact callbacks for automatic fallbacks outside the routed model policy", async () => {
+    const storePath = createTelegramTestStorePath("model-fallback-policy");
+    const config = makeModelPickerConfig(storePath, { omitModels: true });
+    if (!config.agents?.defaults) {
+      throw new Error("expected agent defaults");
+    }
+    config.agents.defaults.model = {
+      primary: "anthropic/claude-opus-4-6",
+      fallbacks: ["openai/gpt-5.4"],
+    };
+
+    loadConfig.mockReturnValue(config);
+    createTelegramBot({ token: "tok", config });
+    const callbackHandler = getTelegramCallbackHandlerForTests();
+    await callbackHandler(
+      createTelegramCallbackContext({
+        id: "cbq-model-denied-fallback",
+        data: "mdl_sel_openai/gpt-5.4",
+        message: { message_id: 17 },
+      }),
+    );
+
+    expect(String(firstEditMessageTextArg(2))).toContain(
+      '❌ Model "openai/gpt-5.4" is not allowed.',
+    );
+    expect(readOnlySessionEntry(storePath)).toBeUndefined();
+  });
+
   it("reports when selecting the default clears an incompatible runtime", async () => {
     const storePath = createTelegramTestStorePath("model-default-runtime");
     const config = makeModelPickerConfig(storePath);
