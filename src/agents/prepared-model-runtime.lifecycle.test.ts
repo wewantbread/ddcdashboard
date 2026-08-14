@@ -198,6 +198,19 @@ describe("prepared model runtime snapshots", () => {
     lease.release();
   });
 
+  it("defaults agent-run admission to static catalog mode", async () => {
+    const lease = await acquireAgentRunPreparedModelRuntime({
+      config: {},
+      agentId: "default",
+      agentDir: "/tmp/default-static-run-agent",
+      workspaceDir: "/tmp/default-static-run-workspace",
+    });
+
+    expect(mocks.prepareStaticCatalog).toHaveBeenCalledOnce();
+    expect(mocks.ensureOpenClawModelsJson).not.toHaveBeenCalled();
+    lease.release();
+  });
+
   it("retains only the latest idle direct-run owner", async () => {
     const firstInput = {
       config: {},
@@ -242,13 +255,16 @@ describe("prepared model runtime snapshots", () => {
       defaultWorkspaceDir: "/tmp/gateway-launch-workspace",
     });
     const acquireDynamicLease = () =>
-      acquireAgentRunPreparedModelRuntime({
-        agentId: "default",
-        config,
-        agentDir: "/tmp/unused-agent",
-        inheritedAuthDir: "/tmp/unused-agent",
-        workspaceDir,
-      });
+      acquireAgentRunPreparedModelRuntime(
+        {
+          agentId: "default",
+          config,
+          agentDir: "/tmp/unused-agent",
+          inheritedAuthDir: "/tmp/unused-agent",
+          workspaceDir,
+        },
+        { catalogMode: "live" },
+      );
     const [firstLease, secondLease] = await Promise.all([
       acquireDynamicLease(),
       acquireDynamicLease(),
@@ -258,13 +274,16 @@ describe("prepared model runtime snapshots", () => {
     expect(secondLease.snapshot).toBe(firstLease.snapshot);
     firstLease.release();
     secondLease.release();
-    const retainedLease = await acquireAgentRunPreparedModelRuntime({
-      agentId: "default",
-      config,
-      agentDir: "/tmp/unused-agent",
-      inheritedAuthDir: "/tmp/unused-agent",
-      workspaceDir,
-    });
+    const retainedLease = await acquireAgentRunPreparedModelRuntime(
+      {
+        agentId: "default",
+        config,
+        agentDir: "/tmp/unused-agent",
+        inheritedAuthDir: "/tmp/unused-agent",
+        workspaceDir,
+      },
+      { catalogMode: "live" },
+    );
     expect(retainedLease.snapshot).toBe(firstLease.snapshot);
     retainedLease.release();
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
@@ -289,9 +308,9 @@ describe("prepared model runtime snapshots", () => {
       workspaceDir: "/tmp/concurrent-dynamic-workspace",
     };
 
-    const firstPending = acquireAgentRunPreparedModelRuntime(input);
+    const firstPending = acquireAgentRunPreparedModelRuntime(input, { catalogMode: "live" });
     await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
-    const secondPending = acquireAgentRunPreparedModelRuntime(input);
+    const secondPending = acquireAgentRunPreparedModelRuntime(input, { catalogMode: "live" });
     await Promise.resolve();
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2);
     finishDynamic();
@@ -481,13 +500,16 @@ describe("prepared model runtime snapshots", () => {
     markPreparedModelRuntimeSnapshotsStale("test lease replacement", {
       waitForReplacement: true,
     });
-    const leasePending = acquireAgentRunPreparedModelRuntime({
-      agentId: "default",
-      config: initialConfig,
-      agentDir: "/tmp/unused-agent",
-      inheritedAuthDir: "/tmp/unused-agent",
-      workspaceDir: "/tmp/dynamic-replacement-workspace",
-    });
+    const leasePending = acquireAgentRunPreparedModelRuntime(
+      {
+        agentId: "default",
+        config: initialConfig,
+        agentDir: "/tmp/unused-agent",
+        inheritedAuthDir: "/tmp/unused-agent",
+        workspaceDir: "/tmp/dynamic-replacement-workspace",
+      },
+      { catalogMode: "live" },
+    );
     await Promise.resolve();
     expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(1);
 
