@@ -114,6 +114,10 @@ type AgentRuntimeMessagePresentationAction =
       value: string;
     }
   | {
+      type: "copy-text";
+      text: string;
+    }
+  | {
       type: "approval";
       approvalId: string;
       approvalKind: "exec" | "plugin";

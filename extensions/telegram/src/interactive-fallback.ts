@@ -25,6 +25,7 @@ const TELEGRAM_CONTROL_ONLY_FALLBACK = "Choose an option.";
 const TELEGRAM_PRESENTATION_CAPABILITIES = {
   supported: true,
   buttons: true,
+  copyTextButtons: true,
   selects: true,
   context: true,
   divider: false,

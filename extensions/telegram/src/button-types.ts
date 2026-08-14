@@ -32,6 +32,7 @@ export type TelegramButtonStyle = "danger" | "success" | "primary";
 type TelegramInlineButton = {
   text: string;
   callback_data?: string;
+  copy_text?: { text: string };
   url?: string;
   web_app?: { url: string };
   style?: TelegramButtonStyle;
@@ -43,6 +44,7 @@ export type TelegramDroppedControl = {
   label: string;
   reason:
     | "callback_data_too_long"
+    | "copy_text_invalid"
     | "invalid_action"
     | "question_context_unavailable"
     | "web_app_unavailable";
@@ -58,6 +60,12 @@ export type TelegramButtonBuildOptions = {
 };
 
 const TELEGRAM_INTERACTIVE_ROW_SIZE = 3;
+const TELEGRAM_COPY_TEXT_MAX_CHARACTERS = 256;
+
+function isValidTelegramCopyText(text: string): boolean {
+  const characterCount = Array.from(text).length;
+  return characterCount >= 1 && characterCount <= TELEGRAM_COPY_TEXT_MAX_CHARACTERS;
+}
 
 /** Reads only bounded, unambiguous Gateway-owned question option ordering. */
 export function resolveTelegramQuestionOptionIndices(
@@ -131,6 +139,11 @@ function toTelegramInlineButton(
   if (action.type === "url") {
     return { text: button.label, url: action.url, style };
   }
+  if (action.type === "copy-text") {
+    return isValidTelegramCopyText(action.text)
+      ? { text: button.label, copy_text: { text: action.text }, style }
+      : recordDroppedControl(button, options, "copy_text_invalid");
+  }
   if (action.type === "web-app") {
     return options?.allowWebAppButtons === true && action.url
       ? { text: button.label, web_app: { url: action.url }, style }
@@ -174,6 +187,9 @@ function toTelegramInlineButton(
     return callbackData
       ? { text: button.label, callback_data: callbackData, style }
       : recordDroppedControl(button, options, "invalid_action", nativeCandidate);
+  }
+  if (action.type !== "callback") {
+    return recordDroppedControl(button, options, "invalid_action");
   }
   // Reserve the full approval prefix, including malformed values, so legacy
   // plugin callbacks cannot be consumed by the approval handler.

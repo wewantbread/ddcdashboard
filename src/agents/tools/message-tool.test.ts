@@ -2926,6 +2926,7 @@ describe("message tool schema scoping", () => {
       expect(presentationSchemaJson).toContain('"action"');
       expect(presentationSchemaJson).toContain('"command"');
       expect(presentationSchemaJson).toContain('"const":"url"');
+      expect(presentationSchemaJson).toContain('"const":"copy-text"');
       expect(presentationSchemaJson).toContain('"const":"web-app"');
       expect(presentationSchemaJson).toContain('"widgetId"');
       expect(webAppRequiredFields).toEqual(

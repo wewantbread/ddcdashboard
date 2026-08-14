@@ -68,6 +68,74 @@ describe("telegramOutbound presentation", () => {
     });
   });
 
+  it("keeps copy-text buttons alongside rich-message presentation text", async () => {
+    sendMessageTelegramMock.mockResolvedValueOnce({ messageId: "tg-copy-text", chatId: "12345" });
+
+    await telegramOutbound.sendPayload!({
+      cfg: { channels: { telegram: { richMessages: true } } } as never,
+      to: "12345",
+      text: "",
+      payload: {
+        presentation: {
+          blocks: [
+            { type: "text", text: "Tap to copy the token." },
+            {
+              type: "buttons",
+              buttons: [
+                {
+                  label: "Copy token",
+                  action: { type: "copy-text", text: "TOKEN-7319" },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      deps: { sendTelegram: sendMessageTelegramMock },
+    });
+
+    const options = callOptionsAt(sendMessageTelegramMock, 0, "12345", "Tap to copy the token.");
+    expect(options.buttons).toEqual([[{ text: "Copy token", copy_text: { text: "TOKEN-7319" } }]]);
+  });
+
+  it("keeps overlong copy-text values visible when Telegram cannot encode the button", async () => {
+    sendMessageTelegramMock.mockResolvedValueOnce({
+      messageId: "tg-copy-text-fallback",
+      chatId: "12345",
+    });
+    const copyText = "x".repeat(257);
+
+    await telegramOutbound.sendPayload!({
+      cfg: {} as never,
+      to: "12345",
+      text: "",
+      payload: {
+        presentation: {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [
+                {
+                  label: "Copy token",
+                  action: { type: "copy-text", text: copyText },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      deps: { sendTelegram: sendMessageTelegramMock },
+    });
+
+    const options = callOptionsAt(
+      sendMessageTelegramMock,
+      0,
+      "12345",
+      `- Copy token: \`${copyText}\``,
+    );
+    expect(options.buttons).toBeUndefined();
+  });
+
   it("renders presentation tables as native islands for payload sends on rich accounts", async () => {
     sendMessageTelegramMock.mockResolvedValueOnce({ messageId: "tg-rich-table", chatId: "12345" });
     await telegramOutbound.sendPayload!({
