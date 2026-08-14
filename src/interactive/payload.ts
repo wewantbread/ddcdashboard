@@ -525,8 +525,8 @@ function normalizePresentationAction(raw: unknown): MessagePresentationAction | 
     return value ? { type: "callback", value } : undefined;
   }
   if (type === "copy-text") {
-    const text = normalizeOptionalString(record.text);
-    return text ? { type: "copy-text", text } : undefined;
+    const text = typeof record.text === "string" ? record.text : undefined;
+    return text?.trim() ? { type: "copy-text", text } : undefined;
   }
   if (type === "model-picker") {
     return normalizeModelPickerAction(record);

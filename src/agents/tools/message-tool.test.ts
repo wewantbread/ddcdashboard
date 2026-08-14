@@ -3954,6 +3954,19 @@ describe("message tool reasoning tag sanitization", () => {
                   label: `Approve\n${internalContext}`,
                   value: "approve",
                 },
+                {
+                  label: "Copy safe text",
+                  action: {
+                    type: "copy-text",
+                    text: `  SAFE-PREFIX\n${internalContext}\nSAFE-SUFFIX  `,
+                  },
+                },
+                {
+                  label: "Copy internal text",
+                  action: { type: "copy-text", text: internalContext },
+                  value: "must-not-become-active",
+                  url: "https://legacy.example.test",
+                },
               ],
             },
             {
@@ -3977,7 +3990,17 @@ describe("message tool reasoning tag sanitization", () => {
         { type: "input", placeholder: "Pick a lane" },
         {
           type: "buttons",
-          buttons: [{ label: "Approve", value: "approve" }],
+          buttons: [
+            { label: "Approve", value: "approve" },
+            {
+              label: "Copy safe text",
+              action: {
+                type: "copy-text",
+                text: "  SAFE-PREFIX\n\nSAFE-SUFFIX  ",
+              },
+            },
+            { label: "Copy internal text" },
+          ],
         },
         {
           type: "select",

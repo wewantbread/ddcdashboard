@@ -7,7 +7,8 @@ import {
 } from "./payload.js";
 
 describe("copy-text presentation actions", () => {
-  it("normalizes copy text and preserves the typed action through the legacy bridge", () => {
+  it("preserves exact nonblank copy text through normalization and the legacy bridge", () => {
+    const copyText = "\n openclaw status \n";
     const normalized = normalizeMessagePresentation({
       blocks: [
         {
@@ -15,7 +16,7 @@ describe("copy-text presentation actions", () => {
           buttons: [
             {
               label: "Copy command",
-              action: { type: "copy-text", text: " openclaw status " },
+              action: { type: "copy-text", text: copyText },
             },
           ],
         },
@@ -29,7 +30,7 @@ describe("copy-text presentation actions", () => {
           buttons: [
             {
               label: "Copy command",
-              action: { type: "copy-text" as const, text: "openclaw status" },
+              action: { type: "copy-text" as const, text: copyText },
             },
           ],
         },
