@@ -224,6 +224,28 @@ describe("MCP HTTP fetch helpers", () => {
     expect(response.body).toBeNull();
   });
 
+  it("does not apply the catalog budget to long-lived SSE streams", async () => {
+    const overBudget = MCP_HTTP_MAX_RESPONSE_BYTES + 1024;
+    const payload = "event: message\ndata: " + "x".repeat(overBudget) + "\n\n";
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(payload, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "content-length": String(payload.length),
+          },
+        }),
+    };
+
+    const fetch = buildMcpHttpFetch({ resourceUrl: "https://mcp.example.com/mcp" });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.text()).resolves.toBe(payload);
+  });
+
   it("rejects Content-Length above the MCP response budget before reading the body", async () => {
     const text = vi.fn(async () => "should-not-read");
     const cancel = vi.fn(async () => undefined);

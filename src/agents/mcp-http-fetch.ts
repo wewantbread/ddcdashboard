@@ -16,11 +16,31 @@ import {
 import { loadUndiciRuntimeDeps } from "../infra/net/undici-runtime.js";
 
 /**
- * Hard cap on a single MCP HTTP/SSE response body before the SDK parses it.
- * Matches the bundle MCP tools/list catalog budget so transport cannot fully
- * materialize a larger payload first.
+ * Hard cap for bounded MCP HTTP catalog/JSON bodies before the SDK parses
+ * them. Matches the bundle MCP tools/list catalog budget.
+ * Long-lived SSE / Streamable HTTP responses stay uncapped: the SDK reuses
+ * this fetch for EventSource connections, and a cumulative 10 MiB limit
+ * would disconnect healthy streams.
  */
 const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+function isBoundedMcpCatalogResponse(headers: Headers): boolean {
+  const contentType = headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/event-stream")) {
+    return false;
+  }
+  return contentType.includes("json");
+}
+
+function resolveMcpHttpResponseBudget(params: {
+  headers: Headers;
+  override?: number;
+}): number | undefined {
+  if (params.override !== undefined) {
+    return params.override;
+  }
+  return isBoundedMcpCatalogResponse(params.headers) ? MCP_HTTP_MAX_RESPONSE_BYTES : undefined;
+}
 
 const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
 
@@ -103,18 +123,23 @@ async function buildManagedMcpResponse(
   response: Response,
   release: () => Promise<void>,
   refreshTimeout?: () => void,
-  maxResponseBytes: number = MCP_HTTP_MAX_RESPONSE_BYTES,
+  maxResponseBytes?: number,
 ): Promise<Response> {
-  const maxBytes = Math.max(1, Math.floor(maxResponseBytes));
-  const contentLength = parseContentLengthBytes(response.headers);
-  if (contentLength !== undefined && contentLength > maxBytes) {
-    // Reject before the SDK reads JSON / SSE event data into memory.
-    try {
-      await response.body?.cancel().catch(() => undefined);
-    } finally {
-      void release();
+  const resolvedBudget =
+    maxResponseBytes !== undefined && Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
+      ? Math.max(1, Math.floor(maxResponseBytes))
+      : undefined;
+  if (resolvedBudget !== undefined) {
+    const contentLength = parseContentLengthBytes(response.headers);
+    if (contentLength !== undefined && contentLength > resolvedBudget) {
+      // Reject before the SDK reads JSON catalog data into memory.
+      try {
+        await response.body?.cancel().catch(() => undefined);
+      } finally {
+        void release();
+      }
+      throw createMcpHttpResponseTooLargeError(resolvedBudget);
     }
-    throw createMcpHttpResponseTooLargeError(maxBytes);
   }
 
   if (!response.body) {
@@ -126,8 +151,12 @@ async function buildManagedMcpResponse(
     body: response.body,
     cleanup: release,
     refreshTimeout,
-    maxBytes,
-    limitError: () => createMcpHttpResponseTooLargeError(maxBytes),
+    ...(resolvedBudget !== undefined
+      ? {
+          maxBytes: resolvedBudget,
+          limitError: () => createMcpHttpResponseTooLargeError(resolvedBudget),
+        }
+      : {}),
   });
   return await ensureGlobalFetchResponse(
     new Response(wrappedBody, {
@@ -145,7 +174,11 @@ export function buildMcpHttpFetch(params: {
   clientKey?: string;
   resourceUrl?: string;
   timeoutMs?: number;
-  /** Override the pre-parse response body cap (defaults to catalog budget). */
+  /**
+   * Optional pre-parse response body cap. When omitted, JSON catalog
+   * responses use the 10 MiB catalog budget and SSE/stream bodies stay
+   * uncapped.
+   */
   maxResponseBytes?: number;
 }): FetchLike {
   const needsCustomDispatcher =
@@ -188,7 +221,10 @@ export function buildMcpHttpFetch(params: {
       guarded.response,
       guarded.release,
       guarded.refreshTimeout,
-      params.maxResponseBytes ?? MCP_HTTP_MAX_RESPONSE_BYTES,
+      resolveMcpHttpResponseBudget({
+        headers: guarded.response.headers,
+        override: params.maxResponseBytes,
+      }),
     );
   };
 }
