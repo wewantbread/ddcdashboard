@@ -58,6 +58,11 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
   sourceTurnId: string;
   storePath: string;
 }): Promise<SessionEntry | undefined> {
+  // updateSessionEntry returns a non-null clone even when the updater declines
+  // (returns null), so a truthy result does not prove a cleanup committed.
+  // Track an explicit sentinel that is set only inside the updater when it
+  // actually produces a cleanup patch.
+  let didRetire = false;
   const retired = await updateSessionEntry(
     { storePath: params.storePath, sessionKey: params.sessionKey },
     (current) => {
@@ -69,6 +74,7 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
       ) {
         return null;
       }
+      didRetire = true;
       return {
         ...buildRestartRecoveryClaimCleanupPatch({
           entry: current,
@@ -80,13 +86,14 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
     },
     { skipMaintenance: true, takeCacheOwnership: true },
   );
-  if (retired) {
+  if (didRetire) {
     diag.warn("retired stale terminal restart-recovery claim", {
       sessionKey: params.sessionKey,
       sourceTurnId: params.sourceTurnId,
     });
+    return retired ?? undefined;
   }
-  return retired ?? undefined;
+  return undefined;
 }
 
 function buildExpectedSessionState(entry: SessionEntry): SessionTranscriptTurnExpectedState {
