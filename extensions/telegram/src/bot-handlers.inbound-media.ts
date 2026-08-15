@@ -41,6 +41,7 @@ import {
 import type { TelegramContext } from "./bot/types.js";
 import { isTelegramForumServiceMessage } from "./forum-service-message.js";
 import { resolveTelegramGroupIngestEnabled } from "./group-config-helpers.js";
+import { resolveTelegramIgnoreDisposition, TELEGRAM_IGNORE_HELP_TEXT } from "./ignore-command.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
 
@@ -112,6 +113,7 @@ export function createTelegramInboundMedia({
   const {
     resolveMediaRuntime,
     recordMessageResolvedMedia,
+    recordMessageForReplyChain,
     promptContextBoundaryOptions,
     latestPromptContextMinTimestampMs,
     latestPromptContextAmbientWatermark,
@@ -271,6 +273,35 @@ export function createTelegramInboundMedia({
     try {
       const finalIngressMessageId = entry.messages.at(-1)?.msg.message_id;
       entry.messages.sort((a, b) => a.msg.message_id - b.msg.message_id);
+      const ignored = entry.messages.find(
+        ({ ctx, msg }) => resolveTelegramIgnoreDisposition(msg, ctx.me?.username) !== "keep",
+      );
+      if (ignored) {
+        if (resolveTelegramIgnoreDisposition(ignored.msg, ignored.ctx.me?.username) === "help") {
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            runtime,
+            fn: () =>
+              bot.api.sendMessage(ignored.msg.chat.id, TELEGRAM_IGNORE_HELP_TEXT, {
+                reply_parameters: {
+                  message_id: ignored.msg.message_id,
+                  allow_sending_without_reply: true,
+                },
+              }),
+          }).catch(() => {});
+        }
+        releaseDispatchDedupeClaims(entry.dispatchDedupeClaims);
+        settleSpooledReplayParticipants(entry.spooledReplayParticipants, { kind: "ignored" });
+        return;
+      }
+      for (const { ctx, msg } of entry.messages) {
+        await recordMessageForReplyChain(
+          msg,
+          resolveTelegramMessageThreadSpec(msg, entry.isForum),
+          ctx.me?.id,
+          ctx.me?.username,
+        );
+      }
       let primary =
         entry.messages.find((item) => item.msg.caption || item.msg.text) ?? entry.messages[0];
       if (!primary) {

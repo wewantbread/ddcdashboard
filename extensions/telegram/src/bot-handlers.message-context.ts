@@ -330,12 +330,14 @@ export function createTelegramMessageContextRuntime({
     msg: Message,
     providerObservedThread?: TelegramThreadSpec,
     botUserId?: number,
+    botUsername?: string,
   ) =>
     messageCache.record({
       accountId,
       chatId: msg.chat.id,
       msg,
       ...(botUserId !== undefined ? { botUserId } : {}),
+      ...(botUsername ? { botUsername } : {}),
       ...(providerObservedThread ? { providerObservedThread } : {}),
       ...(providerObservedThread?.id != null ? { threadId: providerObservedThread.id } : {}),
     });

@@ -666,6 +666,18 @@ export function buildBuiltinChatCommands(
     }),
   ];
   const commands = definitions.map(defineBuiltinChatCommand);
+  commands.push(
+    defineChatCommand({
+      key: "ignore",
+      nativeName: "ignore",
+      nativeProviders: ["telegram"],
+      description: "Keep one Telegram message out of the bot context.",
+      acceptsArgs: true,
+      scope: "native",
+      category: "tools",
+      tier: "standard",
+    }),
+  );
 
   registerAlias(commands, "whoami", "/id");
   registerAlias(commands, "think", "/thinking", "/t");

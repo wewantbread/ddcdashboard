@@ -224,6 +224,27 @@ describe("telegram message cache", () => {
     }
   });
 
+  it("shows an ignored live reply target without persisting it", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    const ignored = message(920, "Ada", {
+      text: "/ignore side chatter",
+      entities: [{ type: "bot_command", offset: 0, length: 7 }],
+    });
+    const reply = message(921, "Grace", {
+      text: "This reply intentionally restores it",
+      reply_to_message: ignored,
+    });
+
+    await record(cache, reply, { botUsername: "OurBot" });
+
+    expect((await replyChain(cache, reply)).map((entry) => entry.body)).toContain(
+      "/ignore side chatter",
+    );
+    expect(await get(cache, "920")).toBeNull();
+    expect(await reloadGet(bucketKey, store, "920")).toBeNull();
+  });
+
   it("keeps an authoritative supplied thread ahead of conflicting root message metadata", async () => {
     const { bucketKey, entries, store } = createMemoryStore();
     const forum = { id: -1001, type: "supergroup", title: "QA", is_forum: true };

@@ -17,6 +17,7 @@ import {
   normalizeForwardedContext,
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
+import { resolveTelegramIgnoreDisposition } from "./ignore-command.js";
 import {
   isTelegramMessageCacheSourceMessage,
   parseTelegramResolvedMedia,
@@ -59,6 +60,7 @@ type TelegramMessageCache = {
     chatId: string | number;
     msg: Message;
     botUserId?: number;
+    botUsername?: string;
     promptContextProjection?: TelegramPromptContextProjection;
     /** Set only while recording an authenticated provider event or response. */
     providerObservedThread?: TelegramThreadSpec;
@@ -208,6 +210,7 @@ function normalizeMessageNode(
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker;
     resolvedMedia?: TelegramResolvedMedia;
     threadBinding?: TelegramMessageThreadBinding;
+    botUsername?: string;
   },
 ): TelegramCachedMessageNode {
   const media = resolveTelegramPrimaryMedia(msg);
@@ -330,7 +333,10 @@ function normalizeMessageNodes(
     }
     visited.add(node.messageId);
     const replyMessage = resolveEmbeddedReplyMessage(message);
-    if (replyMessage?.message_id != null) {
+    if (
+      replyMessage?.message_id != null &&
+      resolveTelegramIgnoreDisposition(replyMessage, params.botUsername) === "keep"
+    ) {
       visit(
         replyMessage,
         nodeThreadId(node) ?? inheritedThreadId,
@@ -670,6 +676,7 @@ export function createTelegramMessageCache(params?: {
     record: async ({
       accountId,
       botUserId,
+      botUsername,
       chatId,
       msg,
       promptContextProjection,
@@ -689,6 +696,7 @@ export function createTelegramMessageCache(params?: {
             }
           : {}),
         ...(threadBinding ? { threadBinding } : {}),
+        ...(botUsername ? { botUsername } : {}),
       });
       const currentObservation = observations.at(-1)!;
       let recordedEntry = currentObservation.node;
