@@ -42,7 +42,15 @@ function fixtureCard(index: number): WorkboardCard {
       links: [
         { id: `${id}-link`, type: "relates_to", url: "https://example.test", createdAt: 1000 },
       ],
-      proof: [{ id: `${id}-proof`, status: "passed", label: "unit", createdAt: 1000 }],
+      proof: [
+        {
+          id: `${id}-proof`,
+          status: "passed",
+          verification: "worker_reported",
+          label: "unit",
+          createdAt: 1000,
+        },
+      ],
       artifacts: [{ id: `${id}-artifact`, label: "log", createdAt: 1000 }],
       attachments: [
         {

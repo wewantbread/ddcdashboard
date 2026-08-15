@@ -63,6 +63,7 @@ export const WORKBOARD_LINK_TYPES = [
   "relates_to",
 ] as const;
 export const WORKBOARD_PROOF_STATUSES = ["passed", "failed", "skipped", "unknown"] as const;
+export const WORKBOARD_PROOF_VERIFICATIONS = ["worker_reported", "independently_verified"] as const;
 export const WORKBOARD_TEMPLATE_IDS = ["bugfix", "docs", "release", "pr_review", "plugin"] as const;
 export const WORKBOARD_DIAGNOSTIC_KINDS = [
   "stranded_ready",
@@ -70,6 +71,8 @@ export const WORKBOARD_DIAGNOSTIC_KINDS = [
   "blocked_too_long",
   "repeated_failures",
   "missing_proof",
+  "stale_proof",
+  "contradictory_proof",
   "orphaned_session",
   "archived_but_active",
 ] as const;
@@ -90,6 +93,7 @@ export type WorkboardEventKind = (typeof WORKBOARD_EVENT_KINDS)[number];
 export type WorkboardAttemptStatus = (typeof WORKBOARD_ATTEMPT_STATUSES)[number];
 export type WorkboardLinkType = (typeof WORKBOARD_LINK_TYPES)[number];
 export type WorkboardProofStatus = (typeof WORKBOARD_PROOF_STATUSES)[number];
+export type WorkboardProofVerification = (typeof WORKBOARD_PROOF_VERIFICATIONS)[number];
 export type WorkboardTemplateId = (typeof WORKBOARD_TEMPLATE_IDS)[number];
 export type WorkboardDiagnosticKind = (typeof WORKBOARD_DIAGNOSTIC_KINDS)[number];
 export type WorkboardDiagnosticSeverity = (typeof WORKBOARD_DIAGNOSTIC_SEVERITIES)[number];
@@ -150,6 +154,8 @@ export type WorkboardLink = {
 export type WorkboardProof = {
   id: string;
   status: WorkboardProofStatus;
+  /** Provenance label; this is caller-reported and is not an independent attestation. */
+  verification: WorkboardProofVerification;
   createdAt: number;
   label?: string;
   command?: string;
@@ -199,6 +205,8 @@ export type WorkboardStaleState = {
 
 export type WorkboardClaim = {
   ownerId: string;
+  /** Session that created the claim when the caller has a session context. */
+  sessionKey?: string;
   token: string;
   claimedAt: number;
   lastHeartbeatAt: number;

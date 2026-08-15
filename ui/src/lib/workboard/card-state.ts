@@ -179,6 +179,10 @@ export function workboardCardSessionKey(card: WorkboardCard): string | undefined
   return card.sessionKey ?? card.execution?.sessionKey;
 }
 
+export function workboardCardNavigationSessionKey(card: WorkboardCard): string | undefined {
+  return workboardCardSessionKey(card) ?? card.metadata?.claim?.sessionKey;
+}
+
 export function workboardCardRunId(card: WorkboardCard): string | undefined {
   return card.runId ?? card.execution?.runId;
 }

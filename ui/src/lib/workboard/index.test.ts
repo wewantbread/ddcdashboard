@@ -2398,7 +2398,7 @@ describe("workboard controller", () => {
         tasksByCardId: new Map(),
         sessions: [],
       }).map((card) => card.id),
-    ).toEqual(["done", "old-done"]);
+    ).toEqual(["review", "done", "old-done"]);
     expect(
       filterWorkboardCardsForPreset({
         cards,
@@ -2481,6 +2481,7 @@ describe("workboard controller", () => {
               },
               claim: {
                 ownerId: "agent:main",
+                sessionKey: "agent:main:session:claim-owner",
                 token: "[redacted]",
                 claimedAt: 10,
                 lastHeartbeatAt: 11,
@@ -2544,7 +2545,7 @@ describe("workboard controller", () => {
         dispatchCount: 2,
         lastDispatchAt: 20,
       },
-      claim: { token: "[redacted]" },
+      claim: { sessionKey: "agent:main:session:claim-owner", token: "[redacted]" },
       diagnostics: [{ actions: [{ kind: "add_proof", label: "Add proof" }] }],
       notifications: [{ sequence: 3 }],
     });
@@ -4425,6 +4426,40 @@ describe("workboard controller", () => {
       expect(getWorkboardLifecycle(card, [...sessions], task), name).toMatchObject(expected);
     }
   });
+
+  it.each(["done", "failed"] as const)(
+    "keeps claim-only %s sessions out of lifecycle reconciliation",
+    async (status) => {
+      const claimSessionKey = `agent:main:claim-only-${status}`;
+      const card = createWorkboardCard({
+        status: "running",
+        metadata: {
+          claim: {
+            ownerId: "agent:main",
+            sessionKey: claimSessionKey,
+            token: "[redacted]",
+            claimedAt: 1,
+            lastHeartbeatAt: 2,
+          },
+        },
+      });
+      const session = createGatewaySession({
+        key: claimSessionKey,
+        status,
+        hasActiveRun: false,
+      });
+
+      expect(getWorkboardLifecycle(card, [session])).toEqual({ session: null, state: "unlinked" });
+
+      state.loaded = true;
+      state.cards = [card];
+      const client = createClient({});
+      await syncLifecycle(client, [session]);
+
+      expect(requestCalls(client, "workboard.cards.update")).toEqual([]);
+      expect(state.cards[0]?.status).toBe("running");
+    },
+  );
 
   it("syncs linked card status from session lifecycle without overriding manual review", async () => {
     state.loaded = true;

@@ -19,6 +19,7 @@ import {
   cardParentIds,
   cardRunId,
   cardSessionKey,
+  clearResolvedProofDiagnostics,
   closeRunningAttempts,
   retryBudgetExhausted,
 } from "./store-card-helpers.js";
@@ -80,6 +81,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
     if (!ownerId) {
       throw new Error("claim ownerId is required.");
     }
+    const sessionKey = normalizeOptionalString(input.sessionKey);
     const ttlSeconds =
       typeof input.ttlSeconds === "number" && Number.isFinite(input.ttlSeconds)
         ? Math.max(1, Math.trunc(input.ttlSeconds))
@@ -142,7 +144,14 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
       const card = await this.updateCard(id, {
         metadata: {
           ...metadata,
-          claim: { ownerId, token, claimedAt: now, lastHeartbeatAt: now, expiresAt },
+          claim: {
+            ownerId,
+            ...(sessionKey ? { sessionKey } : {}),
+            token,
+            claimedAt: now,
+            lastHeartbeatAt: now,
+            expiresAt,
+          },
         },
       });
       const next = await this.updateCard(card.id, {
@@ -241,6 +250,10 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
     }
     assertCanMutateClaimedCard(existing, scope === null ? undefined : scope);
     const now = Date.now();
+    const completionStatus = normalizeStatus(input.status, "done");
+    if (completionStatus !== "review" && completionStatus !== "done") {
+      throw new Error("completion status must be review or done.");
+    }
     const createdCardIds = normalizeStringList(input.createdCardIds, "created card ids", 120);
     const childIds = cardChildIds(existing);
     for (const createdCardId of createdCardIds) {
@@ -266,14 +279,42 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
     if (proofId && !proofInput) {
       throw new Error("proof is required when proofId is provided.");
     }
-    const proof = proofInput ? normalizeProofInput(proofInput, now) : undefined;
+    const pendingProof = proofId
+      ? existing.metadata?.proof?.find((entry) => entry.id === proofId)
+      : undefined;
+    const proof = proofInput
+      ? normalizeProofInput(proofInput, now, pendingProof?.verification)
+      : undefined;
     const artifacts = Array.isArray(input.artifacts)
       ? input.artifacts
           .map((artifact) => normalizeArtifact({ ...artifact, createdAt: now }))
           .filter((artifact): artifact is WorkboardArtifact => artifact !== null)
           .slice(-MAX_CARD_ARTIFACTS)
       : [];
-    const metadata = clearDiagnostics(existing.metadata, ["missing_proof"]);
+    const completedProof = proof
+      ? appendCompletionProof(existing.metadata?.proof, proof, proofId)
+      : existing.metadata?.proof;
+    const evidenceMetadata = {
+      ...existing.metadata,
+      proof: completedProof,
+      artifacts: artifacts.length
+        ? [...(existing.metadata?.artifacts ?? []), ...artifacts].slice(-MAX_CARD_ARTIFACTS)
+        : existing.metadata?.artifacts,
+    };
+    const hasCompletionEvidence = Boolean(
+      completedProof?.length ||
+      artifacts.length ||
+      existing.metadata?.artifacts?.length ||
+      existing.metadata?.attachments?.length,
+    );
+    const metadata = proof
+      ? clearResolvedProofDiagnostics(
+          { ...existing, status: completionStatus, metadata: evidenceMetadata },
+          now,
+        )
+      : hasCompletionEvidence
+        ? clearDiagnostics(existing.metadata, ["missing_proof"])
+        : (existing.metadata ?? {});
     const notification: WorkboardNotification = {
       id: randomUUID(),
       kind: "completed",
@@ -290,7 +331,7 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
     return await this.updateCard(
       id,
       {
-        status: "done",
+        status: completionStatus,
         ...(execution ? { execution } : {}),
         metadata: {
           ...metadata,
@@ -311,10 +352,8 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
                 { id: randomUUID(), body: summary, createdAt: now },
               ].slice(-MAX_CARD_COMMENTS)
             : metadata.comments,
-          proof: proof ? appendCompletionProof(metadata.proof, proof, proofId) : metadata.proof,
-          artifacts: artifacts.length
-            ? [...(metadata.artifacts ?? []), ...artifacts].slice(-MAX_CARD_ARTIFACTS)
-            : metadata.artifacts,
+          proof: completedProof,
+          artifacts: evidenceMetadata.artifacts,
           notifications: [...(metadata.notifications ?? []), notification].slice(
             -MAX_CARD_NOTIFICATIONS,
           ),
@@ -451,7 +490,10 @@ export class WorkboardWorkflowStore extends WorkboardPromoteStore {
           status: targetStatus,
           execution: existing.execution?.status === "running" ? null : existing.execution,
           metadata: {
-            ...existing.metadata,
+            ...clearDiagnostics(existing.metadata, [
+              "running_without_heartbeat",
+              "orphaned_session",
+            ]),
             claim: undefined,
             attempts: closeRunningAttempts(existing.metadata?.attempts, now, "stopped", reason),
             comments: [

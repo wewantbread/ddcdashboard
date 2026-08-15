@@ -26,6 +26,7 @@ import {
 } from "./store-constants.js";
 import type { WorkboardMutationScope } from "./store-inputs.js";
 import {
+  clearDiagnostics,
   metadataIsEmpty,
   normalizeEvents,
   normalizeTimestamp,
@@ -416,6 +417,12 @@ export function computeCardDiagnostics(card: WorkboardCard, now: number): Workbo
   const diagnostics: WorkboardDiagnostic[] = [];
   const claim = card.metadata?.claim;
   const lastHeartbeatAt = claim?.lastHeartbeatAt ?? card.execution?.updatedAt ?? card.updatedAt;
+  const latestProof = card.metadata?.proof?.at(-1);
+  const latestAttemptStartedAt = Math.max(
+    card.startedAt ?? 0,
+    card.execution?.startedAt ?? 0,
+    ...(card.metadata?.attempts ?? []).map((attempt) => attempt.startedAt),
+  );
   if (
     (card.status === "todo" || card.status === "backlog" || card.status === "ready") &&
     card.agentId &&
@@ -444,6 +451,7 @@ export function computeCardDiagnostics(card: WorkboardCard, now: number): Workbo
           detail: "The linked run or claim has not reported recent activity.",
           actions: [
             { kind: "open_session", label: "Open session" },
+            { kind: "reclaim", label: "Reclaim stale work" },
             { kind: "reassign", label: "Reassign card" },
           ],
         },
@@ -480,7 +488,7 @@ export function computeCardDiagnostics(card: WorkboardCard, now: number): Workbo
     );
   }
   if (
-    card.status === "done" &&
+    (card.status === "done" || card.status === "review") &&
     !(
       card.metadata?.proof?.length ||
       card.metadata?.artifacts?.length ||
@@ -492,9 +500,47 @@ export function computeCardDiagnostics(card: WorkboardCard, now: number): Workbo
         {
           kind: "missing_proof",
           severity: "warning",
-          title: "Done card has no proof",
-          detail: "The card is marked done without proof or an attached artifact.",
+          title: card.status === "done" ? "Done card has no proof" : "Review card has no proof",
+          detail:
+            card.status === "done"
+              ? "The card is manually accepted as done without proof or an attached artifact."
+              : "The card is awaiting manual acceptance without proof or an attached artifact.",
           actions: [{ kind: "add_proof", label: "Add proof" }],
+        },
+        now,
+      ),
+    );
+  }
+  if (
+    (card.status === "done" || card.status === "review") &&
+    latestProof &&
+    latestAttemptStartedAt > 0 &&
+    latestProof.createdAt < latestAttemptStartedAt
+  ) {
+    diagnostics.push(
+      diagnostic(
+        {
+          kind: "stale_proof",
+          severity: "warning",
+          title: "Proof predates the current attempt",
+          detail:
+            "The latest proof was recorded before the current work attempt and may not support this lifecycle state.",
+          actions: [{ kind: "add_proof", label: "Add current proof" }],
+        },
+        now,
+      ),
+    );
+  }
+  if (card.status === "done" && latestProof?.status === "failed") {
+    diagnostics.push(
+      diagnostic(
+        {
+          kind: "contradictory_proof",
+          severity: "error",
+          title: "Done card has failed proof",
+          detail:
+            "The card is manually accepted as done, but its latest worker-reported proof is marked failed.",
+          actions: [{ kind: "add_proof", label: "Add resolving proof" }],
         },
         now,
       ),
@@ -515,6 +561,20 @@ export function computeCardDiagnostics(card: WorkboardCard, now: number): Workbo
     );
   }
   return diagnostics;
+}
+
+const PROOF_DIAGNOSTIC_KINDS = [
+  "missing_proof",
+  "stale_proof",
+  "contradictory_proof",
+] as const satisfies readonly WorkboardDiagnosticKind[];
+
+export function clearResolvedProofDiagnostics(card: WorkboardCard, now: number): WorkboardMetadata {
+  const activeKinds = new Set(computeCardDiagnostics(card, now).map((entry) => entry.kind));
+  return clearDiagnostics(
+    card.metadata,
+    PROOF_DIAGNOSTIC_KINDS.filter((kind) => !activeKinds.has(kind)),
+  );
 }
 
 export function capText(value: string | undefined, max: number): string | undefined {
@@ -572,7 +632,7 @@ export function buildWorkerContext(
     lines.push("", "## Proof");
     for (const entry of proof) {
       lines.push(
-        `- ${entry.status}: ${capText(entry.label ?? entry.command ?? entry.url ?? entry.note, 400)}`,
+        `- ${entry.status} (${entry.verification}): ${capText(entry.label ?? entry.command ?? entry.url ?? entry.note, 400)}`,
       );
     }
   }

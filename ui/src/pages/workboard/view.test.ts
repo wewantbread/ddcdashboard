@@ -1102,6 +1102,31 @@ describe("renderWorkboard", () => {
     expect(state.editingCardId).toBe("card-1");
   });
 
+  it("opens the claiming session when no card or execution session is linked", () => {
+    const sessionKey = "agent:main:claim-owner";
+    const onOpenSession = vi.fn();
+    const { state, container, renderView } = createWorkboardView({ onOpenSession });
+    state.cards = [
+      createWorkboardCard({
+        status: "running",
+        metadata: {
+          claim: {
+            ownerId: "agent:main",
+            sessionKey,
+            token: "[redacted]",
+            claimedAt: 1,
+            lastHeartbeatAt: 2,
+          },
+        },
+      }),
+    ];
+    renderView();
+
+    buttonByLabel(container, "Open session")?.click();
+
+    expect(onOpenSession).toHaveBeenCalledWith(sessionKey);
+  });
+
   it("keeps focus inside the card modal and restores focus on Escape", async () => {
     const { host, state } = createLoadedWorkboardState();
     state.cards = [];
@@ -1985,6 +2010,7 @@ describe("renderWorkboard", () => {
           proof: Array.from({ length: 7 }, (_, index) => ({
             id: `proof-${index + 1}`,
             status: "passed",
+            verification: "worker_reported",
             command: `pnpm test ${index + 1}`,
             url: `https://example.com/proof-${index + 1}`,
             createdAt: 5 + index,
@@ -2028,6 +2054,7 @@ describe("renderWorkboard", () => {
     expect(container.querySelector(".workboard-detail")?.textContent).toContain("1 links");
     expect(container.querySelector(".workboard-detail")?.textContent).not.toContain("pnpm test 1");
     expect(container.querySelector(".workboard-detail")?.textContent).toContain("pnpm test 7");
+    expect(container.querySelector(".workboard-detail")?.textContent).toContain("worker_reported");
     expect(container.querySelector(".workboard-detail")?.textContent).toContain(
       "https://example.com/proof-7",
     );

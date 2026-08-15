@@ -254,6 +254,7 @@ const WORKBOARD_SCHEMA_SQL = `
       card_id TEXT NOT NULL REFERENCES workboard_cards(id) ON DELETE CASCADE,
       ordinal INTEGER NOT NULL,
       status TEXT NOT NULL,
+      verification TEXT,
       label TEXT,
       command TEXT,
       url TEXT,
@@ -359,6 +360,7 @@ function ensureWorkboardSchema(db: DatabaseSync): void {
     "lifecycle_status_source_updated_at",
     "lifecycle_status_source_updated_at INTEGER",
   );
+  ensureColumn(db, "workboard_card_proof", "verification", "verification TEXT");
   const migrationId = `schema-${SCHEMA_VERSION}`;
   const current = db
     .prepare("SELECT 1 AS found FROM workboard_schema_migrations WHERE id = ?")
@@ -666,6 +668,8 @@ function readMetadata(
     const entry: WorkboardProof = {
       id: requiredString(child, "id"),
       status: requiredString(child, "status") as WorkboardProof["status"],
+      verification: (stringValue(child, "verification") ??
+        "worker_reported") as WorkboardProof["verification"],
       createdAt: requiredNumber(child, "created_at"),
     };
     const label = stringValue(child, "label");
@@ -1053,14 +1057,15 @@ function insertCard(db: DatabaseSync, card: WorkboardCard): void {
     db.prepare(
       `
         INSERT INTO workboard_card_proof
-          (id, card_id, ordinal, status, label, command, url, note, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, card_id, ordinal, status, verification, label, command, url, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     ).run(
       entry.id,
       card.id,
       ordinal,
       entry.status,
+      entry.verification,
       bindNull(entry.label),
       bindNull(entry.command),
       bindNull(entry.url),
