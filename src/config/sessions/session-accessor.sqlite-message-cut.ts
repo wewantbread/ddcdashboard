@@ -415,7 +415,9 @@ function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBr
 
   const children = new Map<string, TreeNode[]>();
   for (const node of tree.nodes) {
-    if (node.parentId === null) continue;
+    if (node.parentId === null) {
+      continue;
+    }
     const siblings = children.get(node.parentId);
     if (siblings) {
       siblings.push(node);
@@ -448,10 +450,14 @@ function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBr
     let nextHeadline = headline;
     if (record?.type === "message") {
       const extracted = extractHeadlineText(record.message);
-      if (extracted !== undefined) nextHeadline = extracted;
+      if (extracted !== undefined) {
+        nextHeadline = extracted;
+      }
     }
     messageCounts.set(node.id, nextCount);
-    if (nextHeadline !== undefined) headlines.set(node.id, nextHeadline);
+    if (nextHeadline !== undefined) {
+      headlines.set(node.id, nextHeadline);
+    }
     for (const child of children.get(node.id) ?? []) {
       stack.push({ node: child, count: nextCount, headline: nextHeadline });
     }
@@ -465,13 +471,16 @@ function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBr
     )
     .map((node) => {
       const timestamp = asRecord(tree.byId.get(node.id)?.entry)?.timestamp;
-      return {
+      const summary: SessionBranchSummary = {
         leafEntryId: node.id,
         headline: truncateBranchHeadline(headlines.get(node.id) ?? ""),
         messageCount: messageCounts.get(node.id) ?? 0,
-        ...(typeof timestamp === "string" && timestamp.trim() ? { updatedAt: timestamp } : {}),
         active: tree.leafId === node.id,
       };
+      if (typeof timestamp === "string" && timestamp.trim()) {
+        summary.updatedAt = timestamp;
+      }
+      return summary;
     });
 }
 
