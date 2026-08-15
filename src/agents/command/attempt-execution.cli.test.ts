@@ -2943,7 +2943,9 @@ describe("CLI attempt execution", () => {
       // carry the same gate as the auto-reply candidate or the loopback surface
       // resolves to full.
       const grantContext = buildCliMcpGrantContext({
-        run: firstRunCliAgentArg(),
+        run: firstRunCliAgentArg() as unknown as Parameters<
+          typeof buildCliMcpGrantContext
+        >[0]["run"],
         config: cfg,
         requireExplicitMessageTarget: false,
         agentId: "main",
