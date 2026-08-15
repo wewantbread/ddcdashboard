@@ -311,6 +311,17 @@ describe("SQLite active transcript event projection", () => {
     ]);
     expect(page.events.map((entry) => entry.seq)).toEqual([2, 4, 5]);
     expect(page.totalMessages).toBe(3);
+
+    const postBoundaryPage = readSessionTranscriptMessageEventPage(scope, {
+      excludeResetCarryover: true,
+      maxMessages: 10,
+      offset: 0,
+    });
+    expect(postBoundaryPage.events.map((entry) => (entry.event as { id?: unknown }).id)).toEqual([
+      "post-reset",
+    ]);
+    expect(postBoundaryPage.totalMessages).toBe(1);
+
     expect(readSessionTranscriptMessageEventCount(scope)).toBe(3);
     expect(readSessionTranscriptMessageEventById(scope, "old")).toBeUndefined();
     expect(readSessionTranscriptMessageEventById(scope, "kept-tool")).toBeUndefined();
@@ -346,6 +357,16 @@ describe("SQLite active transcript event projection", () => {
     expect(readSessionTranscriptActivePathEntryRelation(scope, "post-reset")).toBe("ancestor");
     expect(readSessionTranscriptMessageEventCount(scope)).toBe(5);
     expect(readSessionTranscriptMessageEventById(scope, "old")).toBeDefined();
+
+    // The compaction reopened the whole active path, but the reset still happened:
+    // a reader that must not cross it still stops at the position it admitted.
+    expect(
+      readSessionTranscriptMessageEventPage(scope, {
+        excludeResetCarryover: true,
+        maxMessages: 10,
+        offset: 0,
+      }).events.map((entry) => (entry.event as { id?: unknown }).id),
+    ).toEqual(["post-reset"]);
   });
 
   it("fails closed when the latest indexed reset payload is malformed", async () => {
