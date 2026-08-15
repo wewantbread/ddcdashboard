@@ -32,7 +32,7 @@ import { createTestPreparedRunAdmission } from "../admitted-run-context.test-sup
 import { clearRuntimeAuthProfileStoreSnapshots } from "../auth-profiles/runtime-snapshots.js";
 import { saveAuthProfileStore } from "../auth-profiles/store.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
-import { readCliMcpDelegationCapability } from "../cli-runner/mcp-grant-context.js";
+import { buildCliMcpGrantContext } from "../cli-runner/mcp-grant-context.js";
 import { createCronCreatorAuthorityCapability } from "../cron-creator-authority-context.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import { FailoverError } from "../failover-error.js";
@@ -2893,6 +2893,16 @@ describe("CLI attempt execution", () => {
         sessionId: `session-${runId}`,
         updatedAt: Date.now(),
       };
+      const cfg = {
+        session: { store: storePath },
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
+            },
+          },
+        },
+      } as OpenClawConfig;
       await writeSessionStoreSeed({ [sessionKey]: sessionEntry });
       runCliAgentMock.mockResolvedValueOnce(makeCliResult("delegation gate"));
 
@@ -2900,16 +2910,7 @@ describe("CLI attempt execution", () => {
         providerOverride: "anthropic",
         originalProvider: "anthropic",
         modelOverride: "claude-opus-4-7",
-        cfg: {
-          session: { store: storePath },
-          agents: {
-            defaults: {
-              models: {
-                "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
-              },
-            },
-          },
-        } as OpenClawConfig,
+        cfg,
         sessionEntry,
         sessionId: sessionEntry.sessionId,
         sessionKey,
@@ -2941,7 +2942,15 @@ describe("CLI attempt execution", () => {
       // The command loop is a second fallback entry point; its CLI grant must
       // carry the same gate as the auto-reply candidate or the loopback surface
       // resolves to full.
-      expect(readCliMcpDelegationCapability(firstRunCliAgentArg())).toBe(expected);
+      const grantContext = buildCliMcpGrantContext({
+        run: firstRunCliAgentArg(),
+        config: cfg,
+        requireExplicitMessageTarget: false,
+        agentId: "main",
+        modelProvider: "anthropic",
+        modelId: "claude-opus-4-7",
+      });
+      expect(grantContext.delegationCapability).toBe(expected);
     },
   );
 

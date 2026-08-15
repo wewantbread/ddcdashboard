@@ -24,7 +24,7 @@ export function buildCliMcpDelegationCapabilityBinding(capability: DelegationCap
   return capability === "report_only" ? { [cliMcpDelegationCapability]: capability } : {};
 }
 
-export function readCliMcpDelegationCapability(run: object): DelegationCapability | undefined {
+function readCliMcpDelegationCapability(run: object): DelegationCapability | undefined {
   return (run as CliMcpInternalRunParams)[cliMcpDelegationCapability];
 }
 
