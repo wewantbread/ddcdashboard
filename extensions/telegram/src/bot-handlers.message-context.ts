@@ -2,6 +2,7 @@ import type { Message } from "grammy/types";
 import { formatMediaPlaceholderText } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveStoredModelOverride } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
+import { resolveNativeCommandsEnabled } from "openclaw/plugin-sdk/native-command-config-runtime";
 import { DEFAULT_GROUP_HISTORY_LIMIT } from "openclaw/plugin-sdk/reply-history";
 import {
   getSessionEntry,
@@ -300,12 +301,19 @@ export function createTelegramMessageContextRuntime({
   RegisterTelegramHandlerParams,
   "cfg" | "accountId" | "ownerAgentId" | "opts" | "telegramCfg" | "telegramDeps"
 >) {
+  const ignoreEnabled = resolveNativeCommandsEnabled({
+    providerId: "telegram",
+    providerSetting: telegramCfg.commands?.native,
+    globalSetting: cfg.commands?.native,
+  });
   const messageCache = createTelegramMessageCache({
+    ignoreEnabled,
     scope: resolveTelegramMessageCacheScope(
       telegramDeps.resolveStorePath(cfg.session?.store, {
         agentId: ownerAgentId,
       }),
     ),
+    ...(opts.botInfo?.username ? { botUsername: opts.botInfo.username } : {}),
   });
   const resolvePromptSender = (
     node: TelegramCachedMessageNode,

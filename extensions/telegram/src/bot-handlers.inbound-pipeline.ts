@@ -144,6 +144,7 @@ function createTelegramInboundHandlers(
     msg: Message;
     requireConfiguredGroup: boolean;
     botUserId: number;
+    botUsername?: string;
     providerUpdate?: { id: number; kind: "edited_message" | "edited_channel_post" };
   }) => {
     if (shouldSkipUpdate(params.ctxForDedupe)) {
@@ -173,7 +174,18 @@ function createTelegramInboundHandlers(
     if (!gate.allowed) {
       return;
     }
-    await recordMessageForReplyChain(normalizedMsg, gate.context.threadSpec, params.botUserId);
+    if (
+      ignoreEnabled &&
+      resolveTelegramIgnoreDisposition(normalizedMsg, params.botUsername) !== "keep"
+    ) {
+      return;
+    }
+    await recordMessageForReplyChain(
+      normalizedMsg,
+      gate.context.threadSpec,
+      params.botUserId,
+      params.botUsername,
+    );
     if (params.providerUpdate) {
       emitTelegramLiveLocationMessageHook({
         accountId,
@@ -277,6 +289,7 @@ function createTelegramInboundHandlers(
         authorizationCfg: gate.context.cfg,
         ctx: event.ctx,
         msg: event.msg,
+        ignoreEnabled,
         chatId: event.chatId,
         isGroup: event.isGroup,
         isForum: event.isForum,
@@ -375,6 +388,7 @@ function createTelegramInboundHandlers(
       msg,
       requireConfiguredGroup: false,
       botUserId: resolveBotUserId(ctx),
+      botUsername: ctx.me?.username ?? opts.botInfo?.username,
       providerUpdate:
         typeof ctx.update?.update_id === "number"
           ? { id: ctx.update.update_id, kind: "edited_message" }
@@ -424,6 +438,7 @@ function createTelegramInboundHandlers(
       msg: normalizeChannelPostMessage(post),
       requireConfiguredGroup: true,
       botUserId: resolveBotUserId(ctx),
+      botUsername: ctx.me?.username ?? opts.botInfo?.username,
       providerUpdate:
         typeof ctx.update?.update_id === "number"
           ? { id: ctx.update.update_id, kind: "edited_channel_post" }

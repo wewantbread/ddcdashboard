@@ -173,6 +173,27 @@ function resolveEmbeddedReplyMessage(msg: Message): Message | undefined {
   return msg.reply_to_message;
 }
 
+/**
+ * Telegram embeds a reply target's full payload in every reply. Keep the live payload available
+ * to the current turn, but do not persist an ignored target (or a dangling replyToId) in cache.
+ */
+function detachIgnoredReplyTarget(
+  msg: Message,
+  botUsername: string | undefined,
+  ignoreEnabled: boolean,
+): Message {
+  const replyMessage = resolveEmbeddedReplyMessage(msg);
+  if (
+    !ignoreEnabled ||
+    !replyMessage ||
+    resolveTelegramIgnoreDisposition(replyMessage, botUsername) === "keep"
+  ) {
+    return msg;
+  }
+  const { reply_to_message: _ignoredTarget, ...cacheable } = msg;
+  return cacheable as Message;
+}
+
 export function isTelegramMessageFromCurrentBot(msg: Message, botUserId?: number): boolean {
   const currentBotUserId = parseStrictPositiveInteger(botUserId);
   if (currentBotUserId === undefined) {
@@ -297,6 +318,8 @@ function normalizeMessageNodes(
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker;
     resolvedMedia?: TelegramResolvedMedia;
     threadBinding?: TelegramMessageThreadBinding;
+    botUsername?: string;
+    ignoreEnabled?: boolean;
   },
 ): TelegramCachedMessageObservation[] {
   const observations: TelegramCachedMessageObservation[] = [];
@@ -304,13 +327,18 @@ function normalizeMessageNodes(
   const nodeThreadId = (node: TelegramCachedMessageNode) =>
     parseTelegramMessageThreadId(node.threadId);
   const visit = (
-    message: Message,
+    observed: Message,
     inheritedThreadId: number | undefined,
     mode: TelegramMessageObservationMode,
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker,
     threadBinding?: TelegramMessageThreadBinding,
     resolvedMedia?: TelegramResolvedMedia,
   ) => {
+    const message = detachIgnoredReplyTarget(
+      observed,
+      params.botUsername,
+      params.ignoreEnabled === true,
+    );
     const embeddedThreadId = parseTelegramMessageThreadId(
       (message as { message_thread_id?: unknown }).message_thread_id,
     );
@@ -333,10 +361,7 @@ function normalizeMessageNodes(
     }
     visited.add(node.messageId);
     const replyMessage = resolveEmbeddedReplyMessage(message);
-    if (
-      replyMessage?.message_id != null &&
-      resolveTelegramIgnoreDisposition(replyMessage, params.botUsername) === "keep"
-    ) {
+    if (replyMessage?.message_id != null) {
       visit(
         replyMessage,
         nodeThreadId(node) ?? inheritedThreadId,
@@ -618,7 +643,11 @@ export function createTelegramMessageCache(params?: {
   scope?: string;
   persistentStore?: TelegramMessageCachePersistentStore;
   bucketKey?: string;
+  botUsername?: string;
+  ignoreEnabled?: boolean;
 }): TelegramMessageCache {
+  const botUsername = params?.botUsername;
+  const ignoreEnabled = params?.ignoreEnabled !== false;
   const persistentStore = params?.persistentStore ?? resolveDefaultPersistentStore();
   const maxMessages =
     params?.maxMessages ??
@@ -676,13 +705,14 @@ export function createTelegramMessageCache(params?: {
     record: async ({
       accountId,
       botUserId,
-      botUsername,
+      botUsername: observedBotUsername,
       chatId,
       msg,
       promptContextProjection,
       providerObservedThread,
       threadId,
     }) => {
+      const effectiveBotUsername = observedBotUsername ?? botUsername;
       await hydrateMessageCacheBucket(bucket, maxMessages, scopeKey);
       const threadBinding = createTelegramMessageThreadBinding(providerObservedThread);
       const observations = normalizeMessageNodes(msg, {
@@ -696,7 +726,8 @@ export function createTelegramMessageCache(params?: {
             }
           : {}),
         ...(threadBinding ? { threadBinding } : {}),
-        ...(botUsername ? { botUsername } : {}),
+        ...(effectiveBotUsername ? { botUsername: effectiveBotUsername } : {}),
+        ignoreEnabled,
       });
       const currentObservation = observations.at(-1)!;
       let recordedEntry = currentObservation.node;

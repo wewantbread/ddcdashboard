@@ -62,6 +62,7 @@ type MediaAuthorization = {
 type TelegramMediaGroupInput = MediaAuthorization & {
   ctx: TelegramContext;
   msg: Message;
+  ignoreEnabled: boolean;
   storeAllowFrom: string[];
   promptContextMinTimestampMs?: number;
   promptContextAmbientWatermark?: TelegramAmbientTranscriptWatermark;
@@ -273,9 +274,11 @@ export function createTelegramInboundMedia({
     try {
       const finalIngressMessageId = entry.messages.at(-1)?.msg.message_id;
       entry.messages.sort((a, b) => a.msg.message_id - b.msg.message_id);
-      const ignored = entry.messages.find(
-        ({ ctx, msg }) => resolveTelegramIgnoreDisposition(msg, ctx.me?.username) !== "keep",
-      );
+      const ignored = entry.ignoreEnabled
+        ? entry.messages.find(
+            ({ ctx, msg }) => resolveTelegramIgnoreDisposition(msg, ctx.me?.username) !== "keep",
+          )
+        : undefined;
       if (ignored) {
         if (resolveTelegramIgnoreDisposition(ignored.msg, ignored.ctx.me?.username) === "help") {
           await withTelegramApiErrorLogging({
@@ -291,7 +294,7 @@ export function createTelegramInboundMedia({
           }).catch(() => {});
         }
         releaseDispatchDedupeClaims(entry.dispatchDedupeClaims);
-        settleSpooledReplayParticipants(entry.spooledReplayParticipants, { kind: "ignored" });
+        settleSpooledReplayParticipants(entry.spooledReplayParticipants, { kind: "skipped" });
         return;
       }
       for (const { ctx, msg } of entry.messages) {

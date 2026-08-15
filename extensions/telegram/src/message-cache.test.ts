@@ -245,6 +245,70 @@ describe("telegram message cache", () => {
     expect(await reloadGet(bucketKey, store, "920")).toBeNull();
   });
 
+  it("filters an addressed ignored reply target when the cache reloads", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const ignored = message(922, "Ada", {
+      text: "/ignore@OurBot side chatter",
+      entities: [{ type: "bot_command", offset: 0, length: 14 }],
+    });
+    const reply = message(923, "Grace", {
+      text: "Reply after restart",
+      reply_to_message: ignored,
+    });
+    const cache = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      botUsername: "OurBot",
+      ignoreEnabled: true,
+    });
+    await record(cache, reply);
+
+    expect((await replyChain(cache, reply)).map((entry) => entry.body)).toContain(
+      "/ignore@OurBot side chatter",
+    );
+    expect(await get(cache, "922")).toBeNull();
+
+    resetCache();
+    const reloaded = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+    });
+
+    expect(await get(reloaded, "922")).toBeNull();
+    const reloadedReply = await get(reloaded, "923");
+    expect(reloadedReply?.replyToId).toBeUndefined();
+    expect(reloadedReply?.sourceMessage.reply_to_message).toBeUndefined();
+  });
+
+  it("keeps a command-shaped reply target when native commands are disabled", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const commandShaped = message(924, "Ada", {
+      text: "/ignore ordinary text",
+      entities: [{ type: "bot_command", offset: 0, length: 7 }],
+    });
+    const reply = message(925, "Grace", {
+      text: "Reply after restart",
+      reply_to_message: commandShaped,
+    });
+    const cache = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      ignoreEnabled: false,
+    });
+    await record(cache, reply);
+
+    resetCache();
+    const reloaded = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      ignoreEnabled: false,
+    });
+    expect((await get(reloaded, "924"))?.body).toBe("/ignore ordinary text");
+    const reloadedReply = await get(reloaded, "925");
+    expect(reloadedReply?.replyToId).toBe("924");
+    expect(reloadedReply?.sourceMessage.reply_to_message?.message_id).toBe(924);
+  });
+
   it("keeps an authoritative supplied thread ahead of conflicting root message metadata", async () => {
     const { bucketKey, entries, store } = createMemoryStore();
     const forum = { id: -1001, type: "supergroup", title: "QA", is_forum: true };

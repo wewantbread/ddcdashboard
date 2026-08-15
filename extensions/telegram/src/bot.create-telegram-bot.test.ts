@@ -25,6 +25,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import {
   createTelegramNativeCommandTestDeps,
   telegramBotInfoForTest,
+  waitForTelegramMockCalls,
 } from "./bot.create-telegram-bot.test-support.js";
 import {
   createTelegramCallbackContext,
@@ -2756,6 +2757,49 @@ describe("createTelegramBot", () => {
     expect(sendMessageSpy).not.toHaveBeenCalled();
   });
 
+  it("does not cache an edited /ignore message into later prompt context", async () => {
+    loadConfig.mockReturnValue({
+      commands: { native: true },
+      channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+    });
+    createTelegramBot({ token: "tok" });
+    const editedHandler = getOnHandler("edited_message") as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+    const messageHandler = getOnHandler("message") as (
+      ctx: Record<string, unknown>,
+    ) => Promise<void>;
+
+    await editedHandler({
+      editedMessage: {
+        chat: { id: 1234, type: "private" },
+        message_id: 418,
+        date: 1736380800,
+        edit_date: 1736380810,
+        text: "/ignore edited private detail",
+        entities: [{ type: "bot_command", offset: 0, length: 7 }],
+        from: { id: 999, username: "human" },
+      },
+      me: { id: 7, username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    await messageHandler({
+      message: {
+        chat: { id: 1234, type: "private" },
+        message_id: 419,
+        date: 1736380860,
+        text: "ordinary follow-up",
+        from: { id: 999, username: "human" },
+      },
+      me: { id: 7, username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(replySpy.mock.calls.at(0)?.[0].ChannelStructuredContext).toBeUndefined();
+  });
+
   it("does not cache blocked group-sender edits into authorized prompt context", async () => {
     loadConfig.mockReturnValue({
       channels: {
@@ -3024,6 +3068,48 @@ describe("createTelegramBot", () => {
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats /ignore in an album as ordinary text when native commands are disabled", async () => {
+    loadConfig.mockReturnValue({
+      commands: { native: false },
+      channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+    });
+    const getFileSpy = vi.fn(async () => ({ file_path: "photos/p1.jpg" }));
+
+    createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
+    const base = {
+      chat: { id: 1234, type: "private" },
+      date: 1736380800,
+      from: { id: 999, username: "human" },
+      media_group_id: "album-ignore-native-disabled",
+    };
+
+    for (const message of [
+      {
+        ...base,
+        message_id: 425,
+        caption: "/ignore trip photos",
+        caption_entities: [{ type: "bot_command", offset: 0, length: 7 }],
+        photo: [{ file_id: "p1", file_unique_id: "u1", width: 1, height: 1 }],
+      },
+      {
+        ...base,
+        message_id: 426,
+        photo: [{ file_id: "p2", file_unique_id: "u2", width: 1, height: 1 }],
+      },
+    ]) {
+      await handler({
+        message,
+        me: { id: 7, username: "openclaw_bot" },
+        getFile: getFileSpy,
+      });
+    }
+    await waitForTelegramMockCalls(dispatchReplyWithBufferedBlockDispatcher, 1);
+
+    expect(getFileSpy).toHaveBeenCalledTimes(2);
     expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
