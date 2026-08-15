@@ -15884,6 +15884,7 @@ public struct LogsTailResult: Codable, Sendable {
     public let lines: [String]
     public let truncated: Bool?
     public let reset: Bool?
+    public let skippedbytes: Int?
 
     public init(
         file: String,
@@ -15891,7 +15892,8 @@ public struct LogsTailResult: Codable, Sendable {
         size: Int,
         lines: [String],
         truncated: Bool? = nil,
-        reset: Bool? = nil)
+        reset: Bool? = nil,
+        skippedbytes: Int? = nil)
     {
         self.file = file
         self.cursor = cursor
@@ -15899,6 +15901,7 @@ public struct LogsTailResult: Codable, Sendable {
         self.lines = lines
         self.truncated = truncated
         self.reset = reset
+        self.skippedbytes = skippedbytes
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -15908,6 +15911,7 @@ public struct LogsTailResult: Codable, Sendable {
         case lines
         case truncated
         case reset
+        case skippedbytes = "skippedBytes"
     }
 }
 

@@ -50,6 +50,7 @@ type LogsTailPayload = {
   lines?: string[];
   truncated?: boolean;
   reset?: boolean;
+  skippedBytes?: number;
   localFallback?: boolean;
 };
 
@@ -343,6 +344,15 @@ function normalizeTailText(text: string, truncated: boolean): { text: string; tr
     return { text: "", truncated };
   }
   return { text: text.slice(firstNewline + 1), truncated };
+}
+
+// `reset` is the backward-compatible re-anchor signal for both a real rotation
+// and a byte-budget skip. `skippedBytes > 0` marks the latter, so avoid the
+// misleading "file rotated" notice when the cursor was only fast-forwarded.
+function logResetNoticeMessage(skippedBytes: number | undefined): string {
+  return (skippedBytes ?? 0) > 0
+    ? `Log cursor re-anchored (skipped ${skippedBytes} bytes).`
+    : "Log cursor reset (file rotated).";
 }
 
 function parseJournalctlOutput(output: string): { lines: string[]; cursor?: string } {
@@ -735,7 +745,7 @@ export function registerLogsCli(program: Command) {
           if (
             !emitJsonLine({
               type: "notice",
-              message: "Log cursor reset (file rotated).",
+              message: logResetNoticeMessage(payload.skippedBytes),
             })
           ) {
             return;
@@ -790,7 +800,7 @@ export function registerLogsCli(program: Command) {
           }
         }
         if (payload.reset) {
-          if (!errorLine("Log cursor reset (file rotated).")) {
+          if (!errorLine(logResetNoticeMessage(payload.skippedBytes))) {
             return;
           }
         }
