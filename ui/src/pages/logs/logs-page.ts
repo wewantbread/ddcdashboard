@@ -136,10 +136,8 @@ class LogsPage extends OpenClawLightDomElement {
       this.logsTaskQuiet = false;
       void this.logsTask.run([null, null, null, false, false]);
     },
-    onSnapshot: () => {
-      this.syncPolling();
-      this.ensureInitialLogs();
-    },
+    onSnapshot: () => this.syncPolling(),
+    ensureInitialData: () => this.ensureInitialLogs(),
   });
   private readonly streamFollow = new StreamAutoFollowController(this, {
     selector: ".log-stream",
