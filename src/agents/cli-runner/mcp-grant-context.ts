@@ -21,7 +21,7 @@ type CliMcpInternalRunParams = RunCliAgentParams & {
 };
 
 export function buildCliMcpDelegationCapabilityBinding(capability: DelegationCapability): object {
-  return { [cliMcpDelegationCapability]: capability };
+  return capability === "report_only" ? { [cliMcpDelegationCapability]: capability } : {};
 }
 
 export function readCliMcpDelegationCapability(run: object): DelegationCapability | undefined {

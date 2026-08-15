@@ -160,8 +160,6 @@ describe("buildCliMcpGrantContext delegationCapability", () => {
     // Primary attempts must produce byte-identical grant contexts, so the key
     // is absent rather than explicitly "full".
     expect(buildGrant()).not.toHaveProperty("delegationCapability");
-    expect(buildGrant({}, "full")).toMatchObject({
-      delegationCapability: "full",
-    });
+    expect(buildGrant({}, "full")).not.toHaveProperty("delegationCapability");
   });
 });

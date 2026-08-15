@@ -2876,13 +2876,13 @@ describe("CLI attempt execution", () => {
       label: "a fallback answering ordinary user input",
       isFallbackRetry: true,
       inputProvenance: { kind: "external_user" },
-      expected: "full",
+      expected: undefined,
     },
     {
       label: "a primary completion report",
       isFallbackRetry: false,
       inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
-      expected: "full",
+      expected: undefined,
     },
   ])(
     "stamps the command-fallback CLI grant delegation capability for $label",
