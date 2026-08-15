@@ -73,6 +73,11 @@ type TelegramMessageCache = {
     messageId: string;
     media: TelegramResolvedMedia;
   }) => Promise<void>;
+  remove: (params: {
+    accountId: string;
+    chatId: string | number;
+    messageId: string;
+  }) => Promise<boolean>;
   get: (params: {
     accountId: string;
     chatId: string | number;
@@ -142,6 +147,7 @@ function getPersistedMessageCacheBuckets(): Map<string, TelegramMessageCacheBuck
 
 type TelegramMessageCachePersistentStore = {
   register(key: string, value: PersistedTelegramMessageCacheValue): Promise<void>;
+  delete(key: string): Promise<boolean>;
   entries(): Promise<Array<{ key: string; value: unknown }>>;
 };
 
@@ -190,8 +196,9 @@ function detachIgnoredReplyTarget(
   ) {
     return msg;
   }
-  const { reply_to_message: _ignoredTarget, ...cacheable } = msg;
-  return cacheable as Message;
+  const cacheable = { ...msg };
+  delete cacheable.reply_to_message;
+  return cacheable;
 }
 
 export function isTelegramMessageFromCurrentBot(msg: Message, botUserId?: number): boolean {
@@ -768,6 +775,21 @@ export function createTelegramMessageCache(params?: {
         node: resolvedNode,
         ...(botUserId !== undefined ? { botUserId } : {}),
       });
+    },
+    remove: async ({ accountId, chatId, messageId }) => {
+      await hydrateMessageCacheBucket(bucket, maxMessages, scopeKey);
+      const key = telegramMessageCacheKey({ scopeKey, accountId, chatId, messageId });
+      const removedFromMemory = messages.delete(key);
+      if (!bucket.persistentStore) {
+        return removedFromMemory;
+      }
+      try {
+        const removedFromStore = await bucket.persistentStore.delete(key);
+        return removedFromMemory || removedFromStore;
+      } catch (error) {
+        logVerbose(`telegram: failed to remove message from persistent cache: ${String(error)}`);
+        throw error;
+      }
     },
     get,
     recentBefore: async ({ accountId, chatId, messageId, threadId, limit }) => {

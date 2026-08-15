@@ -310,6 +310,15 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 
     Group history context is always on and bounded by `historyLimit`. Set `channels.telegram.historyLimit: 0` to disable the group history window. `openclaw doctor --fix` removes the retired `includeGroupHistoryContext` key.
 
+    Mention and activation settings are chat-wide controls for whether a message
+    triggers the bot; they do not provide a per-message context boundary. Without
+    `/ignore`, holding a one-off human-only aside means changing those persistent
+    settings and changing them back, and activation gating alone does not
+    selectively remove the message from rolling group history. Prefix the aside
+    with `/ignore`, for example `/ignore dinner at 7?`, to keep that update out of
+    reply history, media processing, prompt context, and agent dispatch. `/ignore`
+    is available when native Telegram commands are enabled.
+
     Getting the group chat ID: forward a group message to `@userinfobot` / `@getidsbot`, read `chat.id` from `openclaw logs --follow`, inspect Bot API `getUpdates`, or (once the group is allowed) run `/whoami@<bot_username>`.
 
   </Tab>
@@ -446,6 +455,11 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 
   <Accordion title="Native commands and custom commands">
     Telegram's command menu is registered at startup with `setMyCommands`. `commands.native: "auto"` enables native commands for Telegram.
+
+    `/ignore <message>` marks one authorized update as human-only and drops it
+    before it reaches agent context. Bare `/ignore` returns usage help. This is
+    context control, not message deletion: the original Telegram message remains
+    visible in the chat.
 
     Add custom command menu entries:
 

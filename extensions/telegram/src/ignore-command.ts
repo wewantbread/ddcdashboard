@@ -3,7 +3,7 @@ import { getTelegramTextParts } from "./bot/body-helpers.js";
 
 const IGNORE_COMMAND_RE = /^\/ignore(?:@([a-z0-9_]+))?$/i;
 
-export type TelegramIgnoreDisposition = "drop" | "help" | "keep";
+type TelegramIgnoreDisposition = "drop" | "help" | "keep";
 
 export const TELEGRAM_IGNORE_HELP_TEXT =
   "Use /ignore <message> to keep this message out of the bot's context. Replying to it may include it again.";

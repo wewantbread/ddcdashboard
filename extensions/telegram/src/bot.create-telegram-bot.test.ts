@@ -2770,6 +2770,20 @@ describe("createTelegramBot", () => {
       ctx: Record<string, unknown>,
     ) => Promise<void>;
 
+    await messageHandler({
+      message: {
+        chat: { id: 1234, type: "private" },
+        message_id: 418,
+        date: 1736380800,
+        text: "original private detail",
+        from: { id: 999, username: "human" },
+      },
+      me: { id: 7, username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockClear();
+    replySpy.mockClear();
+
     await editedHandler({
       editedMessage: {
         chat: { id: 1234, type: "private" },
@@ -3071,6 +3085,37 @@ describe("createTelegramBot", () => {
     expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves a configured custom /ignore command when native commands are enabled", async () => {
+    loadConfig.mockReturnValue({
+      commands: { native: true },
+      channels: {
+        telegram: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+          customCommands: [{ command: "ignore", description: "Custom ignore workflow" }],
+        },
+      },
+    });
+    createTelegramBot({ token: "tok" });
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
+
+    await handler({
+      message: {
+        chat: { id: 1234, type: "private" },
+        message_id: 427,
+        date: 1736380800,
+        from: { id: 999, username: "human" },
+        text: "/ignore custom workflow input",
+        entities: [{ type: "bot_command", offset: 0, length: 7 }],
+      },
+      me: { id: 7, username: "openclaw_bot" },
+      getFile: async () => ({ download: async () => new Uint8Array() }),
+    });
+
+    expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(1);
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+  });
+
   it("treats /ignore in an album as ordinary text when native commands are disabled", async () => {
     loadConfig.mockReturnValue({
       commands: { native: false },
@@ -3153,6 +3198,40 @@ describe("createTelegramBot", () => {
       expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     },
   );
+
+  it("suppresses an addressed /ignore album when grammY context has no bot identity", async () => {
+    loadConfig.mockReturnValue({
+      commands: { native: true },
+      channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+    });
+    const getFileSpy = vi.fn(async () => ({ file_path: "photos/p1.jpg" }));
+    createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+    const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
+    const base = {
+      chat: { id: 1234, type: "private" },
+      date: 1736380800,
+      from: { id: 999, username: "human" },
+      media_group_id: "album-ignore-addressed-no-me",
+      photo: [{ file_id: "p1", file_unique_id: "u1", width: 1, height: 1 }],
+    };
+
+    await handler({
+      message: {
+        ...base,
+        message_id: 425,
+        caption: "/ignore@openclaw_bot trip photos",
+        caption_entities: [{ type: "bot_command", offset: 0, length: 20 }],
+      },
+      getFile: getFileSpy,
+    });
+    await handler({ message: { ...base, message_id: 426 }, getFile: getFileSpy });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs + 20);
+    });
+
+    expect(getFileSpy).not.toHaveBeenCalled();
+    expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
 
   it("triggers typing cue via onReplyStart", async () => {
     dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(

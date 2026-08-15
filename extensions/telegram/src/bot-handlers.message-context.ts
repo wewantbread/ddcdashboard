@@ -28,6 +28,7 @@ import {
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import type { TelegramContext } from "./bot/types.js";
+import { hasTelegramCustomCommand } from "./command-config.js";
 import {
   resolveTelegramConversationRoute,
   resolveTelegramTargetSession,
@@ -301,11 +302,16 @@ export function createTelegramMessageContextRuntime({
   RegisterTelegramHandlerParams,
   "cfg" | "accountId" | "ownerAgentId" | "opts" | "telegramCfg" | "telegramDeps"
 >) {
-  const ignoreEnabled = resolveNativeCommandsEnabled({
-    providerId: "telegram",
-    providerSetting: telegramCfg.commands?.native,
-    globalSetting: cfg.commands?.native,
-  });
+  const ignoreEnabled =
+    resolveNativeCommandsEnabled({
+      providerId: "telegram",
+      providerSetting: telegramCfg.commands?.native,
+      globalSetting: cfg.commands?.native,
+    }) &&
+    !hasTelegramCustomCommand({
+      commands: telegramCfg.customCommands,
+      command: "ignore",
+    });
   const messageCache = createTelegramMessageCache({
     ignoreEnabled,
     scope: resolveTelegramMessageCacheScope(
@@ -348,6 +354,13 @@ export function createTelegramMessageContextRuntime({
       ...(botUsername ? { botUsername } : {}),
       ...(providerObservedThread ? { providerObservedThread } : {}),
       ...(providerObservedThread?.id != null ? { threadId: providerObservedThread.id } : {}),
+    });
+
+  const removeMessageFromReplyChain = (msg: Message) =>
+    messageCache.remove({
+      accountId,
+      chatId: msg.chat.id,
+      messageId: String(msg.message_id),
     });
 
   const recordMessageResolvedMedia = (params: {
@@ -566,6 +579,7 @@ export function createTelegramMessageContextRuntime({
 
   return {
     recordMessageForReplyChain,
+    removeMessageFromReplyChain,
     recordMessageResolvedMedia,
     recordReplyMessageResolvedMedia,
     resolveCachedMessageThreadSpec,

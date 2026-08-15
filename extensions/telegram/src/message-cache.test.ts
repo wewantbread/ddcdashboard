@@ -51,6 +51,9 @@ function createMemoryStore(maxEntries = TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_ME
           entries.delete(oldest);
         }
       },
+      async delete(key) {
+        return entries.delete(key);
+      },
       async entries() {
         return Array.from(entries, ([key, value]) => ({ key, value: structuredClone(value) }));
       },
@@ -115,6 +118,7 @@ const cacheFor = (bucketKey: string, persistentStore: PersistentStore) =>
 function entryStore(store: PersistentStore, key: string, value: unknown): PersistentStore {
   return {
     register: (nextKey, nextValue) => store.register(nextKey, nextValue),
+    delete: (nextKey) => store.delete(nextKey),
     entries: async () => [{ key, value }],
   } as PersistentStore;
 }
@@ -146,6 +150,19 @@ const projection = (transcriptMessageId: string) => ({
 });
 
 describe("telegram message cache", () => {
+  it("removes a cached message from memory and persistent storage", async () => {
+    const { bucketKey, entries, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    await record(cache, message(9000, "Nora", { text: "private detail" }));
+
+    await expect(
+      cache.remove({ accountId: "default", chatId: 7, messageId: "9000" }),
+    ).resolves.toBe(true);
+    await expect(get(cache, "9000")).resolves.toBeNull();
+    expect(entries).toHaveLength(0);
+    await expect(reloadGet(bucketKey, store, "9000")).resolves.toBeNull();
+  });
+
   it("persists resolved media with its source message and drops it when the media changes", async () => {
     const { bucketKey, entries, store } = createMemoryStore();
     const cache = cacheFor(bucketKey, store);
@@ -673,6 +690,9 @@ describe("telegram message cache", () => {
     const bucketKey = `test:${process.pid}:${Date.now()}:${persistentStoreId++}`;
     const persistentStore: PersistentStore = {
       async register() {
+        throw new Error("state store unavailable");
+      },
+      async delete() {
         throw new Error("state store unavailable");
       },
       async entries() {

@@ -25,6 +25,7 @@ import {
   TelegramPairingStoreReadError,
 } from "./bot/helpers.js";
 import type { TelegramContext, TelegramGetChat } from "./bot/types.js";
+import { hasTelegramCustomCommand } from "./command-config.js";
 import { resolveTelegramIgnoreDisposition, TELEGRAM_IGNORE_HELP_TEXT } from "./ignore-command.js";
 import { emitTelegramLiveLocationMessageHook } from "./location-message-hook.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
@@ -46,6 +47,7 @@ type TelegramMessageHandlerRuntime = Pick<
   | "buildSyntheticContext"
   | "resolveTelegramSessionState"
   | "resolvePromptContextAmbientWatermark"
+  | "removeMessageFromReplyChain"
 > & {
   recordMessageForReplyChain: (
     ...args: Parameters<TelegramMessagePipeline["recordMessageForReplyChain"]>
@@ -82,14 +84,20 @@ function createTelegramInboundHandlers(
     resolveTelegramSessionState,
     resolvePromptContextAmbientWatermark,
     recordMessageForReplyChain,
+    removeMessageFromReplyChain,
   } = messageRuntime;
   const { authorizeInboundMessage } = authorizationRuntime;
   const { processInboundMessage } = inboundRuntime;
-  const ignoreEnabled = resolveNativeCommandsEnabled({
-    providerId: "telegram",
-    providerSetting: telegramCfg.commands?.native,
-    globalSetting: cfg.commands?.native,
-  });
+  const ignoreEnabled =
+    resolveNativeCommandsEnabled({
+      providerId: "telegram",
+      providerSetting: telegramCfg.commands?.native,
+      globalSetting: cfg.commands?.native,
+    }) &&
+    !hasTelegramCustomCommand({
+      commands: telegramCfg.customCommands,
+      command: "ignore",
+    });
   const getChat: TelegramGetChat = bot.api.getChat.bind(bot.api);
   const resolveBotUserId = (ctx: { me?: { id?: number } }): number => {
     const botUserId = ctx.me?.id ?? opts.botInfo?.id;
@@ -178,6 +186,7 @@ function createTelegramInboundHandlers(
       ignoreEnabled &&
       resolveTelegramIgnoreDisposition(normalizedMsg, params.botUsername) !== "keep"
     ) {
+      await removeMessageFromReplyChain(normalizedMsg);
       return;
     }
     await recordMessageForReplyChain(

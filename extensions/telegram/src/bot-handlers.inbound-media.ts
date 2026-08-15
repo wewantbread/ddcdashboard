@@ -174,7 +174,7 @@ export function createTelegramInboundMedia({
       authorization.groupConfig?.requireMention,
       resolveGroupRequireMention(chatId, authorization.authorizationCfg),
     );
-    const botUsername = ctx.me?.username?.trim().toLowerCase();
+    const botUsername = (ctx.me?.username ?? opts.botInfo?.username)?.trim().toLowerCase();
     const hasControlCommandInMessage = hasControlCommand(
       textParts.text,
       authorization.authorizationCfg,
@@ -276,11 +276,18 @@ export function createTelegramInboundMedia({
       entry.messages.sort((a, b) => a.msg.message_id - b.msg.message_id);
       const ignored = entry.ignoreEnabled
         ? entry.messages.find(
-            ({ ctx, msg }) => resolveTelegramIgnoreDisposition(msg, ctx.me?.username) !== "keep",
+            ({ ctx, msg }) =>
+              resolveTelegramIgnoreDisposition(msg, ctx.me?.username ?? opts.botInfo?.username) !==
+              "keep",
           )
         : undefined;
       if (ignored) {
-        if (resolveTelegramIgnoreDisposition(ignored.msg, ignored.ctx.me?.username) === "help") {
+        if (
+          resolveTelegramIgnoreDisposition(
+            ignored.msg,
+            ignored.ctx.me?.username ?? opts.botInfo?.username,
+          ) === "help"
+        ) {
           await withTelegramApiErrorLogging({
             operation: "sendMessage",
             runtime,
@@ -302,7 +309,7 @@ export function createTelegramInboundMedia({
           msg,
           resolveTelegramMessageThreadSpec(msg, entry.isForum),
           ctx.me?.id,
-          ctx.me?.username,
+          ctx.me?.username ?? opts.botInfo?.username,
         );
       }
       let primary =
@@ -316,7 +323,7 @@ export function createTelegramInboundMedia({
         .map(({ msg }) => getTelegramTextParts(msg))
         .filter(({ text }) => text.trim());
       if (captionParts.length > 1) {
-        const botUsername = primary.ctx.me?.username;
+        const botUsername = primary.ctx.me?.username ?? opts.botInfo?.username;
         const commandCaptionIndex = captionParts.findIndex(({ text }) =>
           hasControlCommand(text, entry.authorizationCfg, {
             botUsername,
