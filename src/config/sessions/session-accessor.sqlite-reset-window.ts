@@ -41,6 +41,10 @@ type ResetMessageWindow = {
   indexedSeq: number;
   keptMessagePositions: number[];
   postBoundaryMessagePosition: number;
+  // A compaction after the reset reopens the whole active path, so the kept-tail
+  // window stops describing what is visible. The position the reset admitted still
+  // does, and readers that must not cross the reset depend on it.
+  shadowedByNewerBoundary: boolean;
 };
 
 type ResetMessageWindowCacheEntry = {
@@ -140,18 +144,6 @@ function readLatestActiveBoundaryMetadataByType(
   );
 }
 
-function readLatestActiveBoundaryMetadata(projection: ResetWindowProjection) {
-  const reset = readLatestActiveBoundaryMetadataByType(projection, "reset");
-  const compaction = readLatestActiveBoundaryMetadataByType(projection, "compaction");
-  if (!reset) {
-    return compaction;
-  }
-  if (!compaction) {
-    return reset;
-  }
-  return reset.seq > compaction.seq ? reset : compaction;
-}
-
 function readResetBoundary(projection: ResetWindowProjection, seq: number) {
   const row = executeSqliteQueryTakeFirstSync(
     projection.database.db,
@@ -177,11 +169,14 @@ function findLatestResetMessageWindow(
   generation: string | undefined,
 ): ResetMessageWindow | null {
   const db = getResetWindowKysely(projection.database);
-  const latestBoundary = readLatestActiveBoundaryMetadata(projection);
-  if (!latestBoundary || latestBoundary.event_type !== "reset") {
+  const latestBoundary = readLatestActiveBoundaryMetadataByType(projection, "reset");
+  if (!latestBoundary) {
     return null;
   }
-  const reset = readResetBoundary(projection, latestBoundary.seq);
+  const latestCompaction = readLatestActiveBoundaryMetadataByType(projection, "compaction");
+  const shadowedByNewerBoundary = latestCompaction
+    ? !(latestBoundary.seq > latestCompaction.seq)
+    : false;
   const postBoundaryMessagePosition =
     executeSqliteQueryTakeFirstSync(
       projection.database.db,
@@ -194,8 +189,12 @@ function findLatestResetMessageWindow(
         .orderBy("active_position", "asc")
         .limit(1),
     )?.message_position ?? projection.state.activeMessageCount;
+  // Shadowed, the kept tail is not what is visible, so don't spend a payload read on it.
+  const reset = shadowedByNewerBoundary
+    ? undefined
+    : readResetBoundary(projection, latestBoundary.seq);
   let keptMessagePositions: number[] = [];
-  if (typeof reset.firstKeptEntryId === "string") {
+  if (typeof reset?.firstKeptEntryId === "string") {
     const firstKept = executeSqliteQueryTakeFirstSync(
       projection.database.db,
       db
@@ -244,6 +243,7 @@ function findLatestResetMessageWindow(
     indexedSeq: projection.state.indexedSeq,
     keptMessagePositions,
     postBoundaryMessagePosition,
+    shadowedByNewerBoundary,
   };
 }
 
@@ -265,11 +265,28 @@ function resolveResetMessageWindow(projection: ResetWindowProjection): ResetMess
   return window;
 }
 
+/**
+ * Logical index of the first message the latest reset admitted. Readers that must not
+ * cross a reset use this instead of the kept-tail length, which a newer compaction
+ * empties even though the reset still happened.
+ */
+export function resolvePostResetVisibleStart(projection: ResetWindowProjection): number {
+  const window = resolveResetMessageWindow(projection);
+  if (!window) {
+    return 0;
+  }
+  // Once shadowed the visible space is the raw active path, so the admitted message
+  // position is already the logical index.
+  return window.shadowedByNewerBoundary
+    ? window.postBoundaryMessagePosition
+    : window.keptMessagePositions.length;
+}
+
 export function resolveVisibleMessagePositions(
   projection: ResetWindowProjection,
 ): VisibleMessagePositions {
   const window = resolveResetMessageWindow(projection);
-  if (!window) {
+  if (!window || window.shadowedByNewerBoundary) {
     return { kept: [], postStart: 0, total: projection.state.activeMessageCount };
   }
   return {
