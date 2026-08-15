@@ -577,6 +577,37 @@ CDP URL shapes and picks the right connection strategy automatically:
 logic as runtime attach, so a bare-root URL that connects successfully is not
 reported as unreachable by diagnostics.
 
+### Browserbase
+
+[Browserbase](https://www.browserbase.com) is a cloud platform for running
+headless browsers with built-in CAPTCHA solving, stealth mode, and residential
+proxies.
+
+```json5
+{
+  browser: {
+    enabled: true,
+    defaultProfile: "browserbase",
+    profiles: {
+      browserbase: {
+        cdpUrl: "wss://connect.browserbase.com?apiKey=<BROWSERBASE_API_KEY>",
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- [Sign up](https://www.browserbase.com/sign-up) and copy your **API Key**
+  from the [Overview dashboard](https://www.browserbase.com/overview).
+- Replace `<BROWSERBASE_API_KEY>` with your real Browserbase API key.
+- Browserbase auto-creates a browser session on WebSocket connect, so no
+  manual session creation step is needed.
+- See [pricing](https://www.browserbase.com/pricing) for current free-tier limits and paid plans.
+- See the [Browserbase docs](https://docs.browserbase.com) for full API
+  reference, SDK guides, and integration examples.
+
 ### Browser Use
 
 [Browser Use](https://browser-use.com) provides managed cloud browsers with
@@ -609,37 +640,6 @@ Notes:
   the session duration in minutes.
 - See the [Browser Use OpenClaw guide](https://docs.browser-use.com/cloud/tutorials/integrations/openclaw)
   for CLI-skill setup and additional examples.
-
-### Browserbase
-
-[Browserbase](https://www.browserbase.com) is a cloud platform for running
-headless browsers with built-in CAPTCHA solving, stealth mode, and residential
-proxies.
-
-```json5
-{
-  browser: {
-    enabled: true,
-    defaultProfile: "browserbase",
-    profiles: {
-      browserbase: {
-        cdpUrl: "wss://connect.browserbase.com?apiKey=<BROWSERBASE_API_KEY>",
-      },
-    },
-  },
-}
-```
-
-Notes:
-
-- [Sign up](https://www.browserbase.com/sign-up) and copy your **API Key**
-  from the [Overview dashboard](https://www.browserbase.com/overview).
-- Replace `<BROWSERBASE_API_KEY>` with your real Browserbase API key.
-- Browserbase auto-creates a browser session on WebSocket connect, so no
-  manual session creation step is needed.
-- See [pricing](https://www.browserbase.com/pricing) for current free-tier limits and paid plans.
-- See the [Browserbase docs](https://docs.browserbase.com) for full API
-  reference, SDK guides, and integration examples.
 
 ### Notte
 
