@@ -2,6 +2,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import type { BootstrapContextRunKind } from "../../agents/bootstrap-mode.js";
+import { buildCliMcpDelegationCapabilityBinding } from "../../agents/cli-runner/mcp-grant-context.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import {
   getCliSessionBinding,
@@ -395,12 +396,14 @@ export async function runCliFallbackCandidate(params: {
             // inputs are passed from the same source the run itself uses, so
             // this surface stays on the shared contract rather than assuming
             // fallback state is the only restriction.
-            delegationCapability: resolveDelegationCapability({
-              fallbackActive: true,
-              inputProvenance: turn.followupRun.run.inputProvenance,
-              disableTools: turn.opts?.disableTools,
-              toolsAllow: turn.opts?.toolsAllow,
-            }),
+            ...buildCliMcpDelegationCapabilityBinding(
+              resolveDelegationCapability({
+                fallbackActive: true,
+                inputProvenance: turn.followupRun.run.inputProvenance,
+                disableTools: turn.opts?.disableTools,
+                toolsAllow: turn.opts?.toolsAllow,
+              }),
+            ),
             modelProvider: params.provider,
             modelHasVision,
             modelContextWindow: selectedModelEntry?.contextWindow,

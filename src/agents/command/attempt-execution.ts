@@ -69,6 +69,7 @@ import {
 } from "../cli-execution-auth.js";
 import { runCliAgent } from "../cli-runner.js";
 import { hasCliLiveSession } from "../cli-runner/cli-live-session-registry.js";
+import { buildCliMcpDelegationCapabilityBinding } from "../cli-runner/mcp-grant-context.js";
 import { resolveCliRuntimeToolsAllow } from "../cli-runner/tool-policy.js";
 import {
   getCliSessionBinding,
@@ -1028,12 +1029,14 @@ export function runAgentAttempt(params: {
             // This loop is the command-origin sibling of the auto-reply fallback
             // candidate, so its CLI grant needs the same delegation gate; the
             // inputs match the tool state this invocation actually runs with.
-            delegationCapability: resolveDelegationCapability({
-              fallbackActive: params.isFallbackRetry,
-              inputProvenance: params.opts.inputProvenance,
-              disableTools,
-              toolsAllow: runtimeToolsAllow,
-            }),
+            ...buildCliMcpDelegationCapabilityBinding(
+              resolveDelegationCapability({
+                fallbackActive: params.isFallbackRetry,
+                inputProvenance: params.opts.inputProvenance,
+                disableTools,
+                toolsAllow: runtimeToolsAllow,
+              }),
+            ),
             scheduledToolPolicy: params.opts.scheduledToolPolicy,
             cleanupBundleMcpOnRunEnd: params.opts.cleanupBundleMcpOnRunEnd,
             cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,

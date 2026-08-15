@@ -3,6 +3,7 @@ import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { McpLoopbackRequestContext } from "../../gateway/mcp-grant-store.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
+import type { DelegationCapability } from "../delegation-capability.js";
 import type { RunCliAgentParams } from "./types.js";
 
 const SESSION_PERMISSION_BY_EXEC_MODE = {
@@ -12,6 +13,20 @@ const SESSION_PERMISSION_BY_EXEC_MODE = {
   auto: "workspace",
   full: "full",
 } as const;
+
+const cliMcpDelegationCapability = Symbol("cliMcpDelegationCapability");
+
+type CliMcpInternalRunParams = RunCliAgentParams & {
+  [cliMcpDelegationCapability]?: DelegationCapability;
+};
+
+export function buildCliMcpDelegationCapabilityBinding(capability: DelegationCapability): object {
+  return { [cliMcpDelegationCapability]: capability };
+}
+
+export function readCliMcpDelegationCapability(run: object): DelegationCapability | undefined {
+  return (run as CliMcpInternalRunParams)[cliMcpDelegationCapability];
+}
 
 export function normalizeOptionalMcpContextValue(value: string | undefined): string | undefined {
   return value?.trim() || undefined;
@@ -139,6 +154,7 @@ export function buildCliMcpGrantContext(params: {
   const messageProvider = resolveCliMcpMessageProvider(params.run);
   const currentChannelId = normalizeOptionalMcpContextValue(params.run.currentChannelId);
   const grantedToolsAllow = params.run.cliToolAvailability?.openClaw ?? params.toolsAllow;
+  const delegationCapability = readCliMcpDelegationCapability(params.run);
   // Trusted message-only completions stay restricted even when source routing
   // is missing; the message tool must fail closed instead of widening authority.
   const sourceReplyOnly =
@@ -164,9 +180,7 @@ export function buildCliMcpGrantContext(params: {
       : {}),
     // Same enforcement point for the fallback delegation gate, so an
     // unrestricted run keeps its exact prior grant shape.
-    ...(params.run.delegationCapability
-      ? { delegationCapability: params.run.delegationCapability }
-      : {}),
+    ...(delegationCapability ? { delegationCapability } : {}),
     ...(params.run.scheduledToolPolicy
       ? { scheduledToolPolicy: { ...params.run.scheduledToolPolicy } }
       : {}),

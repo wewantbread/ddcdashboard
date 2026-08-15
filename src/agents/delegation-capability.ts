@@ -11,13 +11,6 @@ const log = createSubsystemLogger("agents/delegation-capability");
 
 export type DelegationCapability = "full" | "report_only";
 
-/**
- * Tool surfaces that assemble their own list and therefore have to apply the
- * gate themselves: the embedded attempt and the Gateway surfaces, whose
- * loopback grant is the tool universe for CLI backends.
- */
-type DelegationCapabilitySurface = "embedded" | "loopback" | "http";
-
 const NEW_DELEGATION_TOOL_NAMES = new Set([
   "codex_session_send",
   "llm-task",
@@ -102,7 +95,6 @@ function wrapReportOnlyTool(tool: AnyAgentTool, allowedActions: ReadonlySet<stri
 export function applyDelegationCapability(
   tools: AnyAgentTool[],
   capability: DelegationCapability | undefined,
-  options?: { surface?: DelegationCapabilitySurface },
 ): AnyAgentTool[] {
   if (capability !== "report_only") {
     return tools;
@@ -127,7 +119,6 @@ export function applyDelegationCapability(
     // no error is raised. Record it so a fallback completion turn stays
     // auditable after the fact.
     log.debug("delegation capability restricted run tools", {
-      surface: options?.surface ?? "embedded",
       removed,
       narrowed,
     });

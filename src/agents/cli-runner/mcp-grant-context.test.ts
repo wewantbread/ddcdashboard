@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
+import {
+  buildCliMcpDelegationCapabilityBinding,
+  buildCliMcpGrantContext,
+} from "./mcp-grant-context.js";
 import type { RunCliAgentParams } from "./types.js";
 
-function buildGrant(overrides: Partial<RunCliAgentParams> = {}) {
+function buildGrant(
+  overrides: Partial<RunCliAgentParams> = {},
+  delegationCapability?: "full" | "report_only",
+) {
   const run = {
     sessionKey: "agent:main:telegram:group:chat123",
     workspaceDir: "/workspace",
@@ -16,6 +22,7 @@ function buildGrant(overrides: Partial<RunCliAgentParams> = {}) {
     currentChannelId: "telegram:chat123",
     cliToolAvailability: { native: [], openClaw: ["message"] },
     ...overrides,
+    ...(delegationCapability ? buildCliMcpDelegationCapabilityBinding(delegationCapability) : {}),
   } as RunCliAgentParams;
 
   return buildCliMcpGrantContext({
@@ -144,7 +151,7 @@ describe("buildCliMcpGrantContext source-reply authority", () => {
 
 describe("buildCliMcpGrantContext delegationCapability", () => {
   it("stamps a report-only capability into the minted grant", () => {
-    expect(buildGrant({ delegationCapability: "report_only" })).toMatchObject({
+    expect(buildGrant({}, "report_only")).toMatchObject({
       delegationCapability: "report_only",
     });
   });
@@ -153,7 +160,7 @@ describe("buildCliMcpGrantContext delegationCapability", () => {
     // Primary attempts must produce byte-identical grant contexts, so the key
     // is absent rather than explicitly "full".
     expect(buildGrant()).not.toHaveProperty("delegationCapability");
-    expect(buildGrant({ delegationCapability: "full" })).toMatchObject({
+    expect(buildGrant({}, "full")).toMatchObject({
       delegationCapability: "full",
     });
   });

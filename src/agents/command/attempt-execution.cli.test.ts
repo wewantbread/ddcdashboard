@@ -32,6 +32,7 @@ import { createTestPreparedRunAdmission } from "../admitted-run-context.test-sup
 import { clearRuntimeAuthProfileStoreSnapshots } from "../auth-profiles/runtime-snapshots.js";
 import { saveAuthProfileStore } from "../auth-profiles/store.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
+import { readCliMcpDelegationCapability } from "../cli-runner/mcp-grant-context.js";
 import { createCronCreatorAuthorityCapability } from "../cron-creator-authority-context.js";
 import type { EmbeddedAgentRunResult } from "../embedded-agent.js";
 import { FailoverError } from "../failover-error.js";
@@ -2940,7 +2941,7 @@ describe("CLI attempt execution", () => {
       // The command loop is a second fallback entry point; its CLI grant must
       // carry the same gate as the auto-reply candidate or the loopback surface
       // resolves to full.
-      expectMockArgFields(runCliAgentMock, { delegationCapability: expected });
+      expect(readCliMcpDelegationCapability(firstRunCliAgentArg())).toBe(expected);
     },
   );
 

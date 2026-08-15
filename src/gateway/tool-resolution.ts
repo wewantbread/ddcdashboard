@@ -569,7 +569,7 @@ export function resolveGatewayScopedTools(params: {
     agentId: sessionAgentId,
     // Applied last so the gate sees exactly the authorized surface, matching
     // the embedded attempt order in createOpenClawCodingToolsInternal.
-    tools: applyDelegationCapability(tools, params.delegationCapability, { surface }),
+    tools: applyDelegationCapability(tools, params.delegationCapability),
     workspaceDir,
   };
 }
