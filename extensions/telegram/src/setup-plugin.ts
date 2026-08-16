@@ -20,6 +20,7 @@ export function createTelegramSetupPluginBase(params: {
   | "reload"
   | "configSchema"
   | "config"
+  | "streaming"
   | "setupContract"
   | "secrets"
 > {
@@ -45,6 +46,9 @@ export function createTelegramSetupPluginBase(params: {
       polls: true,
       nativeCommands: true,
       blockStreaming: true,
+    },
+    streaming: {
+      sessionModeDefault: "progress",
     },
     reload: { configPrefixes: ["channels.telegram"] },
     configSchema: TelegramChannelConfigSchema,

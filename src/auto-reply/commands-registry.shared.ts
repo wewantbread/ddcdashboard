@@ -606,6 +606,16 @@ export function buildBuiltinChatCommands(
       ],
       argsMenu: "auto",
     }),
+    defineBuiltinCommand("stream", "Set chat streaming mode.", "options", "standard", {
+      nativeAliases: ["streaming"],
+      textAliases: ["/stream", "/streaming"],
+      args: [
+        defineCommandArgument("mode", "Streaming mode", {
+          choices: ["status", "off", "partial", "block", "progress", "default"],
+        }),
+      ],
+      argsMenu: "auto",
+    }),
     defineBuiltinCommand("reasoning", "Toggle reasoning visibility.", "options", "standard", {
       args: [
         defineCommandArgument("mode", "on, off, or stream", { choices: ["on", "off", "stream"] }),

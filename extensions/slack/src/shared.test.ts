@@ -42,6 +42,15 @@ describe("createSlackPluginBase", () => {
     expect(plugin.security?.collectWarnings).toBeTypeOf("function");
     expect(plugin.security?.collectAuditFindings).toBeTypeOf("function");
   });
+
+  it("declares the inherited preview-streaming mode so /stream is supported", () => {
+    const plugin = createSlackPluginBase({
+      setupContract: {} as never,
+      setupWizard: {} as never,
+    });
+
+    expect(plugin.streaming?.sessionModeDefault).toBe("progress");
+  });
 });
 
 describe("setSlackChannelAllowlist", () => {

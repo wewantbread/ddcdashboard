@@ -44,6 +44,7 @@ export const slackSetupPlugin: ChannelPlugin<ResolvedSlackAccount> = {
   },
   streaming: {
     blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
+    sessionModeDefault: "progress",
   },
   reload: { configPrefixes: ["channels.slack"] },
   configSchema: SlackChannelConfigSchema,

@@ -35,6 +35,7 @@ type DiscordConfig = NonNullable<OpenClawConfig["channels"]>["discord"];
 export function createDiscordDraftPreviewController(params: {
   cfg: OpenClawConfig;
   discordConfig: DiscordConfig;
+  sessionStreamingMode?: unknown;
   accountId: string;
   sourceRepliesAreToolOnly: boolean;
   textLimit: number;
@@ -46,7 +47,10 @@ export function createDiscordDraftPreviewController(params: {
   chunkMode: Parameters<typeof chunkDiscordTextWithMode>[1]["chunkMode"];
   log: (message: string) => void;
 }) {
-  const discordStreamMode = resolveDiscordPreviewStreamMode(params.discordConfig);
+  const discordStreamMode = resolveDiscordPreviewStreamMode({
+    ...params.discordConfig,
+    sessionStreamingMode: params.sessionStreamingMode,
+  });
   // Provider drafts are visible before outbound modifiers run. Keep them off whenever a hook
   // can rewrite or cancel so the original payload cannot flash before durable delivery.
   const hookRunner = getGlobalHookRunner();
@@ -64,6 +68,7 @@ export function createDiscordDraftPreviewController(params: {
   const accountBlockStreamingEnabled = resolveChannelStreamingBlockEnabled(params.discordConfig, {
     previewAvailable,
     blockStreamingDefault: params.cfg.agents?.defaults?.blockStreamingDefault,
+    sessionStreamingMode: params.sessionStreamingMode,
   });
   const canStreamDraft = previewAvailable && !accountBlockStreamingEnabled;
   const draftStream = canStreamDraft
@@ -113,6 +118,7 @@ export function createDiscordDraftPreviewController(params: {
     resolveChannelStreamingSuppressDefaultToolProgressMessages(params.discordConfig, {
       draftStreamActive: true,
       previewToolProgressEnabled,
+      mode: discordStreamMode,
     });
   const progressSeed = `${params.accountId}:${params.deliverChannelId}`;
   const progressDraft = createChannelProgressDraftCompositor({
