@@ -191,6 +191,58 @@ describe("agents_list tool", () => {
     expect(details.agents?.find((agent) => agent.id === "blank")).not.toHaveProperty("description");
   });
 
+  it("bounds each configured agent description", async () => {
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: ["codex"] },
+        },
+        list: [
+          { id: "main", default: true },
+          {
+            id: "codex",
+            description: `${"a".repeat(511)}🚀tail`,
+          },
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const description = (result.details as AgentListDetails).agents?.[0]?.description;
+
+    expect(description).toBe(`${"a".repeat(511)}…`);
+    expect(description?.length).toBe(512);
+  });
+
+  it("bounds aggregate configured agent descriptions", async () => {
+    const targetIds = Array.from({ length: 10 }, (_, index) => `agent-${index}`);
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: targetIds },
+        },
+        list: [
+          { id: "main", default: true },
+          ...targetIds.map((id) => ({ id, description: id.repeat(100) })),
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const descriptions = (result.details as AgentListDetails).agents?.flatMap((agent) =>
+      agent.description ? [agent.description] : [],
+    );
+
+    expect(descriptions).toHaveLength(8);
+    expect(descriptions?.reduce((total, description) => total + description.length, 0)).toBe(4_096);
+  });
+
   it("returns requester as the only target when no subagent allowlist is configured", async () => {
     loadConfigMock.mockReturnValue({
       agents: {

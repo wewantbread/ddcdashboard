@@ -1,3 +1,4 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 /**
  * agents_list built-in tool.
  *
@@ -16,6 +17,8 @@ import { jsonResult } from "./common.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 
 const AgentsListToolSchema = Type.Object({});
+const AGENT_DESCRIPTION_MAX_CHARS = 512;
+const AGENT_DESCRIPTIONS_TOTAL_MAX_CHARS = 4_096;
 const AgentRuntimeSourceSchema = Type.Union([
   Type.Literal("env"),
   Type.Literal("agent"),
@@ -74,6 +77,14 @@ type AgentListEntry = {
       | "session-key";
   };
 };
+
+function truncateAgentDescription(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const prefix = truncateUtf16Safe(value, Math.max(0, maxChars - 1)).trimEnd();
+  return `${prefix}…`;
+}
 
 export function createAgentsListTool(opts?: {
   agentSessionKey?: string;
@@ -134,6 +145,7 @@ export function createAgentsListTool(opts?: {
         .filter((id) => id !== requesterAgentId)
         .toSorted((a, b) => a.localeCompare(b));
       const ordered = all.includes(requesterAgentId) ? [requesterAgentId, ...rest] : rest;
+      let remainingDescriptionChars = AGENT_DESCRIPTIONS_TOTAL_MAX_CHARS;
       const agents: AgentListEntry[] = ordered.map((id) => {
         const resolvedModel = resolveDefaultModelForAgent({ cfg, agentId: id });
         // Publish the resolved identity (aliases are routing-only) so the model
@@ -153,8 +165,15 @@ export function createAgentsListTool(opts?: {
           agentRuntime,
         };
         const description = configuredDescriptionMap.get(id);
-        if (description) {
-          entry.description = description;
+        if (description && remainingDescriptionChars > 0) {
+          // Agent config is operator-authored model context. Bound each entry and the
+          // deterministic aggregate so wildcard discovery cannot crowd out the turn.
+          const boundedDescription = truncateAgentDescription(
+            description,
+            Math.min(AGENT_DESCRIPTION_MAX_CHARS, remainingDescriptionChars),
+          );
+          entry.description = boundedDescription;
+          remainingDescriptionChars -= boundedDescription.length;
         }
         return entry;
       });
