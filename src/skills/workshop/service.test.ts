@@ -972,6 +972,37 @@ describe("skill workshop proposals", () => {
     ).rejects.toThrow("Only pending proposals can be rejected");
   });
 
+  it("allows terminal disposition when a pending proposal draft is malformed", async () => {
+    const workspaceDir = await makeWorkspace();
+    const rejected = await proposeCreateSkill({
+      workspaceDir,
+      name: "Malformed Rejected Draft",
+      description: "Discard a damaged pending proposal",
+      content: "# Draft\n",
+    });
+    const quarantined = await proposeCreateSkill({
+      workspaceDir,
+      name: "Malformed Quarantined Draft",
+      description: "Isolate a damaged pending proposal",
+      content: "# Draft\n",
+    });
+
+    for (const proposal of [rejected, quarantined]) {
+      await fs.writeFile(
+        path.join(stateDir, "skill-workshop", "proposals", proposal.record.id, "PROPOSAL.md"),
+        "damaged outside the workshop lifecycle\n",
+        "utf8",
+      );
+    }
+
+    await expect(
+      rejectSkillProposal({ workspaceDir, proposalId: rejected.record.id }),
+    ).resolves.toMatchObject({ status: "rejected" });
+    await expect(
+      quarantineSkillProposal({ workspaceDir, proposalId: quarantined.record.id }),
+    ).resolves.toMatchObject({ status: "quarantined" });
+  });
+
   it("reconciles a create apply interrupted after the live skill write", async () => {
     const workspaceDir = await makeWorkspace();
     const proposal = await proposeCreateSkill({
