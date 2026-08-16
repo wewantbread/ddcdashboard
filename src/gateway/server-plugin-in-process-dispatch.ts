@@ -41,6 +41,7 @@ type DispatchGatewayMethodInProcessOptions = {
   internalDeliverySuppressText?: boolean;
   onAccepted?: (payload: unknown) => void;
   onSignalAbort?: () => Promise<void> | void;
+  pluginSubagentDisableTools?: boolean;
   pluginRuntimeOwnerId?: string;
   pluginSubagentRequester?: PluginSubagentRequesterContext;
   runtimePluginToolGrant?: RuntimePluginToolGrant;
@@ -90,6 +91,7 @@ function resolveInProcessGatewayDispatch(
     cronRunContinuation: options?.allowSyntheticCronRunContinuation === true,
     internalDeliveryMediaUrls: options?.internalDeliveryMediaUrls,
     internalDeliverySuppressText: options?.internalDeliverySuppressText,
+    pluginSubagentDisableTools: options?.pluginSubagentDisableTools === true,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     ...(options?.pluginSubagentRequester
       ? { pluginSubagentRequester: options.pluginSubagentRequester }
@@ -105,12 +107,15 @@ function resolveInProcessGatewayDispatch(
     scope?.client,
     pluginRuntimeOwnerId ||
       options?.agentRunTracking ||
+      options?.pluginSubagentDisableTools ||
       options?.pluginSubagentRequester ||
       options?.runtimePluginToolGrant ||
       options?.delegatedToolPolicyHandoff ||
       scope?.client?.internal?.delegatedToolPolicyHandoffId
       ? {
           ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
+          pluginSubagentDisableTools:
+            options?.pluginSubagentDisableTools === true ? true : undefined,
           ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
           ...(options?.pluginSubagentRequester
             ? { pluginSubagentRequester: options.pluginSubagentRequester }

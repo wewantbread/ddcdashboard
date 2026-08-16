@@ -250,10 +250,13 @@ export function createGatewaySubagentRuntime(): PluginRuntime["subagent"] {
         typeof scope?.pluginId === "string" && scope.pluginId.trim()
           ? scope.pluginId.trim()
           : undefined;
-      const runtimePluginToolGrant = resolvePluginSubagentToolsAlsoAllow({
-        pluginId,
-        toolsAlsoAllow: params.toolsAlsoAllow,
-      });
+      const disablePluginSubagentTools = params.disableTools === true;
+      const runtimePluginToolGrant = disablePluginSubagentTools
+        ? undefined
+        : resolvePluginSubagentToolsAlsoAllow({
+            pluginId,
+            toolsAlsoAllow: params.toolsAlsoAllow,
+          });
       const overrideRequested = Boolean(params.provider || params.model);
       const hasRequestScopeClient = Boolean(scope?.client);
       let allowOverride = hasRequestScopeClient && canClientUseModelOverride(scope?.client ?? null);
@@ -294,6 +297,7 @@ export function createGatewaySubagentRuntime(): PluginRuntime["subagent"] {
         {
           allowSyntheticModelOverride,
           agentRunTracking: "plugin_subagent",
+          ...(disablePluginSubagentTools ? { pluginSubagentDisableTools: true } : {}),
           ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
           ...(pluginSubagentRequester ? { pluginSubagentRequester } : {}),
           ...(runtimePluginToolGrant ? { runtimePluginToolGrant } : {}),

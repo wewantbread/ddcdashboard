@@ -705,6 +705,7 @@ export function runAgentAttempt(params: {
     : params.opts.toolsAllow;
   const disableTools =
     params.opts.modelRun === true ||
+    params.opts.disableTools === true ||
     (isSubagentAnnounceHandoff &&
       !completionRetainsRequesterTools &&
       !completionNeedsMessageDelivery);
