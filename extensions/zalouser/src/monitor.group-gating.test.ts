@@ -1,8 +1,10 @@
 // Zalouser tests cover monitor.group gating plugin behavior.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
-import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig, PluginRuntime } from "../runtime-api.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../runtime-api.js";
 import "./monitor.send.test-mocks.js";
 import "./zalo-js.test-mocks.js";
 import { resolveZalouserAccountSync } from "./accounts.js";
@@ -11,6 +13,12 @@ import {
   waitForZalouserIngressVerdict,
   withZalouserIngressTestQueue,
 } from "./ingress.test-support.js";
+import {
+  dispatchReplyCall,
+  installGroupCommandAuthRuntime,
+  installRuntime,
+  mockCallArg,
+} from "./monitor.group-gating.test-support.js";
 import { monitorZalouserProvider } from "./monitor.js";
 import {
   sendDeliveredZalouserMock,
@@ -18,7 +26,6 @@ import {
   sendSeenZalouserMock,
   sendTypingZalouserMock,
 } from "./monitor.send.test-mocks.js";
-import { setZalouserRuntime } from "./runtime.js";
 import { createZalouserSendReceipt } from "./send-receipt.js";
 import { sendMessageZalouser } from "./send.js";
 import { createZalouserRuntimeEnv } from "./test-helpers.js";
@@ -61,248 +68,18 @@ function createConfig(): OpenClawConfig {
   };
 }
 
-const createRuntimeEnv = () => createZalouserRuntimeEnv();
+const kernelProofTempDirs = new Set<string>();
 
-type DispatchReplyCallArg = {
-  ctx?: {
-    Body?: string;
-    BodyForCommands?: string;
-    CommandAuthorized?: boolean;
-    CommandBody?: string;
-    InboundHistory?: unknown;
-    OriginatingTo?: string;
-    ReplyToBody?: string;
-    ReplyToId?: string;
-    ReplyToIsQuote?: boolean;
-    SessionKey?: string;
-    To?: string;
-    WasMentioned?: boolean;
-  };
-};
-
-function mockCallArg(mock: unknown, label: string, index = 0) {
-  const call = (mock as { mock?: { calls?: unknown[][] } }).mock?.calls?.at(index);
-  if (!call) {
-    throw new Error(`Expected ${label} call ${index + 1}`);
-  }
-  return call[0];
-}
-
-function dispatchReplyCall(mock: unknown, index = 0): DispatchReplyCallArg {
-  return mockCallArg(mock, "dispatch reply", index) as DispatchReplyCallArg;
-}
-
-function installRuntime(params: {
-  commandAuthorized?: boolean;
-  replyPayload?: { text?: string; mediaUrl?: string; mediaUrls?: string[] };
-  replyKind?: "block" | "tool";
-  resolveCommandAuthorizedFromAuthorizers?: (params: {
-    useAccessGroups: boolean;
-    authorizers: Array<{ configured: boolean; allowed: boolean }>;
-  }) => boolean;
-}) {
-  const deliveryErrors: unknown[] = [];
-  const dispatchReplyWithBufferedBlockDispatcher = vi.fn(async ({ dispatcherOptions, ctx }) => {
-    await dispatcherOptions.typingCallbacks?.onReplyStart?.();
-    if (params.replyPayload) {
-      const info = { kind: params.replyKind ?? "block" };
-      try {
-        await dispatcherOptions.deliver(params.replyPayload, info);
-      } catch (error) {
-        deliveryErrors.push(error);
-        dispatcherOptions.onError(error, info);
-      }
-    }
-    return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 }, ctx };
-  });
-  const resolveCommandAuthorizedFromAuthorizers = vi.fn(
-    (input: {
-      useAccessGroups: boolean;
-      authorizers: Array<{ configured: boolean; allowed: boolean }>;
-    }) => {
-      if (params.resolveCommandAuthorizedFromAuthorizers) {
-        return params.resolveCommandAuthorizedFromAuthorizers(input);
-      }
-      return params.commandAuthorized ?? false;
-    },
-  );
-  const resolveAgentRoute = vi.fn(
-    (input: { dmScope?: string; peer?: { kind?: string; id?: string } }) => {
-      const peerKind = input.peer?.kind === "direct" ? "direct" : "group";
-      const peerId = input.peer?.id ?? "1";
-      return {
-        agentId: "main",
-        sessionKey:
-          peerKind === "direct" && input.dmScope === "main"
-            ? "agent:main:main"
-            : `agent:main:zalouser:${peerKind}:${peerId}`,
-        accountId: "default",
-        mainSessionKey: "agent:main:main",
-      };
-    },
-  );
-  const readAllowFromStore = vi.fn(async () => []);
-  type TurnPlan = Parameters<PluginRuntime["channel"]["inbound"]["dispatch"]>[0];
-  const recordInboundSession = vi.fn(async (_params: unknown) => {});
-  const dispatch = vi.fn(async (plan: TurnPlan) => {
-    const turn = {
-      ...plan,
-      agentId: plan.route.agentId,
-      routeSessionKey: plan.route.sessionKey,
-      storePath: "/tmp",
-      recordInboundSession,
-      dispatchReplyWithBufferedBlockDispatcher,
-    };
-    await turn.recordInboundSession({
-      storePath: turn.storePath,
-      sessionKey: turn.ctxPayload.SessionKey ?? turn.routeSessionKey,
-      ctx: turn.ctxPayload,
-      groupResolution: turn.record?.groupResolution,
-      createIfMissing: turn.record?.createIfMissing,
-      updateLastRoute: turn.record?.updateLastRoute,
-      onRecordError: turn.record?.onRecordError ?? (() => undefined),
-    });
-    const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
-      cfg: turn.cfg,
-      agentId: turn.agentId,
-      channel: "zalouser",
-      accountId: turn.accountId,
-      ...turn.replyPipeline,
-    });
-    const dispatchResult = await turn.dispatchReplyWithBufferedBlockDispatcher({
-      ctx: turn.ctxPayload,
-      cfg: turn.cfg,
-      dispatcherOptions: {
-        ...replyPipeline,
-        ...turn.dispatcherOptions,
-        deliver: async (...args: Parameters<typeof turn.delivery.deliver>) => {
-          const result = await turn.delivery.deliver(...args);
-          await turn.delivery.onDelivered?.(args[0], args[1], result);
-          return result;
-        },
-        onError: turn.delivery.onError,
-      },
-      replyOptions: {
-        onModelSelected,
-        ...turn.replyOptions,
-      },
-      replyResolver: turn.replyResolver,
-    });
-    return {
-      admission: { kind: "dispatch" as const },
-      dispatched: true,
-      ctxPayload: turn.ctxPayload,
-      routeSessionKey: turn.routeSessionKey,
-      dispatchResult,
-    };
-  });
-  const buildContext = vi.fn(
-    (paramsLocal: Parameters<PluginRuntime["channel"]["inbound"]["buildContext"]>[0]) =>
-      ({
-        Body: paramsLocal.message.body ?? paramsLocal.message.rawBody,
-        BodyForAgent: paramsLocal.message.bodyForAgent ?? paramsLocal.message.rawBody,
-        InboundHistory: paramsLocal.message.inboundHistory,
-        RawBody: paramsLocal.message.rawBody,
-        CommandBody: paramsLocal.message.commandBody ?? paramsLocal.message.rawBody,
-        BodyForCommands: paramsLocal.message.commandBody ?? paramsLocal.message.rawBody,
-        From: paramsLocal.from,
-        To: paramsLocal.reply.to,
-        SessionKey: paramsLocal.route.dispatchSessionKey ?? paramsLocal.route.routeSessionKey,
-        AccountId: paramsLocal.route.accountId ?? paramsLocal.accountId,
-        ChatType: paramsLocal.conversation.kind,
-        ConversationLabel: paramsLocal.conversation.label,
-        SenderName: paramsLocal.sender.name,
-        SenderId: paramsLocal.sender.id,
-        Provider: paramsLocal.provider ?? paramsLocal.channel,
-        Surface: paramsLocal.surface ?? paramsLocal.provider ?? paramsLocal.channel,
-        MessageSid: paramsLocal.messageId,
-        MessageSidFull: paramsLocal.messageIdFull,
-        OriginatingChannel: paramsLocal.channel,
-        OriginatingTo: paramsLocal.reply.originatingTo,
-        ...paramsLocal.extra,
-      }) as Awaited<ReturnType<PluginRuntime["channel"]["inbound"]["buildContext"]>>,
-  );
-  setZalouserRuntime({
-    logging: {
-      shouldLogVerbose: () => false,
-    },
-    channel: {
-      pairing: {
-        readAllowFromStore,
-        upsertPairingRequest: vi.fn(async () => ({ code: "PAIR", created: true })),
-        buildPairingReply: vi.fn(() => "pair"),
-      },
-      commands: {
-        shouldComputeCommandAuthorized: vi.fn((body: string) => body.trim().startsWith("/")),
-        resolveCommandAuthorizedFromAuthorizers,
-        isControlCommandMessage: vi.fn((body: string) => body.trim().startsWith("/")),
-        shouldHandleTextCommands: vi.fn(() => true),
-      },
-      mentions: {
-        buildMentionRegexes: vi.fn(() => []),
-        matchesMentionWithExplicit: vi.fn(
-          (input) => input.explicit?.isExplicitlyMentioned === true,
-        ),
-      },
-      groups: {
-        resolveRequireMention: vi.fn((input) => {
-          const cfg = input.cfg as OpenClawConfig;
-          const groupCfg = cfg.channels?.zalouser?.groups ?? {};
-          const typedGroupCfg = groupCfg as Record<string, { requireMention?: boolean }>;
-          const groupEntry = input.groupId ? typedGroupCfg[input.groupId] : undefined;
-          const defaultEntry = typedGroupCfg["*"];
-          if (typeof groupEntry?.requireMention === "boolean") {
-            return groupEntry.requireMention;
-          }
-          if (typeof defaultEntry?.requireMention === "boolean") {
-            return defaultEntry.requireMention;
-          }
-          return true;
-        }),
-      },
-      routing: {
-        resolveAgentRoute,
-      },
-      session: {
-        resolveStorePath: vi.fn(() => "/tmp"),
-        recordInboundSession,
-      },
-      reply: {
-        resolveEnvelopeFormatOptions: vi.fn(() => undefined),
-        formatAgentEnvelope: vi.fn(({ body }) => body),
-        finalizeInboundContext: vi.fn((ctx) => ctx),
-        dispatchReplyWithBufferedBlockDispatcher,
-      },
-      inbound: {
-        dispatch,
-        buildContext:
-          buildContext as unknown as PluginRuntime["channel"]["inbound"]["buildContext"],
-      },
-      text: {
-        resolveMarkdownTableMode: vi.fn(() => "code"),
-        convertMarkdownTables: vi.fn((text: string) => text),
-        resolveChunkMode: vi.fn(() => "length"),
-        resolveTextChunkLimit: vi.fn(() => 1200),
-        chunkMarkdownTextWithMode: vi.fn((text: string) => [text]),
-      },
-    },
-  } as unknown as PluginRuntime);
-
+async function createKernelProofConfig(): Promise<OpenClawConfig> {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "openclaw-zalouser-kernel-proof-"));
+  kernelProofTempDirs.add(tempDir);
   return {
-    deliveryErrors,
-    dispatchReplyWithBufferedBlockDispatcher,
-    resolveAgentRoute,
-    resolveCommandAuthorizedFromAuthorizers,
-    readAllowFromStore,
+    ...createConfig(),
+    session: { store: path.join(tempDir, "sessions.json") },
   };
 }
 
-function installGroupCommandAuthRuntime() {
-  return installRuntime({
-    resolveCommandAuthorizedFromAuthorizers: ({ useAccessGroups, authorizers }) =>
-      useAccessGroups && authorizers.some((entry) => entry.configured && entry.allowed),
-  });
-}
+const createRuntimeEnv = () => createZalouserRuntimeEnv();
 
 async function processMessageThroughMonitor(params: {
   message?: ZaloInboundMessage;
@@ -415,6 +192,13 @@ describe("zalouser monitor group mention gating", () => {
     listZaloGroupsMock.mockResolvedValue([]);
     startZaloListenerMock.mockReset();
     startZaloListenerMock.mockResolvedValue({ stop: vi.fn() });
+  });
+
+  afterEach(async () => {
+    await Promise.all(
+      Array.from(kernelProofTempDirs, (tempDir) => rm(tempDir, { recursive: true, force: true })),
+    );
+    kernelProofTempDirs.clear();
   });
 
   async function processMessageWithDefaults(params: {
@@ -737,6 +521,124 @@ describe("zalouser monitor group mention gating", () => {
         expect.objectContaining({ mediaUrl: "https://a/2" }),
       );
     }
+  });
+
+  it("sanitizes custom inbound replies while preserving media delivery", async () => {
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyPayload: {
+        text: "Done.\n⚠️ 🛠️ `search repos (agent)` failed",
+        mediaUrl: "https://example.com/a.png",
+      },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-mixed", msgId: "dm-mixed" }),
+      account: createAccount(),
+      config: await createKernelProofConfig(),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
+    expect(sendMessageZalouserMock).toHaveBeenCalledOnce();
+    expect(sendMessageZalouserMock).toHaveBeenCalledWith(
+      "u-mixed",
+      "Done.",
+      expect.objectContaining({
+        isGroup: false,
+        mediaUrl: "https://example.com/a.png",
+        profile: "default",
+        textChunkLimit: 1200,
+        textChunkMode: "length",
+        textMode: "markdown",
+      }),
+    );
+  });
+
+  it("suppresses trace-only custom inbound replies", async () => {
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyPayload: { text: "⚠️ 🛠️ `search repos (agent)` failed" },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-trace", msgId: "dm-trace" }),
+      account: createAccount(),
+      config: await createKernelProofConfig(),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toHaveLength(1);
+    expect(sendMessageZalouserMock).not.toHaveBeenCalled();
+  });
+
+  it("passes ordinary markdown through the actual inbound turn kernel", async () => {
+    const replyText = "**Done.**\n\n- first\n- second";
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyPayload: { text: replyText },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-markdown", msgId: "dm-markdown" }),
+      account: createAccount(),
+      config: await createKernelProofConfig(),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
+    expect(sendMessageZalouserMock).toHaveBeenCalledOnce();
+    expect(sendMessageZalouserMock).toHaveBeenCalledWith(
+      "u-markdown",
+      replyText,
+      expect.objectContaining({ textMode: "markdown" }),
+    );
+  });
+
+  it("sanitizes a tool-result caption once across multi-media delivery", async () => {
+    const { actualKernelDispatchResults } = installRuntime({
+      commandAuthorized: false,
+      replyKind: "tool",
+      replyPayload: {
+        text: "Caption.\n⚠️ 🛠️ `search repos (agent)` failed",
+        mediaUrls: ["https://example.com/a.png", "https://example.com/b.png"],
+      },
+      useActualKernel: true,
+    });
+
+    await processMessageThroughMonitor({
+      message: createDmMessage({ threadId: "u-tool", msgId: "dm-tool" }),
+      account: createAccount(),
+      config: {
+        ...(await createKernelProofConfig()),
+        agents: { defaults: { verboseDefault: "on" } },
+      },
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(actualKernelDispatchResults).toMatchObject([
+      { dispatched: true, dispatchResult: { queuedFinal: false } },
+    ]);
+    expect(sendMessageZalouserMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageZalouserMock).toHaveBeenNthCalledWith(
+      1,
+      "u-tool",
+      "Caption.",
+      expect.objectContaining({ mediaUrl: "https://example.com/a.png" }),
+    );
+    expect(sendMessageZalouserMock).toHaveBeenNthCalledWith(
+      2,
+      "u-tool",
+      "",
+      expect.objectContaining({ mediaUrl: "https://example.com/b.png" }),
+    );
   });
 
   it("allows DM senders from static access groups", async () => {
