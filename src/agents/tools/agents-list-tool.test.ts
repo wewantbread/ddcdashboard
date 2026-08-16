@@ -243,6 +243,31 @@ describe("agents_list tool", () => {
     expect(descriptions?.reduce((total, description) => total + description.length, 0)).toBe(4_096);
   });
 
+  it("uses a CJK-aware aggregate description budget", async () => {
+    const targetIds = Array.from({ length: 4 }, (_, index) => `agent-${index}`);
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: targetIds },
+        },
+        list: [
+          { id: "main", default: true },
+          ...targetIds.map((id) => ({ id, description: "漢".repeat(512) })),
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const descriptions = (result.details as AgentListDetails).agents?.flatMap((agent) =>
+      agent.description ? [agent.description] : [],
+    );
+
+    expect(descriptions).toEqual(["漢".repeat(512), "漢".repeat(512)]);
+  });
+
   it("returns requester as the only target when no subagent allowlist is configured", async () => {
     loadConfigMock.mockReturnValue({
       agents: {
