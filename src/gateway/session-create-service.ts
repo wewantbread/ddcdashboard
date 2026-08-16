@@ -1449,6 +1449,7 @@ export async function createGatewaySession(params: {
         sessionKey: target.canonicalKey,
         sessionId: created.entry.sessionId,
         resumedFrom: parentEntry?.sessionId,
+        reason: "new",
         storePath: target.storePath,
         sessionFile: target.canonicalKey,
         agentId: target.agentId,

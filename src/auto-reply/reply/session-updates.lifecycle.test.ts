@@ -117,6 +117,7 @@ describe("session-updates lifecycle hooks", () => {
     expect(startEvent?.sessionId).toBe("s2");
     expect(startEvent?.sessionKey).toBe(sessionKey);
     expect(startEvent?.resumedFrom).toBe("s1");
+    expect(startEvent?.reason).toBe("compaction");
     expect(startContext?.sessionId).toBe("s2");
     expect(startContext?.sessionKey).toBe(sessionKey);
     expect(startContext?.agentId).toBe("main");

@@ -147,6 +147,7 @@ function emitCompactionSessionLifecycleHooks(params: {
       sessionKey: params.sessionKey,
       agentId,
       resumedFrom: params.previousEntry.sessionId,
+      reason: "compaction",
     });
     void runWithGatewayIndependentRootWorkContinuation(async () => {
       await hookRunner.runSessionStart(payload.event, payload.context);
