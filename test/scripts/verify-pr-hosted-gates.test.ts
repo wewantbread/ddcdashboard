@@ -1512,7 +1512,11 @@ describe("verify-pr-hosted-gates", () => {
     expect(() => parseArgs(requiredCliArgs.with(5, "zero"))).toThrow(
       "Expected --pr <positive-integer>.",
     );
-    for (const value of ["1e3", "0x10"]) {
+    expect(parseArgs(requiredCliArgs.with(5, "1")).pr).toBe(1);
+    expect(parseArgs(requiredCliArgs.with(5, String(Number.MAX_SAFE_INTEGER))).pr).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    for (const value of ["1e3", "0x10", "0", String(Number.MAX_SAFE_INTEGER + 1)]) {
       expect(() => parseArgs(requiredCliArgs.with(5, value))).toThrow(
         "Expected --pr <positive-integer>.",
       );
