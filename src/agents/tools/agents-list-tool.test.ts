@@ -13,6 +13,7 @@ type AgentListDetails = {
   agents?: Array<{
     id?: string;
     name?: string;
+    description?: string;
     configured?: boolean;
     model?: string;
     agentRuntime?: { id?: string; source?: string };
@@ -63,7 +64,7 @@ describe("agents_list tool", () => {
       required: ["requester", "allowAny", "agents"],
     });
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      '{ agents: Array<{ configured: boolean; id: string; agentRuntime?: { id: string; source: "env" | "agent" | "defaults" | "model" | "provider" | "implicit" | "session" | "session-key" }; model?: string; name?: string }>; allowAny: boolean; requester: string }',
+      '{ agents: Array<{ configured: boolean; id: string; agentRuntime?: { id: string; source: "env" | "agent" | "defaults" | "model" | "provider" | "implicit" | "session" | "session-key" }; description?: string; model?: string; name?: string }>; allowAny: boolean; requester: string }',
     );
     const result = await tool.execute("call", {});
     const details = result.details as AgentListDetails;
@@ -152,6 +153,119 @@ describe("agents_list tool", () => {
       allowAny: false,
       agents: [],
     });
+  });
+
+  it("returns configured agent descriptions", async () => {
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: ["codex", "blank"] },
+        },
+        list: [
+          { id: "main", default: true },
+          {
+            id: "codex",
+            name: "Codex",
+            description: "Code implementation and review",
+          },
+          {
+            id: "blank",
+            name: "Blank",
+            description: "   ",
+          },
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const details = result.details as AgentListDetails;
+
+    expect(details.agents?.find((agent) => agent.id === "codex")).toMatchObject({
+      id: "codex",
+      name: "Codex",
+      description: "Code implementation and review",
+    });
+    expect(details.agents?.find((agent) => agent.id === "blank")).not.toHaveProperty("description");
+  });
+
+  it("bounds each configured agent description", async () => {
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: ["codex"] },
+        },
+        list: [
+          { id: "main", default: true },
+          {
+            id: "codex",
+            description: `${"a".repeat(511)}🚀tail`,
+          },
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const description = (result.details as AgentListDetails).agents?.[0]?.description;
+
+    expect(description).toBe(`${"a".repeat(511)}…`);
+    expect(description?.length).toBe(512);
+  });
+
+  it("bounds aggregate configured agent descriptions", async () => {
+    const targetIds = Array.from({ length: 10 }, (_, index) => `agent-${index}`);
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: targetIds },
+        },
+        list: [
+          { id: "main", default: true },
+          ...targetIds.map((id) => ({ id, description: id.repeat(100) })),
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const descriptions = (result.details as AgentListDetails).agents?.flatMap((agent) =>
+      agent.description ? [agent.description] : [],
+    );
+
+    expect(descriptions).toHaveLength(8);
+    expect(descriptions?.reduce((total, description) => total + description.length, 0)).toBe(4_096);
+  });
+
+  it("uses a CJK-aware aggregate description budget", async () => {
+    const targetIds = Array.from({ length: 4 }, (_, index) => `agent-${index}`);
+    loadConfigMock.mockReturnValue({
+      agents: {
+        defaults: {
+          subagents: { allowAgents: targetIds },
+        },
+        list: [
+          { id: "main", default: true },
+          ...targetIds.map((id) => ({ id, description: "漢".repeat(512) })),
+        ],
+      },
+    } satisfies OpenClawConfig);
+
+    const result = await createAgentsListTool({ agentSessionKey: "agent:main:main" }).execute(
+      "call",
+      {},
+    );
+    const descriptions = (result.details as AgentListDetails).agents?.flatMap((agent) =>
+      agent.description ? [agent.description] : [],
+    );
+
+    expect(descriptions).toEqual(["漢".repeat(512), "漢".repeat(512)]);
   });
 
   it("returns requester as the only target when no subagent allowlist is configured", async () => {

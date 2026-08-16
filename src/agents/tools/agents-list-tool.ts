@@ -1,3 +1,4 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 /**
  * agents_list built-in tool.
  *
@@ -9,6 +10,10 @@ import { normalizeAgentId } from "../../routing/session-key.js";
 import { resolveModelAgentRuntimeMetadata } from "../agent-runtime-metadata.js";
 import { listAgentEntries, listAgentIds } from "../agent-scope-config.js";
 import { resolveAgentConfig, resolveSessionAgentIds } from "../agent-scope.js";
+import {
+  estimateToolResultTextChars,
+  sliceToolResultTextToBudget,
+} from "../embedded-agent-runner/tool-result-text-budget.js";
 import { resolveDefaultModelForAgent } from "../model-selection.js";
 import { resolveSubagentAllowedTargetIds } from "../subagents/spawn/subagent-target-policy.js";
 import type { AnyAgentTool } from "./common.js";
@@ -16,6 +21,8 @@ import { jsonResult } from "./common.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 
 const AgentsListToolSchema = Type.Object({});
+const AGENT_DESCRIPTION_MAX_CHARS = 512;
+const AGENT_DESCRIPTIONS_TOTAL_MAX_BUDGET_UNITS = 4_096;
 const AgentRuntimeSourceSchema = Type.Union([
   Type.Literal("env"),
   Type.Literal("agent"),
@@ -35,6 +42,7 @@ const AgentsListOutputSchema = Type.Object(
         {
           id: Type.String(),
           name: Type.Optional(Type.String()),
+          description: Type.Optional(Type.String()),
           configured: Type.Boolean(),
           model: Type.Optional(Type.String()),
           agentRuntime: Type.Optional(
@@ -57,6 +65,7 @@ const AgentsListOutputSchema = Type.Object(
 type AgentListEntry = {
   id: string;
   name?: string;
+  description?: string;
   configured: boolean;
   model?: string;
   agentRuntime?: {
@@ -73,6 +82,18 @@ type AgentListEntry = {
   };
 };
 
+function truncateAgentDescription(value: string, maxBudgetUnits: number): string {
+  const rawBounded =
+    value.length <= AGENT_DESCRIPTION_MAX_CHARS
+      ? value
+      : `${truncateUtf16Safe(value, AGENT_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`;
+  if (estimateToolResultTextChars(rawBounded) <= maxBudgetUnits) {
+    return rawBounded;
+  }
+  const prefix = sliceToolResultTextToBudget(rawBounded, Math.max(0, maxBudgetUnits - 1)).trimEnd();
+  return `${prefix}…`;
+}
+
 export function createAgentsListTool(opts?: {
   agentSessionKey?: string;
   /** Explicit agent ID override for cron/hook sessions. */
@@ -82,7 +103,7 @@ export function createAgentsListTool(opts?: {
     label: "Agents",
     name: "agents_list",
     description:
-      'List configured agent ids with name/model/runtime metadata, allowed as `sessions_spawn(runtime:"subagent")` targets.',
+      'List configured agent ids with name/description/model/runtime metadata, allowed as `sessions_spawn(runtime:"subagent")` targets.',
     parameters: AgentsListToolSchema,
     outputSchema: AgentsListOutputSchema,
     execute: async () => {
@@ -109,12 +130,17 @@ export function createAgentsListTool(opts?: {
       const configuredAgents = listAgentEntries(cfg);
       const configuredIds = listAgentIds(cfg);
       const configuredNameMap = new Map<string, string>();
+      const configuredDescriptionMap = new Map<string, string>();
       for (const entry of configuredAgents) {
+        const id = normalizeAgentId(entry.id);
         const name = entry?.name?.trim() ?? "";
-        if (!name) {
-          continue;
+        if (name) {
+          configuredNameMap.set(id, name);
         }
-        configuredNameMap.set(normalizeAgentId(entry.id), name);
+        const description = entry?.description?.trim() ?? "";
+        if (description) {
+          configuredDescriptionMap.set(id, description);
+        }
       }
 
       const allowed = resolveSubagentAllowedTargetIds({
@@ -127,6 +153,7 @@ export function createAgentsListTool(opts?: {
         .filter((id) => id !== requesterAgentId)
         .toSorted((a, b) => a.localeCompare(b));
       const ordered = all.includes(requesterAgentId) ? [requesterAgentId, ...rest] : rest;
+      let remainingDescriptionBudgetUnits = AGENT_DESCRIPTIONS_TOTAL_MAX_BUDGET_UNITS;
       const agents: AgentListEntry[] = ordered.map((id) => {
         const resolvedModel = resolveDefaultModelForAgent({ cfg, agentId: id });
         // Publish the resolved identity (aliases are routing-only) so the model
@@ -138,13 +165,25 @@ export function createAgentsListTool(opts?: {
           provider: resolvedModel.provider,
           model: resolvedModel.model,
         });
-        return {
+        const entry: AgentListEntry = {
           id,
           name: configuredNameMap.get(id),
           configured: configuredIds.includes(id),
           model,
           agentRuntime,
         };
+        const description = configuredDescriptionMap.get(id);
+        if (description && remainingDescriptionBudgetUnits > 0) {
+          // Agent config is operator-authored model context. Bound each entry and the
+          // CJK-aware deterministic aggregate so wildcard discovery cannot crowd out the turn.
+          const boundedDescription = truncateAgentDescription(
+            description,
+            remainingDescriptionBudgetUnits,
+          );
+          entry.description = boundedDescription;
+          remainingDescriptionBudgetUnits -= estimateToolResultTextChars(boundedDescription);
+        }
+        return entry;
       });
 
       return jsonResult({
