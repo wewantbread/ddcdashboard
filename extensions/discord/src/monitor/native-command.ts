@@ -345,6 +345,23 @@ async function dispatchDiscordCommandInteraction(params: {
       threadBinding: isThreadChannel ? threadBindings.getByThreadId(rawChannelId) : undefined,
       enforceConfiguredBindingReadiness: !shouldBypassConfiguredAcpEnsure(commandName),
     }));
+  const rejectUnavailableConfiguredBinding = async (
+    resolvedRouteState?: Awaited<ReturnType<typeof getNativeRouteState>>,
+  ): Promise<boolean> => {
+    const routeState = resolvedRouteState ?? (await getNativeRouteState());
+    if (!routeState.bindingReadiness || routeState.bindingReadiness.ok) {
+      return false;
+    }
+    const configuredBinding = routeState.configuredBinding;
+    if (!configuredBinding) {
+      return false;
+    }
+    logVerbose(
+      `discord native command: configured ACP binding unavailable for channel ${configuredBinding.record.conversation.conversationId}: ${routeState.bindingReadiness.error}`,
+    );
+    await respond("Configured ACP binding is unavailable right now. Please try again.");
+    return true;
+  };
   const canBypassConfiguredAcpGuildGuards = async () => {
     if (!interaction.guild || !shouldBypassConfiguredAcpGuildGuards(commandName)) {
       return false;
@@ -483,6 +500,29 @@ async function dispatchDiscordCommandInteraction(params: {
 
   const isGuild = Boolean(interaction.guild);
   const channelId = rawChannelId || "unknown";
+  const pickerCommandContext = shouldOpenDiscordModelPickerFromCommand({
+    command,
+    commandArgs,
+  });
+  if (pickerCommandContext) {
+    const routeState = await getNativeRouteState();
+    if (await rejectUnavailableConfiguredBinding(routeState)) {
+      return { accepted: false };
+    }
+    await replyWithDiscordModelPickerProviders({
+      interaction,
+      cfg,
+      command: pickerCommandContext,
+      userId: user.id,
+      accountId,
+      threadBindings,
+      preferFollowUp,
+      safeInteractionCall: safeDiscordInteractionCall,
+      route: routeState.effectiveRoute,
+    });
+    return { accepted: true };
+  }
+
   const menuNeedsModelContext =
     !(commandArgs?.raw && !commandArgs.values) &&
     command.args?.some(
@@ -514,6 +554,7 @@ async function dispatchDiscordCommandInteraction(params: {
     command,
     args: commandArgs,
     cfg,
+    agentId: menuModelContext?.agentId,
     provider: menuModelContext?.provider,
     model: menuModelContext?.model,
     agentRuntime: menuModelContext?.agentRuntime,
@@ -614,35 +655,10 @@ async function dispatchDiscordCommandInteraction(params: {
     return { accepted: true, effectiveRoute };
   }
 
-  const pickerCommandContext = shouldOpenDiscordModelPickerFromCommand({
-    command,
-    commandArgs,
-  });
-  if (pickerCommandContext) {
-    await replyWithDiscordModelPickerProviders({
-      interaction,
-      cfg,
-      command: pickerCommandContext,
-      userId: user.id,
-      accountId,
-      threadBindings,
-      preferFollowUp,
-      safeInteractionCall: safeDiscordInteractionCall,
-    });
-    return { accepted: true };
-  }
-
   const interactionId = interaction.rawData.id;
   const routeState = await getNativeRouteState();
-  if (routeState.bindingReadiness && !routeState.bindingReadiness.ok) {
-    const configuredBinding = routeState.configuredBinding;
-    if (configuredBinding) {
-      logVerbose(
-        `discord native command: configured ACP binding unavailable for channel ${configuredBinding.record.conversation.conversationId}: ${routeState.bindingReadiness.error}`,
-      );
-      await respond("Configured ACP binding is unavailable right now. Please try again.");
-      return { accepted: false };
-    }
+  if (await rejectUnavailableConfiguredBinding()) {
+    return { accepted: false };
   }
   const boundSessionKey = routeState.boundSessionKey;
   const effectiveRoute = routeState.effectiveRoute;

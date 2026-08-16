@@ -314,6 +314,99 @@ describe("Telegram native command built-ins", () => {
     expect(replyMocks.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
+  it("resolves /model choices against the routed agent policy", async () => {
+    commandAuthMocks.resolveCommandArgMenu.mockImplementation(({ command, agentId }) => {
+      if (command.key !== "model") {
+        return null;
+      }
+      const arg = command.args?.[0];
+      if (!arg) {
+        return null;
+      }
+      expect(agentId).toBe("main");
+      return {
+        arg,
+        choices: [{ label: "anthropic/Claude Sonnet 4.6", value: "anthropic/claude-sonnet-4.6" }],
+        title: "Choose a model for /model.",
+      };
+    });
+    const { handler, sendMessage } = registerAndResolveCommandHandler({
+      commandName: "model",
+      cfg: {},
+      allowFrom: ["*"],
+    });
+
+    await handler(createTelegramPrivateCommandContext());
+
+    const options = expectSendMessageCall({
+      sendMessage,
+      chatId: 100,
+      textIncludes: "Choose a model for /model.",
+      requireReplyMarkup: true,
+      label: "model menu",
+    });
+    expect(options.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          {
+            text: "anthropic/Claude Sonnet 4.6",
+            callback_data: "tgcmd:/model anthropic/claude-sonnet-4.6",
+          },
+        ],
+      ],
+    });
+  });
+
+  it("keeps routed model choices when a /model callback needs compact encoding", async () => {
+    const longModel = "openrouter/hermes-3-llama-3.1-405b-extended-build-v1";
+    commandAuthMocks.resolveCommandArgMenu.mockImplementation(({ command }) => {
+      if (command.key !== "model") {
+        return null;
+      }
+      const arg = command.args?.[0];
+      if (!arg) {
+        return null;
+      }
+      return {
+        arg,
+        choices: [
+          { label: "Short Model", value: "openrouter/short-model" },
+          { label: "Hermes 405B Extended", value: longModel },
+        ],
+        title: "Choose a model for /model.",
+      };
+    });
+    const { handler, sendMessage } = registerAndResolveCommandHandler({
+      commandName: "model",
+      cfg: {},
+      allowFrom: ["*"],
+    });
+
+    await handler(createTelegramPrivateCommandContext());
+
+    const options = expectSendMessageCall({
+      sendMessage,
+      chatId: 100,
+      textIncludes: "Choose a model for /model.",
+      requireReplyMarkup: true,
+      label: "oversized model menu",
+    });
+    expect(options.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          {
+            text: "Short Model",
+            callback_data: "tgcmd:/model openrouter/short-model",
+          },
+          {
+            text: "Hermes 405B Extended",
+            callback_data: "mdl_sel_openrouter/hermes-3-llama-3.1-405b-extended-build-v1",
+          },
+        ],
+      ],
+    });
+  });
+
   it("uses the read-only catalog for Claude CLI thinking menus", async () => {
     const cfg = {
       agents: {
