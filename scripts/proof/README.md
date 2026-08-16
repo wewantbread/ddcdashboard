@@ -38,10 +38,9 @@ bash scripts/proof/run-issue-119977-docker.sh
 The script builds a lean image (`node:24-bookworm-slim`, pinned by digest, +
 `tsx` + a Linux esbuild binary), bind-mounts the host-built tree read-only,
 and executes `scripts/proof/issue-119977-proof.mts` inside the container.
-The toolchain is pinned via the committed `scripts/proof/package.json` +
-`scripts/proof/package-lock.json` and installed with `npm ci --ignore-scripts`,
-so transitive deps are reproducible across builds; `tsx` is pinned to `4.23.1`
-and `esbuild` to `0.28.1`, matching the repo. The image resolves the
+The toolchain is installed with direct pinned versions — `tsx` `4.23.1` and
+`esbuild` `0.28.1`, matching the repo — via `npm install --ignore-scripts`,
+with no committed lockfile. The image resolves the
 `@esbuild/linux-<arch>` binary for the container's arch and overrides
 `ESBUILD_BINARY_PATH` so the host's darwin-arm64 esbuild in the mounted
 `node_modules` is never used.

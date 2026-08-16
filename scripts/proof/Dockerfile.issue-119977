@@ -21,13 +21,12 @@ FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9
 # linux-x64 and linux-arm64 builders instead of hardcoding one; if neither the
 # @esbuild/linux-<arch> package nor an esbuild on PATH resolves, the build fails
 # loudly rather than baking an empty binary path.
-# The toolchain is pinned via the committed scripts/proof/package-lock.json and
-# installed with `npm ci --ignore-scripts`, so transitive deps are reproducible
-# across builds; --ignore-scripts neutralizes transitive install-script
-# execution. tsx is pinned to 4.23.1 and esbuild to 0.28.1, matching the repo.
+# The toolchain is installed with direct pinned versions (tsx 4.23.1, esbuild
+# 0.28.1, matching the repo) via `npm install --ignore-scripts`, with no
+# committed lockfile; --ignore-scripts neutralizes transitive install-script
+# execution.
 WORKDIR /opt/proof-toolchain
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --no-fund --no-audit \
+RUN npm install --ignore-scripts --no-fund --no-audit esbuild@0.28.1 tsx@4.23.1 \
  && ESBUILD_BIN="$(cd /opt/proof-toolchain && node -e 'const s={x64:"linux-x64",arm64:"linux-arm64"}[process.arch]; if(!s)process.exit(0); try{console.log(require.resolve("@esbuild/"+s+"/bin/esbuild"))}catch{process.exit(0)}' 2>/dev/null || true)" \
  && if [ -z "$ESBUILD_BIN" ]; then ESBUILD_BIN="$(command -v esbuild || true)"; fi \
  && if [ -z "$ESBUILD_BIN" ] || [ ! -x "$ESBUILD_BIN" ]; then \
@@ -39,7 +38,7 @@ RUN npm ci --ignore-scripts --no-fund --no-audit \
  && echo "$ESBUILD_BIN" > /etc/esbuild-binary-path
 
 ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
-# Put the pinned toolchain's bin on PATH so `tsx` resolves to the lockfile-installed
+# Put the pinned toolchain's bin on PATH so `tsx` resolves to the pinned
 # version regardless of the host-mounted /app/node_modules contents.
 ENV PATH="/opt/proof-toolchain/node_modules/.bin:${PATH}"
 WORKDIR /app
