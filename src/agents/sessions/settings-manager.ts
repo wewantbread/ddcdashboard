@@ -132,8 +132,39 @@ export type SettingsScope = "global" | "project";
 
 const SETTINGS_SCOPES: SettingsScope[] = ["global", "project"];
 
+type SettingsMutator = (current: string | undefined) => string | undefined;
+
 export interface SettingsStorage {
-  withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+  withLock(scope: SettingsScope, fn: SettingsMutator): void;
+}
+
+/**
+ * Storage backends that can perform the read-modify-write under a single lock.
+ *
+ * `withLock` reads before locking when the file does not exist yet, so two
+ * processes creating settings.json concurrently can both merge from an empty
+ * base and lose one update. Backends that implement `withLockedUpdate` take the
+ * lock first and invoke the mutator exactly once against the locked contents.
+ */
+interface LockedUpdateSettingsStorage extends SettingsStorage {
+  withLockedUpdate(scope: SettingsScope, fn: SettingsMutator): void;
+}
+
+function supportsLockedUpdate(storage: SettingsStorage): storage is LockedUpdateSettingsStorage {
+  return typeof (storage as Partial<LockedUpdateSettingsStorage>).withLockedUpdate === "function";
+}
+
+/** Apply a settings mutation under the strongest lock the backend supports. */
+function updateSettingsFile(
+  storage: SettingsStorage,
+  scope: SettingsScope,
+  fn: SettingsMutator,
+): void {
+  if (supportsLockedUpdate(storage)) {
+    storage.withLockedUpdate(scope, fn);
+    return;
+  }
+  storage.withLock(scope, fn);
 }
 
 export interface SettingsError {
@@ -162,21 +193,62 @@ export class FileSettingsStorage implements SettingsStorage {
       if (fileExists) {
         release = acquireFileLockSyncWithRetry(path);
       }
-      const current = fileExists ? readFileSync(path, "utf-8") : undefined;
+      const current = readSettingsFileIfPresent(path);
       const next = fn(current);
       if (next !== undefined) {
         // Only create directory when we actually need to write
         if (!existsSync(dir)) {
           mkdirSync(dir, { recursive: true });
         }
-        if (!release) {
-          release = acquireFileLockSyncWithRetry(path);
-        }
+        release ??= acquireFileLockSyncWithRetry(path);
         writeFileSync(path, next, "utf-8");
       }
     } finally {
       release?.();
     }
+  }
+
+  /**
+   * Read-modify-write settings.json with the lock held across the whole cycle.
+   *
+   * The lock is taken before the read even when the file is missing, so a
+   * process that wins the create race cannot have its settings replaced by a
+   * concurrent first write that merged from an empty base. `fn` runs exactly
+   * once, against contents that cannot change until the write completes.
+   */
+  withLockedUpdate(
+    scope: SettingsScope,
+    fn: (current: string | undefined) => string | undefined,
+  ): void {
+    const path = this.paths[scope];
+    const dir = dirname(path);
+
+    // The lock file lives beside settings.json, so its directory has to exist
+    // before the lock can be taken on the create path.
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    const release = acquireFileLockSyncWithRetry(path);
+    try {
+      const next = fn(readSettingsFileIfPresent(path));
+      if (next !== undefined) {
+        writeFileSync(path, next, "utf-8");
+      }
+    } finally {
+      release();
+    }
+  }
+}
+
+/** Read settings file contents, treating a missing file as absent. */
+function readSettingsFileIfPresent(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
   }
 }
 
@@ -393,7 +465,7 @@ export class SettingsManager {
     snapshotSettings: Settings,
     modified: Map<keyof Settings, Set<string> | null>,
   ): void {
-    this.storage.withLock(scope, (current) => {
+    updateSettingsFile(this.storage, scope, (current) => {
       const currentFileSettings = current
         ? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
         : {};
