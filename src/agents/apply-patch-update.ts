@@ -12,6 +12,9 @@ const SINGLE_QUOTE_PUNCTUATION = /[\u2018-\u201B]/g;
 const DOUBLE_QUOTE_PUNCTUATION = /[\u201C-\u201F]/g;
 const SPACE_PUNCTUATION = /[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g;
 
+// UTF-8 BOM marker
+const BOM = "\uFEFF";
+
 type UpdateFileChunk = {
   changeContext?: string;
   oldLines: string[];
@@ -35,22 +38,36 @@ export async function applyUpdateHunk(
     throw new Error(`Failed to read file to update ${filePath}: ${formatErrorMessage(err)}`);
   });
 
+  // Preserve UTF-8 BOM if present
+  const hasBom = originalContents.startsWith(BOM);
+  const contentWithoutBom = hasBom ? originalContents.slice(1) : originalContents;
+
   // Normalizing mixed endings would rewrite untouched lines across the file.
   // Keep the existing localized behavior unless every terminator is CRLF.
-  const preserveCrlf = hasOnlyCrlfLineEndings(originalContents);
-  const matchingContents = preserveCrlf ? normalizeToLF(originalContents) : originalContents;
+  const preserveCrlf = hasOnlyCrlfLineEndings(contentWithoutBom);
+  const matchingContents = preserveCrlf ? normalizeToLF(contentWithoutBom) : contentWithoutBom;
   const originalLines = matchingContents.split("\n");
-  if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
+  const hadTrailingNewline =
+    originalLines.length > 0 && originalLines[originalLines.length - 1] === "";
+  if (hadTrailingNewline) {
     originalLines.pop();
   }
 
   const replacements = computeReplacements(originalLines, filePath, chunks);
   let newLines = applyReplacements(originalLines, replacements);
-  if (newLines.length === 0 || newLines[newLines.length - 1] !== "") {
+
+  // Only add trailing newline if the original file had one
+  if (hadTrailingNewline && (newLines.length === 0 || newLines[newLines.length - 1] !== "")) {
     newLines = [...newLines, ""];
   }
+
   const updatedContents = newLines.join("\n");
-  return preserveCrlf ? restoreLineEndings(updatedContents, "\r\n") : updatedContents;
+  const restoredContents = preserveCrlf
+    ? restoreLineEndings(updatedContents, "\r\n")
+    : updatedContents;
+
+  // Restore BOM if it was present
+  return hasBom ? BOM + restoredContents : restoredContents;
 }
 
 function computeReplacements(
@@ -133,7 +150,18 @@ function keepContextBytes(params: {
     if (oldIndex === undefined || oldIndex >= patternLength) {
       return line;
     }
-    return originalLines.at(matchIndex + oldIndex) ?? line;
+    const originalLine = originalLines.at(matchIndex + oldIndex);
+    if (originalLine === undefined) {
+      return line;
+    }
+    // Preserve the original line's indentation style (tabs vs spaces)
+    const originalIndent = originalLine.match(/^[\t ]*/)?.[0] ?? "";
+    const newIndent = line.match(/^[\t ]*/)?.[0] ?? "";
+    if (originalIndent !== newIndent && line.trim().length > 0) {
+      // Replace the new line's indentation with the original indentation
+      return originalIndent + line.slice(newIndent.length);
+    }
+    return originalLine;
   });
 }
 
