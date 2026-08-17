@@ -103,8 +103,9 @@ function normalizeCronJobForSqlite(job: CronStoreFile["jobs"][number]): CronStor
     ...normalized,
     createdAtMs,
     updatedAtMs,
+    // SAFETY: state validated as record; CronJobState is the persisted shape.
     state: isRecord(normalized.state) ? (normalized.state as CronJobState) : {},
-  } as CronStoredJob;
+  } as CronStoredJob; // SAFETY: normalized job fields match CronStoredJob
 }
 
 function countUnpersistableCronJobs(store: CronStoreFile): number {
@@ -180,6 +181,7 @@ export function projectCronJobThroughStorageCodec(job: CronStoredJob): CronStore
   if (!normalized) {
     throw new Error(`cannot project invalid cron job ${job.id}`);
   }
+  // SAFETY: bindCronJobRow returns the sqlite row binding for a normalized job.
   const row = bindCronJobRow("config-revision", normalized, 0) as CronJobRow;
   const projected = rowToCronJob(row, tryParseJsonObject(row.job_json) ?? {});
   if (!projected) {
