@@ -1,6 +1,7 @@
 // Policy tests cover policy state plugin behavior.
 import { describe, expect, it } from "vitest";
 import { scanPolicySandboxPosture } from "./policy-state-sandbox.js";
+import { scanPolicyToolPosture } from "./policy-state-tool-posture.js";
 import { collectPolicyEvidence } from "./policy-state.js";
 
 const scanPolicyChannels = (cfg: Record<string, unknown>) => collectPolicyEvidence(cfg).channels;
@@ -48,6 +49,88 @@ describe("scanPolicySandboxPosture", () => {
           kind: "containerMount",
           bindSurface: "docker",
           bind: "/host/data:/data:ro",
+        }),
+      ]),
+    );
+  });
+});
+
+describe("scanPolicyToolPosture", () => {
+  it("derives exec posture from local mode and records the mode source", () => {
+    const evidence = scanPolicyToolPosture({
+      agents: {
+        list: [{ id: "reviewer", tools: { exec: { mode: "ask" } } }],
+      },
+    });
+
+    expect(evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reviewer-exec-security",
+          kind: "execSecurity",
+          value: "allowlist",
+          source: "oc://openclaw.config/agents/list/#0/tools/exec/mode",
+          explicit: true,
+        }),
+        expect.objectContaining({
+          id: "reviewer-exec-ask",
+          kind: "execAsk",
+          value: "on-miss",
+          source: "oc://openclaw.config/agents/list/#0/tools/exec/mode",
+          explicit: true,
+        }),
+      ]),
+    );
+  });
+
+  it("derives exec posture from normalized agent entries", () => {
+    const evidence = scanPolicyToolPosture({
+      agents: {
+        entries: { reviewer: { tools: { exec: { mode: "ask" } } } },
+      },
+    });
+
+    expect(evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reviewer-exec-security",
+          kind: "execSecurity",
+          value: "allowlist",
+          source: "oc://openclaw.config/agents/entries/reviewer/tools/exec/mode",
+          explicit: true,
+        }),
+        expect.objectContaining({
+          id: "reviewer-exec-ask",
+          kind: "execAsk",
+          value: "on-miss",
+          source: "oc://openclaw.config/agents/entries/reviewer/tools/exec/mode",
+          explicit: true,
+        }),
+      ]),
+    );
+  });
+
+  it("merges legacy agent fields with an inherited exec mode", () => {
+    const evidence = scanPolicyToolPosture({
+      tools: { exec: { mode: "auto" } },
+      agents: {
+        list: [{ id: "reviewer", tools: { exec: { ask: "always" } } }],
+      },
+    });
+
+    expect(evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reviewer-exec-security",
+          kind: "execSecurity",
+          value: "allowlist",
+          source: "oc://openclaw.config/tools/exec/mode",
+        }),
+        expect.objectContaining({
+          id: "reviewer-exec-ask",
+          kind: "execAsk",
+          value: "always",
+          source: "oc://openclaw.config/agents/list/#0/tools/exec/ask",
         }),
       ]),
     );

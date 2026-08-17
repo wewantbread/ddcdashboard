@@ -10,6 +10,39 @@ vi.mock("openclaw/plugin-sdk/exec-approvals-runtime", async () => {
       : "~/.openclaw/state/openclaw.sqlite#exec_approvals_config";
   };
   return {
+    resolveExecModePolicy: ({
+      mode,
+      security,
+      ask,
+    }: {
+      mode?: "deny" | "allowlist" | "ask" | "auto" | "full" | null;
+      security: "deny" | "allowlist" | "full";
+      ask: "off" | "on-miss" | "always";
+    }) => {
+      if (!mode) {
+        return {
+          mode:
+            security === "deny"
+              ? "deny"
+              : security === "allowlist" && ask === "off"
+                ? "allowlist"
+                : security === "full" && ask !== "always"
+                  ? "full"
+                  : "ask",
+          security,
+          ask,
+          autoReview: false,
+        };
+      }
+      const policy = {
+        deny: { security: "deny", ask: "off", autoReview: false },
+        allowlist: { security: "allowlist", ask: "off", autoReview: false },
+        ask: { security: "allowlist", ask: "on-miss", autoReview: false },
+        auto: { security: "allowlist", ask: "on-miss", autoReview: true },
+        full: { security: "full", ask: "off", autoReview: false },
+      }[mode];
+      return { mode, ...policy };
+    },
     resolveExecApprovalsDisplayPath: displayPath,
     readExecApprovalsSnapshot: () => {
       const fixtureRoot =
