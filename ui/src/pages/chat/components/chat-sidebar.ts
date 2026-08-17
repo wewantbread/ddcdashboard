@@ -264,7 +264,9 @@ type FileViewControls = {
   dirty: boolean;
   editorMenuOpen: boolean;
   editing: boolean;
+  editorLoadFailed: boolean;
   loadingEditor: boolean;
+  onRetryEditorLoad: () => void;
   mountKey: number;
   matches: number[];
   query: string;
@@ -477,6 +479,14 @@ function renderFileSidebarContent(
         ${keyed(controls?.mountKey ?? content, html`<div class="file-view__mount"></div>`)}
         ${controls?.loadingEditor
           ? html`<div class="file-view__loading muted">${t("common.loading")}</div>`
+          : nothing}
+        ${!controls?.loadingEditor && controls?.editorLoadFailed
+          ? html`<div class="file-view__loading muted">
+              ${t("chat.detailPanel.editorLoadFailed")}
+              <button class="btn btn--sm" type="button" @click=${controls.onRetryEditorLoad}>
+                ${t("common.retry")}
+              </button>
+            </div>`
           : nothing}
       </div>
       ${controls?.editing
@@ -710,6 +720,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @state() private fileEditorMenuOpen = false;
   @state() private fileCopyFeedback = noFileCopyFeedback;
   @state() private fileEditorLoading = false;
+  @state() private fileEditorLoadFailed = false;
   @state() private fileEditing = false;
   @state() private fileDirty = false;
   @state() private fileReloading = false;
@@ -785,6 +796,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     this.fileEditing = Boolean(restoredDraft);
     this.fileDirty = Boolean(restoredDraft);
     this.fileEditorLoading = this.content?.kind === "file";
+    this.fileEditorLoadFailed = false;
     this.destroyFileEditor();
   }
 
@@ -801,7 +813,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
 
   protected override updated(changed: Map<string, unknown>) {
     const visibleContent = this.visibleContent;
-    if (visibleContent?.kind === "file" && !this.showingRawText) {
+    if (visibleContent?.kind === "file" && !this.showingRawText && !this.fileEditorLoadFailed) {
       void this.ensureFileEditor().then(() => {
         this.syncFileEditor();
         if (changed.has("content") && visibleContent.line != null) {
@@ -836,6 +848,19 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     this.fileEditorLoad = null;
   }
 
+  // Separate method so tests can simulate a failed chunk load (e.g. a stale
+  // chunk hash after a UI redeploy).
+  private loadFileEditorModule(): Promise<typeof import("./file-editor-view.ts")> {
+    return import("./file-editor-view.ts");
+  }
+
+  // User-triggered one-shot retry after a terminal chunk-load failure (e.g.
+  // connectivity returned). Flipping the reactive flag re-renders, and
+  // updated() starts a fresh load exactly once — never in a loop.
+  private retryFileEditorLoad = () => {
+    this.fileEditorLoadFailed = false;
+  };
+
   private ensureFileEditor(): Promise<void> {
     if (this.fileEditor) {
       return Promise.resolve();
@@ -850,7 +875,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     }
     const version = this.fileOperationVersion;
     this.fileEditorLoading = true;
-    this.fileEditorLoad = import("./file-editor-view.ts")
+    this.fileEditorLoad = this.loadFileEditorModule()
       .then(async ({ createFileEditorView }) => {
         const current = this.visibleContent;
         if (version !== this.fileOperationVersion || current?.kind !== "file") {
@@ -889,6 +914,15 @@ class ChatDetailPanel extends OpenClawLightDomElement {
             this.fileSaveNotice = null;
           }
         });
+      })
+      .catch(() => {
+        // Chunk load or editor init failed: mark the failure terminal for
+        // this content version so updated() does not spin a re-import loop,
+        // and swallow the rejection here instead of letting it escape as an
+        // unhandled promise rejection on every render pass.
+        if (version === this.fileOperationVersion) {
+          this.fileEditorLoadFailed = true;
+        }
       })
       .finally(() => {
         if (version === this.fileOperationVersion) {
@@ -1341,7 +1375,9 @@ class ChatDetailPanel extends OpenClawLightDomElement {
             dirty: this.fileDirty,
             editorMenuOpen: this.fileEditorMenuOpen,
             editing: this.fileEditing,
+            editorLoadFailed: this.fileEditorLoadFailed,
             loadingEditor: this.fileEditorLoading,
+            onRetryEditorLoad: this.retryFileEditorLoad,
             mountKey: this.fileOperationVersion,
             matches,
             query: this.fileSearchQuery,

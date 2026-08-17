@@ -34,6 +34,10 @@ type FileSidebarContent = {
 beforeAll(async () => {
   if (browserMode) {
     ({ userEvent } = await import("vitest/browser"));
+    // Tests assert English labels; pin the locale so they do not depend on the
+    // runner machine's browser language.
+    const { i18n } = await import("../../../i18n/index.ts");
+    await i18n.setLocale("en");
   }
 });
 
@@ -330,5 +334,44 @@ describe.runIf(browserMode)("chat file editor", () => {
     finishReload?.({ content: "latest", hash: "hash-2", editable: true });
     await expect.poll(() => panel.querySelector(".cm-content")?.textContent).toContain("latest");
     expect(panel.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("true");
+  });
+
+  it("stops retrying after the editor chunk fails to load", async () => {
+    type LoadFailPanel = DetailPanel & {
+      loadFileEditorModule: () => Promise<unknown>;
+      fileEditorLoadFailed: boolean;
+    };
+    const panel = document.createElement("openclaw-chat-detail-panel") as LoadFailPanel;
+    let attempts = 0;
+    panel.loadFileEditorModule = () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return Promise.reject(new Error("Failed to fetch dynamically imported module"));
+      }
+      // Connectivity "returned": the next (user-triggered) attempt loads the real chunk.
+      return import("./file-editor-view.ts");
+    };
+    panel.content = { kind: "file", path: "src/broken.ts", name: "broken.ts", content: "x" };
+    document.body.append(panel);
+    mounted.push(panel);
+
+    await expect.poll(() => panel.fileEditorLoadFailed, { timeout: 5_000 }).toBe(true);
+    expect(attempts).toBe(1);
+
+    for (let i = 0; i < 3; i++) {
+      panel.requestUpdate();
+      await panel.updateComplete;
+    }
+    expect(attempts).toBe(1);
+    expect(panel.textContent).toContain("Could not load the file editor");
+
+    // A deliberate user retry recovers once the chunk can load again.
+    // (Located structurally: button labels are localized in this environment.)
+    const retryButton = panel.querySelector<HTMLButtonElement>(".file-view__loading .btn");
+    expect(retryButton).not.toBeNull();
+    retryButton!.click();
+    await expect.poll(() => panel.querySelector(".cm-editor"), { timeout: 5_000 }).not.toBeNull();
+    expect(attempts).toBe(2);
+    expect(panel.textContent).not.toContain("Could not load the file editor");
   });
 });
