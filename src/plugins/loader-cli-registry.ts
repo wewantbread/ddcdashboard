@@ -118,6 +118,7 @@ export async function loadOpenClawPluginCliRegistry(
           rootConfig: context.cfg,
           enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
           activationSource: context.activationSource,
+          env: context.env,
           autoEnabledReason: formatAutoEnabledActivationReason(
             context.autoEnabledReasons[pluginId],
           ),
@@ -145,6 +146,7 @@ export async function loadOpenClawPluginCliRegistry(
           rootConfig: context.cfg,
           enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
           activationSource: context.activationSource,
+          env: context.env,
         });
     const entry = context.normalized.entries[policyId];
     const record = createManifestPluginRecord({

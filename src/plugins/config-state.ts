@@ -208,6 +208,8 @@ export function resolvePluginActivationState(params: {
   enabledByDefault?: boolean;
   activationSource?: PluginActivationConfigSource;
   autoEnabledReason?: string;
+  /** Registry loads scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return toPluginActivationState(
     resolvePluginActivationDecisionShared({
@@ -220,7 +222,7 @@ export function resolvePluginActivationState(params: {
         }),
       allowBundledChannelExplicitBypassesAllowlist: true,
       bundledDiscoveryMode:
-        params.origin === "bundled" ? readBundledDiscoveryModeMemoized() : undefined,
+        params.origin === "bundled" ? readBundledDiscoveryModeMemoized(params.env) : undefined,
       isBundledChannelEnabledByChannelConfig: isBundledChannelEnabledByChannelConfigShared,
     }),
   );
@@ -238,6 +240,7 @@ type EffectiveActivationParams = {
   rootConfig?: OpenClawConfig;
   enabledByDefault?: boolean;
   activationSource?: PluginActivationConfigSource;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const resolveEffectiveEnableState =
@@ -253,6 +256,7 @@ export function resolveEffectivePluginActivationState(params: {
   enabledByDefault?: EffectiveActivationParams["enabledByDefault"];
   activationSource?: EffectiveActivationParams["activationSource"];
   autoEnabledReason?: string;
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return resolvePluginActivationState(params);
 }

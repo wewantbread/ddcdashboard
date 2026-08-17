@@ -21,7 +21,12 @@ export function resolveCompatRegistryVersion(): string {
 }
 
 /** Hashes config policy inputs that can change installed plugin activation. */
-export function resolveInstalledPluginIndexPolicyHash(config: OpenClawConfig | undefined): string {
+export function resolveInstalledPluginIndexPolicyHash(
+  config: OpenClawConfig | undefined,
+  // Callers scoped to an explicit env hash that env's state-root mode so
+  // persisted indexes cannot leak activation decisions across roots.
+  env?: NodeJS.ProcessEnv,
+): string {
   const normalized = normalizePluginsConfig(config?.plugins);
   const channelPolicy: Record<string, boolean> = {};
   const channels = config?.channels;
@@ -43,7 +48,7 @@ export function resolveInstalledPluginIndexPolicyHash(config: OpenClawConfig | u
       // Machine-state discovery mode changes activation for bundled plugins;
       // omitting it left persisted indexes stale across doctor's compat
       // migration (allow-listed installs stayed mass-disabled after --fix).
-      bundledDiscovery: readBundledDiscoveryModeMemoized() ?? null,
+      bundledDiscovery: readBundledDiscoveryModeMemoized(env) ?? null,
       slots: normalized.slots,
       entries: Object.fromEntries(
         Object.entries(normalized.entries)

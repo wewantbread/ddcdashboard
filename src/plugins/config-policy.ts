@@ -35,6 +35,8 @@ function resolvePluginActivationState(params: {
   sourceConfig?: NormalizedPluginsConfig;
   sourceRootConfig?: OpenClawConfig;
   autoEnabledReason?: string;
+  /** Callers scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return toPluginActivationState(
     resolvePluginActivationDecisionShared({
@@ -46,7 +48,7 @@ function resolvePluginActivationState(params: {
       // Keep control-plane policy decisions aligned with the runtime gate:
       // compat exempts bundled plugins from the allowlist on both surfaces.
       bundledDiscoveryMode:
-        params.origin === "bundled" ? readBundledDiscoveryModeMemoized() : undefined,
+        params.origin === "bundled" ? readBundledDiscoveryModeMemoized(params.env) : undefined,
       isBundledChannelEnabledByChannelConfig,
     }),
   );
@@ -63,6 +65,7 @@ type PolicyEffectiveActivationParams = {
   sourceConfig?: NormalizedPluginsConfig;
   sourceRootConfig?: OpenClawConfig;
   autoEnabledReason?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export function resolvePolicyPluginActivationState(

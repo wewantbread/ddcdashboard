@@ -302,7 +302,7 @@ function refreshPersistedPolicyState(
   const normalizedConfig = normalizePluginsConfig(params.config?.plugins);
   return {
     ...persisted,
-    policyHash: resolveInstalledPluginIndexPolicyHash(params.config),
+    policyHash: resolveInstalledPluginIndexPolicyHash(params.config, params.env),
     generatedAtMs: (params.now?.() ?? new Date()).getTime(),
     refreshReason: params.reason,
     plugins: persisted.plugins.map((plugin) => ({
@@ -313,6 +313,7 @@ function refreshPersistedPolicyState(
         config: normalizedConfig,
         rootConfig: params.config,
         enabledByDefault: isPluginEnabledByDefaultForPlatform(plugin),
+        env: params.env,
       }).enabled,
     })),
   };

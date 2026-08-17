@@ -38,17 +38,27 @@ registerPluginMetadataProcessMemoLifecycleClear(() => {
   memoizedBundledDiscoveryMode = undefined;
 });
 
-function resolveBundledDiscoveryMemoKey(): string {
-  const env = hasActivePluginInstallRoots()
-    ? { ...process.env, OPENCLAW_STATE_DIR: resolveActivePluginInstallRoots().stateDir }
-    : process.env;
-  return resolveOpenClawStateSqlitePath(env);
+function resolveBundledDiscoveryMemoKey(env: NodeJS.ProcessEnv): string {
+  const scopedEnv = hasActivePluginInstallRoots()
+    ? { ...env, OPENCLAW_STATE_DIR: resolveActivePluginInstallRoots(env).stateDir }
+    : env;
+  return resolveOpenClawStateSqlitePath(scopedEnv);
 }
 
-export function readBundledDiscoveryModeMemoized(): "compat" | "allowlist" | undefined {
-  const key = resolveBundledDiscoveryMemoKey();
+/**
+ * Callers loading a registry with an explicit env pass it so the mode comes
+ * from that env's state root; omitting it reads the process root. Pinned
+ * install roots win over both, matching readBundledDiscoveryMode.
+ */
+export function readBundledDiscoveryModeMemoized(
+  env: NodeJS.ProcessEnv = process.env,
+): "compat" | "allowlist" | undefined {
+  const key = resolveBundledDiscoveryMemoKey(env);
   if (memoizedBundledDiscoveryMode?.key !== key) {
-    memoizedBundledDiscoveryMode = { key, value: readBundledDiscoveryMode() };
+    memoizedBundledDiscoveryMode = {
+      key,
+      value: readBundledDiscoveryMode(env === process.env ? {} : { env }),
+    };
   }
   return memoizedBundledDiscoveryMode.value;
 }

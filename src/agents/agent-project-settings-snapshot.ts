@@ -114,6 +114,7 @@ export function loadEnabledBundleAgentSettingsSnapshot(params: {
       origin: record.origin,
       config: normalizedPlugins,
       rootConfig: config,
+      env,
     });
     if (!activationState.activated) {
       continue;

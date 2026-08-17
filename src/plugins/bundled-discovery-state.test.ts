@@ -65,4 +65,35 @@ describe("readBundledDiscoveryModeMemoized", () => {
       await fs.rm(plainRoot, { recursive: true, force: true });
     }
   });
+
+  it("honors a caller-supplied env's state root over the process root", async () => {
+    // Two-root regression (#123416 review): provider and manifest-contract
+    // registry loads pass an explicit env; compat recorded in that env's root
+    // must be readable even when the process root has no mode, and the
+    // process-root read must stay strict.
+    const compatRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-bd-caller-")),
+    );
+    const plainRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-bd-process-")),
+    );
+    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    try {
+      setTestEnvValue("OPENCLAW_STATE_DIR", compatRoot);
+      writeConfigMachineState("plugins.bundledDiscovery", "compat");
+      // Process root has no recorded mode.
+      setTestEnvValue("OPENCLAW_STATE_DIR", plainRoot);
+      clearBundledDiscoveryModeMemo();
+
+      const callerEnv = { ...process.env, OPENCLAW_STATE_DIR: compatRoot };
+      expect(readBundledDiscoveryModeMemoized(callerEnv)).toBe("compat");
+      expect(readBundledDiscoveryModeMemoized()).toBeUndefined();
+      // Alternating scopes stay correct: the memo re-keys per resolved root.
+      expect(readBundledDiscoveryModeMemoized(callerEnv)).toBe("compat");
+    } finally {
+      envSnapshot.restore();
+      await fs.rm(compatRoot, { recursive: true, force: true });
+      await fs.rm(plainRoot, { recursive: true, force: true });
+    }
+  });
 });

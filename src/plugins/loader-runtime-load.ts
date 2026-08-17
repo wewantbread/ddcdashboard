@@ -192,6 +192,7 @@ function loadOpenClawPluginsInternal(
         rootConfig: context.cfg,
         enabledByDefault: isPluginEnabledByDefaultForPlatform(record),
         activationSource: context.activationSource,
+        env: context.env,
       });
       const runtimes = normalizeAgentToolResultMiddlewareRuntimeIds(
         record.contracts?.agentToolResultMiddleware,

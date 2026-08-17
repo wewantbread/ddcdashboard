@@ -1,5 +1,11 @@
 // Covers plugin config state normalization and reset behavior.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { writeConfigMachineState } from "../state/config-machine-state.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { clearBundledDiscoveryModeMemo } from "./bundled-discovery-state.js";
 import {
   createPluginActivationSource,
   normalizePluginsConfig,
@@ -10,14 +16,6 @@ import {
 } from "./config-state.js";
 import * as discovery from "./discovery.js";
 import * as manifest from "./manifest.js";
-
-const bundledDiscoveryState = vi.hoisted(() => ({
-  mode: undefined as "compat" | "allowlist" | undefined,
-}));
-vi.mock("./bundled-discovery-state.js", () => ({
-  readBundledDiscoveryMode: () => bundledDiscoveryState.mode,
-  readBundledDiscoveryModeMemoized: () => bundledDiscoveryState.mode,
-}));
 
 function normalizeVoiceCallEntry(entry: Record<string, unknown>) {
   return normalizePluginsConfig({
@@ -707,10 +705,34 @@ describe("resolveEnableState", () => {
 
 describe("resolveEnableState under bundledDiscovery modes", () => {
   afterEach(() => {
-    bundledDiscoveryState.mode = undefined;
+    clearBundledDiscoveryModeMemo();
   });
 
   const allowlistConfig = { allow: ["rollover", "brave"] };
+
+  // Real machine state in an isolated root: module mocks would evict this
+  // file from the unit-fast lane and leak across isolate=false workers.
+  const withDiscoveryMode = async (
+    mode: "compat" | "allowlist" | undefined,
+    run: () => void,
+  ): Promise<void> => {
+    const stateDir = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-config-state-")),
+    );
+    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    try {
+      if (mode) {
+        writeConfigMachineState("plugins.bundledDiscovery", mode);
+      }
+      clearBundledDiscoveryModeMemo();
+      run();
+    } finally {
+      envSnapshot.restore();
+      clearBundledDiscoveryModeMemo();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  };
 
   it.each([
     {
@@ -776,11 +798,48 @@ describe("resolveEnableState under bundledDiscovery modes", () => {
       config: { ...allowlistConfig, entries: { telegram: { enabled: false } } },
       expected: { enabled: false, reason: "disabled in config" },
     },
-  ])("$name", ({ mode, id, origin, manifestEnabledByDefault, config, expected }) => {
-    bundledDiscoveryState.mode = mode;
-    expect(
-      resolveEnableState(id, origin, normalizePluginsConfig(config), manifestEnabledByDefault),
-    ).toEqual(expected);
+  ])("$name", async ({ mode, id, origin, manifestEnabledByDefault, config, expected }) => {
+    await withDiscoveryMode(mode, () => {
+      expect(
+        resolveEnableState(id, origin, normalizePluginsConfig(config), manifestEnabledByDefault),
+      ).toEqual(expected);
+    });
+  });
+
+  it("reads compat from the caller-scoped env's state root, not the process root", async () => {
+    // Two-root regression (#123416): explicit-env registry loads must honor
+    // compat recorded in the supplied root while the process root stays strict.
+    const compatRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-config-state-caller-")),
+    );
+    const plainRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-config-state-process-")),
+    );
+    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    try {
+      setTestEnvValue("OPENCLAW_STATE_DIR", compatRoot);
+      writeConfigMachineState("plugins.bundledDiscovery", "compat");
+      setTestEnvValue("OPENCLAW_STATE_DIR", plainRoot);
+      clearBundledDiscoveryModeMemo();
+
+      const config = normalizePluginsConfig(allowlistConfig);
+      const params = {
+        id: "telegram",
+        origin: "bundled",
+        config,
+        enabledByDefault: true,
+      } as const;
+      const callerEnv = { ...process.env, OPENCLAW_STATE_DIR: compatRoot };
+      expect(resolveEffectivePluginActivationState({ ...params, env: callerEnv }).enabled).toBe(
+        true,
+      );
+      expect(resolveEffectivePluginActivationState(params).enabled).toBe(false);
+    } finally {
+      envSnapshot.restore();
+      clearBundledDiscoveryModeMemo();
+      await fs.rm(compatRoot, { recursive: true, force: true });
+      await fs.rm(plainRoot, { recursive: true, force: true });
+    }
   });
 });
 
