@@ -7,6 +7,8 @@ import { setupCronServiceSuite, writeCronStoreSnapshot } from "../../cron/servic
 import { createCronServiceState as createCronServiceStateBase } from "../../cron/service/state.js";
 import { executeJobCore, onTimer } from "../../cron/service/timer.test-support.js";
 import { loadCronStore } from "../../cron/store.js";
+import * as jobPrecheck from "../../cron/job-precheck.js";
+import { cronStoreKey } from "../../cron/store/key.js";
 import type { CronJob } from "../../cron/types.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as taskExecutor from "../../tasks/task-executor.js";
