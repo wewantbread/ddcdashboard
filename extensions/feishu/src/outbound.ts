@@ -55,6 +55,7 @@ import type { ChannelOutboundAdapter } from "./outbound-runtime-api.js";
 import {
   assertFeishuCardWithinEnvelope,
   buildFeishuPresentationCardElements,
+  FEISHU_PRESENTATION_CAPABILITIES,
   isFeishuCardWithinEnvelope,
 } from "./presentation-card.js";
 import {
@@ -590,26 +591,7 @@ export const feishuOutbound: ChannelOutboundAdapter = {
   chunker: chunkFeishuMarkdown,
   chunkerMode: "markdown",
   textChunkLimit: FEISHU_TEXT_CHUNK_LIMIT,
-  presentationCapabilities: {
-    supported: true,
-    buttons: true,
-    selects: false,
-    context: true,
-    divider: true,
-    limits: {
-      actions: {
-        maxActions: 20,
-        maxActionsPerRow: 5,
-        maxLabelLength: 40,
-        maxValueBytes: 1024,
-      },
-      text: {
-        maxLength: FEISHU_TEXT_CHUNK_LIMIT,
-        encoding: "characters",
-        markdownDialect: "markdown",
-      },
-    },
-  },
+  presentationCapabilities: FEISHU_PRESENTATION_CAPABILITIES,
   renderPresentation: renderFeishuPresentationPayload,
   sendPayload: async (ctx) => {
     const { payload, presentationFallback } = consumeFeishuPresentationFallbackMarker(ctx.payload);

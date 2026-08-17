@@ -325,6 +325,56 @@ describe("buildTelegramPresentationButtons", () => {
     expect(parseTelegramOpaqueCallbackData(callbackData)).toBe("/not-a-native-command");
   });
 
+  it("renders typed copy-text actions without callback data", () => {
+    expect(
+      buildTelegramPresentationButtons({
+        blocks: [
+          {
+            type: "buttons",
+            buttons: [
+              {
+                label: "Copy token",
+                action: { type: "copy-text", text: "TOKEN-7319" },
+                style: "primary",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      [
+        {
+          text: "Copy token",
+          copy_text: { text: "TOKEN-7319" },
+          style: "primary",
+        },
+      ],
+    ]);
+  });
+
+  it("drops copy-text actions beyond Telegram's 256-character limit", () => {
+    const dropped: Array<{ label: string; reason: string }> = [];
+    expect(
+      buildTelegramPresentationButtons(
+        {
+          blocks: [
+            {
+              type: "buttons",
+              buttons: [
+                {
+                  label: "Copy token",
+                  action: { type: "copy-text", text: "😀".repeat(257) },
+                },
+              ],
+            },
+          ],
+        },
+        { onDroppedControl: (control) => dropped.push(control) },
+      ),
+    ).toBeUndefined();
+    expect(dropped).toEqual([{ label: "Copy token", reason: "copy_text_invalid" }]);
+  });
+
   it("keeps legacy values that look like opaque callback prefixes raw", () => {
     expect(parseTelegramOpaqueCallbackData("tgcb1:inspect:123")).toBeNull();
     expect(

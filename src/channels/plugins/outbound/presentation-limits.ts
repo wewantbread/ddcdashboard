@@ -247,6 +247,7 @@ function consumeSelectBudget(budget: ActionBudget): void {
 function adaptButton(
   button: MessagePresentationButton,
   limits: ActionLimits | undefined,
+  capabilities: ChannelPresentationCapabilities | undefined,
 ): MessagePresentationButton | undefined {
   const hasExplicitAction = button.action !== undefined;
   const action = resolveMessagePresentationButtonAction(button);
@@ -258,6 +259,7 @@ function adaptButton(
   const legacyValueFits = fitsByteLimit(button.value, limits?.maxValueBytes);
   if (
     (hasExplicitAction ? !actionFits : action.type === "callback" && !legacyValueFits) ||
+    (action.type === "copy-text" && capabilities?.copyTextButtons !== true) ||
     (button.disabled === true && limits?.supportsDisabled !== true)
   ) {
     return undefined;
@@ -278,6 +280,7 @@ function adaptButton(
 function adaptButtonsBlock(
   block: Extract<MessagePresentationBlock, { type: "buttons" }>,
   limits: ActionLimits | undefined,
+  capabilities: ChannelPresentationCapabilities | undefined,
   budget: ActionBudget,
   fallbackBlockType: "context" | "text",
   buttonSelection: ButtonSelection,
@@ -286,7 +289,7 @@ function adaptButtonsBlock(
   const capacity = buttonCapacity(budget);
   const candidates: ButtonCandidate[] = block.buttons.map((button) => ({
     original: button,
-    adapted: adaptButton(button, limits),
+    adapted: adaptButton(button, limits, capabilities),
   }));
   const renderableCandidates = candidates.filter(
     (candidate): candidate is ButtonCandidate & { adapted: MessagePresentationButton } =>
@@ -336,13 +339,22 @@ function appendAdaptedButtonsBlock(
   blocks: MessagePresentationBlock[],
   block: Extract<MessagePresentationBlock, { type: "buttons" }>,
   limits: ActionLimits | undefined,
+  capabilities: ChannelPresentationCapabilities | undefined,
   budget: ActionBudget,
   fallbackBlockType: "context" | "text",
   buttonSelection: ButtonSelection,
   textLimits?: TextLimits,
 ): void {
   blocks.push(
-    ...adaptButtonsBlock(block, limits, budget, fallbackBlockType, buttonSelection, textLimits),
+    ...adaptButtonsBlock(
+      block,
+      limits,
+      capabilities,
+      budget,
+      fallbackBlockType,
+      buttonSelection,
+      textLimits,
+    ),
   );
 }
 
@@ -465,7 +477,7 @@ function createGlobalButtonSelection(params: {
     return block.buttons
       .map((button) => ({
         original: button,
-        adapted: adaptButton(button, params.limits),
+        adapted: adaptButton(button, params.limits, params.capabilities),
       }))
       .filter(
         (
@@ -570,6 +582,7 @@ export function adaptMessagePresentationForChannel(params: {
         blocks,
         block,
         limits?.actions,
+        capabilities,
         actionBudget,
         fallbackBlockType,
         buttonSelection,
@@ -620,6 +633,7 @@ export function applyPresentationActionLimits(
   const block = adaptButtonsBlock(
     { type: "buttons", buttons: [...buttons] },
     capabilities?.limits?.actions,
+    capabilities,
     createActionBudget(capabilities?.limits?.actions),
     capabilities?.context === false ? "text" : "context",
     undefined,

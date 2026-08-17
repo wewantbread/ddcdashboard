@@ -31,10 +31,12 @@ import {
 } from "openclaw/plugin-sdk/directory-runtime";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import {
+  adaptMessagePresentationForChannel,
   legacyInteractiveReplyToPresentation,
   normalizeLegacyInteractiveReply,
   normalizeMessagePresentation,
   resolveLegacyInteractiveTextFallback,
+  type MessagePresentation,
 } from "openclaw/plugin-sdk/interactive-runtime";
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
@@ -92,6 +94,7 @@ import { resolveFeishuGroupToolPolicy } from "./policy.js";
 import {
   assertFeishuCardWithinEnvelope,
   buildFeishuPresentationCard,
+  FEISHU_PRESENTATION_CAPABILITIES,
   isFeishuCardWithinEnvelope,
 } from "./presentation-card.js";
 import {
@@ -112,6 +115,27 @@ import { feishuSetupContract } from "./setup-core.js";
 import { feishuSetupWizard, runFeishuLogin } from "./setup-surface.js";
 import { looksLikeFeishuId, normalizeFeishuTarget, resolveReceiveIdType } from "./targets.js";
 import type { FeishuConfig, FeishuProbeResult, ResolvedFeishuAccount } from "./types.js";
+
+function adaptFeishuDirectCopyTextButtons(presentation: MessagePresentation): MessagePresentation {
+  return {
+    ...presentation,
+    blocks: presentation.blocks.flatMap((block) => {
+      if (
+        block.type !== "buttons" ||
+        !block.buttons.some((button) => button.action?.type === "copy-text")
+      ) {
+        return [block];
+      }
+      // The direct action path predates the shared presentation adapter and its
+      // card builder owns the other fallback shapes. Adapt copy-text blocks here
+      // so unsupported native actions become visible text instead of disappearing.
+      return adaptMessagePresentationForChannel({
+        presentation: { blocks: [block] },
+        capabilities: FEISHU_PRESENTATION_CAPABILITIES,
+      }).blocks;
+    }),
+  };
+}
 
 function readFeishuMediaParam(params: Record<string, unknown>): string | undefined {
   const media = params.media;
@@ -1083,9 +1107,12 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
               responsePrefix: resolveFeishuMessageActionResponsePrefix(ctx),
             });
             const interactive = normalizeLegacyInteractiveReply(ctx.params.interactive);
-            const presentation =
+            const normalizedPresentation =
               normalizeMessagePresentation(ctx.params.presentation) ??
               (interactive ? legacyInteractiveReplyToPresentation(interactive) : undefined);
+            const presentation = normalizedPresentation
+              ? adaptFeishuDirectCopyTextButtons(normalizedPresentation)
+              : undefined;
             const mediaUrl = readFeishuMediaParam(ctx.params);
             const audioAsVoice = readBooleanParam(ctx.params, ["asVoice", "audioAsVoice"]);
             if (textCard && !presentation) {
@@ -1855,26 +1882,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
       chunkerMode: "markdown",
       textChunkLimit: 4000,
       sanitizeText: ({ text }) => sanitizeAssistantVisibleText(text),
-      presentationCapabilities: {
-        supported: true,
-        buttons: true,
-        selects: false,
-        context: true,
-        divider: true,
-        limits: {
-          actions: {
-            maxActions: 20,
-            maxActionsPerRow: 5,
-            maxLabelLength: 40,
-            maxValueBytes: 1024,
-          },
-          text: {
-            maxLength: 4000,
-            encoding: "characters",
-            markdownDialect: "markdown",
-          },
-        },
-      },
+      presentationCapabilities: FEISHU_PRESENTATION_CAPABILITIES,
       renderPresentation: async (ctx) => {
         const runtime = await loadFeishuChannelRuntime();
         const renderPresentation = runtime.feishuOutbound.renderPresentation;

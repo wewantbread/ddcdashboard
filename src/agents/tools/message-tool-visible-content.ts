@@ -198,6 +198,22 @@ function sanitizePresentationTextFieldsResult(
           const action = sanitizedButton.action;
           if (action && typeof action === "object" && !Array.isArray(action)) {
             const sanitizedAction = { ...(action as Record<string, unknown>) };
+            if (sanitizedAction.type === "copy-text" && typeof sanitizedAction.text === "string") {
+              const sanitized = sanitizeUserVisibleToolTextResult(sanitizedAction.text, bootPrompt);
+              if (sanitized.text.trim()) {
+                sanitizedAction.text = sanitized.text;
+                sanitizedButton.action = sanitizedAction;
+              } else {
+                // Explicit typed actions own the control. If sanitization removes
+                // the target, legacy shadow fields must not become active fallbacks.
+                delete sanitizedButton.action;
+                delete sanitizedButton.value;
+                delete sanitizedButton.url;
+                delete sanitizedButton.webApp;
+                delete sanitizedButton.web_app;
+              }
+              suppressionReason ??= sanitized.suppressionReason;
+            }
             if (
               (sanitizedAction.type === "url" || sanitizedAction.type === "web-app") &&
               typeof sanitizedAction.url === "string"

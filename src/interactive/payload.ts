@@ -79,6 +79,11 @@ export type MessagePresentationAction =
       type: "callback";
       value: string;
     }
+  | {
+      /** Copy text to the user's clipboard without invoking a callback. */
+      type: "copy-text";
+      text: string;
+    }
   | ModelPickerAction
   | {
       /** Resolve one durable operator approval without exposing transport callback data. */
@@ -518,6 +523,10 @@ function normalizePresentationAction(raw: unknown): MessagePresentationAction | 
   if (type === "callback") {
     const value = normalizeOptionalString(record.value);
     return value ? { type: "callback", value } : undefined;
+  }
+  if (type === "copy-text") {
+    const text = typeof record.text === "string" ? record.text : undefined;
+    return text?.trim() ? { type: "copy-text", text } : undefined;
   }
   if (type === "model-picker") {
     return normalizeModelPickerAction(record);
@@ -1104,6 +1113,9 @@ export function renderMessagePresentationControlFallbackLabel(
   }
   if (action?.type === "command") {
     return `${control.label}: \`${action.command}\``;
+  }
+  if (action?.type === "copy-text") {
+    return `${control.label}: \`${action.text}\``;
   }
   return control.label;
 }
