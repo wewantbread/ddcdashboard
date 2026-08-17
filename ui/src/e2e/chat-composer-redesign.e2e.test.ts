@@ -31,6 +31,40 @@ async function captureUiProof(page: Page, fileName: string) {
 
 // Browser contexts preserve test isolation; keep one process warm for this file.
 suite.define(() => {
+  it("removes an attached image from its full mobile touch target", async () => {
+    await suite.withPage(
+      { hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page);
+        await page.goto(`${suite.server.baseUrl}chat`);
+        await gateway.waitForRequest("chat.startup");
+
+        const composer = page.locator(".agent-chat__input");
+        await composer.locator(".agent-chat__file-input").setInputFiles({
+          name: "mobile-close.png",
+          mimeType: "image/png",
+          buffer: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            "base64",
+          ),
+        });
+        const attachment = composer.locator(".chat-attachment-thumb");
+        await attachment.waitFor({ state: "visible" });
+        const box = await attachment.boundingBox();
+        expect(box).not.toBeNull();
+        if (!box) {
+          throw new Error("expected attached image bounds");
+        }
+
+        // Tap inside the platform-sized target but outside the 20px visible circle.
+        await page.touchscreen.tap(box.x + box.width - 32, box.y + 14);
+
+        await expect.poll(() => attachment.count()).toBe(0);
+        expect(await page.getByRole("dialog", { name: /Image preview/u }).count()).toBe(0);
+      },
+    );
+  });
+
   it("keeps mobile picker panels above an attachment-expanded composer", async () => {
     await suite.withPage({ viewport: { width: 667, height: 375 } }, async ({ page }) => {
       const gateway = await installMockGateway(page);
