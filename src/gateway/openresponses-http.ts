@@ -34,11 +34,11 @@ import {
   type InputImageLimits,
   type InputImageSource,
 } from "../media/input-files.js";
-import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
 import {
   DOCUMENT_EXTRACTOR_CAPACITY_ERROR_CODE,
   isDocumentExtractorCapacityError,
 } from "../plugins/document-extractor-types.js";
+import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
 import { defaultRuntime } from "../runtime.js";
 import {
   isReplaceableAssistantStreamEvent,
