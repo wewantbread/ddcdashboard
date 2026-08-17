@@ -44,11 +44,26 @@ const mocks = vi.hoisted(() => ({
   readBundledDiscoveryMode: vi.fn<() => "compat" | "allowlist" | undefined>(() => "allowlist"),
 }));
 
-vi.mock("./bundled-discovery-state.js", () => ({
-  readBundledDiscoveryMode: mocks.readBundledDiscoveryMode,
-  readBundledDiscoveryModeMemoized: mocks.readBundledDiscoveryMode,
-  clearBundledDiscoveryModeMemo: () => {},
-}));
+vi.mock("./bundled-discovery-state.js", async () => {
+  const { registerPluginMetadataProcessMemoLifecycleClear } =
+    await import("./plugin-metadata-lifecycle.js");
+  // Mirror the real single-slot memo so read-count assertions exercise the
+  // memoized seam; beforeEach's lifecycle clear resets it per test.
+  let memo: { value: "compat" | "allowlist" | undefined } | undefined;
+  registerPluginMetadataProcessMemoLifecycleClear(() => {
+    memo = undefined;
+  });
+  return {
+    readBundledDiscoveryMode: mocks.readBundledDiscoveryMode,
+    readBundledDiscoveryModeMemoized: () => {
+      memo ??= { value: mocks.readBundledDiscoveryMode() };
+      return memo.value;
+    },
+    clearBundledDiscoveryModeMemo: () => {
+      memo = undefined;
+    },
+  };
+});
 
 vi.mock("./loader.js", () => ({
   resolveRuntimePluginRegistry: mocks.resolveRuntimePluginRegistry,
