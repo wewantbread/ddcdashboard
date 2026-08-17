@@ -5,24 +5,17 @@ import {
   resolveChannelConfigRecord,
 } from "../config/channel-configured-shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { readBundledDiscoveryMode } from "./bundled-discovery-state.js";
+import { readBundledDiscoveryModeMemoized } from "./bundled-discovery-state.js";
 import { normalizePluginsConfig } from "./config-state.js";
 import { isInstalledPluginEnabled } from "./installed-plugin-index.js";
 import { resolveManifestOwnerBasePolicyBlock } from "./manifest-owner-policy.js";
 import type { PluginManifestContractListKey, PluginManifestRecord } from "./manifest-registry.js";
-import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 import { resolvePluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import type {
   PluginMetadataManifestView,
   PluginMetadataRegistryView,
   PluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.types.js";
-
-let bundledDiscoveryMode: { value: ReturnType<typeof readBundledDiscoveryMode> } | undefined;
-
-registerPluginMetadataProcessMemoLifecycleClear(() => {
-  bundledDiscoveryMode = undefined;
-});
 
 /** Enforces owner-specific policy while preserving bundled speech/global compatibility. */
 export function isManifestPluginOwnerAllowedByControlPlanePolicy(params: {
@@ -60,8 +53,7 @@ export function isManifestPluginOwnerAllowedByControlPlanePolicy(params: {
   ) {
     return true;
   }
-  bundledDiscoveryMode ??= { value: readBundledDiscoveryMode() };
-  return bundledDiscoveryMode.value === "compat";
+  return readBundledDiscoveryModeMemoized() === "compat";
 }
 
 export function isManifestPluginAvailableForControlPlane(params: {

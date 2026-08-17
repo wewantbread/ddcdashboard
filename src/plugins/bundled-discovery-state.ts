@@ -1,6 +1,7 @@
 // Bundled-discovery compatibility is machine-owned upgrade state.
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
   hasActivePluginInstallRoots,
   resolveActivePluginInstallRoots,
@@ -24,17 +25,31 @@ export function readBundledDiscoveryMode(
   return value === "compat" || value === "allowlist" ? value : undefined;
 }
 
-// Single-slot process memo: the mode is machine-owned upgrade state that only
-// changes through doctor/restart, and per-plugin activation must not open
-// SQLite once per decision.
-let memoizedBundledDiscoveryMode: { value: "compat" | "allowlist" | undefined } | undefined;
+// Single-slot process memo keyed by the resolved state-database path: the mode
+// is machine-owned upgrade state that only changes through doctor/restart, and
+// per-plugin activation must not open SQLite once per decision. The key keeps
+// interleaved isolated scopes (agent execution, doctor lint) from inheriting
+// another root's cached mode; the reads honor the active install-root context.
+let memoizedBundledDiscoveryMode:
+  | { key: string; value: "compat" | "allowlist" | undefined }
+  | undefined;
 
 registerPluginMetadataProcessMemoLifecycleClear(() => {
   memoizedBundledDiscoveryMode = undefined;
 });
 
+function resolveBundledDiscoveryMemoKey(): string {
+  const env = hasActivePluginInstallRoots()
+    ? { ...process.env, OPENCLAW_STATE_DIR: resolveActivePluginInstallRoots().stateDir }
+    : process.env;
+  return resolveOpenClawStateSqlitePath(env);
+}
+
 export function readBundledDiscoveryModeMemoized(): "compat" | "allowlist" | undefined {
-  memoizedBundledDiscoveryMode ??= { value: readBundledDiscoveryMode() };
+  const key = resolveBundledDiscoveryMemoKey();
+  if (memoizedBundledDiscoveryMode?.key !== key) {
+    memoizedBundledDiscoveryMode = { key, value: readBundledDiscoveryMode() };
+  }
   return memoizedBundledDiscoveryMode.value;
 }
 

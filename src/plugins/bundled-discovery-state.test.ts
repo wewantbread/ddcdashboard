@@ -36,4 +36,33 @@ describe("readBundledDiscoveryModeMemoized", () => {
       await fs.rm(stateDir, { recursive: true, force: true });
     }
   });
+
+  it("does not leak one state root's cached mode into an interleaved scope", async () => {
+    // The memo is keyed by the resolved state-database path: isolated scopes
+    // (agent execution, doctor lint) alternating in one process must each see
+    // their own root's mode without explicit clears.
+    const compatRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-bd-compat-")),
+    );
+    const plainRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-bd-plain-")),
+    );
+    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    try {
+      setTestEnvValue("OPENCLAW_STATE_DIR", compatRoot);
+      writeConfigMachineState("plugins.bundledDiscovery", "compat");
+      clearBundledDiscoveryModeMemo();
+      expect(readBundledDiscoveryModeMemoized()).toBe("compat");
+
+      setTestEnvValue("OPENCLAW_STATE_DIR", plainRoot);
+      expect(readBundledDiscoveryModeMemoized()).toBeUndefined();
+
+      setTestEnvValue("OPENCLAW_STATE_DIR", compatRoot);
+      expect(readBundledDiscoveryModeMemoized()).toBe("compat");
+    } finally {
+      envSnapshot.restore();
+      await fs.rm(compatRoot, { recursive: true, force: true });
+      await fs.rm(plainRoot, { recursive: true, force: true });
+    }
+  });
 });
