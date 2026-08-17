@@ -21,19 +21,25 @@ const hoisted = vi.hoisted(() => {
   return {
     makeTool,
     cronExecute,
-    createOpenClawToolsMock: vi.fn(() => [
-      makeTool("read"),
-      makeTool("sessions_spawn"),
-      makeTool("sessions_send"),
-      makeTool("cron", cronExecute),
-      makeTool("gateway"),
-      makeTool("nodes"),
-    ]),
+    createOpenClawToolsMock: vi.fn(
+      (_options?: {
+        inheritedToolAllowlist?: string[];
+        cronCreatorToolAllowlist?: Array<{ name: string }>;
+      }) => [
+        makeTool("read"),
+        makeTool("sessions_spawn"),
+        makeTool("sessions_send"),
+        makeTool("cron", cronExecute),
+        makeTool("gateway"),
+        makeTool("nodes"),
+      ],
+    ),
   };
 });
 
 vi.mock("../agents/openclaw-tools.js", () => ({
-  createOpenClawTools: () => hoisted.createOpenClawToolsMock(),
+  createOpenClawTools: (options: Parameters<typeof hoisted.createOpenClawToolsMock>[0]) =>
+    hoisted.createOpenClawToolsMock(options),
 }));
 
 vi.mock("../agents/agent-tools.js", () => ({
@@ -72,6 +78,30 @@ describe("resolveGatewayScopedTools delegationCapability", () => {
     expect(tools).toEqual(["read", "cron", "gateway", "nodes"]);
     expect(tools).not.toContain("sessions_spawn");
     expect(tools).not.toContain("sessions_send");
+  });
+
+  it("captures report-only derived authority from the gated loopback surface", () => {
+    hoisted.createOpenClawToolsMock.mockClear();
+    resolveGatewayScopedTools({
+      cfg: {
+        tools: {
+          allow: ["read", "sessions_spawn", "sessions_send", "cron", "gateway", "nodes"],
+        },
+      } as OpenClawConfig,
+      sessionKey: "agent:main:direct:test",
+      surface: "loopback",
+      senderIsOwner: true,
+      delegationCapability: "report_only",
+    });
+
+    const options = hoisted.createOpenClawToolsMock.mock.calls.at(-1)?.[0];
+    expect(options?.inheritedToolAllowlist).toEqual(["read", "automations", "gateway", "nodes"]);
+    expect(options?.cronCreatorToolAllowlist).toEqual([
+      { name: "read" },
+      { name: "automations" },
+      { name: "gateway" },
+      { name: "nodes" },
+    ]);
   });
 
   it("narrows report-only loopback tools to their status actions", async () => {

@@ -551,7 +551,10 @@ export function resolveGatewayScopedTools(params: {
     ].map(normalizeToolPolicyName),
   );
   const tools = applyToolAvailabilityDescriptions(
-    policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
+    applyDelegationCapability(
+      policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
+      params.delegationCapability,
+    ),
   );
   // The loopback exec tool is node-only. Do not let a raw `exec` capability get
   // reinterpreted as generic Gateway/sandbox exec by spawned sessions or cron jobs.
@@ -567,9 +570,7 @@ export function resolveGatewayScopedTools(params: {
 
   return {
     agentId: sessionAgentId,
-    // Applied last so the gate sees exactly the authorized surface, matching
-    // the embedded attempt order in createOpenClawCodingToolsInternal.
-    tools: applyDelegationCapability(tools, params.delegationCapability),
+    tools,
     workspaceDir,
   };
 }
