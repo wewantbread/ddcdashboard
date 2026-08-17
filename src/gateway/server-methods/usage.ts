@@ -1132,6 +1132,26 @@ export const testApi = {
 
 export type { SessionUsageEntry, SessionsUsageAggregates, SessionsUsageResult };
 
+function respondIfAgentScopeAllConflicts(params: {
+  agentScope?: unknown;
+  agentId?: string;
+  key?: string | null;
+  respond: RespondFn;
+}): boolean {
+  if (params.agentScope !== "all" || (!params.agentId && !params.key)) {
+    return false;
+  }
+  // usage.cost used to drop agentScope=all whenever agentId was set, so a
+  // combined request returned a single-agent total with ok:true. Keep the
+  // same fail-closed contract as sessions.usage.
+  params.respond(
+    false,
+    undefined,
+    errorShape(ErrorCodes.INVALID_REQUEST, "agentScope=all cannot be combined with key or agentId"),
+  );
+  return true;
+}
+
 export const usageHandlers: GatewayRequestHandlers = {
   "usage.status": async ({ respond, context }) => {
     const summary = await loadUsageStatusStaleWhileRevalidate({
@@ -1148,7 +1168,16 @@ export const usageHandlers: GatewayRequestHandlers = {
     const config = context.getRuntimeConfig();
     const { startMs, endMs } = range;
     const agentId = normalizeOptionalString(params?.agentId);
-    const agentScope = params?.agentScope === "all" && !agentId ? "all" : undefined;
+    if (
+      respondIfAgentScopeAllConflicts({
+        agentScope: params?.agentScope,
+        agentId,
+        respond,
+      })
+    ) {
+      return;
+    }
+    const agentScope = params?.agentScope === "all" ? "all" : undefined;
     let effectiveAgentId = agentId;
     if (!agentScope && !effectiveAgentId) {
       const requestedAgent = resolveRequestedSessionAgentId(config, "main");
@@ -1187,15 +1216,14 @@ export const usageHandlers: GatewayRequestHandlers = {
     const specificKey = normalizeOptionalString(p.key) ?? null;
     const requestedAgentId = normalizeOptionalString(p.agentId);
     const requestedAllAgents = p.agentScope === "all";
-    if (requestedAllAgents && (requestedAgentId || specificKey)) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          "agentScope=all cannot be combined with key or agentId",
-        ),
-      );
+    if (
+      respondIfAgentScopeAllConflicts({
+        agentScope: p.agentScope,
+        agentId: requestedAgentId,
+        key: specificKey,
+        respond,
+      })
+    ) {
       return;
     }
     const specificSessionOwner = specificKey

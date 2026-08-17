@@ -610,6 +610,74 @@ describe("gateway usage helpers", () => {
     );
   });
 
+  it("rejects usage.cost when agentScope=all is combined with agentId", async () => {
+    const respond = vi.fn();
+
+    await expectDefined(
+      usageHandlers["usage.cost"],
+      'usageHandlers["usage.cost"] test invariant',
+    )({
+      respond,
+      params: {
+        startDate: "2026-02-01",
+        endDate: "2026-02-02",
+        agentId: "research",
+        agentScope: "all",
+      },
+      context: {
+        getRuntimeConfig: () => ({
+          agents: { list: [{ id: "main" }, { id: "research" }] },
+        }),
+      },
+    } as unknown as Parameters<(typeof usageHandlers)["usage.cost"]>[0]);
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        "agentScope=all cannot be combined with key or agentId",
+      ),
+    );
+    expect(vi.mocked(loadCostUsageSummaryFromCache)).not.toHaveBeenCalled();
+  });
+
+  it("treats blank usage.cost agentId as omitted when aggregating all agents", async () => {
+    const respond = vi.fn();
+
+    await expectDefined(
+      usageHandlers["usage.cost"],
+      'usageHandlers["usage.cost"] test invariant',
+    )({
+      respond,
+      params: {
+        startDate: "2026-02-01",
+        endDate: "2026-02-02",
+        agentId: "  ",
+        agentScope: "all",
+      },
+      context: {
+        getRuntimeConfig: () => ({
+          agents: { list: [{ id: "main" }, { id: "research" }] },
+        }),
+      },
+    } as unknown as Parameters<(typeof usageHandlers)["usage.cost"]>[0]);
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        totals: expect.objectContaining({ totalTokens: 2 }),
+      }),
+      undefined,
+    );
+    expect(vi.mocked(loadCostUsageSummaryFromCache)).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "main" }),
+    );
+    expect(vi.mocked(loadCostUsageSummaryFromCache)).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "research" }),
+    );
+  });
+
   it("passes usage.cost all-agent scope through to all configured agent loaders", async () => {
     const respond = vi.fn();
 
