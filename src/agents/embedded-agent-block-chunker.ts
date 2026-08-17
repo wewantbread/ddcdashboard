@@ -152,7 +152,7 @@ export class EmbeddedBlockChunker {
     const minChars = Math.max(1, Math.floor(this.#chunking.minChars));
     const maxChars = Math.max(minChars, Math.floor(this.#chunking.maxChars));
     // A paragraph separator plus visible text must fit without a whitespace-only payload.
-    const preserveParagraphBoundaries = this.#chunking.flushOnParagraph && maxChars >= 3;
+    const preserveParagraphBoundaries = this.#chunking.flushOnParagraph === true && maxChars >= 3;
 
     if (this.#buffer.length < minChars && !force) {
       return;
