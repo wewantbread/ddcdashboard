@@ -1,17 +1,39 @@
+import type { WorkerTunnelStatus } from "@openclaw/gateway-protocol";
+import { NODE_WORKER_CAPACITY_EXHAUSTED_ERROR_CODE } from "../../infra/node-commands.js";
 import type { SpawnResult } from "../../process/exec.js";
-import type { WorkerLaunchDescriptor } from "../../worker/launch-descriptor.js";
-import type { WorkerConnectionEndpoint } from "../../worker/worker-connection-endpoint.js";
+import type { WorkerLaunchPlan } from "../../worker/launch-descriptor.js";
+import type { NodeWorkerWorkspaceTransferInput } from "../../worker/node-workspace-transfer-protocol.js";
 import type {
   WorkerWorkspaceApplyResult,
   WorkerWorkspaceReconciliationJournalAdapter,
 } from "./workspace-reconcile.js";
 
-export type WorkerTunnelStatus = "stopped" | "connecting" | "connected" | "reconnecting";
+export type { WorkerTunnelStatus };
 
 export class WorkerTunnelOwnerDisconnectedError extends Error {
   constructor() {
     super("Worker tunnel owner is no longer connected");
     this.name = "WorkerTunnelOwnerDisconnectedError";
+  }
+}
+
+export class WorkerRunnerUnavailableError extends Error {
+  readonly code = "runner-offline";
+
+  constructor() {
+    super(
+      "The device runner is offline. Reconnect it, retry later, or bring the session back to this gateway.",
+    );
+    this.name = "WorkerRunnerUnavailableError";
+  }
+}
+
+export class WorkerRunnerCapacityError extends Error {
+  readonly code = NODE_WORKER_CAPACITY_EXHAUSTED_ERROR_CODE;
+
+  constructor() {
+    super("device worker capacity remained full");
+    this.name = "WorkerRunnerCapacityError";
   }
 }
 
@@ -23,9 +45,11 @@ export type WorkerTunnelRequest = {
 export type WorkerWorkspaceCommand = {
   argv: readonly string[];
   transportRetry: "idempotent" | "never";
+  onDispatchReady?: () => void;
   input?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  transfer?: NodeWorkerWorkspaceTransferInput;
 };
 
 export type WorkerWorkspaceSyncRequest = {
@@ -75,15 +99,16 @@ export type WorkerWorkspaceQuiescence = {
 };
 
 type WorkerTurnLaunchRequest = {
-  descriptor: WorkerLaunchDescriptor;
+  plan: WorkerLaunchPlan;
+  placementGeneration: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onDispatchReady?: () => void;
 };
 
 export type WorkerTunnelHandle = {
   environmentId: string;
   ownerEpoch: number;
-  connectionEndpoint: WorkerConnectionEndpoint;
   launchTurn(request: WorkerTurnLaunchRequest): Promise<SpawnResult>;
   runWorkspaceCommand(command: WorkerWorkspaceCommand): Promise<SpawnResult>;
   quiesceWorkspace(remoteWorkspaceDir: string): Promise<WorkerWorkspaceQuiescence>;

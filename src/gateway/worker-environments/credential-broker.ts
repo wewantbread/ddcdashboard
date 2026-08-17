@@ -3,7 +3,7 @@ import {
   WORKER_RPC_SET_VERSION,
 } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import {
-  resolveLocalWorkerBuild,
+  StaleWorkerBuildError,
   verifyWorkerAdmissionHandshake,
   type ExpectedWorkerBuild,
 } from "./admission.js";
@@ -31,7 +31,7 @@ type WorkerCredentialBrokerOptions = {
   prepareInstallation: (
     install: WorkerInstallationArtifact["install"],
   ) => Promise<WorkerInstallationArtifact>;
-  tunnelManager?: WorkerTunnelManager;
+  tunnelManager?: Pick<WorkerTunnelManager, "stop">;
   workerCredentialTtlMs?: number;
   generateWorkerCredential?: (bytes: number) => string;
   liveEvents?: Pick<WorkerLiveEventReceiver, "bindSession" | "rotateCredential">;
@@ -124,7 +124,7 @@ export function createWorkerCredentialBroker(options: WorkerCredentialBrokerOpti
 
   const commitReady = (
     record: WorkerEnvironmentRecord,
-    receipt: WorkerAdmissionHandshake & { installKind: "bundle" | "local" },
+    receipt: WorkerAdmissionHandshake & { installKind: "bundle" },
     patch: WorkerEnvironmentTransitionPatch = {},
   ) => {
     const material = credentialMaterial();
@@ -220,9 +220,7 @@ export function createWorkerCredentialBroker(options: WorkerCredentialBrokerOpti
       }
       let currentBuild: ExpectedWorkerBuild;
       try {
-        currentBuild =
-          resolveLocalWorkerBuild(current.bootstrapReceipt) ??
-          (await options.prepareInstallation("bundle"));
+        currentBuild = await options.prepareInstallation("bundle");
       } catch {
         throw serviceError("invalid_state", "Current worker build identity is unavailable");
       }
@@ -230,10 +228,7 @@ export function createWorkerCredentialBroker(options: WorkerCredentialBrokerOpti
         !current.bootstrapReceipt ||
         !verifyWorkerAdmissionHandshake(current.bootstrapReceipt, currentBuild)
       ) {
-        throw serviceError(
-          "invalid_state",
-          "Worker must bootstrap the current build before attach",
-        );
+        throw new StaleWorkerBuildError();
       }
       const material = credentialMaterial();
       let attached: WorkerEnvironmentRecord;

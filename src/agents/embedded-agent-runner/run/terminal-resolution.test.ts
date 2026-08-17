@@ -5,9 +5,11 @@ import {
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
+import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import {
   copyAttemptDeliveryState,
+  createTerminalToolPresentationTracker,
   resolveEmbeddedRunTerminal,
   resolveSettledTurnFinalizationRequest,
 } from "./terminal-resolution.js";
@@ -106,6 +108,27 @@ function makeTerminalInput(overrides: TerminalInputOverrides = {}): TerminalInpu
 }
 
 describe("terminal resolution", () => {
+  it("carries presentation across retries until a newer tool outcome replaces it", () => {
+    const tracker = createTerminalToolPresentationTracker();
+    const firstOrdinal = tracker.allocateOrdinal();
+    tracker.observe({
+      toolCallOrdinal: firstOrdinal,
+      terminalPresentation: "Fetched https://example.com",
+    });
+
+    expect(tracker.read()).toBe("Fetched https://example.com");
+
+    const retryOrdinal = tracker.allocateOrdinal();
+    expect(tracker.read()).toBe("Fetched https://example.com");
+    tracker.observe({ toolCallOrdinal: retryOrdinal });
+    tracker.observe({
+      toolCallOrdinal: firstOrdinal,
+      terminalPresentation: "stale presentation",
+    });
+
+    expect(tracker.read()).toBeUndefined();
+  });
+
   it("keeps only the bounded latest MCP App view identity", () => {
     expect(
       copyAttemptDeliveryState({
@@ -127,6 +150,37 @@ describe("terminal resolution", () => {
     await expect(resolveEmbeddedRunTerminal(input)).resolves.toEqual({ action: "retry" });
     expect(input.retryState.emptyResponseAttempts).toBe(1);
     expect(activateInternalPrompt).toHaveBeenCalledWith(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+  });
+
+  it("retries an empty final turn after Anthropic server compaction", async () => {
+    const assistant = emptyAssistant({
+      providerReplay: {
+        v: 1,
+        type: "anthropic-compaction",
+        data: "summary",
+        provider: "anthropic",
+        api: "anthropic-messages",
+        model: "claude-sonnet-4-6",
+        baseUrlHash: "route-a",
+      },
+    } as never);
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const armPostCompactionGuard = vi.fn();
+    const input = makeTerminalInput({
+      attempt,
+      attemptAssistant: assistant,
+      maxEmptyResponseRetryAttempts: 0,
+      armPostCompactionGuard,
+    });
+
+    await expect(resolveEmbeddedRunTerminal(input)).resolves.toEqual({ action: "retry" });
+    expect(input.retryState.compactionContinuationAttempts).toBe(1);
+    expect(armPostCompactionGuard).toHaveBeenCalledTimes(1);
   });
 
   it("completes an explicit silent reply without retrying", async () => {
@@ -157,6 +211,75 @@ describe("terminal resolution", () => {
     expect(resolved.result.meta.terminalReplyKind).toBe("silent-empty");
     expect(resolved.result.meta.livenessState).toBe("working");
     expect(activateInternalPrompt).not.toHaveBeenCalled();
+  });
+
+  it("completes a cron turn from a trailing silent tool result", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      toolMetas: [{ toolName: "exec" }],
+      messagesSnapshot: [
+        {
+          role: "toolResult",
+          content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+          details: { aggregated: SILENT_REPLY_TOKEN },
+        } as never,
+        assistant,
+      ],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+    });
+    const activateInternalPrompt = vi.fn();
+    const input = makeTerminalInput({
+      attempt,
+      attemptAssistant: assistant,
+      runParams: { trigger: "cron", terminalReplyExpectation: "required" },
+      activateInternalPrompt,
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(input);
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads).toEqual([{ text: SILENT_REPLY_TOKEN }]);
+    expect(resolved.result.meta.livenessState).toBe("working");
+    expect(activateInternalPrompt).not.toHaveBeenCalled();
+  });
+
+  it("keeps a length-stopped silent cron result silent", async () => {
+    // The only payload is the synthesized silent result of a successful tool and
+    // the assistant produced no prose, so there is no partial reply to label; a
+    // truncation notice here would turn intentional silence into a message.
+    const assistant = emptyAssistant({ stopReason: "length" });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      toolMetas: [{ toolName: "exec" }],
+      messagesSnapshot: [
+        {
+          role: "toolResult",
+          content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+          details: { aggregated: SILENT_REPLY_TOKEN },
+        } as never,
+        assistant,
+      ],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+    });
+    const input = makeTerminalInput({
+      attempt,
+      attemptAssistant: assistant,
+      runParams: { trigger: "cron", terminalReplyExpectation: "required" },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(input);
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads).toEqual([{ text: SILENT_REPLY_TOKEN }]);
   });
 
   it("completes a reply-optional side-effecting turn as intentional silence", async () => {
@@ -210,6 +333,7 @@ describe("terminal resolution", () => {
     const retryInput = makeTerminalInput({
       attempt,
       attemptAssistant: assistant,
+      runParams: { allowEmptyAssistantReplyAsSilent: true, terminalReplyExpectation: "required" },
       activateInternalPrompt,
     });
 
@@ -242,6 +366,43 @@ describe("terminal resolution", () => {
       fallbackSafe: true,
       terminalPresentation: true,
     });
+  });
+
+  it("does not surface a read-only presentation after a sibling side effect", async () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "tool-1", name: "exec", arguments: {} }],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      toolMetas: [
+        { toolName: "exec", replaySafe: false },
+        { toolName: "web_fetch", replaySafe: true },
+      ],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        replayState: { hadPotentialSideEffects: true, replayInvalid: true },
+        readTerminalToolPresentation: () => "Fetched https://example.com",
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads?.[0]?.text).not.toContain("Fetched https://example.com");
+    expect(resolved.result.meta.error).toMatchObject({
+      kind: "incomplete_turn",
+      fallbackSafe: false,
+    });
+    expect(resolved.result.meta.error?.terminalPresentation).toBe(false);
   });
 
   it.each([
@@ -302,5 +463,232 @@ describe("terminal resolution", () => {
 
     expect(request("required")).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
     expect(request("optional")).toBeNull();
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-heartbeat",
+          runId: "run:settled-heartbeat",
+          trigger: "heartbeat",
+        } as never,
+        attempt,
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("requires an available finalizer and no visible structured error", () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "tool-1", name: "exec", arguments: {} }],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      toolMetas: [{ toolName: "exec", isError: true, replaySafe: false }],
+      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+      messagesSnapshot: [
+        assistant,
+        { role: "toolResult", toolCallId: "tool-1", toolName: "exec", isError: true } as never,
+      ],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      lastToolError: { toolName: "exec", error: "post-processing error" },
+    });
+    const terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
+    const request = (overrides: {
+      payloadsWithToolMedia?: TerminalInput["payloadsWithToolMedia"];
+      settledTurnFinalizationAvailable?: boolean;
+    }) =>
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-policy",
+          runId: "run:settled-policy",
+          trigger: "user",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt,
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: overrides.payloadsWithToolMedia ?? [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: overrides.settledTurnFinalizationAvailable ?? true,
+      });
+
+    expect(
+      request({
+        payloadsWithToolMedia: [
+          {
+            text: "Review the failed operation.",
+            isError: true,
+            channelData: { structuredError: true },
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(request({ settledTurnFinalizationAvailable: false })).toBeNull();
+    expect(
+      request({ payloadsWithToolMedia: [{ text: "⚠️ 🛠️ Exec failed", isError: true }] }),
+    ).toContain(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+  });
+
+  it.each([
+    { expectation: "required" as const, expectedError: true },
+    { expectation: "optional" as const, expectedError: false },
+  ])(
+    "handles completed-empty finalization for $expectation replies",
+    async ({ expectation, expectedError }) => {
+      const assistant = emptyAssistant();
+      const attempt = makeEmbeddedRunnerAttempt({
+        assistantTexts: [],
+        toolMetas: [{ toolName: "write", replaySafe: false }],
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      });
+      const resolved = await resolveEmbeddedRunTerminal(
+        makeTerminalInput({
+          attempt,
+          attemptAssistant: assistant,
+          runParams: {
+            allowEmptyAssistantReplyAsSilent: true,
+            terminalReplyExpectation: expectation,
+          },
+          replayState: { hadPotentialSideEffects: true, replayInvalid: true },
+          settledTurnFinalizationOutcome: "completed-empty",
+        }),
+      );
+
+      expect(resolved.action).toBe("complete");
+      if (resolved.action !== "complete") {
+        return;
+      }
+      if (expectedError) {
+        expect(resolved.result.payloads?.[0]).toMatchObject({ isError: true });
+        expect(resolved.result.meta.error?.kind).toBe("incomplete_turn");
+        expect(resolved.result.meta.terminalReplyKind).toBeUndefined();
+      } else {
+        expect(resolved.result.payloads).toBeUndefined();
+        expect(resolved.result.meta.error).toBeUndefined();
+        expect(resolved.result.meta.terminalReplyKind).toBeUndefined();
+      }
+    },
+  );
+
+  it("does not retry after isolated finalization fails", async () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      content: [
+        {
+          type: "thinking",
+          thinking: "internal reasoning",
+          thinkingSignature: JSON.stringify({ id: "rs-finalizer-failed", type: "reasoning" }),
+        },
+      ],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const activateInternalPrompt = vi.fn();
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        activateInternalPrompt,
+        settledTurnFinalizationOutcome: "failed",
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    expect(activateInternalPrompt).not.toHaveBeenCalled();
+  });
+
+  it("delivers partial text with a truncation notice when the output budget ends", async () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "length",
+      content: [{ type: "text", text: "Here is the first half of the answer" }],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: ["Here is the first half of the answer"],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        payloadsWithToolMedia: [{ text: "Here is the first half of the answer" }],
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads).toEqual([
+      { text: "Here is the first half of the answer" },
+      { text: TRUNCATED_REPLY_NOTICE_TEXT },
+    ]);
+    expect(resolved.result.meta.error).toBeUndefined();
+    expect(resolved.result.meta.livenessState).toBe("working");
+  });
+
+  it("does not add a truncation notice to a length stop that already has terminal output", async () => {
+    // Terminal tool media was already a complete outcome before this fix, so it
+    // must not gain a notice telling the user to ask for a continuation.
+    const assistant = buildEmbeddedRunnerAssistant({
+      stopReason: "length",
+      content: [{ type: "text", text: "Chart attached" }],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: ["Chart attached"],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      toolMediaUrls: ["https://example.invalid/chart.png"],
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        attemptAssistant: assistant,
+        payloadsWithToolMedia: [{ text: "Chart attached" }],
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads).toEqual([{ text: "Chart attached" }]);
+  });
+
+  it("still reports an incomplete turn when the output budget ends with no text", async () => {
+    const assistant = emptyAssistant({ stopReason: "length" });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({ attempt, attemptAssistant: assistant }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads?.[0]).toMatchObject({ isError: true });
+    expect(resolved.result.meta.error?.kind).toBe("incomplete_turn");
+    expect(resolved.result.meta.livenessState).toBe("abandoned");
   });
 });

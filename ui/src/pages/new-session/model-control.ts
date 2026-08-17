@@ -1,22 +1,17 @@
-import {
-  DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-  resolveGatewayStartupRetryAfterMs,
-} from "@openclaw/gateway-client/browser";
-import { html, nothing } from "lit";
 import type {
   SessionCatalog,
   SessionsCatalogListResult,
 } from "../../../../packages/gateway-protocol/src/index.ts";
 import type { GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
-import { icons } from "../../components/icons.ts";
-import { renderPicker } from "../../components/select-picker.ts";
 import { t } from "../../i18n/index.ts";
+import { peekChatMetadata, revalidateChatMetadata } from "../../lib/chat/chat-metadata-store.ts";
 import {
   buildQualifiedChatModelValue,
   normalizeChatModelProviderId,
   resolvePreferredServerChatModelValue,
 } from "../../lib/chat/model-ref.ts";
+import { isChatModelUnavailable } from "../../lib/chat/model-select-state.ts";
 import { normalizeThinkingOptionValue } from "../../lib/chat/thinking.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
@@ -26,9 +21,10 @@ import {
 } from "../chat/components/chat-model-controls.ts";
 import type { NewSessionPreference } from "./preferences.ts";
 
-const NEW_SESSION_METADATA_RETRY_WINDOW_MS = 60_000;
-
 type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
+type GatewayAgentRuntime = NonNullable<GatewayAgentRow["agentRuntime"]> & {
+  cloudPlacementSupported?: boolean;
+};
 type NewSessionMetadataStatus = ChatModelCatalogState["status"];
 type NewSessionMetadataState = {
   catalog: ModelCatalogEntry[];
@@ -52,90 +48,6 @@ type ReconciledNewSessionSelection = {
   thinkingLevel: string;
   repaired: boolean;
 };
-
-function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new DOMException("New-session metadata retry aborted", "AbortError");
-}
-
-function waitForMetadataRetry(delayMs: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(abortError(signal));
-  }
-
-  return new Promise((resolve, reject) => {
-    let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
-    const cleanup = () => {
-      if (timer !== null) {
-        globalThis.clearTimeout(timer);
-        timer = null;
-      }
-      signal.removeEventListener("abort", onAbort);
-    };
-    const onAbort = () => {
-      cleanup();
-      reject(abortError(signal));
-    };
-
-    signal.addEventListener("abort", onAbort, { once: true });
-    timer = globalThis.setTimeout(() => {
-      cleanup();
-      resolve();
-    }, delayMs);
-  });
-}
-
-async function requestNewSessionMetadata(
-  client: NewSessionMetadataClient,
-  agentId: string,
-  signal: AbortSignal,
-): Promise<{ models?: ModelCatalogEntry[] }> {
-  const deadlineAt = Date.now() + NEW_SESSION_METADATA_RETRY_WINDOW_MS;
-  let latestStartupError: Error | undefined;
-
-  while (true) {
-    if (signal.aborted) {
-      throw abortError(signal);
-    }
-
-    const remainingMs = deadlineAt - Date.now();
-    if (remainingMs <= 0) {
-      if (latestStartupError !== undefined) {
-        throw latestStartupError;
-      }
-      throw new Error("New-session metadata retry deadline elapsed");
-    }
-
-    try {
-      return await client.request<{ models?: ModelCatalogEntry[] }>(
-        "chat.metadata",
-        { agentId },
-        {
-          signal,
-          timeoutMs: Math.min(DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS, remainingMs),
-        },
-      );
-    } catch (error) {
-      const requestError =
-        error instanceof Error
-          ? error
-          : new Error("New-session metadata request failed", { cause: error });
-      const retryAfterMs = resolveGatewayStartupRetryAfterMs(requestError);
-      if (retryAfterMs === null) {
-        throw requestError;
-      }
-
-      const retryRemainingMs = deadlineAt - Date.now();
-      if (retryRemainingMs <= 0) {
-        throw requestError;
-      }
-
-      latestStartupError = requestError;
-      await waitForMetadataRetry(Math.min(retryAfterMs, retryRemainingMs), signal);
-    }
-  }
-}
 
 type DraftModelTarget = {
   entry?: ModelCatalogEntry;
@@ -190,7 +102,6 @@ export class NewSessionModelControl {
     | {
         agentId: string;
         client: NewSessionMetadataClient;
-        controller: AbortController;
         id: number;
       }
     | undefined;
@@ -230,13 +141,11 @@ export class NewSessionModelControl {
   }
 
   private cancelMetadataRequest() {
-    const active = this.activeMetadataRequest;
-    if (!active) {
+    if (!this.activeMetadataRequest) {
       return;
     }
     this.activeMetadataRequest = undefined;
     this.metadataRequestId += 1;
-    active.controller.abort();
   }
 
   private clearCatalogTargets() {
@@ -319,39 +228,44 @@ export class NewSessionModelControl {
     this.notify();
   }
 
+  private publishMetadataCatalog(catalog: ModelCatalogEntry[], status: NewSessionMetadataStatus) {
+    this.metadataState = { catalog, hasSnapshot: true, status };
+    if (this.pendingSelectionGeneration === this.selectionGeneration) {
+      this.restorePreference(this.pendingPreference, this.pendingAgent, this.pendingContext);
+    }
+    this.restoringPreference = false;
+    this.notify();
+  }
+
   private startMetadataRequest(client: NewSessionMetadataClient, agentId: string) {
     this.cancelMetadataRequest();
-    const controller = new AbortController();
     const requestId = ++this.metadataRequestId;
     this.activeMetadataRequest = {
       agentId,
       client,
-      controller,
       id: requestId,
     };
-    this.updateMetadataState({
-      ...this.metadataState,
-      status: this.metadataState.hasSnapshot ? "refreshing" : "loading",
-    });
+    const cached = peekChatMetadata(client, agentId);
+    if (Array.isArray(cached?.models)) {
+      this.publishMetadataCatalog(cached.models, "refreshing");
+    } else {
+      this.updateMetadataState({
+        ...this.metadataState,
+        status: this.metadataState.hasSnapshot ? "refreshing" : "loading",
+      });
+    }
 
-    void requestNewSessionMetadata(client, agentId, controller.signal).then(
+    void revalidateChatMetadata(client, agentId, {
+      startupRetryWindowMs: 60_000,
+    }).then(
       (result) => {
-        // Aborted transports may still resolve. Only the request that still
-        // owns the control may publish catalog data or restore preferences.
+        // Only the request that still owns the control may publish catalog data
+        // or restore preferences.
         if (this.activeMetadataRequest?.id !== requestId) {
           return;
         }
         this.activeMetadataRequest = undefined;
-        this.metadataState = {
-          catalog: Array.isArray(result.models) ? result.models : [],
-          hasSnapshot: true,
-          status: "ready",
-        };
-        if (this.pendingSelectionGeneration === this.selectionGeneration) {
-          this.restorePreference(this.pendingPreference, this.pendingAgent, this.pendingContext);
-        }
-        this.restoringPreference = false;
-        this.notify();
+        this.publishMetadataCatalog(Array.isArray(result.models) ? result.models : [], "ready");
       },
       () => {
         if (this.activeMetadataRequest?.id !== requestId) {
@@ -480,6 +394,13 @@ export class NewSessionModelControl {
     return this.restoringPreference;
   }
 
+  isModelUnavailable(agent: GatewayAgentRow | undefined): boolean {
+    return (
+      this.metadataState.hasSnapshot &&
+      isChatModelUnavailable(this.selected || agent?.model?.primary, undefined, this.catalog)
+    );
+  }
+
   private restorePreference(
     preference: NewSessionPreference | null | undefined,
     agent: GatewayAgentRow | undefined,
@@ -541,33 +462,34 @@ export class NewSessionModelControl {
     return { model: selected, thinkingLevel, repaired: false };
   }
 
-  resolveAgentRuntimeId(options: {
+  resolveAgentRuntime(options: {
     agent?: GatewayAgentRow;
     context: ApplicationContext | undefined;
-  }): string | undefined {
+  }): GatewayAgentRuntime | undefined {
     const defaults = options.context?.sessions.state.result?.defaults;
     const agentDefaultModel = options.agent?.model?.primary;
+    let runtime: GatewayAgentRuntime | undefined;
     if (this.selected) {
       // Agent/default runtime metadata belongs to its default model. An explicit
       // model without per-model metadata is unknown, not an inherited runtime.
-      return resolveDraftModelTarget(
-        this.selected,
-        undefined,
+      runtime = resolveDraftModelTarget(this.selected, undefined, this.catalog)?.entry
+        ?.agentRuntime;
+    } else {
+      const defaultTarget = resolveDraftModelTarget(
+        agentDefaultModel ?? defaults?.model,
+        agentDefaultModel ? undefined : defaults?.modelProvider,
         this.catalog,
-      )?.entry?.agentRuntime?.id.trim();
+      );
+      runtime =
+        defaultTarget?.entry?.agentRuntime ?? options.agent?.agentRuntime ?? defaults?.agentRuntime;
     }
-    const defaultTarget = resolveDraftModelTarget(
-      agentDefaultModel ?? defaults?.model,
-      agentDefaultModel ? undefined : defaults?.modelProvider,
-      this.catalog,
-    );
-    const runtime =
-      defaultTarget?.entry?.agentRuntime?.id.trim() ??
-      options.agent?.agentRuntime?.id.trim() ??
-      defaults?.agentRuntime?.id.trim();
+    const runtimeId = runtime?.id.trim();
     // Default selectors need server-side model/provider policy before they are
     // concrete, so the UI must leave Cloud eligibility to the dispatch gate.
-    return runtime === "auto" || runtime === "default" ? undefined : runtime;
+    if (!runtime || !runtimeId || runtimeId === "auto" || runtimeId === "default") {
+      return undefined;
+    }
+    return runtimeId === runtime.id ? runtime : { ...runtime, id: runtimeId };
   }
 
   render(options: {
@@ -603,31 +525,7 @@ export class NewSessionModelControl {
       thinkingDefault:
         options.agent?.thinkingDefault ?? sourceResult?.defaults.thinkingDefault ?? "medium",
     };
-    const targetPicker =
-      this.catalogTargets.length > 0
-        ? renderPicker({
-            label: t("newSession.cliAgentsGroup"),
-            value: "",
-            options: [
-              { value: "", label: t("newSession.cliAgentsGroup"), disabled: true },
-              ...this.catalogTargets.map(({ id, label }) => ({ value: id, label })),
-            ],
-            disabled: options.sending || snapshot?.phase !== "connected",
-            className: "new-session-page__target-picker",
-            renderLeading: (option) =>
-              option.value
-                ? html`<span class="new-session-page__target-icon" aria-hidden="true"
-                    >${icons.terminal}</span
-                  >`
-                : nothing,
-            onChange: (catalogId) => {
-              if (catalogId) {
-                this.onCatalogTargetSelect(catalogId);
-              }
-            },
-          })
-        : nothing;
-    return html`${targetPicker}${renderChatModelControls({
+    return renderChatModelControls({
       activeRunId: null,
       agentDefaultModel,
       connected: snapshot?.phase === "connected",
@@ -645,6 +543,16 @@ export class NewSessionModelControl {
             : this.metadataState.status,
       },
       modelOverrides: { [sessionKey]: this.selected },
+      modelPickerTargetGroups:
+        this.catalogTargets.length > 0
+          ? [
+              {
+                id: "cliAgents",
+                label: t("newSession.cliAgentsGroup"),
+                options: this.catalogTargets.map(({ id, label }) => ({ value: id, label })),
+              },
+            ]
+          : undefined,
       modelSwitching: false,
       sending: options.sending,
       sessionKey,
@@ -660,16 +568,20 @@ export class NewSessionModelControl {
         this.selected = selection.model;
         this.thinkingLevel = selection.thinkingLevel;
         this.onSelectionChange({ model: this.selected, thinkingLevel: this.thinkingLevel });
-        this.notify();
+      },
+      onModelPickerTargetSelect: (groupId, catalogId) => {
+        if (groupId === "cliAgents") {
+          this.onCatalogTargetSelect(catalogId);
+        }
       },
       onThinkingSelect: (value) => {
         this.selectionGeneration += 1;
         this.restoringPreference = false;
         this.thinkingLevel = value;
         this.onSelectionChange({ model: this.selected, thinkingLevel: this.thinkingLevel });
-        this.notify();
       },
+      onModelSetup: () => options.context?.navigate("model-setup"),
       onRequestUpdate: this.notify,
-    })}`;
+    });
   }
 }

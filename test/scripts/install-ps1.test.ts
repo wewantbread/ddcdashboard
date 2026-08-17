@@ -7,13 +7,15 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createScriptTestHarness } from "./test-helpers.js";
 
 const SCRIPT_PATH = "scripts/install.ps1";
-const ENTRYPOINT_RE =
-  /\r?\n\$mainResults = @\(Main\)\r?\n\$installSucceeded = Test-BooleanSuccessResult -Results \$mainResults\r?\nComplete-Install -Succeeded:\$installSucceeded\s*$/m;
-const ENTRYPOINT_LINES = [
-  "$mainResults = @(Main)",
-  "$installSucceeded = Test-BooleanSuccessResult -Results $mainResults",
-  "Complete-Install -Succeeded:$installSucceeded",
-];
+const ENTRYPOINT_RE = /\r?\n\$null = Main\r?\nComplete-Install\s*$/m;
+
+function extractEntrypointLines(source: string): string[] {
+  const match = source.match(ENTRYPOINT_RE);
+  if (!match) {
+    throw new Error("Missing PowerShell installer entrypoint");
+  }
+  return match[0].trim().split(/\r?\n/);
+}
 
 function extractFunctionBody(source: string, name: string): string {
   const match = source.match(
@@ -47,6 +49,7 @@ function toPowerShellSingleQuotedLiteral(value: string): string {
 
 function createFailingNodeFixture(source: string): string {
   const scriptWithoutEntryPoint = source.replace(ENTRYPOINT_RE, "");
+  const entrypointLines = extractEntrypointLines(source);
   expect(scriptWithoutEntryPoint).not.toBe(source);
 
   return [
@@ -57,7 +60,29 @@ function createFailingNodeFixture(source: string): string {
     "function Check-Node { return $false }",
     "function Install-Node { return $false }",
     "",
-    ...ENTRYPOINT_LINES,
+    ...entrypointLines,
+    "",
+  ].join("\n");
+}
+
+function createDeferredPathSuccessFixture(source: string): string {
+  const scriptWithoutEntryPoint = source.replace(ENTRYPOINT_RE, "");
+  const entrypointLines = extractEntrypointLines(source);
+  expect(scriptWithoutEntryPoint).not.toBe(source);
+
+  return [
+    scriptWithoutEntryPoint,
+    "",
+    "function Write-Banner { }",
+    "function Ensure-ExecutionPolicy { return $true }",
+    "function Check-Node { return $true }",
+    "function Check-ExistingOpenClaw { return $false }",
+    "function Add-ToPath { param([string]$Path) }",
+    "function Install-OpenClaw { return $true }",
+    "function Ensure-OpenClawOnPath { return $false }",
+    "$NoOnboard = $true",
+    "",
+    ...entrypointLines,
     "",
   ].join("\n");
 }
@@ -103,6 +128,7 @@ describe("install.ps1 failure handling", () => {
       return;
     }
     const scriptWithoutEntryPoint = source.replace(ENTRYPOINT_RE, "");
+    const entrypointLines = extractEntrypointLines(source);
     const cases = [
       {
         name: "openclaw-native-command-exit",
@@ -460,7 +486,7 @@ describe("install.ps1 failure handling", () => {
           "function Install-Node { return $false }",
           "$caught = $false",
           "try {",
-          ...ENTRYPOINT_LINES.map((line) => `  ${line}`),
+          ...entrypointLines.map((line) => `  ${line}`),
           "} catch {",
           "  if ($_.Exception.Message -ne 'OpenClaw installation failed with exit code 1.') { throw }",
           "  $caught = $true",
@@ -468,6 +494,10 @@ describe("install.ps1 failure handling", () => {
           "if (-not $caught) { throw 'Install failure did not reach the caller' }",
           "",
         ].join("\n"),
+      },
+      {
+        name: "scriptblock-deferred-path-success",
+        source: createDeferredPathSuccessFixture(source),
       },
       {
         name: "noisy-git-failure",
@@ -487,8 +517,7 @@ describe("install.ps1 failure handling", () => {
           "$InstallMethod = 'git'",
           "$GitDir = 'C:\\\\openclaw-test'",
           "$NoOnboard = $true",
-          "$result = Main",
-          'if ($result -ne $false) { throw "Main returned $result" }',
+          "$null = Main",
           'if ($script:InstallExitCode -ne 1) { throw "InstallExitCode=$script:InstallExitCode" }',
           "",
         ].join("\n"),
@@ -515,7 +544,7 @@ describe("install.ps1 failure handling", () => {
         ].join("\n"),
       },
       {
-        name: "final-boolean-success",
+        name: "terminal-code-success",
         source: [
           scriptWithoutEntryPoint,
           "",
@@ -532,7 +561,7 @@ describe("install.ps1 failure handling", () => {
           "function Refresh-GatewayServiceIfLoaded { }",
           "function Invoke-OpenClawCommand { return 'OpenClaw test-version' }",
           "$NoOnboard = $true",
-          ...ENTRYPOINT_LINES,
+          ...entrypointLines,
           "",
         ].join("\n"),
       },
@@ -580,17 +609,17 @@ describe("install.ps1 failure handling", () => {
   it("does not exit directly from inside Main", () => {
     const mainBody = extractFunctionBody(source, "Main");
     expect(mainBody).not.toMatch(/\bexit\b/i);
-    expect(mainBody).toContain("return (Fail-Install)");
+    expect(mainBody).toContain("Fail-Install");
   });
 
   it("keeps failure termination in the top-level completion handler", () => {
     const completeInstallBody = extractFunctionBody(source, "Complete-Install");
-    const booleanSuccessBody = extractFunctionBody(source, "Test-BooleanSuccessResult");
     expect(completeInstallBody).toMatch(/\$PSCommandPath/);
     expect(completeInstallBody).toMatch(/\bexit \$script:InstallExitCode\b/);
     expect(completeInstallBody).toMatch(/\bthrow "OpenClaw installation failed with exit code/);
-    expect(booleanSuccessBody).toContain("$Results.Count -gt 0");
-    expect(source).toContain("$installSucceeded = Test-BooleanSuccessResult -Results $mainResults");
+    expect(completeInstallBody).toContain("$script:InstallExitCode -eq 0");
+    expect(source).toContain("$null = Main");
+    expect(source).toMatch(/\$null = Main\s+Complete-Install\s*$/);
   });
 
   it("checks the full supported Node version range", () => {
@@ -664,12 +693,8 @@ describe("install.ps1 failure handling", () => {
     expect(npmInstallBody).toContain('$freshnessArgs = @("--min-release-age=0")');
     expect(npmInstallBody).toContain("Remove-Item Env:NPM_CONFIG_BEFORE");
     expect(npmInstallBody).toContain("Remove-Item Env:NPM_CONFIG_MIN_RELEASE_AGE");
-    expect(npmInstallBody).toContain('$env:NODE_LLAMA_CPP_SKIP_DOWNLOAD = "1"');
     expect(npmInstallBody).toContain("$env:NPM_CONFIG_LOGLEVEL = $prevLogLevel");
     expect(npmInstallBody).toContain("$env:NPM_CONFIG_BEFORE = $prevBefore");
-    expect(npmInstallBody).toContain(
-      "$env:NODE_LLAMA_CPP_SKIP_DOWNLOAD = $prevNodeLlamaSkipDownload",
-    );
     expect(npmInstallBody).toContain(
       "Write-NpmInstallFailureDetails -Output $npmOutput -CacheRoots $npmDebugLogRoots",
     );
@@ -969,7 +994,6 @@ describe("install.ps1 failure handling", () => {
     expect(gitInstallBody).toContain('$env:PNPM_CONFIG_WORKSPACE_CONCURRENCY = "1"');
     expect(gitInstallBody).toContain('$env:PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN = "false"');
     expect(gitInstallBody).toContain('$env:PNPM_CONFIG_SIDE_EFFECTS_CACHE = "false"');
-    expect(gitInstallBody).toContain('$env:NODE_LLAMA_CPP_POSTINSTALL = "skip"');
     expect(gitInstallBody).toContain("$installSucceeded = ($LASTEXITCODE -eq 0)");
     expect(gitInstallBody).toContain("clearing node_modules and retrying once");
     expect(gitInstallBody).toContain("Remove-Item -Recurse -Force node_modules");
@@ -991,7 +1015,6 @@ describe("install.ps1 failure handling", () => {
     expect(gitInstallBody).toContain(
       "$env:PNPM_CONFIG_WORKSPACE_CONCURRENCY = $prevPnpmWorkspaceConcurrency",
     );
-    expect(gitInstallBody).toContain("$env:NODE_LLAMA_CPP_POSTINSTALL = $prevNodeLlamaPostinstall");
     expect(gitInstallBody).toContain("Add-ToUserPath $binDir");
     expect(gitInstallBody).toContain('Write-Host "[!] pnpm build failed for the Git checkout"');
     expect(gitInstallBody).toContain('$entryPath = Join-Path $RepoDir "dist\\\\entry.js"');
@@ -1050,7 +1073,7 @@ describe("install.ps1 failure handling", () => {
             "$InstallMethod = 'npm'",
             "$NoOnboard = $false",
             "",
-            ...ENTRYPOINT_LINES,
+            ...extractEntrypointLines(source),
             "",
           ].join("\n"),
         );
@@ -1097,8 +1120,38 @@ describe("install.ps1 failure handling", () => {
     }
   });
 
+  runConcurrentIfPowerShell(
+    "exits zero after install succeeds with deferred PATH discovery",
+    async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "openclaw-install-ps1-"));
+      const scriptPath = join(tempDir, "install.ps1");
+      try {
+        writeFileSync(scriptPath, createDeferredPathSuccessFixture(source));
+        chmodSync(scriptPath, 0o755);
+
+        const result = await runPowerShellAsync([
+          "-NoLogo",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          scriptPath,
+        ]);
+
+        expect(result.status).toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`).not.toContain("installation failed");
+      } finally {
+        rmSync(tempDir, { force: true, recursive: true });
+      }
+    },
+  );
+
   runIfPowerShell("throws without killing the caller when run as a scriptblock", () => {
     expectBatchedPowerShellCase("scriptblock-failure");
+  });
+
+  runIfPowerShell("accepts deferred PATH discovery when run as a scriptblock", () => {
+    expectBatchedPowerShellCase("scriptblock-deferred-path-success");
   });
 
   runIfPowerShell("treats noisy Git install false as failure", () => {
@@ -1113,7 +1166,7 @@ describe("install.ps1 failure handling", () => {
     expectBatchedPowerShellCase("quiet-main-success");
   });
 
-  runIfPowerShell("uses Main's final boolean result when helper output precedes success", () => {
-    expectBatchedPowerShellCase("final-boolean-success");
+  runIfPowerShell("uses the terminal exit code when helper output precedes success", () => {
+    expectBatchedPowerShellCase("terminal-code-success");
   });
 });

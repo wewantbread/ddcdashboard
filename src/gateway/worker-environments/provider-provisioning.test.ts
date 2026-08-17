@@ -7,7 +7,6 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
-import { VERSION } from "../../version.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
 import { writeSessionStore } from "../test-helpers.js";
 import { directSessionReq } from "../test/server-sessions.test-helpers.js";
@@ -27,25 +26,27 @@ describe("worker environment service", () => {
   it("persists intent and an immutable profile snapshot before provisioning", async () => {
     const operationIds: string[] = [];
     const provider = support.createProvider({
-      provision: async (profile, operationId) => {
+      provision: async (profile, operationId, options) => {
         operationIds.push(operationId);
         expect(support.testState.store.list()[0]).toMatchObject({
           state: "provisioning",
           provisionOperationId: operationId,
           profileSnapshot: {
             install: "bundle",
+            machineClass: "beast",
             settings: { region: "test" },
           },
         });
         support.getDevelopmentProfile().settings = { region: "mutated" };
         expect(profile).toEqual({ region: "test" });
+        expect(options).toEqual({ machineClass: "beast" });
         return { leaseId: "lease-1", ssh: support.SSH_ENDPOINT };
       },
     });
 
     const workerService = support.createService(provider);
-    const result = await workerService.create("development", "request-1");
-    const repeated = await workerService.create("development", "request-1");
+    const result = await workerService.create("development", "request-1", "beast");
+    const repeated = await workerService.create("development", "request-1", "beast");
 
     expect(result).toMatchObject({ state: "ready", leaseId: "lease-1", ownerEpoch: 1 });
     expect(repeated.environmentId).toBe(result.environmentId);
@@ -76,17 +77,52 @@ describe("worker environment service", () => {
       deliveredAtMs: support.testState.nowMs,
     });
     expect(workerService.takeMintedCredential(binding)).toBeUndefined();
+    await expect(workerService.create("development", "request-1", "fast")).rejects.toMatchObject({
+      code: "invalid_profile",
+    });
   });
 
-  it("commits a local-install receipt and credential for a node lease", async () => {
-    const workerBuild = {
-      bundleHash: "c".repeat(64),
-      openclawVersion: VERSION,
-      protocolFeatures: ["worker-heartbeat-v1"],
-    };
-    support.testState.prepareInstallation = vi.fn(async () => {
-      throw new Error("node leases must not prepare an SSH installation");
-    });
+  it("delegates configured machine options to the profile provider", async () => {
+    const listMachineOptions = vi.fn(() => [{ id: "standard", label: "Standard", default: true }]);
+    const workerService = support.createService(support.createProvider({ listMachineOptions }));
+
+    await expect(workerService.listMachineOptions("development")).resolves.toEqual([
+      { id: "standard", label: "Standard", default: true },
+    ]);
+    expect(listMachineOptions).toHaveBeenCalledWith({ region: "test" });
+  });
+
+  it.each([
+    [
+      "duplicate ids",
+      [
+        { id: "fast", label: "Fast" },
+        { id: "fast", label: "Faster" },
+      ],
+    ],
+    ["blank ids", [{ id: " ", label: "Fast" }]],
+    ["malformed labels", [{ id: "fast", label: 16 }]],
+    [
+      "multiple defaults",
+      [
+        { id: "standard", label: "Standard", default: true },
+        { id: "fast", label: "Fast", default: true },
+      ],
+    ],
+    [
+      "over-limit catalogs",
+      Array.from({ length: 33 }, (_, index) => ({ id: `machine-${index}`, label: "Machine" })),
+    ],
+  ])("omits %s returned by a worker provider", async (_name, options) => {
+    const provider = support.createProvider();
+    Object.defineProperty(provider, "listMachineOptions", { value: () => options });
+    const workerService = support.createService(provider);
+
+    await expect(workerService.listMachineOptions("development")).resolves.toBeUndefined();
+  });
+
+  it("commits an installed Gateway bundle receipt and credential for a node lease", async () => {
+    const workerBuild = structuredClone(support.BOOTSTRAP_RECEIPT);
     const workerService = support.createService(
       support.createProvider({
         provisionBeforeInstallation: true,
@@ -96,7 +132,7 @@ describe("worker environment service", () => {
           sharedHost: true,
         }),
       }),
-      { resolveNodeWorkerBuild: async () => workerBuild },
+      { ensureNodeWorkerBundle: async () => workerBuild },
     );
 
     const result = await workerService.create("development", "request-device");
@@ -105,7 +141,7 @@ describe("worker environment service", () => {
       state: "ready",
       leaseId: "device-lease-1",
       sshEndpoint: null,
-      bootstrapReceipt: { ...workerBuild, installKind: "local" },
+      bootstrapReceipt: { ...workerBuild, installKind: "bundle" },
       sharedHost: true,
       ownerEpoch: 1,
     });
@@ -118,7 +154,7 @@ describe("worker environment service", () => {
     });
     expect(credential).toMatchObject({
       credential: support.CREDENTIAL,
-      bundleHash: "c".repeat(64),
+      bundleHash: support.BUNDLE_HASH,
     });
     const attachedCredential = await workerService.attachSession({
       environmentId: result.environmentId,
@@ -156,34 +192,31 @@ describe("worker environment service", () => {
     ).toEqual({ ok: false, reason: "bundle-mismatch" });
   });
 
-  it("fails node provisioning visibly when the node version differs", async () => {
-    const nodeVersion = "0.0.0-node";
+  it("fails node provisioning visibly when Gateway bundle installation fails", async () => {
     const workerService = support.createService(
       support.createProvider({
         provisionBeforeInstallation: true,
         provision: async () => ({
-          leaseId: "device-lease-version-mismatch",
+          leaseId: "device-lease-install-failure",
           node: { deviceId: "device-1" },
         }),
       }),
       {
-        resolveNodeWorkerBuild: async () => ({
-          bundleHash: "c".repeat(64),
-          openclawVersion: nodeVersion,
-          protocolFeatures: ["worker-heartbeat-v1"],
-        }),
+        ensureNodeWorkerBundle: async () => {
+          throw new Error("bundle transfer unavailable");
+        },
       },
     );
 
     await expect(
-      workerService.create("development", "request-device-mismatch"),
+      workerService.create("development", "request-device-install-failure"),
     ).rejects.toMatchObject({
       code: "bootstrap_failure",
-      message: expect.stringContaining(`OpenClaw ${nodeVersion}`),
+      message: expect.stringContaining("bundle transfer unavailable"),
     } satisfies Partial<WorkerEnvironmentServiceError>);
     expect(support.testState.store.list()[0]).toMatchObject({
       state: "failed",
-      lastError: expect.stringContaining(`gateway runs ${VERSION}`),
+      lastError: expect.stringContaining("bundle transfer unavailable"),
     });
   });
 
@@ -375,6 +408,7 @@ describe("worker environment service", () => {
         sessionKey: "agent:main:session-bootstrap-failure",
         agentId: "main",
         profileId: "development",
+        executionMode: "worker-turn",
       }),
     ).rejects.toThrow("Worker bootstrap failed: remote bootstrap rejected");
 
@@ -529,16 +563,54 @@ describe("worker environment service", () => {
     expect(support.testState.store.list()[0]).toMatchObject({ state: "failed", leaseId: null });
   });
 
+  it("allows a large bundle bootstrap to outlive the former service deadline", async () => {
+    vi.useFakeTimers();
+    support.testState.prepareInstallation = vi.fn(async () => ({
+      ...support.BUNDLE_ARTIFACT,
+      tarballBytes: 243_000_000,
+    }));
+    let finishBootstrap: (() => void) | undefined;
+    const bootstrapPending = new Promise<void>((resolve) => {
+      finishBootstrap = resolve;
+    });
+    let bootstrapSignal: AbortSignal | undefined;
+    support.testState.bootstrapWorker = vi.fn(async ({ signal }) => {
+      bootstrapSignal = signal;
+      await bootstrapPending;
+      return support.BOOTSTRAP_RECEIPT;
+    });
+    const workerService = support.createService(support.createProvider());
+
+    const creation = workerService.create("development", "request-large-bundle-bootstrap");
+    await support.waitForFast(() =>
+      expect(support.testState.bootstrapWorker).toHaveBeenCalledOnce(),
+    );
+    let creationError: unknown;
+    try {
+      await vi.advanceTimersByTimeAsync(35 * 60_000 + 1);
+      expect(bootstrapSignal?.aborted).toBe(false);
+    } finally {
+      finishBootstrap?.();
+      await creation.catch((error: unknown) => {
+        creationError = error;
+      });
+    }
+    expect(creationError).toBeUndefined();
+    expect(support.testState.store.list()[0]).toMatchObject({ state: "ready" });
+  });
+
   it("adopts one committed provision across a service and store restart", async () => {
     const physicalLeases = new Set<string>();
     const operationIds: string[] = [];
+    const machineClasses: Array<string | undefined> = [];
     const destroyed: string[] = [];
     let creates = 0;
     let loseFirstReply = true;
     const provider = () =>
       support.createProvider({
-        provision: async (_profile, operationId) => {
+        provision: async (_profile, operationId, options) => {
           operationIds.push(operationId);
+          machineClasses.push(options?.machineClass);
           if (!physicalLeases.has("lease-restarted")) {
             creates += 1;
             physicalLeases.add("lease-restarted");
@@ -556,7 +628,9 @@ describe("worker environment service", () => {
       });
     const first = support.createService(provider());
 
-    await expect(first.create("development", "request-restart-replay")).rejects.toMatchObject({
+    await expect(
+      first.create("development", "request-restart-replay", "large"),
+    ).rejects.toMatchObject({
       code: "provider_failure",
     } satisfies Partial<WorkerEnvironmentServiceError>);
     const environmentId = expectDefined(
@@ -597,6 +671,7 @@ describe("worker environment service", () => {
 
     expect(creates).toBe(1);
     expect(operationIds).toEqual([operationId, operationId]);
+    expect(machineClasses).toEqual(["large", "large"]);
     expect(destroyed).toEqual(["lease-restarted"]);
     expect(physicalLeases.size).toBe(0);
     expect(support.testState.store.get(environmentId)).toMatchObject({

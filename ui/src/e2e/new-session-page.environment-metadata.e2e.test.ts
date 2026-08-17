@@ -29,6 +29,20 @@ suite.define(() => {
               commands: ["system.run"],
             },
             {
+              nodeId: "outdated-mac",
+              displayName: "Outdated build Mac",
+              connected: true,
+              commands: ["system.run"],
+              issues: [
+                {
+                  code: "update-required",
+                  action: "update-and-reconnect",
+                  updateCommand: "openclaw update",
+                  headlessReconnectCommand: "openclaw node restart",
+                },
+              ],
+            },
+            {
               nodeId: "offline-rich",
               displayName: "Offline rich device",
               connected: false,
@@ -74,10 +88,29 @@ suite.define(() => {
               ],
             },
             {
-              id: "node:offline-rich",
+              id: "node:outdated-mac",
               type: "node",
               status: "available",
-              sessionHost: true,
+              platform: "darwin",
+              sessionHost: false,
+              trust: "persistent",
+              capabilities: ["system.run"],
+              issues: [
+                {
+                  code: "update-required",
+                  action: "update-and-reconnect",
+                  updateCommand: "openclaw update",
+                  headlessReconnectCommand: "openclaw node restart",
+                },
+              ],
+            },
+            {
+              id: "node:offline-rich",
+              type: "node",
+              status: "unavailable",
+              sessionHost: false,
+              lastConnectedAtMs: 1_000,
+              lastDisconnectedAtMs: 4_000,
               capabilities: ["camera", "screen"],
             },
             {
@@ -110,6 +143,15 @@ suite.define(() => {
       await expect
         .poll(() => device.locator(".new-session-page__menu-fact").allTextContents())
         .toEqual(["macOS", "Camera", "Screen capture", "Voice"]);
+      const outdated = place.locator('[data-value="node:outdated-mac"]');
+      expect(await outdated.count()).toBe(1);
+      expect(await outdated.isDisabled()).toBe(true);
+      await expect
+        .poll(() => outdated.locator(".new-session-page__menu-fact").allTextContents())
+        .toEqual([
+          "Update required: run openclaw update, then reconnect. For a headless node, run openclaw node restart.",
+        ]);
+      expect(await outdated.getAttribute("title")).toContain("openclaw update");
       await expect
         .poll(() =>
           place
@@ -130,7 +172,12 @@ suite.define(() => {
       expect(
         await place.locator('[data-value="gateway"] .new-session-page__menu-fact').count(),
       ).toBe(0);
-      expect(await place.locator('[data-value="node:offline-rich"]').count()).toBe(0);
+      const offline = place.locator('[data-value="node:offline-rich"]');
+      expect(await offline.count()).toBe(1);
+      expect(await offline.isDisabled()).toBe(true);
+      expect(
+        (await offline.locator(".new-session-page__menu-fact").first().textContent()) ?? "",
+      ).toMatch(/^Offline for /);
       expect(await place.locator('[data-value="node:non-exec-rich"]').count()).toBe(0);
 
       const visibleCopy = ((await place.textContent()) ?? "").toLowerCase();

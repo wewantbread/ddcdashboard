@@ -35,6 +35,13 @@ export function createSlackDraftProgressCardRuntime(params: {
   let finalStatus: Exclude<DraftProgressCardState, "working"> | undefined;
 
   const resolveSessionUrl = () => {
+    // Both conditions are the operator's own statement that this session is
+    // openable: `publicOrigin` is where the Gateway is externally reachable,
+    // and the Control UI is what serves the session route. Installations that
+    // set neither, or that replaced the Control UI, get no dead link.
+    if (cfg.gateway?.controlUi?.enabled === false) {
+      return undefined;
+    }
     const publicOrigin = resolveGatewayPublicOrigin(cfg);
     if (!publicOrigin) {
       return undefined;
@@ -87,10 +94,7 @@ export function createSlackDraftProgressCardRuntime(params: {
             toolCalls: params.progressReceipt.toolCalls,
             elapsedSeconds: params.progressReceipt.elapsedSeconds,
           }
-        : {
-            receiptSummary: params.progressReceipt.buildSummaryLine(),
-            sessionUrl: resolveSessionUrl(),
-          }),
+        : { sessionUrl: resolveSessionUrl() }),
     });
   };
 
@@ -138,6 +142,7 @@ export function createSlackDraftProgressCardRuntime(params: {
   };
 
   return {
+    resolveSessionUrl,
     resolveText,
     resolvePresentation,
     finalize,

@@ -50,9 +50,9 @@ import {
   readRecentSessionMessagesWithStatsAsync,
   readSessionPreviewItemsFromTranscript,
 } from "../session-transcript-readers.js";
-import type {
-  GatewaySessionStoreCache,
-  GatewaySessionStoreDiscoveryCache,
+import {
+  createGatewaySessionStoreDiscoveryCache,
+  type GatewaySessionStoreCache,
 } from "../session-utils-store-lookup.js";
 import {
   buildGatewaySessionRow,
@@ -66,6 +66,7 @@ import {
 } from "../session-utils.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
 import { projectWorkerSessionPlacement } from "../worker-environments/placement-projector.js";
+import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { readPreparedServerMethodModelCatalog } from "./optional-model-catalog.js";
 import {
@@ -75,13 +76,14 @@ import {
 import { emitSessionsChanged } from "./session-change-event.js";
 import { respondWithCachedSessionList } from "./sessions-list-cache.js";
 import { resolveSessionSearchScope } from "./sessions-search-scope.js";
-import {
-  filterSessionStoreToConfiguredAgents,
-  loadSessionEntriesForTarget,
-  requireSessionKey,
-} from "./sessions-shared.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-shared.js";
+import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
+
+const projectContextWorkerPlacement = (
+  context: GatewayRequestContext,
+  record: WorkerSessionPlacementRecord,
+) => projectWorkerSessionPlacement(record, context.workerPlacementDiskSpaceReader?.read(record));
 
 export const sessionReadHandlers: GatewayRequestHandlers = {
   "sessions.search": async ({ params, respond, context, client }) => {
@@ -218,11 +220,8 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           options: {
             allowFullReload?: boolean;
             excludedKeys?: ReadonlySet<string>;
-            loaded?: {
-              durableStorePath?: string;
-              listStore: Record<string, SessionEntry>;
+            loaded?: ReturnType<typeof loadCombinedSessionStoreForGatewayCore> & {
               modelCatalog: Awaited<ReturnType<typeof readPreparedServerMethodModelCatalog>>;
-              storePath: string;
             };
             rowRepairAttempted?: boolean;
           } = {},
@@ -241,11 +240,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 phase: "sessions.list",
               },
             );
-            const { durableStorePath, storePath, store } = measureDiagnosticsTimelineSpanSync(
+            const loadedStore = measureDiagnosticsTimelineSpanSync(
               "gateway.sessions.list.store_load",
               () =>
                 loadCombinedSessionStoreForGatewayCore(cfg, {
                   agentId: p.agentId,
+                  configuredAgentsOnly,
                   projection: "list",
                 }),
               {
@@ -257,19 +257,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 },
               },
             );
-            loaded = {
-              durableStorePath,
-              listStore: configuredAgentsOnly
-                ? filterSessionStoreToConfiguredAgents(cfg, store)
-                : store,
-              modelCatalog,
-              storePath,
-            };
+            loaded = { ...loadedStore, modelCatalog };
           }
           if (!loaded) {
             throw new Error("sessions.list store input was not loaded");
           }
-          const { durableStorePath, listStore, modelCatalog, storePath } = loaded;
+          const { durableStorePath, durableTargets, modelCatalog, storePath } = loaded;
           const visibilityFilter = createSessionListEntryFilter({ client });
           const entryFilter =
             visibilityFilter || options.excludedKeys?.size
@@ -284,7 +277,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 durableStorePath,
                 ...(entryFilter ? { entryFilter } : {}),
                 storePath,
-                store: listStore,
+                store: loaded.store,
                 modelCatalog,
                 opts: p,
               }),
@@ -300,7 +293,15 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
               // One cache for the whole listing: sharing resolution otherwise
               // materialized every entry of a candidate store once per row.
               const sharingStoreCache: GatewaySessionStoreCache = new Map();
-              const targetDiscoveryCache: GatewaySessionStoreDiscoveryCache = new Map();
+              const targetDiscoveryCache = createGatewaySessionStoreDiscoveryCache({
+                cfg,
+                targets: durableTargets,
+                agentIds: result.sessions.map((session) =>
+                  session.key === "global" && p.agentId
+                    ? p.agentId
+                    : resolveSessionStoreAgentId(cfg, session.key),
+                ),
+              });
               const resolvedSharingTargets = result.sessions.map((session) =>
                 resolveSessionSharingTarget({
                   cfg,
@@ -408,7 +409,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                     : {}),
                   hasActiveRun: activeRunState.active,
                   ...(placementRecord
-                    ? { placement: projectWorkerSessionPlacement(placementRecord) }
+                    ? { placement: projectContextWorkerPlacement(context, placementRecord) }
                     : {}),
                   ...(activeRunState.runIds.length > 0
                     ? { activeRunIds: activeRunState.runIds }
@@ -630,10 +631,13 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     const placement = row.sessionId
       ? context.workerSessionPlacementService?.getMany([row.sessionId]).get(row.sessionId)
       : undefined;
+    const projectedPlacement = placement
+      ? projectContextWorkerPlacement(context, placement)
+      : undefined;
     respond(
       true,
       {
-        session: placement ? { ...row, placement: projectWorkerSessionPlacement(placement) } : row,
+        session: projectedPlacement ? { ...row, placement: projectedPlacement } : row,
       },
       undefined,
     );

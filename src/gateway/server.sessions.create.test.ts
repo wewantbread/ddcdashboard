@@ -40,6 +40,7 @@ import {
   attachGatewayLocalUserIngress,
   prepareGatewayLocalUserIngress,
 } from "./local-user-ingress.js";
+import { listSessionGroups } from "./session-groups.js";
 import { resolveGatewaySessionStoreTarget } from "./session-utils.js";
 import {
   agentCommandMock,
@@ -193,6 +194,109 @@ function describeSessionStoreForensics(storePath: string): string {
     .all();
   return JSON.stringify({ storeDir, files, resolvedTargetPath: target.path, rows });
 }
+
+test("sessions.create assigns and registers its requested group", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const broadcastToConnIds = vi.fn();
+
+  const created = await directSessionReq<{ key: string }>(
+    "sessions.create",
+    {
+      agentId: "main",
+      category: "Client work",
+    },
+    {
+      context: {
+        broadcastToConnIds,
+        getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
+      },
+    },
+  );
+
+  expect(created.ok).toBe(true);
+  const key = requireNonEmptyString(created.payload?.key, "grouped session key");
+  expect(loadSessionEntry({ sessionKey: key, storePath })?.category).toBe("Client work");
+  expect(listSessionGroups().map((group) => group.name)).toContain("Client work");
+  expect(broadcastToConnIds).toHaveBeenCalledWith(
+    "sessions.changed",
+    expect.objectContaining({ reason: "groups" }),
+    new Set(["conn-1"]),
+    { dropIfSlow: true },
+  );
+});
+
+test("sessions.create carries keyed adoption authorization through the durable commit", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const key = "agent:main:dashboard:categorized-adoption";
+  await writeSessionStore({
+    entries: {
+      [key]: sessionStoreEntry("session-categorized-adoption", { category: "Personal" }),
+    },
+  });
+  const assertCurrent = vi.fn();
+
+  const adopted = await directSessionReq(
+    "sessions.create",
+    { agentId: "main", key, category: "Projects" },
+    {
+      sessionMutationAuthorization: {
+        assertCurrent,
+        assertTargetCurrent: vi.fn(),
+      },
+    },
+  );
+
+  expect(adopted.ok).toBe(true);
+  expect(assertCurrent).toHaveBeenCalled();
+  expect(loadSessionEntry({ sessionKey: key, storePath })?.category).toBe("Projects");
+});
+
+test("sessions.create registers a category only after the session commit succeeds", async () => {
+  await createSessionStoreDir();
+  const category = "Deferred category";
+  let validations = 0;
+
+  const failed = await directSessionReq(
+    "sessions.create",
+    { agentId: "main", category, key: "agent:main:dashboard:failed-category-create" },
+    {
+      context: {
+        validateAgentRuntimeApprovalAuthority: () => ++validations < 3,
+      },
+      client: {
+        connect: { scopes: ["operator.write"] },
+        internal: {
+          agentRuntimeIdentity: {
+            kind: "agentRuntime",
+            agentId: "main",
+            sessionKey: "agent:main:main",
+          },
+        },
+      } as never,
+    },
+  );
+
+  expect(failed.ok).toBe(false);
+  expect(listSessionGroups().map((group) => group.name)).not.toContain(category);
+
+  const broadcastToConnIds = vi.fn();
+  const created = await directSessionReq(
+    "sessions.create",
+    { agentId: "main", category, key: "agent:main:dashboard:successful-category-create" },
+    {
+      context: {
+        broadcastToConnIds,
+        getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
+      },
+    },
+  );
+
+  expect(created.ok).toBe(true);
+  expect(listSessionGroups().filter((group) => group.name === category)).toHaveLength(1);
+  expect(
+    broadcastToConnIds.mock.calls.filter(([, payload]) => payload?.reason === "groups"),
+  ).toHaveLength(1);
+});
 
 test("concurrent sessions.create requests adopt one canonical keyed session", async () => {
   const { storePath } = await createSessionStoreDir();
@@ -572,36 +676,24 @@ test("createGatewaySession forwards its commit guard into main-session reset", a
   }
 });
 
-test("createGatewaySession persists a generated title only for a new session", async () => {
-  await createSessionStoreDir();
-  const { createGatewaySession } = await import("./session-create-service.js");
-  const key = "agent:main:dashboard:generated-worktree-title";
-  const base = {
-    cfg: getRuntimeConfig(),
-    agentId: "main",
-    key,
-    commandSource: "test",
-  };
-
-  const created = await createGatewaySession({
-    ...base,
-    generatedDisplayName: "Readable Worktree Names",
-  });
-  expect(created).toMatchObject({ ok: true, entry: { displayName: "Readable Worktree Names" } });
-
-  const reused = await createGatewaySession({
-    ...base,
-    generatedDisplayName: "Replacement Title",
-  });
-  expect(reused).toMatchObject({ ok: true, entry: { displayName: "Readable Worktree Names" } });
-});
-
-test("chat.send generates a dashboard title only after the user turn finishes", async () => {
-  await createSessionStoreDir();
+test("chat.send fences dashboard title persistence from concurrent session deletion", async () => {
+  const { storePath } = await createSessionStoreDir();
   const { ws } = await openClient();
   let finishDispatch: (() => void) | undefined;
   const dispatchFinished = new Promise<void>((resolve) => {
     finishDispatch = resolve;
+  });
+  let finishTitle: (() => void) | undefined;
+  let markTitleStarted = () => {};
+  const titleStarted = new Promise<void>((resolve) => {
+    markTitleStarted = resolve;
+  });
+  dashboardTitleGenerationMocks.generate.mockImplementationOnce(async () => {
+    markTitleStarted();
+    await new Promise<void>((resolve) => {
+      finishTitle = resolve;
+    });
+    return "Generated Dashboard Title";
   });
   dispatchInboundMessageMock.mockImplementationOnce(async () => {
     await dispatchFinished;
@@ -625,9 +717,6 @@ test("chat.send generates a dashboard title only after the user turn finishes", 
     });
     expect(sent.ok, JSON.stringify(sent.error)).toBe(true);
     await waitForFast(() => expect(dispatchInboundMessageMock).toHaveBeenCalled());
-    expect(dashboardTitleScheduleMocks.schedule).not.toHaveBeenCalled();
-
-    finishDispatch?.();
     await waitForFast(() => expect(dashboardTitleScheduleMocks.schedule).toHaveBeenCalled(), {
       timeout: 5_000,
     });
@@ -637,6 +726,69 @@ test("chat.send generates a dashboard title only after the user turn finishes", 
         sessionKey,
       }),
     );
+    await titleStarted;
+    finishDispatch?.();
+
+    let deletionSettled = false;
+    const deletion = directSessionReq<{ deleted: boolean }>("sessions.delete", {
+      key: sessionKey,
+    }).finally(() => {
+      deletionSettled = true;
+    });
+    await waitForFast(
+      () => expect(isSessionLifecycleMutationActive(storePath, [sessionKey])).toBe(true),
+      { timeout: 5_000 },
+    );
+    expect(deletionSettled).toBe(false);
+
+    finishTitle?.();
+    const deleted = await deletion;
+    expect(deleted.ok, JSON.stringify(deleted.error)).toBe(true);
+    expect(deleted.payload?.deleted).toBe(true);
+  } finally {
+    finishDispatch?.();
+    finishTitle?.();
+    ws.close();
+  }
+});
+
+test("chat.send persists a dashboard title while the first turn is still running", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const { ws } = await openClient();
+  let finishDispatch: (() => void) | undefined;
+  let dispatchFinished = false;
+  const dispatchPending = new Promise<void>((resolve) => {
+    finishDispatch = resolve;
+  });
+  dispatchInboundMessageMock.mockImplementationOnce(async () => {
+    await dispatchPending;
+    dispatchFinished = true;
+    return {
+      queuedFinal: false,
+      counts: { block: 0, final: 0, tool: 0 },
+    };
+  });
+  try {
+    const created = await rpcReq<{ key: string }>(ws, "sessions.create", {
+      agentId: "main",
+      key: "agent:main:dashboard:title-during-turn",
+    });
+    expect(created.ok, JSON.stringify(created.error)).toBe(true);
+    const sessionKey = requireNonEmptyString(created.payload?.key, "created session key");
+
+    const sent = await rpcReq(ws, "chat.send", {
+      sessionKey,
+      message: "Help me plan the release",
+      idempotencyKey: "dashboard-title-during-turn",
+    });
+    expect(sent.ok, JSON.stringify(sent.error)).toBe(true);
+    await waitForFast(() => expect(dispatchInboundMessageMock).toHaveBeenCalled());
+    await waitForFast(() =>
+      expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toMatchObject({
+        displayName: "Generated Dashboard Title",
+      }),
+    );
+    expect(dispatchFinished).toBe(false);
   } finally {
     finishDispatch?.();
     ws.close();
@@ -1198,7 +1350,7 @@ test("sessions.create preserves a committed worktree when initial-turn setup fai
   }
 });
 
-test("sessions.create names its managed worktree without waiting for the model title", async () => {
+test("sessions.create shares its generated title with the worktree and first chat send", async () => {
   const openClawState = await createOpenClawTestState({
     layout: "state-only",
     prefix: "openclaw-session-worktree-title-",
@@ -1206,7 +1358,7 @@ test("sessions.create names its managed worktree without waiting for the model t
   const workspace = await initializeGitWorkspace(openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
-  await createSessionStoreDir();
+  const { storePath } = await createSessionStoreDir();
   const { ws } = await openClient({ scopes: ["operator.admin"] });
   let worktreeId: string | undefined;
   const pastedText = `Pasted deployment plan ${"x".repeat(2_000)}`;
@@ -1216,51 +1368,129 @@ test("sessions.create names its managed worktree without waiting for the model t
     mimeType: "text/plain",
     content: Buffer.from(pastedText).toString("base64"),
   };
-  let resolveTitle: ((title: string) => void) | undefined;
-  dashboardTitleGenerationMocks.generate.mockReturnValueOnce(
-    new Promise<string>((resolve) => {
-      resolveTitle = resolve;
-    }),
-  );
+  dashboardTitleGenerationMocks.generate.mockResolvedValueOnce("Attachment Repair");
   dispatchInboundMessageMock.mockResolvedValueOnce({
     queuedFinal: false,
     counts: { block: 0, final: 0, tool: 0 },
   });
-  const createResult = rpcReq<{
-    key: string;
-    worktree: { id: string; branch: string };
-  }>(ws, "sessions.create", {
-    agentId: "main",
-    worktree: true,
-    message,
-    attachments: [attachment],
-  });
-  let createSettled = false;
-  void createResult.then(() => {
-    createSettled = true;
-  });
   try {
-    await waitForFast(() => expect(createSettled).toBe(true), {
-      timeout: 1_000,
+    const created = await rpcReq<{
+      key: string;
+      worktree: { id: string; branch: string };
+    }>(ws, "sessions.create", {
+      agentId: "main",
+      worktree: true,
+      message,
+      attachments: [attachment],
     });
-    const created = await createResult;
 
     expect(created.ok, JSON.stringify(created.error)).toBe(true);
     worktreeId = created.payload?.worktree.id;
-    expect(created.payload?.worktree.branch).toBe(
-      "openclaw/review-this-rollout-pasted-deployment-plan-xxxxxxxxxxxxxxxxxxxxx",
+    expect(created.payload?.worktree.branch).toBe("openclaw/attachment-repair");
+    const sessionKey = requireNonEmptyString(created.payload?.key, "created session key");
+    await waitForFast(() => expect(dashboardTitleScheduleMocks.schedule).toHaveBeenCalled());
+    expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toMatchObject({
+      displayName: "Attachment Repair",
+    });
+    expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 4_000 }),
     );
-    resolveTitle?.("Attachment Repair");
+    expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledOnce();
   } finally {
-    resolveTitle?.("Attachment Repair");
-    const created = await createResult;
-    worktreeId ??= created.payload?.worktree.id;
     if (worktreeId) {
       await managedWorktrees.remove({ id: worktreeId, reason: "test-cleanup", force: true });
     }
     closeOpenClawStateDatabaseForTest();
     testState.agentConfig = undefined;
     ws.close();
+    await openClawState.cleanup();
+  }
+});
+
+test.each([
+  {
+    name: "generator error",
+    key: "agent:main:subagent:worktree-title-error",
+    arrange: () => dashboardTitleGenerationMocks.generate.mockRejectedValueOnce(new Error("boom")),
+  },
+  {
+    name: "overall timeout",
+    key: "agent:main:subagent:worktree-title-timeout",
+    arrange: () =>
+      dashboardTitleGenerationMocks.generate.mockReturnValueOnce(new Promise<string>(() => {})),
+  },
+])(
+  "sessions.create falls back to the raw title source after $name",
+  async ({ key, arrange }) => {
+    const openClawState = await createOpenClawTestState({
+      layout: "state-only",
+      prefix: "openclaw-session-worktree-title-fallback-",
+    });
+    const workspace = await initializeGitWorkspace(openClawState.root);
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = { workspace };
+    await createSessionStoreDir();
+    const { ws } = await openClient({ scopes: ["operator.admin"] });
+    let worktreeId: string | undefined;
+    arrange();
+    try {
+      const created = await rpcReq<{ worktree: { id: string; branch: string } }>(
+        ws,
+        "sessions.create",
+        {
+          agentId: "main",
+          key,
+          worktree: true,
+          message: "Investigate the raw fallback title",
+        },
+      );
+
+      expect(created.ok, JSON.stringify(created.error)).toBe(true);
+      worktreeId = created.payload?.worktree.id;
+      expect(created.payload?.worktree.branch).toBe("openclaw/investigate-the-raw-fallback-title");
+      expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledOnce();
+    } finally {
+      if (worktreeId) {
+        await managedWorktrees.remove({ id: worktreeId, reason: "test-cleanup", force: true });
+      }
+      closeOpenClawStateDatabaseForTest();
+      testState.agentConfig = undefined;
+      ws.close();
+      await openClawState.cleanup();
+    }
+  },
+  15_000,
+);
+
+test("sessions.create keeps the crustacean fallback when no title source exists", async () => {
+  const openClawState = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "openclaw-session-worktree-empty-title-",
+  });
+  const workspace = await initializeGitWorkspace(openClawState.root);
+  closeOpenClawStateDatabaseForTest();
+  testState.agentConfig = { workspace };
+  await createSessionStoreDir();
+  let worktreeId: string | undefined;
+  try {
+    const created = await directSessionReq<{ worktree: { id: string; branch: string } }>(
+      "sessions.create",
+      { agentId: "main", worktree: true },
+      { client: { connect: { scopes: ["operator.admin"] } } as never },
+    );
+
+    expect(created.ok, JSON.stringify(created.error)).toBe(true);
+    worktreeId = created.payload?.worktree.id;
+    expect(created.payload?.worktree.branch).toMatch(
+      /^openclaw\/[a-z]+-(?:barnacle|claw|crab|crayfish|krill|langoustine|lobster|prawn|shrimp|shell)$/,
+    );
+    expect(dashboardTitleGenerationMocks.generate).not.toHaveBeenCalled();
+  } finally {
+    if (worktreeId) {
+      await managedWorktrees.remove({ id: worktreeId, reason: "test-cleanup", force: true });
+    }
+    closeOpenClawStateDatabaseForTest();
+    testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
 });
@@ -3850,6 +4080,21 @@ test("sessions.create rejects fork without parentSessionKey", async () => {
   });
 });
 
+test("sessions.create rejects forkFrom without fork", async () => {
+  await createSessionStoreDir();
+
+  const created = await directSessionReq("sessions.create", {
+    parentSessionKey: "main",
+    forkFrom: "last-completed",
+  });
+
+  expect(created.ok).toBe(false);
+  expect(created.error).toMatchObject({
+    code: "INVALID_REQUEST",
+    message: "forkFrom requires fork=true",
+  });
+});
+
 test("sessions.create rejects fork when the parent exceeds the fork size cap", async () => {
   const { dir } = await createSessionStoreDir();
   testState.sessionConfig = { scope: "per-sender" };
@@ -3894,6 +4139,74 @@ test("sessions.create rejects fork while the parent session is active", async ()
       code: "UNAVAILABLE",
       message: "Parent session main is still active; try again in a moment.",
     });
+  } finally {
+    embeddedRunMock.activeIds.delete(parentSessionId);
+    testState.sessionConfig = undefined;
+  }
+});
+
+test("sessions.create forks an active parent from its last completed message", async () => {
+  const { storePath } = await createSessionStoreDir();
+  testState.sessionConfig = { scope: "per-sender" };
+  const parentSessionId = "sess-active-completed-fork-parent";
+  await writeSessionStore({
+    entries: {
+      main: sessionStoreEntry(parentSessionId, {
+        // The in-flight tail can make the whole parent exceed the cap; only the
+        // selected completed prefix should govern this fork.
+        totalTokens: 200_000,
+        totalTokensFresh: true,
+        totalTokensVersion: 1,
+      }),
+    },
+  });
+  await seedSessionTranscript({
+    sessionId: parentSessionId,
+    sessionKey: "agent:main:main",
+    storePath,
+    messages: [
+      { role: "user", content: "completed question" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "completed answer" }],
+        stopReason: "stop",
+      },
+      { role: "user", content: "active question" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "active tool call" }],
+        stopReason: "toolUse",
+      },
+    ],
+  });
+  embeddedRunMock.activeIds.add(parentSessionId);
+  try {
+    const created = await directSessionReq<{ key: string; sessionId: string }>("sessions.create", {
+      parentSessionKey: "main",
+      fork: true,
+      forkFrom: "last-completed",
+    });
+
+    expect(created.ok, JSON.stringify(created.error)).toBe(true);
+    const messages = await loadTranscriptEvents({
+      sessionId: created.payload?.sessionId ?? "",
+      sessionKey: created.payload?.key ?? "",
+      storePath,
+    });
+    expect(
+      messages.flatMap((entry) =>
+        entry &&
+        typeof entry === "object" &&
+        "type" in entry &&
+        entry.type === "message" &&
+        "message" in entry
+          ? [entry.message]
+          : [],
+      ),
+    ).toEqual([
+      expect.objectContaining({ role: "user", content: "completed question" }),
+      expect.objectContaining({ role: "assistant", stopReason: "stop" }),
+    ]);
   } finally {
     embeddedRunMock.activeIds.delete(parentSessionId);
     testState.sessionConfig = undefined;

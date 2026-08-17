@@ -99,14 +99,14 @@ suite.define(() => {
 
     await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
     const composer = page.locator(".agent-chat__composer-combobox textarea");
-    const modelPicker = page.locator("wa-select.chat-controls__model-picker");
+    const modelTrigger = page.locator(".chat-controls__model-trigger");
     const outsideTypingIndicator = page.locator(".agent-chat__typing-indicator--outside");
     await gateway.waitForRequest("session.suggestions.list");
     await expect(composer).toBeEnabled();
-    await modelPicker.waitFor();
-    const idleModelBox = await modelPicker.boundingBox();
+    await modelTrigger.waitFor();
+    const idleModelBox = await modelTrigger.boundingBox();
     if (idleModelBox === null) {
-      throw new Error("Expected the model picker before remote typing");
+      throw new Error("Expected the model trigger before remote typing");
     }
     await expect(outsideTypingIndicator).toHaveCount(0);
     await gateway.emitGatewayEvent("session.typing", {
@@ -119,7 +119,7 @@ suite.define(() => {
     });
     await expect(page.locator(".agent-chat__typing-text")).toHaveText("Owner is typing…");
     const [typingModelBox, typingIndicatorBox, composerShellBox] = await Promise.all([
-      modelPicker.boundingBox(),
+      modelTrigger.boundingBox(),
       outsideTypingIndicator.boundingBox(),
       page.locator(".agent-chat__composer-shell").boundingBox(),
     ]);
@@ -127,7 +127,9 @@ suite.define(() => {
       throw new Error("Expected the composer layout after remote typing");
     }
     expect(Math.abs(typingModelBox.x - idleModelBox.x)).toBeLessThanOrEqual(0.5);
-    expect(Math.abs(typingModelBox.y - idleModelBox.y)).toBeLessThanOrEqual(2);
+    // The #122809 regression shifted the picker by a full indicator row
+    // (~20px); allow subpixel/rounding jitter seen on CI renderers (2.41px).
+    expect(Math.abs(typingModelBox.y - idleModelBox.y)).toBeLessThanOrEqual(4);
     expect(typingIndicatorBox.y + typingIndicatorBox.height).toBeLessThanOrEqual(
       composerShellBox.y + 1,
     );

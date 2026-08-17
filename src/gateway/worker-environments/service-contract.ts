@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
-import type { WorkerDesktopApp, WorkerProfile } from "../../plugins/capability-provider.types.js";
-import type { WorkerSessionPlacementRecord } from "./placement-record.js";
+import type {
+  WorkerDesktopApp,
+  WorkerMachineOption,
+  WorkerProfile,
+} from "../../plugins/capability-provider.types.js";
+import type {
+  WorkerSessionPlacementRecord,
+  WorkerPlacementExecutionMode,
+} from "./placement-record.js";
 import type { WorkerEnvironmentState } from "./state.js";
 import type {
   WorkerTunnelHandle,
@@ -53,7 +60,12 @@ export type WorkerDesktopLaunchResult = {
 export type WorkerEnvironmentServiceContract = {
   list(): WorkerEnvironmentServiceRecord[];
   get(environmentId: string): WorkerEnvironmentServiceRecord | undefined;
-  create(profileId: string, idempotencyKey: string): Promise<WorkerEnvironmentServiceRecord>;
+  listMachineOptions(profileId: string): Promise<readonly WorkerMachineOption[] | undefined>;
+  create(
+    profileId: string,
+    idempotencyKey: string,
+    machineClass?: string,
+  ): Promise<WorkerEnvironmentServiceRecord>;
   destroy(environmentId: string): Promise<WorkerEnvironmentServiceRecord>;
   destroyUnattached(environmentId: string): Promise<WorkerEnvironmentServiceRecord>;
   observeDesktop(request: {
@@ -73,7 +85,9 @@ export type WorkerPlacementDispatchRequest = {
   sessionKey: string;
   agentId: string;
   profileId: string;
+  executionMode: WorkerPlacementExecutionMode;
   deviceId?: string;
+  machineClass?: string;
   inheritedProfile?: {
     providerId: string;
     profileSnapshot: WorkerProfile;
@@ -94,7 +108,7 @@ export type WorkerPlacementDispatchContract = {
   ): Promise<Extract<WorkerSessionPlacementRecord, { state: "active" }>>;
   reclaim?(
     request: WorkerPlacementReclaimRequest,
-  ): Promise<Extract<WorkerSessionPlacementRecord, { state: "reclaimed" }>>;
+  ): Promise<Extract<WorkerSessionPlacementRecord, { state: "local" | "reclaimed" }>>;
   forceDestroyEnvironment?(
     environmentId: string,
     onCleanupError?: (error: unknown) => void,

@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { resolvePluginNpmGenerationProjectDir } from "./install-paths.js";
 import { commitPluginInstallRecordsWithConfig } from "./install-record-commit.js";
 import { listRecoveredManagedNpmInstallCandidates } from "./installed-plugin-index-record-reader.js";
 import {
@@ -142,18 +143,15 @@ describe("retained managed npm record commits", () => {
   it("keeps npm generation replacements cleanup-eligible", async () => {
     await withOpenClawTestState({ label: "retained-generation-update" }, async (state) => {
       const packageName = "@openclaw/updated-plugin";
-      const previousInstallPath = state.statePath(
-        "npm",
-        "projects",
-        "updated-plugin-v1",
+      const npmDir = state.statePath("npm");
+      const previousInstallPath = path.join(
+        resolvePluginNpmGenerationProjectDir({ npmDir, packageName, generationKey: "v1" }),
         "node_modules",
         "@openclaw",
         "updated-plugin",
       );
-      const nextInstallPath = state.statePath(
-        "npm",
-        "projects",
-        "updated-plugin-v2",
+      const nextInstallPath = path.join(
+        resolvePluginNpmGenerationProjectDir({ npmDir, packageName, generationKey: "v2" }),
         "node_modules",
         "@openclaw",
         "updated-plugin",

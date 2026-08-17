@@ -3,8 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { safePathSegmentHashed } from "../infra/install-safe-path.js";
-import { isNotFoundPathError } from "../infra/path-guards.js";
-import { resolveDefaultPluginNpmDir, resolvePluginNpmProjectsDir } from "./install-paths.js";
+import { isNotFoundPathError, isPathInside } from "../infra/path-guards.js";
+import {
+  isPluginNpmProjectDir,
+  resolveDefaultPluginNpmDir,
+  resolvePluginNpmProjectsDir,
+} from "./install-paths.js";
 import {
   isRetainedManagedNpmCleanupEligibleReason,
   RETAINED_MANAGED_NPM_KEEP_FILES_REASON,
@@ -170,11 +174,6 @@ export async function markRetainedManagedNpmInstall(params: {
   return true;
 }
 
-function isPathEqualOrInside(parentPath: string, childPath: string): boolean {
-  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
-}
-
 function listManagedNpmPackageDirs(npmRoot: string): string[] {
   const nodeModulesDir = path.join(npmRoot, "node_modules");
   let entries: fs.Dirent[];
@@ -200,6 +199,25 @@ function listManagedNpmPackageDirs(npmRoot: string): string[] {
   });
 }
 
+function isOwnedManagedNpmProject(params: {
+  markerNames: ReadonlySet<string>;
+  npmDir: string;
+  projectRoot: string;
+}): boolean {
+  return listManagedNpmPackageDirs(params.projectRoot).some((packageDir) => {
+    const info = resolveRetainedManagedNpmInstallPackageInfo(packageDir);
+    return Boolean(
+      info &&
+      params.markerNames.has(path.basename(info.markerPath)) &&
+      isPluginNpmProjectDir({
+        npmDir: params.npmDir,
+        packageName: info.packageName,
+        projectDir: params.projectRoot,
+      }),
+    );
+  });
+}
+
 async function cleanupRetainedLegacyNpmPackages(params: {
   npmRoot: string;
   activeInstallPaths: string[];
@@ -207,9 +225,7 @@ async function cleanupRetainedLegacyNpmPackages(params: {
 }): Promise<number> {
   let removed = 0;
   for (const packageDir of listManagedNpmPackageDirs(params.npmRoot)) {
-    if (
-      params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))
-    ) {
+    if (params.activeInstallPaths.some((installPath) => isPathInside(packageDir, installPath))) {
       continue;
     }
     // Classify in one read so access failures cannot masquerade as a missing marker.
@@ -273,8 +289,13 @@ export async function cleanupRetainedManagedNpmInstallGenerations(
     }
     if (
       markerEntries.length === 0 ||
-      !isPathEqualOrInside(projectsDir, projectRoot) ||
-      activeInstallPaths.some((installPath) => isPathEqualOrInside(projectRoot, installPath))
+      !isPathInside(projectsDir, projectRoot) ||
+      !isOwnedManagedNpmProject({
+        markerNames: new Set(markerEntries.map((entry) => entry.name)),
+        npmDir,
+        projectRoot,
+      }) ||
+      activeInstallPaths.some((installPath) => isPathInside(projectRoot, installPath))
     ) {
       continue;
     }

@@ -58,7 +58,9 @@ vi.mock("../../plugins/memory-runtime.js", () => ({
   getActiveMemorySearchManagerCore: getMemorySearchManager,
 }));
 
-vi.mock("./doctor.memory-core-runtime.js", () => ({
+import { createDoctorHandlers } from "./doctor.js";
+
+const doctorHandlers = createDoctorHandlers({
   dedupeDreamDiaryEntries,
   loadShortTermPromotionDreamingStats,
   previewGroundedRemMarkdown,
@@ -66,9 +68,7 @@ vi.mock("./doctor.memory-core-runtime.js", () => ({
   removeBackfillDiaryEntries,
   removeGroundedShortTermCandidates,
   repairDreamingArtifacts,
-}));
-
-import { doctorHandlers } from "./doctor.js";
+});
 
 const makeRuntimeContext = () => ({ getRuntimeConfig: () => getRuntimeConfig() });
 
@@ -451,16 +451,15 @@ describe("doctor.memory.status", () => {
                 llamaCppRuntime: {
                   engine: "llama.cpp",
                   state: "ready",
-                  backend: "cuda",
-                  buildType: "prebuilt",
-                  deviceNames: ["NVIDIA Test GPU"],
-                  offload: {
-                    supported: true,
-                    offloadedLayers: 24,
-                    totalLayers: 24,
-                  },
-                  context: {
-                    requestedSize: 4096,
+                  backend: "cpu",
+                  buildInfo: "b10357 (689e227db)",
+                  model: { id: "embedding-model", path: "/models/embedding.gguf" },
+                  capabilities: { vision: false, draft: false },
+                  endpoints: {
+                    health: "ready",
+                    models: "ready",
+                    props: "ready",
+                    metrics: "ready",
                   },
                 },
               },
@@ -478,15 +477,11 @@ describe("doctor.memory.status", () => {
 
     expect(respondPayload(respond).embeddingRuntime).toMatchObject({
       state: "ready",
-      backend: "cuda",
-      deviceNames: ["NVIDIA Test GPU"],
-      offload: {
-        offloadedLayers: 24,
-        totalLayers: 24,
-      },
-      context: {
-        requestedSize: 4096,
-      },
+      backend: "cpu",
+      buildInfo: "b10357 (689e227db)",
+      model: { id: "embedding-model", path: "/models/embedding.gguf" },
+      capabilities: { vision: false, draft: false },
+      endpoints: { health: "ready", metrics: "ready" },
     });
     expect(close).toHaveBeenCalled();
   });

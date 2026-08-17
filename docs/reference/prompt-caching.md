@@ -16,6 +16,21 @@ Provider references:
 - [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 
+## Keep model settings stable
+
+Prompt-cache reuse depends on provider request configuration as well as prompt
+text. Changing the model always starts a different cache lineage. Changing the
+thinking or reasoning level can also invalidate reuse even when the prompt and
+model stay the same. In particular, OpenAI reasoning-effort changes alter the
+reusable request state and can force the next turn to process the full prefix or
+conversation again. Anthropic likewise documents cache invalidation when its
+thinking budget, effort, or mode changes.
+
+If cache continuity matters, choose the model and thinking level when creating
+the session and keep both stable. Start a new session for a planned change.
+Invalidating reuse means the next request misses that cached state; it does not
+necessarily delete the provider's older cache entry before its normal expiry.
+
 ## Primary knobs
 
 ### `cacheRetention`
@@ -120,6 +135,8 @@ Source: `src/agents/embedded-agent-runner/google-prompt-cache.ts`.
 ### CLI-harness providers (Claude Code, Gemini CLI)
 
 CLI backends that emit JSONL usage events (`jsonlDialect: "claude-stream-json"` or `"gemini-stream-json"`) go through a shared usage parser that recognizes several field-name variants, including a plain `cached` counter mapped to `cacheRead`. When the CLI's JSON payload omits a direct input-token field, OpenClaw derives it as `input_tokens - cached`. This is usage normalization only - it does not create Anthropic/OpenAI-style prompt-cache markers for these CLI-driven models.
+
+Claude Code has no OpenClaw-controlled `cache_control` breakpoint on `--append-system-prompt-file`, so OpenClaw keeps its complete system prompt in that transport. When the bounded Gateway-startup probe finds Claude Code 2.1.98 or newer, bundled `claude-cli` also passes `--exclude-dynamic-system-prompt-sections`. That Claude Code flag moves only Claude's own per-machine cwd, environment, memory-path, and Git-status sections out of its native system prompt; an older, unknown, or failed probe keeps the established argv. `cacheRetention` still has no effect on this path.
 
 Source: `src/agents/cli-output.ts` (`toCliUsage`).
 

@@ -1,6 +1,4 @@
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
-import { normalizeDevicePublicKeyBase64Url } from "../infra/device-identity.js";
-import type { EffectiveOperatorDeviceIdentity } from "../infra/device-pairing.js";
 import type { GatewayRestartEmitter } from "../infra/restart.js";
 import type { ChannelAutostartSuppression } from "./server-channels.js";
 import type { GatewaySidecarStartupMode } from "./server-sidecar-startup-mode.js";
@@ -13,6 +11,11 @@ export type GatewayCloseOptions = {
 
 export type GatewayServer = {
   close: (opts?: GatewayCloseOptions) => Promise<void>;
+  /**
+   * Resolves when this generation finishes mandatory sidecar startup and rejects on failure.
+   * Closing never forces settlement. Direct callers may safely ignore this pre-handled promise.
+   */
+  startupSettled: Promise<void>;
 };
 
 export type GatewayServerOptions = {
@@ -67,16 +70,3 @@ export type GatewayServerOptions = {
   /** Restart request override; direct servers fail closed on restart-required reloads. */
   hotReloadRecovery?: GatewayRestartEmitter;
 };
-
-export function shouldRetainControlUiDeviceAuthMigrationSession(params: {
-  sessionDevice: { id: string; publicKey: string } | null | undefined;
-  approvedDevice: EffectiveOperatorDeviceIdentity;
-}): boolean {
-  const approvedDeviceId = params.approvedDevice.deviceId.trim();
-  const approvedPublicKey = normalizeDevicePublicKeyBase64Url(params.approvedDevice.publicKey);
-  return Boolean(
-    params.sessionDevice?.id.trim() === approvedDeviceId &&
-    approvedPublicKey &&
-    normalizeDevicePublicKeyBase64Url(params.sessionDevice.publicKey) === approvedPublicKey,
-  );
-}
