@@ -1,7 +1,5 @@
 // Msteams plugin module implements channel behavior.
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
-import { describeAccountSnapshot } from "openclaw/plugin-sdk/account-helpers";
-import { createScopedDmSecurityResolver } from "openclaw/plugin-sdk/channel-config-helpers";
 import type {
   ChannelMessageActionAdapter,
   ChannelMessageToolDiscovery,
@@ -109,18 +107,6 @@ const collectMSTeamsSecurityFindings = createConditionalWarningCollector.finding
   checkId: "channels.msteams.groups.open",
   severity: "critical",
   title: "MS Teams security warning",
-});
-
-const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMSTeamsAccount>({
-  channelKey: "msteams",
-  resolvePolicy: () => undefined,
-  resolveAllowFrom: () => undefined,
-  resolveAccess: ({ cfg }) => ({
-    dmPolicy: cfg.channels?.msteams?.dmPolicy,
-    allowFrom: cfg.channels?.msteams?.allowFrom,
-  }),
-  policyPathSuffix: "dmPolicy",
-  normalizeEntry: (raw) => normalizeMSTeamsUserInput(raw).toLowerCase(),
 });
 
 const loadMSTeamsChannelRuntime = createLazyRuntimeNamedExport(
@@ -1110,7 +1096,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       },
     },
     security: {
-      resolveDmPolicy: resolveMSTeamsDmPolicy,
+      ...msteamsSetupPlugin.security,
       collectWarnings: ({ cfg }) => collectMSTeamsSecurityFindings({ cfg }),
     },
     pairing: {

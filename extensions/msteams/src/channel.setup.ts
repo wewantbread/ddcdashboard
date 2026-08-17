@@ -4,6 +4,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   msteamsConfigAdapter,
   msteamsMeta,
+  resolveMSTeamsDmPolicy,
   type ResolvedMSTeamsAccount,
 } from "./channel-config.js";
 import { MSTeamsChannelConfigSchema } from "./config-schema.js";
@@ -34,6 +35,9 @@ export const msteamsSetupPlugin: ChannelPlugin<ResolvedMSTeamsAccount> = {
         configured: account.configured,
         extra: { tokenStatus: account.tokenStatus },
       }),
+  },
+  security: {
+    resolveDmPolicy: resolveMSTeamsDmPolicy,
   },
   setupWizard: msteamsSetupWizard,
   setupContract: msteamsSetupContract,
