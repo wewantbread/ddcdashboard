@@ -62,7 +62,10 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
+import {
+  appendTranscriptEventsInTransaction,
+  ensureTranscriptHeader,
+} from "./session-accessor.sqlite-transcript-store.js";
 import {
   collectAdmissionProtectedSessionIds,
   kickSessionHistoryDiskBudgetMaintenance,
@@ -207,13 +210,22 @@ export async function resetSessionEntryLifecycle(
         assertLifecycleTargetUnchanged(transactionDb, params.target, current?.entry, "reset");
         if (resetBoundaryPlan && current?.entry.sessionId) {
           const events = [...resetBoundaryPlan.seedEvents, resetBoundaryPlan.event];
+          const boundaryScope = {
+            ...resolved,
+            sessionId: current.entry.sessionId,
+            sessionKey: current.key,
+          };
+          // The current entry can still be an empty transcript when the reset
+          // lands (a session window created moments earlier, before its first
+          // message). Appending the boundary would then make seq 0 a reset
+          // event, and ensureTranscriptHeader only writes a header to an
+          // *empty* transcript -- so the first message append would skip it and
+          // the session would stay permanently headerless, rejected on every
+          // later load as a legacy transcript before the model runs.
+          ensureTranscriptHeader(transactionDb, boundaryScope, undefined, Date.now());
           const appended = appendTranscriptEventsInTransaction(
             transactionDb,
-            {
-              ...resolved,
-              sessionId: current.entry.sessionId,
-              sessionKey: current.key,
-            },
+            boundaryScope,
             events,
           );
           if (appended !== events.length) {
