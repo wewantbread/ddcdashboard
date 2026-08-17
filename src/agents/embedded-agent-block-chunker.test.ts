@@ -122,6 +122,20 @@ describe("EmbeddedBlockChunker", () => {
     expect(chunks.every((chunk) => chunk.trim().length > 0)).toBe(true);
   });
 
+  it.each([1, 2])(
+    "keeps legacy separator trimming when maxChars=%i cannot carry a visible boundary",
+    (maxChars) => {
+      const chunker = createFlushOnParagraphChunker({ minChars: 1, maxChars });
+
+      chunker.append("A\n\nB");
+      const chunks = [...drainChunks(chunker), ...drainChunks(chunker, true)];
+
+      expect(chunks.join("")).toBe("AB");
+      expectChunksWithinLength(chunks, maxChars);
+      expect(chunks.every((chunk) => chunk.trim().length > 0)).toBe(true);
+    },
+  );
+
   it.each([
     { name: "complete separator", tail: "\n\n", completion: "Rest" },
     { name: "partial separator", tail: "\n ", completion: "\nRest" },

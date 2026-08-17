@@ -18,6 +18,7 @@ export function normalizeReplyPayloadDirectives(params: {
   currentMessageId?: string;
   silentToken?: string;
   trimLeadingWhitespace?: boolean;
+  preserveLeadingParagraphBoundary?: boolean;
   parseMode?: ReplyDirectiveParseMode;
   extractMarkdownImages?: boolean;
   extractMediaDirectives?: boolean;
@@ -44,7 +45,11 @@ export function normalizeReplyPayloadDirectives(params: {
     : undefined;
 
   let text = parsed ? parsed.text || undefined : params.payload.text || undefined;
-  if (params.trimLeadingWhitespace && text && !/^\n[\t ]*\n+/.test(text)) {
+  if (
+    params.trimLeadingWhitespace &&
+    text &&
+    !(params.preserveLeadingParagraphBoundary && /^\n[\t ]*\n+/.test(text))
+  ) {
     text = text.trimStart() || undefined;
   }
 
@@ -98,6 +103,8 @@ export function createBlockReplyDeliveryHandler(params: {
   directlySentBlockKeys: Set<string>;
   directlySentBlockPayloads: Array<ReplyPayload | undefined>;
 }): (payload: ReplyPayload) => Promise<void> {
+  let hasAcceptedTextBlock = false;
+
   return async (payload) => {
     // Suppressed display lanes must not enter delivery bookkeeping: callers use
     // that evidence to decide whether an otherwise empty turn needs a fallback.
@@ -142,6 +149,7 @@ export function createBlockReplyDeliveryHandler(params: {
       currentMessageId: params.currentMessageId,
       silentToken: SILENT_REPLY_TOKEN,
       trimLeadingWhitespace: true,
+      preserveLeadingParagraphBoundary: hasAcceptedTextBlock,
       parseMode: "auto",
       extractMediaDirectives: false,
     });
@@ -167,6 +175,7 @@ export function createBlockReplyDeliveryHandler(params: {
     }
 
     if (blockPayload.text) {
+      hasAcceptedTextBlock = true;
       void params.typingSignals.signalTextDelta(blockPayload.text).catch((err: unknown) => {
         logVerbose(`block reply typing signal failed: ${String(err)}`);
       });

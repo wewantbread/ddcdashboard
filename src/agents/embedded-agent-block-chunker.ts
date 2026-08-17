@@ -151,6 +151,8 @@ export class EmbeddedBlockChunker {
     const { force, emit } = params;
     const minChars = Math.max(1, Math.floor(this.#chunking.minChars));
     const maxChars = Math.max(minChars, Math.floor(this.#chunking.maxChars));
+    // A paragraph separator plus visible text must fit without a whitespace-only payload.
+    const preserveParagraphBoundaries = this.#chunking.flushOnParagraph && maxChars >= 3;
 
     if (this.#buffer.length < minChars && !force) {
       return;
@@ -158,7 +160,7 @@ export class EmbeddedBlockChunker {
 
     if (force && this.#buffer.length <= maxChars) {
       // Retain complete or partial separators until visible text follows; never emit a blank block.
-      const trailingParagraphSeparator = this.#chunking.flushOnParagraph
+      const trailingParagraphSeparator = preserveParagraphBoundaries
         ? findTrailingParagraphSeparatorCandidate(this.#buffer)
         : undefined;
       if (trailingParagraphSeparator) {
@@ -197,8 +199,10 @@ export class EmbeddedBlockChunker {
           if (chunk.trim().length > 0) {
             emit(chunk);
           }
-          // The next visible chunk owns the separator, so independent drains reconstruct exactly.
-          start = paragraphBreak.index;
+          // The next visible chunk owns the separator when the configured cap can carry it.
+          start = preserveParagraphBoundaries
+            ? paragraphBreak.index
+            : skipLeadingNewlines(source, paragraphBreak.index + paragraphBreak.length);
           reopenFence = undefined;
           continue;
         }
@@ -208,7 +212,7 @@ export class EmbeddedBlockChunker {
       }
 
       const view = source.slice(start);
-      const paragraphPrefixLength = this.#chunking.flushOnParagraph
+      const paragraphPrefixLength = preserveParagraphBoundaries
         ? findParagraphSeparatorPrefixLength(view)
         : 0;
       if (force && paragraphPrefixLength === view.length && view.trim().length === 0) {
@@ -236,6 +240,7 @@ export class EmbeddedBlockChunker {
         breakResult,
         emit,
         reopenPrefix,
+        preserveParagraphBoundaries,
         source,
         start,
       });
@@ -257,7 +262,7 @@ export class EmbeddedBlockChunker {
     const remaining = source.slice(start);
     this.#buffer = reopenFence
       ? `${reopenFence.openLine}\n${remaining}`
-      : findParagraphSeparatorPrefixLength(remaining) > 0
+      : preserveParagraphBoundaries && findParagraphSeparatorPrefixLength(remaining) > 0
         ? remaining
         : stripLeadingNewlines(remaining);
   }
@@ -266,10 +271,11 @@ export class EmbeddedBlockChunker {
     breakResult: BreakResult;
     emit: (chunk: string) => void;
     reopenPrefix: string;
+    preserveParagraphBoundaries: boolean;
     source: string;
     start: number;
   }): { start: number; reopenFence?: FenceSpan } | null {
-    const { breakResult, emit, reopenPrefix, source, start } = params;
+    const { breakResult, emit, preserveParagraphBoundaries, reopenPrefix, source, start } = params;
     const breakIdx = breakResult.index;
     if (breakIdx <= 0) {
       return null;
@@ -296,7 +302,7 @@ export class EmbeddedBlockChunker {
     }
 
     const preserveParagraphPrefix =
-      this.#chunking.flushOnParagraph &&
+      preserveParagraphBoundaries &&
       findParagraphSeparatorPrefixLength(source.slice(absoluteBreakIdx)) > 0;
     const nextStart = preserveParagraphPrefix
       ? absoluteBreakIdx

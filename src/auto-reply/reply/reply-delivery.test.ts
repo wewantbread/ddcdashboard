@@ -241,7 +241,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       directlySentBlockPayloads: [],
     });
 
-    await handler({ text: " \n  Hello from stream" });
+    await handler({ text: "\n\n  Hello from stream" });
 
     expect(blockReplyPipeline.enqueue).toHaveBeenCalledWith({
       text: "Hello from stream",
@@ -254,7 +254,7 @@ describe("createBlockReplyDeliveryHandler", () => {
     });
   });
 
-  it("preserves a leading paragraph boundary in later block-streamed replies", async () => {
+  it("trims the first block and preserves a paragraph boundary in later blocks", async () => {
     const blockReplyPipeline = {
       enqueue: vi.fn(),
     } as unknown as BlockReplyPipelineLike;
@@ -272,10 +272,21 @@ describe("createBlockReplyDeliveryHandler", () => {
       directlySentBlockPayloads: [],
     });
 
+    await handler({ text: "\n\n# Title" });
     await handler({ text: "\n\nFirst paragraph." });
+    await handler({ text: " \n  Trimmed continuation" });
 
-    expect(blockReplyPipeline.enqueue).toHaveBeenCalledWith(
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "# Title" }),
+    );
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({ text: "\n\nFirst paragraph." }),
+    );
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ text: "Trimmed continuation" }),
     );
   });
 
