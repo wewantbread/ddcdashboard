@@ -241,7 +241,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       directlySentBlockPayloads: [],
     });
 
-    await handler({ text: "\n\n  Hello from stream" });
+    await handler({ text: " \n  Hello from stream" });
 
     expect(blockReplyPipeline.enqueue).toHaveBeenCalledWith({
       text: "Hello from stream",
@@ -252,6 +252,31 @@ describe("createBlockReplyDeliveryHandler", () => {
       audioAsVoice: false,
       mediaUrls: undefined,
     });
+  });
+
+  it("preserves a leading paragraph boundary in later block-streamed replies", async () => {
+    const blockReplyPipeline = {
+      enqueue: vi.fn(),
+    } as unknown as BlockReplyPipelineLike;
+
+    const handler = createBlockReplyDeliveryHandler({
+      onBlockReply: vi.fn(async () => {}),
+      normalizeStreamingText: (payload) => ({ text: payload.text, skip: false }),
+      applyReplyToMode: (payload) => payload,
+      typingSignals: {
+        signalTextDelta: vi.fn(async () => {}),
+      } as unknown as TypingSignaler,
+      blockStreamingEnabled: true,
+      blockReplyPipeline,
+      directlySentBlockKeys: new Set(),
+      directlySentBlockPayloads: [],
+    });
+
+    await handler({ text: "\n\nFirst paragraph." });
+
+    expect(blockReplyPipeline.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "\n\nFirst paragraph." }),
+    );
   });
 
   it("suppresses implicit current-message threading for block replies when reply threading denies it", async () => {

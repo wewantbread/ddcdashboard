@@ -23,6 +23,7 @@ function createProjectorHarness(
     shouldSendToolSummaries?: boolean;
     shouldSendToolSummariesNow?: () => boolean;
     shouldSendFullToolDetails?: boolean;
+    provider?: string;
   },
 ) {
   const deliveries: Delivery[] = [];
@@ -36,6 +37,7 @@ function createProjectorHarness(
       return true;
     },
     onProgress: opts?.onProgress,
+    provider: opts?.provider,
   });
   return { deliveries, projector };
 }
@@ -312,6 +314,35 @@ describe("createAcpReplyProjector", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("preserves a paragraph boundary flushed before its following text", async () => {
+    const { deliveries, projector } = createProjectorHarness(
+      {
+        acp: {
+          enabled: true,
+          stream: { deliveryMode: "live" },
+        },
+        agents: {
+          defaults: {
+            blockStreamingChunk: { minChars: 1, maxChars: 10, breakPreference: "paragraph" },
+          },
+        },
+        channels: {
+          telegram: { textChunkLimit: 10, streaming: { chunkMode: "newline" } },
+        },
+      },
+      { provider: "telegram" },
+    );
+
+    await emitText(projector, "abcdefghij\n\n");
+    await emitText(projector, "Rest");
+    await projector.flush(true);
+
+    const blocks = blockDeliveries(deliveries);
+    expect(combinedBlockText(deliveries)).toBe("abcdefghij\n\nRest");
+    expect(blocks.every((entry) => (entry.text?.length ?? 0) <= 10)).toBe(true);
+    expect(blocks.every((entry) => entry.text?.trim())).toBe(true);
   });
 
   it("does not flush short live fragments mid-phrase on idle", async () => {

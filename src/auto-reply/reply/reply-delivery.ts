@@ -44,7 +44,7 @@ export function normalizeReplyPayloadDirectives(params: {
     : undefined;
 
   let text = parsed ? parsed.text || undefined : params.payload.text || undefined;
-  if (params.trimLeadingWhitespace && text) {
+  if (params.trimLeadingWhitespace && text && !/^\n[\t ]*\n+/.test(text)) {
     text = text.trimStart() || undefined;
   }
 

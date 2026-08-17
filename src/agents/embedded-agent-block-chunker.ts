@@ -157,6 +157,18 @@ export class EmbeddedBlockChunker {
     }
 
     if (force && this.#buffer.length <= maxChars) {
+      // Retain complete or partial separators until visible text follows; never emit a blank block.
+      const trailingParagraphSeparator = this.#chunking.flushOnParagraph
+        ? findTrailingParagraphSeparatorCandidate(this.#buffer)
+        : undefined;
+      if (trailingParagraphSeparator) {
+        const text = this.#buffer.slice(0, -trailingParagraphSeparator.length);
+        if (text.trim().length > 0) {
+          emit(text);
+        }
+        this.#buffer = trailingParagraphSeparator;
+        return;
+      }
       if (this.#buffer.trim().length > 0) {
         emit(this.#buffer);
       }
@@ -185,7 +197,8 @@ export class EmbeddedBlockChunker {
           if (chunk.trim().length > 0) {
             emit(chunk);
           }
-          start = skipLeadingNewlines(source, paragraphBreak.index + paragraphBreak.length);
+          // The next visible chunk owns the separator, so independent drains reconstruct exactly.
+          start = paragraphBreak.index;
           reopenFence = undefined;
           continue;
         }
@@ -195,10 +208,21 @@ export class EmbeddedBlockChunker {
       }
 
       const view = source.slice(start);
+      const paragraphPrefixLength = this.#chunking.flushOnParagraph
+        ? findParagraphSeparatorPrefixLength(view)
+        : 0;
+      if (force && paragraphPrefixLength === view.length && view.trim().length === 0) {
+        break;
+      }
+      const minBreakOverride = paragraphPrefixLength
+        ? Math.max(force ? 1 : minChars, Math.min(maxChars, paragraphPrefixLength + 1))
+        : force
+          ? 1
+          : undefined;
       const breakResult =
         force && remainingLength <= maxChars
           ? this.#pickSoftBreakIndex(view, fenceSpans, 1, start)
-          : this.#pickBreakIndex(view, fenceSpans, force ? 1 : undefined, start);
+          : this.#pickBreakIndex(view, fenceSpans, minBreakOverride, start);
       if (breakResult.index <= 0) {
         if (force) {
           emit(`${reopenPrefix}${source.slice(start)}`);
@@ -230,9 +254,12 @@ export class EmbeddedBlockChunker {
         break;
       }
     }
+    const remaining = source.slice(start);
     this.#buffer = reopenFence
-      ? `${reopenFence.openLine}\n${source.slice(start)}`
-      : stripLeadingNewlines(source.slice(start));
+      ? `${reopenFence.openLine}\n${remaining}`
+      : findParagraphSeparatorPrefixLength(remaining) > 0
+        ? remaining
+        : stripLeadingNewlines(remaining);
   }
 
   #emitBreakResult(params: {
@@ -268,11 +295,18 @@ export class EmbeddedBlockChunker {
       return { start: absoluteBreakIdx, reopenFence: fenceSplit.fence };
     }
 
-    const nextStart =
-      absoluteBreakIdx < source.length && /\s/.test(source.charAt(absoluteBreakIdx))
+    const preserveParagraphPrefix =
+      this.#chunking.flushOnParagraph &&
+      findParagraphSeparatorPrefixLength(source.slice(absoluteBreakIdx)) > 0;
+    const nextStart = preserveParagraphPrefix
+      ? absoluteBreakIdx
+      : absoluteBreakIdx < source.length && /\s/.test(source.charAt(absoluteBreakIdx))
         ? absoluteBreakIdx + 1
         : absoluteBreakIdx;
-    return { start: skipLeadingNewlines(source, nextStart), reopenFence: undefined };
+    return {
+      start: preserveParagraphPrefix ? nextStart : skipLeadingNewlines(source, nextStart),
+      reopenFence: undefined,
+    };
   }
 
   #pickSoftBreakIndex(
@@ -430,6 +464,14 @@ function skipLeadingNewlines(value: string, start = 0): number {
 function stripLeadingNewlines(value: string): string {
   const start = skipLeadingNewlines(value);
   return start > 0 ? value.slice(start) : value;
+}
+
+function findParagraphSeparatorPrefixLength(value: string): number {
+  return value.match(/^\n[\t ]*(?:\n+|$)/)?.[0].length ?? 0;
+}
+
+function findTrailingParagraphSeparatorCandidate(value: string): string | undefined {
+  return value.match(/\n[\t ]*(?:\n+[\t ]*)?$/)?.[0];
 }
 
 function findNextParagraphBreak(
