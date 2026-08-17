@@ -6,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { tryReadSecretFileSync } from "openclaw/plugin-sdk/secret-file-runtime";
+import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMSTeamsCredentials } from "./token.js";
 
 export type ResolvedMSTeamsAccount = {
@@ -71,8 +72,6 @@ export const msteamsConfigAdapter = createTopLevelChannelConfigAdapter<
   formatAllowFrom: (allowFrom) => formatAllowFromLowercase({ allowFrom }),
   resolveDefaultTo: (account) => account.defaultTo,
 });
-
-
 export const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMSTeamsAccount>({
   channelKey: "msteams",
   resolvePolicy: () => undefined,
@@ -82,10 +81,6 @@ export const resolveMSTeamsDmPolicy = createScopedDmSecurityResolver<ResolvedMST
     allowFrom: cfg.channels?.msteams?.allowFrom,
   }),
   policyPathSuffix: "dmPolicy",
-  normalizeEntry: (raw) =>
-    raw
-      .replace(/^(msteams|teams):/i, "")
-      .replace(/^(user|conversation):/i, "")
-      .trim()
-      .toLowerCase(),
+  // Keep audit counting aligned with inbound sender-id matching; prefixes are not aliases.
+  normalizeEntry: normalizeLowercaseStringOrEmpty,
 });
