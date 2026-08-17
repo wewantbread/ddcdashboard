@@ -1,60 +1,39 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resolvePluginInstallRoots, withPluginInstallRoots } from "./install-root-context.js";
+// Covers memoized bundled-discovery mode reads across machine-state writes.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { writeConfigMachineState } from "../state/config-machine-state.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import {
+  clearBundledDiscoveryModeMemo,
+  readBundledDiscoveryModeMemoized,
+} from "./bundled-discovery-state.js";
 
-const mocks = vi.hoisted(() => ({
-  readConfigMachineState: vi.fn(),
-}));
-
-vi.mock("../state/config-machine-state.js", () => ({
-  readConfigMachineState: mocks.readConfigMachineState,
-}));
-
-const { readBundledDiscoveryMode } = await import("./bundled-discovery-state.js");
-
-describe("bundled discovery state", () => {
-  beforeEach(() => {
-    mocks.readConfigMachineState.mockReset();
+describe("readBundledDiscoveryModeMemoized", () => {
+  afterEach(() => {
+    clearBundledDiscoveryModeMemo();
   });
 
-  it("reads machine state from the active plugin registry state directory", async () => {
-    const sourceEnv = { OPENCLAW_STATE_DIR: "/operator/openclaw" };
-    const isolatedRoots = {
-      ...resolvePluginInstallRoots(sourceEnv),
-      stateDir: "/tmp/private-plugin-state",
-    };
-    mocks.readConfigMachineState.mockReturnValue("allowlist");
-
-    await withPluginInstallRoots(isolatedRoots, async () => {
-      expect(readBundledDiscoveryMode({ env: sourceEnv })).toBe("allowlist");
-    });
-
-    expect(mocks.readConfigMachineState).toHaveBeenCalledWith("plugins.bundledDiscovery", {
-      env: {
-        OPENCLAW_STATE_DIR: "/tmp/private-plugin-state",
-      },
-    });
-  });
-
-  it("preserves explicit database path ownership", async () => {
-    const sourceEnv = { OPENCLAW_STATE_DIR: "/operator/openclaw" };
-    const isolatedRoots = {
-      ...resolvePluginInstallRoots(sourceEnv),
-      stateDir: "/tmp/private-plugin-state",
-    };
-    mocks.readConfigMachineState.mockReturnValue("compat");
-
-    await withPluginInstallRoots(isolatedRoots, async () => {
-      expect(
-        readBundledDiscoveryMode({
-          env: sourceEnv,
-          path: "/explicit/openclaw.sqlite",
-        }),
-      ).toBe("compat");
-    });
-
-    expect(mocks.readConfigMachineState).toHaveBeenCalledWith("plugins.bundledDiscovery", {
-      env: sourceEnv,
-      path: "/explicit/openclaw.sqlite",
-    });
+  it("observes a machine-state write after the memo is cleared", async () => {
+    const stateDir = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-bundled-discovery-")),
+    );
+    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    try {
+      clearBundledDiscoveryModeMemo();
+      // Pre-migration read caches the absent mode.
+      expect(readBundledDiscoveryModeMemoized()).toBeUndefined();
+      writeConfigMachineState("plugins.bundledDiscovery", "compat");
+      // Regression for the doctor same-process staleness: the memo must not
+      // outlive the write, or index rebuilds keep strict-gate decisions.
+      expect(readBundledDiscoveryModeMemoized()).toBeUndefined();
+      clearBundledDiscoveryModeMemo();
+      expect(readBundledDiscoveryModeMemoized()).toBe("compat");
+    } finally {
+      envSnapshot.restore();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
   });
 });

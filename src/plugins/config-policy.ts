@@ -1,5 +1,6 @@
 // Evaluates plugin config policy without activating plugin runtime code.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readBundledDiscoveryModeMemoized } from "./bundled-discovery-state.js";
 import {
   resolvePluginActivationDecisionShared,
   toPluginActivationState,
@@ -42,6 +43,10 @@ function resolvePluginActivationState(params: {
         plugins: params.sourceConfig ?? params.config,
         rootConfig: params.sourceRootConfig ?? params.rootConfig,
       },
+      // Keep control-plane policy decisions aligned with the runtime gate:
+      // compat exempts bundled plugins from the allowlist on both surfaces.
+      bundledDiscoveryMode:
+        params.origin === "bundled" ? readBundledDiscoveryModeMemoized() : undefined,
       isBundledChannelEnabledByChannelConfig,
     }),
   );

@@ -37,3 +37,12 @@ export function readBundledDiscoveryModeMemoized(): "compat" | "allowlist" | und
   memoizedBundledDiscoveryMode ??= { value: readBundledDiscoveryMode() };
   return memoizedBundledDiscoveryMode.value;
 }
+
+/**
+ * Clears the memo after a machine-state write so same-process readers observe
+ * the new mode. Without this, doctor's migration could cache the pre-migration
+ * absent mode and rebuild plugin indexes against stale strict-gate decisions.
+ */
+export function clearBundledDiscoveryModeMemo(): void {
+  memoizedBundledDiscoveryMode = undefined;
+}
