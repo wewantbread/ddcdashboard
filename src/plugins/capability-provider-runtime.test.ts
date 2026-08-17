@@ -46,6 +46,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./bundled-discovery-state.js", () => ({
   readBundledDiscoveryMode: mocks.readBundledDiscoveryMode,
+  readBundledDiscoveryModeMemoized: mocks.readBundledDiscoveryMode,
+  clearBundledDiscoveryModeMemo: () => {},
 }));
 
 vi.mock("./loader.js", () => ({
