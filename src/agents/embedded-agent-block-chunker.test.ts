@@ -122,6 +122,19 @@ describe("EmbeddedBlockChunker", () => {
     expect(chunks.every((chunk) => chunk.trim().length > 0)).toBe(true);
   });
 
+  it("preserves a paragraph boundary when a forced chunk ends exactly at maxChars", () => {
+    const chunker = createFlushOnParagraphChunker({ minChars: 1, maxChars: 10 });
+    const input = "abcdefghij\n\nRest";
+
+    chunker.append(input);
+    const chunks = drainChunks(chunker, true);
+
+    expect(chunks).toEqual(["abcdefghij", "\n\nRest"]);
+    expect(chunks.join("")).toBe(input);
+    expectChunksWithinLength(chunks, 10);
+    expect(chunks.every((chunk) => chunk.trim().length > 0)).toBe(true);
+  });
+
   it.each([1, 2])(
     "keeps legacy separator trimming when maxChars=%i cannot carry a visible boundary",
     (maxChars) => {

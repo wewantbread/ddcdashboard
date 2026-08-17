@@ -244,7 +244,7 @@ export class EmbeddedBlockChunker {
           : undefined;
       const breakResult =
         force && remainingLength <= maxChars
-          ? this.#pickSoftBreakIndex(view, fenceSpans, 1, start)
+          ? this.#pickSoftBreakIndex(view, fenceSpans, minBreakOverride ?? 1, start)
           : this.#pickBreakIndex(view, fenceSpans, minBreakOverride, start);
       if (breakResult.index <= 0) {
         if (force) {
