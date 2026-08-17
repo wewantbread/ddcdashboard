@@ -137,6 +137,51 @@ describe("EmbeddedBlockChunker", () => {
   );
 
   it.each([
+    { prefix: "A", tail: "\n", maxChars: 10, expectedTail: "B" },
+    { prefix: "A", tail: "\n ", maxChars: 10, expectedTail: " B" },
+    { prefix: "A", tail: "\n\t", maxChars: 10, expectedTail: "\tB" },
+    { prefix: "AA", tail: "\n ", maxChars: 3, expectedTail: " B" },
+  ])(
+    "uses legacy newline trimming when retained partial $tail is not a paragraph separator",
+    ({ expectedTail, maxChars, prefix, tail }) => {
+      const chunker = createFlushOnParagraphChunker({ minChars: 1, maxChars });
+
+      chunker.append(`${prefix}${tail}`);
+      const chunks = drainChunks(chunker, true);
+      expect(chunks).toEqual([prefix]);
+      expect(chunker.bufferedText).toBe(tail);
+
+      chunker.append("B");
+      chunks.push(...drainChunks(chunker, true));
+
+      expect(chunks).toEqual([prefix, expectedTail]);
+      expect(chunker.bufferedText).toBe("");
+    },
+  );
+
+  it.each([
+    { maxChars: 3, separator: "\n \n", expected: "AB" },
+    { maxChars: 4, separator: "\n \n", expected: "A\n \nB" },
+    { maxChars: 3, separator: "\n\n\n", expected: "AB" },
+    { maxChars: 4, separator: "\n\n\n", expected: "A\n\n\nB" },
+  ])(
+    "preserves a $separator boundary only when it fits maxChars=$maxChars with visible text",
+    ({ expected, maxChars, separator }) => {
+      const chunker = createFlushOnParagraphChunker({ minChars: 1, maxChars });
+      const chunks: string[] = [];
+
+      chunker.append(`A${separator}`);
+      chunks.push(...drainChunks(chunker));
+      chunker.append("B");
+      chunks.push(...drainChunks(chunker, true));
+
+      expect(chunks.join("")).toBe(expected);
+      expectChunksWithinLength(chunks, maxChars);
+      expect(chunks.every((chunk) => chunk.trim().length > 0)).toBe(true);
+    },
+  );
+
+  it.each([
     { name: "complete separator", tail: "\n\n", completion: "Rest" },
     { name: "partial separator", tail: "\n ", completion: "\nRest" },
   ])("holds a forced $name tail for the next visible block", ({ tail, completion }) => {

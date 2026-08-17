@@ -126,6 +126,14 @@ export class EmbeddedBlockChunker {
     if (!text) {
       return;
     }
+    const pendingPrefix = findParagraphSeparatorPrefix(this.#buffer);
+    if (pendingPrefix && !pendingPrefix.complete) {
+      const combined = `${this.#buffer}${text}`;
+      this.#buffer = findParagraphSeparatorPrefix(combined)
+        ? combined
+        : stripLeadingNewlines(combined);
+      return;
+    }
     this.#buffer += text;
   }
 
@@ -151,8 +159,7 @@ export class EmbeddedBlockChunker {
     const { force, emit } = params;
     const minChars = Math.max(1, Math.floor(this.#chunking.minChars));
     const maxChars = Math.max(minChars, Math.floor(this.#chunking.maxChars));
-    // A paragraph separator plus visible text must fit without a whitespace-only payload.
-    const preserveParagraphBoundaries = this.#chunking.flushOnParagraph === true && maxChars >= 3;
+    const paragraphPreservationEnabled = this.#chunking.flushOnParagraph === true;
 
     if (this.#buffer.length < minChars && !force) {
       return;
@@ -160,10 +167,16 @@ export class EmbeddedBlockChunker {
 
     if (force && this.#buffer.length <= maxChars) {
       // Retain complete or partial separators until visible text follows; never emit a blank block.
-      const trailingParagraphSeparator = preserveParagraphBoundaries
+      const trailingParagraphSeparator = paragraphPreservationEnabled
         ? findTrailingParagraphSeparatorCandidate(this.#buffer)
         : undefined;
-      if (trailingParagraphSeparator) {
+      if (
+        trailingParagraphSeparator &&
+        canPreserveParagraphPrefix(
+          findParagraphSeparatorPrefix(trailingParagraphSeparator),
+          maxChars,
+        )
+      ) {
         const text = this.#buffer.slice(0, -trailingParagraphSeparator.length);
         if (text.trim().length > 0) {
           emit(text);
@@ -199,10 +212,11 @@ export class EmbeddedBlockChunker {
           if (chunk.trim().length > 0) {
             emit(chunk);
           }
-          // The next visible chunk owns the separator when the configured cap can carry it.
-          start = preserveParagraphBoundaries
+          const paragraphPrefix = findParagraphSeparatorPrefix(source.slice(paragraphBreak.index));
+          // The next visible chunk owns the separator only when it fits with visible text.
+          start = canPreserveParagraphPrefix(paragraphPrefix, maxChars)
             ? paragraphBreak.index
-            : skipLeadingNewlines(source, paragraphBreak.index + paragraphBreak.length);
+            : paragraphBreak.index + (paragraphPrefix?.length ?? paragraphBreak.length);
           reopenFence = undefined;
           continue;
         }
@@ -212,9 +226,14 @@ export class EmbeddedBlockChunker {
       }
 
       const view = source.slice(start);
-      const paragraphPrefixLength = preserveParagraphBoundaries
-        ? findParagraphSeparatorPrefixLength(view)
-        : 0;
+      const paragraphPrefix = paragraphPreservationEnabled
+        ? findParagraphSeparatorPrefix(view)
+        : undefined;
+      if (paragraphPrefix && !canPreserveParagraphPrefix(paragraphPrefix, maxChars)) {
+        start += paragraphPrefix.length;
+        continue;
+      }
+      const paragraphPrefixLength = paragraphPrefix?.length ?? 0;
       if (force && paragraphPrefixLength === view.length && view.trim().length === 0) {
         break;
       }
@@ -239,8 +258,9 @@ export class EmbeddedBlockChunker {
       const consumed = this.#emitBreakResult({
         breakResult,
         emit,
+        maxChars,
+        paragraphPreservationEnabled,
         reopenPrefix,
-        preserveParagraphBoundaries,
         source,
         start,
       });
@@ -260,22 +280,36 @@ export class EmbeddedBlockChunker {
       }
     }
     const remaining = source.slice(start);
+    const remainingParagraphPrefix = paragraphPreservationEnabled
+      ? findParagraphSeparatorPrefix(remaining)
+      : undefined;
     this.#buffer = reopenFence
       ? `${reopenFence.openLine}\n${remaining}`
-      : preserveParagraphBoundaries && findParagraphSeparatorPrefixLength(remaining) > 0
+      : canPreserveParagraphPrefix(remainingParagraphPrefix, maxChars)
         ? remaining
-        : stripLeadingNewlines(remaining);
+        : remainingParagraphPrefix
+          ? remaining.slice(remainingParagraphPrefix.length)
+          : stripLeadingNewlines(remaining);
   }
 
   #emitBreakResult(params: {
     breakResult: BreakResult;
     emit: (chunk: string) => void;
+    maxChars: number;
+    paragraphPreservationEnabled: boolean;
     reopenPrefix: string;
-    preserveParagraphBoundaries: boolean;
     source: string;
     start: number;
   }): { start: number; reopenFence?: FenceSpan } | null {
-    const { breakResult, emit, preserveParagraphBoundaries, reopenPrefix, source, start } = params;
+    const {
+      breakResult,
+      emit,
+      maxChars,
+      paragraphPreservationEnabled,
+      reopenPrefix,
+      source,
+      start,
+    } = params;
     const breakIdx = breakResult.index;
     if (breakIdx <= 0) {
       return null;
@@ -301,16 +335,23 @@ export class EmbeddedBlockChunker {
       return { start: absoluteBreakIdx, reopenFence: fenceSplit.fence };
     }
 
-    const preserveParagraphPrefix =
-      preserveParagraphBoundaries &&
-      findParagraphSeparatorPrefixLength(source.slice(absoluteBreakIdx)) > 0;
-    const nextStart = preserveParagraphPrefix
-      ? absoluteBreakIdx
-      : absoluteBreakIdx < source.length && /\s/.test(source.charAt(absoluteBreakIdx))
+    const paragraphPrefix = paragraphPreservationEnabled
+      ? findParagraphSeparatorPrefix(source.slice(absoluteBreakIdx))
+      : undefined;
+    if (paragraphPrefix) {
+      return {
+        start: canPreserveParagraphPrefix(paragraphPrefix, maxChars)
+          ? absoluteBreakIdx
+          : absoluteBreakIdx + paragraphPrefix.length,
+        reopenFence: undefined,
+      };
+    }
+    const nextStart =
+      absoluteBreakIdx < source.length && /\s/.test(source.charAt(absoluteBreakIdx))
         ? absoluteBreakIdx + 1
         : absoluteBreakIdx;
     return {
-      start: preserveParagraphPrefix ? nextStart : skipLeadingNewlines(source, nextStart),
+      start: skipLeadingNewlines(source, nextStart),
       reopenFence: undefined,
     };
   }
@@ -472,8 +513,29 @@ function stripLeadingNewlines(value: string): string {
   return start > 0 ? value.slice(start) : value;
 }
 
-function findParagraphSeparatorPrefixLength(value: string): number {
-  return value.match(/^\n[\t ]*(?:\n+|$)/)?.[0].length ?? 0;
+type ParagraphSeparatorPrefix = {
+  complete: boolean;
+  length: number;
+};
+
+function findParagraphSeparatorPrefix(value: string): ParagraphSeparatorPrefix | undefined {
+  const complete = value.match(/^\n[\t ]*\n+[\t ]*/)?.[0];
+  if (complete) {
+    return { complete: true, length: complete.length };
+  }
+  const partial = value.match(/^\n[\t ]*$/)?.[0];
+  return partial ? { complete: false, length: partial.length } : undefined;
+}
+
+function canPreserveParagraphPrefix(
+  prefix: ParagraphSeparatorPrefix | undefined,
+  maxChars: number,
+): boolean {
+  if (!prefix) {
+    return false;
+  }
+  // An incomplete candidate needs the next delta to decide whether it is content or a separator.
+  return !prefix.complete || prefix.length + 1 <= maxChars;
 }
 
 function findTrailingParagraphSeparatorCandidate(value: string): string | undefined {
