@@ -16,16 +16,16 @@ const SESSION_PERMISSION_BY_EXEC_MODE = {
 
 const cliMcpDelegationCapability = Symbol("cliMcpDelegationCapability");
 
-type CliMcpInternalRunParams = RunCliAgentParams & {
-  [cliMcpDelegationCapability]?: DelegationCapability;
-};
-
 export function buildCliMcpDelegationCapabilityBinding(capability: DelegationCapability): object {
   return capability === "report_only" ? { [cliMcpDelegationCapability]: capability } : {};
 }
 
 function readCliMcpDelegationCapability(run: object): DelegationCapability | undefined {
-  return (run as CliMcpInternalRunParams)[cliMcpDelegationCapability];
+  if (!(cliMcpDelegationCapability in run)) {
+    return undefined;
+  }
+  const capability = run[cliMcpDelegationCapability];
+  return capability === "full" || capability === "report_only" ? capability : undefined;
 }
 
 export function normalizeOptionalMcpContextValue(value: string | undefined): string | undefined {
