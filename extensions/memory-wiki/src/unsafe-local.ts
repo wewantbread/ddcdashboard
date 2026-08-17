@@ -72,6 +72,7 @@ async function listAllowedFilesRecursive(rootDir: string): Promise<string[]> {
 
 async function collectUnsafeLocalArtifacts(
   configuredPaths: string[],
+  vaultRootKey: string,
 ): Promise<UnsafeLocalArtifactCollection> {
   const artifacts: UnsafeLocalArtifact[] = [];
   const unavailableConfiguredPaths: string[] = [];
@@ -107,6 +108,13 @@ async function collectUnsafeLocalArtifacts(
 
   const deduped = new Map<string, UnsafeLocalArtifact>();
   for (const artifact of artifacts) {
+    if (isSourceWithinConfiguredPath(artifact.syncKey, vaultRootKey)) {
+      // The vault's own generated pages (e.g. a backup/mirror of the vault
+      // copied under a configured unsafe-local path) must never be
+      // re-ingested as new source artifacts, or every import round
+      // duplicates the prior round's output into an unbounded loop.
+      continue;
+    }
     deduped.set(artifact.syncKey, artifact);
   }
   return { artifacts: [...deduped.values()], unavailableConfiguredPaths };
@@ -231,8 +239,10 @@ export async function syncMemoryWikiUnsafeLocalSources(
     };
   }
 
+  const vaultRootKey = await resolveArtifactKey(config.vault.path);
   const { artifacts, unavailableConfiguredPaths } = await collectUnsafeLocalArtifacts(
     config.unsafeLocal.paths,
+    vaultRootKey,
   );
   const state = await readMemoryWikiSourceSyncState(config.vault.path);
   const activeKeys = new Set<string>();
