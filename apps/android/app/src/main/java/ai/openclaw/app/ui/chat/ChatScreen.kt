@@ -794,6 +794,31 @@ fun ChatScreen(
 
     ChatSwarmProgress(groups = swarmGroups)
 
+    val startVoiceNote: () -> Unit = {
+      scope.launch {
+        val ownerSnapshot = composerOwner
+        val mediaAuthorizationId = composerState.beginMediaAcquisition(ownerSnapshot) ?: return@launch
+        val recordingId = UUID.randomUUID().toString()
+        if (!viewModel.isCurrentChatComposerOwner(ownerSnapshot)) {
+          composerState.cancelMediaAcquisition(mediaAuthorizationId)
+          return@launch
+        }
+        if (voiceNoteRecorder.start(recordingId)) {
+          if (
+            viewModel.isCurrentChatComposerOwner(ownerSnapshot) &&
+            composerState.isMediaAcquisitionActive(mediaAuthorizationId)
+          ) {
+            voiceNoteCommitCheckpoint.begin(ownerSnapshot, mediaAuthorizationId, recordingId)
+          } else {
+            voiceNoteRecorder.cancel()
+            composerState.cancelMediaAcquisition(mediaAuthorizationId)
+          }
+        } else {
+          composerState.cancelMediaAcquisition(mediaAuthorizationId)
+        }
+      }
+    }
+
     ChatComposer(
       value = input,
       onValueChange = {
@@ -851,30 +876,7 @@ fun ChatScreen(
           !micCaptureActive &&
           !dictationActive &&
           !sendInFlight,
-      onStartVoiceNote = {
-        scope.launch {
-          val ownerSnapshot = composerOwner
-          val mediaAuthorizationId = composerState.beginMediaAcquisition(ownerSnapshot) ?: return@launch
-          val recordingId = UUID.randomUUID().toString()
-          if (!viewModel.isCurrentChatComposerOwner(ownerSnapshot)) {
-            composerState.cancelMediaAcquisition(mediaAuthorizationId)
-            return@launch
-          }
-          if (voiceNoteRecorder.start(recordingId)) {
-            if (
-              viewModel.isCurrentChatComposerOwner(ownerSnapshot) &&
-              composerState.isMediaAcquisitionActive(mediaAuthorizationId)
-            ) {
-              voiceNoteCommitCheckpoint.begin(ownerSnapshot, mediaAuthorizationId, recordingId)
-            } else {
-              voiceNoteRecorder.cancel()
-              composerState.cancelMediaAcquisition(mediaAuthorizationId)
-            }
-          } else {
-            composerState.cancelMediaAcquisition(mediaAuthorizationId)
-          }
-        }
-      },
+      onStartVoiceNote = startVoiceNote,
       onCancelVoiceNote = {
         voiceNoteCommitCheckpoint.clear()?.let { lease ->
           composerState.cancelMediaAcquisition(lease.authorizationId)
@@ -892,6 +894,8 @@ fun ChatScreen(
       onToggleDictation = {
         if (dictationActive) {
           dictationController.finish()
+        } else if (!dictationController.isAvailable) {
+          startVoiceNote()
         } else {
           scope.launch {
             val ownerSnapshot = composerOwner
@@ -901,6 +905,18 @@ fun ChatScreen(
             if (transcript != null && viewModel.isCurrentChatComposerOwner(ownerSnapshot)) {
               inputDrafts[ownerSnapshot] =
                 appendChatDictationTranscript(inputDrafts[ownerSnapshot], transcript)
+              return@launch
+            }
+            if (
+              viewModel.isCurrentChatComposerOwner(ownerSnapshot) &&
+              shouldFallbackDictationToVoiceNote(
+                dictationAvailable = dictationController.isAvailable,
+                transcript = transcript,
+                state = dictationController.state.value,
+              )
+            ) {
+              dictationController.cancel()
+              startVoiceNote()
             }
           }
         }

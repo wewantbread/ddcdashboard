@@ -208,7 +208,9 @@ to waitlist-enabled Platform access.
 - Android's main navigation is **Home**, **Chat**, and **Settings**. Voice input
   lives in the Chat composer rather than a separate Voice tab.
 - Tap the composer microphone for on-device dictation. Long-press it to record
-  a voice-note attachment. Start continuous Talk from the Talk waveform.
+  a voice-note attachment. If on-device speech recognition is unavailable, tap
+  records a voice-note attachment instead of showing an error. Start continuous
+  Talk from the Talk waveform.
 - Dictation, voice-note recording, and Talk are mutually exclusive microphone
   paths; starting one stops or blocks the others.
 - Realtime Talk prefers a connected Bluetooth Classic or BLE headset

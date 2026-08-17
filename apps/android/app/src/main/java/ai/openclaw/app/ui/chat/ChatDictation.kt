@@ -361,6 +361,17 @@ internal fun dictationFailureForError(code: Int): ChatDictationFailure =
     else -> ChatDictationFailure.Generic
   }
 
+/** Tap starts on-device dictation; if that path cannot run, the same tap records a voice note. */
+internal fun shouldFallbackDictationToVoiceNote(
+  dictationAvailable: Boolean,
+  transcript: String?,
+  state: ChatDictationState,
+): Boolean {
+  if (transcript != null) return false
+  if (!dictationAvailable) return true
+  return (state as? ChatDictationState.Failure)?.reason == ChatDictationFailure.Unavailable
+}
+
 @Composable
 internal fun rememberChatDictationController(viewModel: MainViewModel): ChatDictationController {
   val context = LocalContext.current.applicationContext
