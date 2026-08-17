@@ -73,7 +73,10 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
+import {
+  appendTranscriptEventsInTransaction,
+  ensureTranscriptHeader,
+} from "./session-accessor.sqlite-transcript-store.js";
 import { resolveMaintenanceConfig } from "./store-maintenance-runtime.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { SessionEntry } from "./types.js";
@@ -351,9 +354,14 @@ export async function applySessionEntryLifecycleMutation(params: {
         }
         if (resetBoundaryPlan && expectedEntry?.sessionId) {
           const events = [...resetBoundaryPlan.seedEvents, resetBoundaryPlan.event];
+          const boundaryScope = { ...resolved, sessionId: expectedEntry.sessionId, sessionKey };
+          // Same empty-window hazard as the single-target reset path: the
+          // boundary must not become seq 0, or the window stays permanently
+          // headerless and is rejected as a legacy transcript on every load.
+          ensureTranscriptHeader(transactionDb, boundaryScope, undefined, Date.now());
           const appended = appendTranscriptEventsInTransaction(
             transactionDb,
-            { ...resolved, sessionId: expectedEntry.sessionId, sessionKey },
+            boundaryScope,
             events,
           );
           if (appended !== events.length) {
