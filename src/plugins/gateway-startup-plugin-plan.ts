@@ -166,6 +166,7 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
         activationSource,
         manifestLookup,
         platform: params.platform,
+        env: params.env,
       });
       if (canStartConfiguredChannel) {
         pluginIds.push(plugin.pluginId);
@@ -179,6 +180,7 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
         config: params.config,
         pluginsConfig,
         activationSource,
+        env: params.env,
         requiredAgentHarnessRuntimes,
         configuredWorkerProviderIds,
         configuredSpeechProviderIds,

@@ -31,6 +31,8 @@ type PluginStartupActivationParams = {
   pluginsConfig: NormalizedPluginsConfig;
   activationSource: { plugins: NormalizedPluginsConfig; rootConfig?: OpenClawConfig };
   platform?: NodeJS.Platform;
+  /** Startup planning scoped to an explicit env reads that env's compat state. */
+  env?: NodeJS.ProcessEnv;
 };
 
 type GatewayStartupActivationParams = PluginStartupActivationParams & {
@@ -103,6 +105,7 @@ function resolveStartupActivationState(
     rootConfig: params.config,
     enabledByDefault: isPluginEnabledByDefaultForPlatform(params.plugin, params.platform),
     activationSource: params.activationSource,
+    env: params.env,
     ...(autoEnabledReason ? { autoEnabledReason } : {}),
   });
 }

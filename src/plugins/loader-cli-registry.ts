@@ -81,6 +81,7 @@ export async function loadOpenClawPluginCliRegistry(
     activationSource: context.activationSource,
     manifestRegistry,
     memorySlot,
+    env: context.env,
   });
 
   for (const candidate of orderedCandidates) {

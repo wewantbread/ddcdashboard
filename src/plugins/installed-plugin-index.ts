@@ -87,6 +87,7 @@ function buildInstalledPluginIndex(
   const diagnostics = [...(registry.diagnostics ?? [])];
   const generatedAtMs = (params.now?.() ?? new Date()).getTime();
   const plugins = buildInstalledPluginIndexRecords({
+    env,
     candidates: discovery.candidates,
     registry,
     config: params.config,

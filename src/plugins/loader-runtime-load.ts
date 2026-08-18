@@ -221,6 +221,7 @@ function loadOpenClawPluginsInternal(
       activationSource: context.activationSource,
       manifestRegistry,
       memorySlot,
+      env: context.env,
     });
     const pluginLoadStartMs = performance.now();
     for (const candidate of orderedCandidates) {
