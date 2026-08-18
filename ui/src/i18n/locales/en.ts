@@ -406,6 +406,15 @@ export const en: TranslationMap = {
     retry: "Retry",
     stylesFailed: "Styles failed to load, so the page may look broken.",
   },
+  communityInvite: {
+    dialogLabel: "Join the OpenClaw community on Discord",
+    artAlt: "A lobster beside the Discord mark on a lit seafloor pedestal",
+    eyebrow: "OpenClaw community",
+    title: "Come build with us",
+    body: "Ask questions, report bugs, and show other builders what you're making.",
+    action: "Join us on Discord",
+    dismissForever: "Dismiss and don't show again",
+  },
   updates: {
     adminRequired: "Administrator access is required to change update settings or start an update.",
     campaign: {

@@ -60,6 +60,7 @@ import { ShellNavigationOwner, type ShellNavigationHost } from "./app-shell-navi
 import { renderApplicationShell, type ShellViewHost } from "./app-shell-view.ts";
 import { ShellWorkboardOwner, type ShellWorkboardHost } from "./app-shell-workboard.ts";
 import type { ApplicationRuntime } from "./bootstrap.ts";
+import { hasActiveRunOrSubagent, hasRecordedInteraction } from "./community-invite-cohort.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "./context.ts";
 import {
   BROWSER_PANEL_ELEMENT,
@@ -169,6 +170,7 @@ class OpenClawShell
   agentRosterRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   outboxStoreRuntime: OutboxStoreRuntime | null = null;
   private outboxStoreUnsubscribe: (() => void) | null = null;
+  private communityInviteCohort: { readonly hasInteractionHistory: boolean } | null = null;
   readonly outboxStoreImport = createIdleImport(
     () => import("../lib/chat/outbox-store.ts").then((module): OutboxStoreRuntime => module),
     (runtime) => this.installOutboxStoreRuntime(runtime),
@@ -223,6 +225,48 @@ class OpenClawShell
     const routeSearch = this.routeState.location?.search;
     return routeSearch === undefined ? this.onboarding : resolveOnboardingMode(routeSearch);
   }
+
+  /** One-shot qualification for the community invite: a connected gateway with a
+   * published sessions list, outside onboarding. Latched, because the cohort
+   * classification is decided by the first load that qualifies and must not be
+   * re-decided when the sessions list or the route moves afterwards. This only
+   * decides the cohort (upgrade vs. fresh install); whether it is still safe to
+   * present is re-checked live by `communityInviteEligibleNow` below, since
+   * gateway connectivity and onboarding can both change after this latches. */
+  private qualifiedCommunityInviteCohort(): { readonly hasInteractionHistory: boolean } | null {
+    if (this.communityInviteCohort) {
+      return this.communityInviteCohort;
+    }
+    const context = this.context;
+    const sessions = context?.sessions.state.result;
+    if (!context || !sessions || this.onboardingMode) {
+      return null;
+    }
+    if (context.gateway.snapshot.phase !== "connected") {
+      return null;
+    }
+    // `lastInteractionAt` is the recorded fact of a real human turn, so basing the
+    // cohort on it (not on session count or a raw page-load tally) keeps the
+    // arming window pinned to actual usage instead of an easily-gamed inference.
+    this.communityInviteCohort = {
+      hasInteractionHistory: hasRecordedInteraction(sessions.sessions),
+    };
+    return this.communityInviteCohort;
+  }
+
+  /** Live gate checked at the moment of presenting, not only at qualification
+   * above: a disconnect or a return to onboarding after the cohort latched must
+   * still keep the card from mounting, and an active run or subagent — work the
+   * operator may need to keep watching — defers it rather than competing for
+   * attention. */
+  private readonly communityInviteEligibleNow = (): boolean => {
+    const context = this.context;
+    if (!context || context.gateway.snapshot.phase !== "connected" || this.onboardingMode) {
+      return false;
+    }
+    const sessions = context.sessions.state.result?.sessions;
+    return !sessions || !hasActiveRunOrSubagent(sessions);
+  };
 
   storedOutboxScopeHost(context: ApplicationContext<RouteId>): StoredOutboxScopeHost {
     const gatewaySnapshot = context.gateway.snapshot;
@@ -284,6 +328,25 @@ class OpenClawShell
       .effect(
         () => this.context?.gateway,
         (gateway) => gateway.subscribeEvents(this.handleGatewayEvent),
+      )
+      .effect(
+        () => this.qualifiedCommunityInviteCohort(),
+        ({ hasInteractionHistory }) => {
+          // Loaded only once a load has qualified, so an unsolicited nudge costs
+          // nothing before first paint.
+          let stop: (() => void) | null = null;
+          let cancelled = false;
+          void import("./community-invite.runtime.ts").then(({ runCommunityInvite }) => {
+            if (!cancelled) {
+              stop = runCommunityInvite(hasInteractionHistory, this.communityInviteEligibleNow);
+            }
+          });
+          return () => {
+            cancelled = true;
+            stop?.();
+            stop = null;
+          };
+        },
       )
       .watch(
         () => this.context?.config,

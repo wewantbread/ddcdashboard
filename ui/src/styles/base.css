@@ -275,6 +275,10 @@
 
   /* Layering */
   --z-dropdown: 100;
+  /* Persistent corner floaters. Below --z-toast so a transient notice, which
+     answers something the operator just did, always reads over an unsolicited
+     card that parked itself on screen. */
+  --z-floater: 1900;
   --z-toast: 2000;
 
   /* Custom select chevron. Data URIs cannot read var(--muted), so the stroke

@@ -11,7 +11,8 @@ type ControlUiPublicAsset =
   | "sw.js"
   | `provider-icons/ProviderIcon-${string}.svg`
   | `plugin-art/${string}.webp`
-  | `app-art/${string}.webp`;
+  | `app-art/${string}.webp`
+  | `community-art/${string}.webp`;
 
 export function controlUiPublicAssetPath(
   asset: ControlUiPublicAsset,
