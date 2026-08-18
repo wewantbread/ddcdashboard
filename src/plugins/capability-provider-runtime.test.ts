@@ -1,8 +1,43 @@
 /** Exercises runtime capability-provider loading from manifest-backed plugin contracts. */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import { writeConfigMachineState } from "../state/config-machine-state.js";
+import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
+import { clearBundledDiscoveryModeMemo } from "./bundled-discovery-state.js";
 import { resolveInstalledPluginIndexPolicyHash } from "./installed-plugin-index-policy.js";
 import { createEmptyPluginRegistry } from "./registry.js";
+
+// Real machine state instead of a module mock: the plugins project runs every
+// file in one shared worker (isolate=false), so a mocked bundled-discovery
+// module here and the real module in sibling suites would shadow each other
+// depending on file order.
+let discoveryCompatRoot: string | undefined;
+let discoveryEnvSnapshot: ReturnType<typeof captureEnv> | undefined;
+function setBundledDiscoveryCompat(): void {
+  if (!discoveryCompatRoot) {
+    discoveryCompatRoot = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-capability-compat-")),
+    );
+    const seedSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+    setTestEnvValue("OPENCLAW_STATE_DIR", discoveryCompatRoot);
+    try {
+      writeConfigMachineState("plugins.bundledDiscovery", "compat");
+    } finally {
+      seedSnapshot.restore();
+    }
+  }
+  discoveryEnvSnapshot ??= captureEnv(["OPENCLAW_STATE_DIR"]);
+  setTestEnvValue("OPENCLAW_STATE_DIR", discoveryCompatRoot);
+  clearBundledDiscoveryModeMemo();
+}
+function restoreBundledDiscoveryState(): void {
+  discoveryEnvSnapshot?.restore();
+  discoveryEnvSnapshot = undefined;
+  clearBundledDiscoveryModeMemo();
+}
 
 type MockManifestRegistry = {
   plugins: Array<Record<string, unknown>>;
@@ -41,29 +76,7 @@ const mocks = vi.hoisted(() => ({
     plugins: [],
   })),
   withBundledPluginEnablementCompat: vi.fn(({ config }) => config),
-  readBundledDiscoveryMode: vi.fn<() => "compat" | "allowlist" | undefined>(() => "allowlist"),
 }));
-
-vi.mock("./bundled-discovery-state.js", async () => {
-  const { registerPluginMetadataProcessMemoLifecycleClear } =
-    await import("./plugin-metadata-lifecycle.js");
-  // Mirror the real single-slot memo so read-count assertions exercise the
-  // memoized seam; beforeEach's lifecycle clear resets it per test.
-  let memo: { value: "compat" | "allowlist" | undefined } | undefined;
-  registerPluginMetadataProcessMemoLifecycleClear(() => {
-    memo = undefined;
-  });
-  return {
-    readBundledDiscoveryMode: mocks.readBundledDiscoveryMode,
-    readBundledDiscoveryModeMemoized: () => {
-      memo ??= { value: mocks.readBundledDiscoveryMode() };
-      return memo.value;
-    },
-    clearBundledDiscoveryModeMemo: () => {
-      memo = undefined;
-    },
-  };
-});
 
 vi.mock("./loader.js", () => ({
   resolveRuntimePluginRegistry: mocks.resolveRuntimePluginRegistry,
@@ -310,7 +323,7 @@ function expectBundledCompatLoadPath(params: {
 }
 
 function createCompatChainConfig() {
-  mocks.readBundledDiscoveryMode.mockReturnValue("compat");
+  setBundledDiscoveryCompat();
   const cfg = { plugins: { allow: ["custom-plugin"] } } as OpenClawConfig;
   const enablementCompat = {
     plugins: {
@@ -398,8 +411,7 @@ describe("resolvePluginCapabilityProviders", () => {
     mocks.loadBundledCapabilityRuntimeRegistry.mockImplementation(() => mocks.createMockRegistry());
     mocks.withBundledPluginEnablementCompat.mockReset();
     mocks.withBundledPluginEnablementCompat.mockImplementation(({ config }) => config);
-    mocks.readBundledDiscoveryMode.mockReset();
-    mocks.readBundledDiscoveryMode.mockReturnValue("allowlist");
+    restoreBundledDiscoveryState();
   });
 
   afterEach(() => {
@@ -592,7 +604,7 @@ describe("resolvePluginCapabilityProviders", () => {
   });
 
   it("preserves restrictive-allowlist compatibility only for known bundled active owners", () => {
-    mocks.readBundledDiscoveryMode.mockReturnValue("compat");
+    setBundledDiscoveryCompat();
     const active = createEmptyPluginRegistry();
     active.plugins.push({ id: "bundled-owner", origin: "bundled" } as never);
     addSpeechProvider(active, "bundled-provider", { pluginId: "bundled-owner" });
@@ -619,7 +631,6 @@ describe("resolvePluginCapabilityProviders", () => {
     expect(resolvePluginCapabilityProviders({ key: "speechProviders", cfg })).toEqual([
       expect.objectContaining({ id: "bundled-provider" }),
     ]);
-    expect(mocks.readBundledDiscoveryMode).toHaveBeenCalledTimes(1);
   });
 
   it.each([{ entries: { blocked: { enabled: false } } }, { deny: ["blocked"] }])(
@@ -1700,7 +1711,7 @@ describe("resolvePluginCapabilityProviders", () => {
   });
 
   it("loads fallback snapshots without startup dependency repair", () => {
-    mocks.readBundledDiscoveryMode.mockReturnValue("compat");
+    setBundledDiscoveryCompat();
     const cfg = { plugins: { allow: ["custom-plugin"] } } as OpenClawConfig;
     const enablementCompat = {
       plugins: {
@@ -1865,7 +1876,7 @@ describe("resolvePluginCapabilityProviders", () => {
   });
 
   it("loads only the bundled owner plugin for a targeted provider lookup", () => {
-    mocks.readBundledDiscoveryMode.mockReturnValue("compat");
+    setBundledDiscoveryCompat();
     const cfg = { plugins: { allow: ["custom-plugin"] } } as OpenClawConfig;
     const enablementCompat = {
       plugins: {

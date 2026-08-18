@@ -2,6 +2,7 @@
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { registerBundledDiscoveryModeReader } from "./bundled-discovery-mode.js";
 import {
   hasActivePluginInstallRoots,
   resolveActivePluginInstallRoots,
@@ -71,3 +72,7 @@ export function readBundledDiscoveryModeMemoized(
 export function clearBundledDiscoveryModeMemo(): void {
   memoizedBundledDiscoveryMode = undefined;
 }
+
+// config-state resolves activation through the kysely-free seam; registering
+// here keeps one canonical read path while doctor-closure graphs stay light.
+registerBundledDiscoveryModeReader(readBundledDiscoveryModeMemoized);

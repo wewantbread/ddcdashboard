@@ -12,6 +12,9 @@ import {
   resolveMemoryDreamingConfig,
   resolveMemoryDreamingPluginConfig,
 } from "../memory-host-sdk/dreaming.js";
+// Loading plugins must observe machine-state compat: importing the SQLite
+// reader registers it into the kysely-free seam config-state resolves through.
+import "./bundled-discovery-state.js";
 import { recordPluginCandidateInstallOwner } from "./candidate-install-owner.js";
 import {
   resolveEffectiveEnableState,
