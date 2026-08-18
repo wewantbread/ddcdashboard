@@ -51,6 +51,7 @@ import {
   planSessionStateAfterEntryRemoval,
   readReferencedSessionIdsAfterTargetMutation,
 } from "./session-accessor.sqlite-lifecycle-state.js";
+import { collectAdmissionProtectedSessionIds } from "./session-accessor.sqlite-maintenance.js";
 import { deleteSessionDeliveryArtifacts } from "./session-accessor.sqlite-node-artifacts.js";
 import { loadTranscriptEventsFromDatabase } from "./session-accessor.sqlite-read.js";
 import {
@@ -63,10 +64,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
-import {
-  collectAdmissionProtectedSessionIds,
-  kickSessionHistoryDiskBudgetMaintenance,
-} from "./session-history-eviction.js";
+import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";
 import { buildSessionResetBoundaryPlan } from "./session-reset-boundary-event.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 

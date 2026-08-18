@@ -847,12 +847,16 @@ export async function enforceSessionDiskBudget(params: {
       if (!entry) {
         continue;
       }
+      // `maxDiskBytes` is a hard cap: always-protected and preserveRecent entries
+      // survive. Durable conversations are evictable oldest-first (keys are sorted
+      // ascending by updatedAt above) so the disk budget actually bounds the store.
       if (
         shouldPreserveMaintenanceEntry({
           key,
           entry,
           preserveKeys: params.preserveKeys,
           preserveRecentMs: params.maintenance.preserveRecentMs,
+          scope: "capacity",
         })
       ) {
         continue;
