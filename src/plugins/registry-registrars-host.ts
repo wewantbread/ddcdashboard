@@ -1,4 +1,5 @@
 import { isOperatorScope, type OperatorScope } from "../gateway/operator-scopes.js";
+import { normalizeControlUiBridgeCapabilities } from "./control-ui-bridge-capabilities.js";
 import {
   getPluginSessionSchedulerJobGeneration,
   registerPluginSessionSchedulerJob,
@@ -361,6 +362,7 @@ export function createHostRegistrars(state: PluginRegistryState) {
     const description = normalizeOptionalHostHookString(descriptor.description);
     const placement = normalizeOptionalHostHookString(descriptor.placement);
     const requiredScopes = normalizeHostHookStringList(descriptor.requiredScopes);
+    const bridgeCapabilities = normalizeControlUiBridgeCapabilities(descriptor);
     // The flat API predates required surface/label; preserve shipped JS-plugin behavior.
     const surface = typeof descriptor.surface === "string" ? descriptor.surface : "session";
     if (
@@ -369,7 +371,8 @@ export function createHostRegistrars(state: PluginRegistryState) {
       !controlUiSurfaces.has(surface) ||
       description === "" ||
       placement === "" ||
-      requiredScopes === null
+      requiredScopes === null ||
+      bridgeCapabilities === null
     ) {
       pushDiagnostic({
         level: "error",
@@ -454,6 +457,7 @@ export function createHostRegistrars(state: PluginRegistryState) {
         path: tabPath,
         group,
         order,
+        ...bridgeCapabilities,
       },
       source: record.source,
       rootDir: record.rootDir,
