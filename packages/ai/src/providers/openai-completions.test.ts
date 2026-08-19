@@ -544,6 +544,46 @@ describe("OpenAI-compatible completions params", () => {
     });
   });
 
+  it("keeps request bytes stable across equivalent tool input order", async () => {
+    const tools = [
+      {
+        name: "zeta_tool",
+        description: "Zeta tool",
+        parameters: { type: "object", properties: {} },
+      },
+      {
+        name: "alpha_tool",
+        description: "Alpha tool",
+        parameters: { type: "object", properties: {} },
+      },
+    ];
+    const payloads: string[] = [];
+
+    for (const orderedTools of [tools, tools.toReversed()]) {
+      const stream = streamOpenAICompletions(
+        model,
+        { ...context, tools: orderedTools },
+        {
+          apiKey: "sk-test",
+          onPayload(payload) {
+            payloads.push(JSON.stringify(payload));
+            throw new Error("stop before network");
+          },
+        },
+      );
+      await stream.result();
+    }
+
+    expect(payloads[0]).toBe(payloads[1]);
+    expect(
+      (
+        JSON.parse(payloads[0] ?? "{}") as {
+          tools: Array<{ function: { name: string } }>;
+        }
+      ).tools.map((tool) => tool.function.name),
+    ).toEqual(["alpha_tool", "zeta_tool"]);
+  });
+
   it("fails locally when a pinned official OpenAI tool is unreadable", async () => {
     const stream = streamOpenAICompletions(
       model,
@@ -858,7 +898,7 @@ describe("OpenAI-compatible completions params", () => {
   });
 
   it("enables Z.AI thinking with the documented payload when requested", async () => {
-    const stream = streamOpenAICompletions(
+    const stream = streamSimpleOpenAICompletions(
       {
         ...createModel(32_000),
         provider: "zai",
@@ -868,15 +908,16 @@ describe("OpenAI-compatible completions params", () => {
       context,
       {
         apiKey: "sk-test",
-        reasoningEffort: "high",
+        reasoning: "max",
       },
     );
 
     await stream.result();
 
     expect(mockOpenAIOptionsRef.payloads[0]).toMatchObject({
-      thinking: { type: "enabled" },
+      thinking: { type: "enabled", clear_thinking: false },
     });
+    expect(mockOpenAIOptionsRef.payloads[0]).not.toHaveProperty("reasoning_effort");
     expect(mockOpenAIOptionsRef.payloads[0]).not.toHaveProperty("enable_thinking");
   });
 

@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 329483,
-  "reason": "cumulative chat/session UI growth (#122296, #122713, #122870, #122876); CI-measured build-artifacts bytes",
-  "updatedAt": "2026-08-13"
+  "startupJsGzipBytes": 344429,
+  "reason": "Channel conversation avatars (PR #125668): lead-slot render branch + row plumbing on top of the 344395 B main baseline; avatar element itself is code-split out of startup",
+  "updatedAt": "2026-08-18"
 }
