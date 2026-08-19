@@ -127,6 +127,244 @@ describe("cron tool flat-params", () => {
     });
   });
 
+  it("prepares flat add and update calls before schema validation", () => {
+    const tool = createCronTool();
+    const flatAdd = {
+      action: "add",
+      job: "truncated",
+      name: "daily summary",
+      expr: "0 9 * * *",
+      tz: "Europe/London",
+      message: "Send the summary",
+    };
+    const preparedAdd = tool.prepareArguments?.(flatAdd);
+
+    expect(preparedAdd).toMatchObject({
+      action: "add",
+      job: {
+        name: "daily summary",
+        schedule: { kind: "cron", expr: "0 9 * * *", tz: "Europe/London" },
+        payload: { kind: "agentTurn", message: "Send the summary" },
+      },
+    });
+    expect(tool.prepareArguments?.(preparedAdd)).toEqual(preparedAdd);
+    expect(
+      tool.prepareArguments?.({
+        action: "update",
+        jobId: "job-123",
+        enabled: false,
+        everyMs: 300_000,
+      }),
+    ).toMatchObject({
+      action: "update",
+      jobId: "job-123",
+      job: { enabled: false, schedule: { kind: "every", everyMs: 300_000 } },
+    });
+  });
+
+  it.each([
+    {
+      caseName: "one-shot reminder",
+      args: {
+        action: "add",
+        message:
+          "Create a cron job named exactly FLATTEST-1 that reminds me to stretch at 2026-08-16T21:29:19Z.",
+        name: "FLATTEST-1",
+        sessionTarget: "current",
+        text: "remind me to stretch at 2026-08-16T21:29:19Z",
+      },
+    },
+    {
+      caseName: "recurring reminder",
+      args: {
+        action: "add",
+        message:
+          "Create a cron job named exactly FLATTEST-2 that runs every 5 minutes and asks me if I'm still working.",
+        name: "FLATTEST-2",
+        sessionTarget: "current",
+        text: "Are you still working?",
+      },
+    },
+  ])("guides a schedule-less flat $caseName call", ({ args }) => {
+    const tool = createCronTool();
+
+    expect(() => tool.prepareArguments?.(args)).toThrow(
+      'set "at" to an ISO-8601 timestamp, "everyMs" to an interval in milliseconds (5 minutes = 300000), or "expr" to a cron expression',
+    );
+  });
+
+  it('accepts "current" on a corrected weak-model flat add', () => {
+    const tool = createCronTool();
+
+    expect(
+      tool.prepareArguments?.({
+        action: "add",
+        message:
+          "Create a cron job named exactly FLATTEST-2 that runs every 5 minutes and asks me if I'm still working.",
+        name: "FLATTEST-2",
+        sessionTarget: "current",
+        text: "Are you still working?",
+        everyMs: 300_000,
+      }),
+    ).toMatchObject({
+      job: {
+        name: "FLATTEST-2",
+        sessionTarget: "current",
+        schedule: { kind: "every", everyMs: 300_000 },
+      },
+    });
+  });
+
+  it("keeps wake text out of cron job preparation", () => {
+    const tool = createCronTool();
+    const wake = { action: "wake", text: "check now", mode: "now" };
+
+    expect(tool.prepareArguments?.(wake)).toEqual(wake);
+  });
+
+  it("normalizes scalar payload array hints and remains idempotent", () => {
+    const tool = createCronTool();
+    const prepared = tool.prepareArguments?.({
+      action: "add",
+      job: {
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: {
+          message: "Run the report",
+          toolsAllow: " read ",
+          fallbacks: " openai/gpt-5-mini ",
+        },
+      },
+    });
+
+    expect(prepared).toMatchObject({
+      job: {
+        payload: {
+          kind: "agentTurn",
+          toolsAllow: ["read"],
+          fallbacks: ["openai/gpt-5-mini"],
+        },
+      },
+    });
+    expect(tool.prepareArguments?.(prepared)).toEqual(prepared);
+  });
+
+  it("repairs a scalar flat toolsAllow before schema validation", () => {
+    const tool = createCronTool();
+    const prepared = tool.prepareArguments?.({
+      action: "add",
+      everyMs: 3_600_000,
+      job: "truncated",
+      message: "status summary",
+      name: "FLATTEST-9",
+      text: "status summary",
+      toolsAllow: "read",
+    });
+
+    expect(prepared).toMatchObject({
+      job: {
+        name: "FLATTEST-9",
+        schedule: { kind: "every", everyMs: 3_600_000 },
+        payload: {
+          kind: "agentTurn",
+          message: "status summary",
+          text: "status summary",
+          toolsAllow: ["read"],
+        },
+      },
+    });
+    expect(tool.prepareArguments?.(prepared)).toEqual(prepared);
+  });
+
+  it("leaves blank scalar capability fields invalid", () => {
+    const tool = createCronTool();
+    const prepared = tool.prepareArguments?.({
+      action: "add",
+      job: {
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: { message: "Run the report", toolsAllow: "" },
+      },
+    }) as { job?: { payload?: { toolsAllow?: unknown } } };
+
+    expect(prepared.job?.payload?.toolsAllow).toBe("");
+  });
+
+  it("rejects wake-only mode on add and update calls", async () => {
+    const tool = createCronTool(undefined, { callGatewayTool: callGatewayToolMock });
+
+    for (const action of ["add", "update"] as const) {
+      expect(() => tool.prepareArguments?.({ action, mode: "now" })).toThrow(
+        '"mode" is only valid for action="wake"',
+      );
+    }
+
+    const nestedCalls = [
+      {
+        action: "add",
+        mode: "now",
+        job: {
+          schedule: { kind: "every", everyMs: 60_000 },
+          payload: { kind: "agentTurn", message: "Run the report" },
+        },
+      },
+      {
+        action: "update",
+        id: "job-1",
+        mode: "now",
+        job: { enabled: false },
+      },
+    ] as const;
+    for (const args of nestedCalls) {
+      expect(() => tool.prepareArguments?.(args)).toThrow('"mode" is only valid for action="wake"');
+      await expect(tool.execute(`call-nested-mode-${args.action}`, args)).rejects.toThrow(
+        '"mode" is only valid for action="wake"',
+      );
+    }
+    expect(callGatewayToolMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects conflicting flat schedule fields on add", () => {
+    const tool = createCronTool();
+
+    for (const args of [
+      { action: "add", name: "S1", at: "2026-09-01T09:00:00Z", everyMs: 300_000, message: "x" },
+      {
+        action: "add",
+        name: "S2",
+        at: "2026-09-01T09:00:00Z",
+        atMs: 1_800_000_000_000,
+        message: "x",
+      },
+      { action: "add", name: "S3", everyMs: 300_000, expr: "0 * * * *", message: "x" },
+    ] as const) {
+      expect(() => tool.prepareArguments?.(args)).toThrow("takes exactly one schedule field");
+    }
+  });
+
+  it("rejects flat tz without a cron expression on add", () => {
+    const tool = createCronTool();
+
+    expect(() =>
+      tool.prepareArguments?.({ action: "add", name: "TZ1", tz: "Europe/London", message: "x" }),
+    ).toThrow('"tz" is only valid alongside "expr"');
+  });
+
+  it("resolves a flat message/text payload conflict by precedence, not rejection", () => {
+    const tool = createCronTool();
+
+    // Payload conflicts stay recoverable (weak-model tolerance): message wins,
+    // no throw. Only schedule conflicts reject.
+    const prepared = tool.prepareArguments?.({
+      action: "add",
+      name: "P1",
+      everyMs: 300_000,
+      message: "do the thing",
+      text: "stray",
+    }) as { job?: { payload?: { kind?: string; message?: string } } };
+
+    expect(prepared.job?.payload?.kind).toBe("agentTurn");
+    expect(prepared.job?.payload?.message).toBe("do the thing");
+  });
+
   it("recovers flat script payload fields before agent-turn hints", async () => {
     const tool = createCronTool(undefined, { callGatewayTool: callGatewayToolMock });
 
