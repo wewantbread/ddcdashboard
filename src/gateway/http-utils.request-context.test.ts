@@ -19,6 +19,7 @@ vi.mock("../config/sessions/session-accessor.js", async (importOriginal) => {
   return {
     ...actual,
     resolveSessionEntryAccessTarget: (params: { sessionKey: string }) => ({
+      canonicalKey: params.sessionKey,
       entry: sessionEntries.get(params.sessionKey),
     }),
   };
@@ -38,6 +39,7 @@ describe("resolveGatewayRequestContext", () => {
     const result = resolveGatewayRequestContext({
       req: createReq({ "x-openclaw-message-channel": " Custom-Channel " }),
       model: "openclaw",
+      senderIsOwner: true,
       sessionPrefix: "openai",
       defaultMessageChannel: "webchat",
       useMessageChannelHeader: true,
@@ -50,6 +52,7 @@ describe("resolveGatewayRequestContext", () => {
     const result = resolveGatewayRequestContext({
       req: createReq({ "x-openclaw-message-channel": "custom-channel" }),
       model: "openclaw",
+      senderIsOwner: true,
       sessionPrefix: "openresponses",
       defaultMessageChannel: "webchat",
       useMessageChannelHeader: false,
@@ -62,6 +65,7 @@ describe("resolveGatewayRequestContext", () => {
     const result = resolveGatewayRequestContext({
       req: createReq(),
       model: "openclaw",
+      senderIsOwner: true,
       user: "alice",
       sessionPrefix: "openresponses",
       defaultMessageChannel: "webchat",
@@ -74,11 +78,42 @@ describe("resolveGatewayRequestContext", () => {
     const result = resolveGatewayRequestContext({
       req: createReq({ "x-openclaw-session-key": "customer-case-42" }),
       model: "openclaw",
+      senderIsOwner: false,
       sessionPrefix: "openai",
       defaultMessageChannel: "webchat",
     });
 
     expect(result.sessionKey).toBe("customer-case-42");
+  });
+
+  it.each([
+    ["agent:main:dashboard:incognito-private", undefined],
+    ["dashboard:incognito-private", undefined],
+    ["customer-incognito-alias", { sessionId: "incognito-session", incognito: true }],
+  ] as const)("keeps incognito override %s admin-only", (sessionKey, entry) => {
+    if (entry) {
+      sessionEntries.set(`agent:main:${sessionKey}`, entry);
+    }
+
+    expect(() =>
+      resolveGatewayRequestContext({
+        req: createReq({ "x-openclaw-session-key": sessionKey }),
+        model: "openclaw",
+        senderIsOwner: false,
+        sessionPrefix: "openai",
+        defaultMessageChannel: "webchat",
+      }),
+    ).toThrow(`Incognito session "${sessionKey}" was not found.`);
+
+    expect(
+      resolveGatewayRequestContext({
+        req: createReq({ "x-openclaw-session-key": sessionKey }),
+        model: "openclaw",
+        senderIsOwner: true,
+        sessionPrefix: "openai",
+        defaultMessageChannel: "webchat",
+      }).sessionKey,
+    ).toBe(sessionKey);
   });
 
   it.each([
@@ -95,6 +130,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq({ "x-openclaw-session-key": sessionKey }),
         model: "openclaw",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),
@@ -108,6 +144,7 @@ describe("resolveGatewayRequestContext", () => {
     const result = resolveGatewayRequestContext({
       req: createReq({ "x-openclaw-session-key": sessionKey }),
       model: "openclaw",
+      senderIsOwner: true,
       sessionPrefix: "openai",
       defaultMessageChannel: "webchat",
     });
@@ -127,6 +164,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq({ "x-openclaw-session-key": sessionKey }),
         model: "openclaw",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),
@@ -138,6 +176,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq({ "x-openclaw-agent-id": "missing-agent" }),
         model: "openclaw",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),
@@ -147,6 +186,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq(),
         model: "openclaw/missing-agent",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),
@@ -156,6 +196,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq({ "x-openclaw-agent-id": "!!!" }),
         model: "openclaw",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),
@@ -167,6 +208,7 @@ describe("resolveGatewayRequestContext", () => {
       resolveGatewayRequestContext({
         req: createReq({ "x-openclaw-agent-id": "main" }),
         model: "gpt-4o",
+        senderIsOwner: true,
         sessionPrefix: "openai",
         defaultMessageChannel: "webchat",
       }),

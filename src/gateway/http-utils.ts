@@ -32,6 +32,7 @@ import {
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { getHeader } from "./http-auth-utils.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
+import { isIncognitoSessionTarget } from "./session-sharing.js";
 import { canonicalizeSessionKeyForAgent } from "./session-store-key.js";
 
 export {
@@ -63,8 +64,10 @@ class UnknownGatewayAgentError extends Error {
 }
 
 class GatewaySessionKeyOverrideError extends Error {
-  constructor() {
-    super("`x-openclaw-session-key` cannot use reserved internal session namespaces.");
+  constructor(
+    message = "`x-openclaw-session-key` cannot use reserved internal session namespaces.",
+  ) {
+    super(message);
     this.name = "GatewaySessionKeyOverrideError";
   }
 }
@@ -243,6 +246,7 @@ export function resolveAgentIdForRequest(params: {
 function resolveSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
+  senderIsOwner: boolean;
   user?: string | undefined;
   prefix: string;
 }): string {
@@ -250,6 +254,18 @@ function resolveSessionKey(params: {
   if (explicit) {
     if (isReservedSessionKeyOverride(explicit, params.agentId)) {
       throw new GatewaySessionKeyOverrideError();
+    }
+    if (!params.senderIsOwner) {
+      const lookupKey = explicit.startsWith("agent:")
+        ? explicit
+        : canonicalizeSessionKeyForAgent(params.agentId, explicit);
+      const target = resolveSessionEntryAccessTarget({
+        cfg: getRuntimeConfig(),
+        sessionKey: lookupKey,
+      });
+      if (isIncognitoSessionTarget({ sessionKey: explicit, target })) {
+        throw new GatewaySessionKeyOverrideError(`Incognito session "${explicit}" was not found.`);
+      }
     }
     return explicit;
   }
@@ -288,6 +304,7 @@ function isReservedSessionKeyOverride(sessionKey: string, agentId: string): bool
 export function resolveGatewayRequestContext(params: {
   req: IncomingMessage;
   model: string | undefined;
+  senderIsOwner: boolean;
   user?: string | undefined;
   sessionPrefix: string;
   defaultMessageChannel: string;
@@ -297,6 +314,7 @@ export function resolveGatewayRequestContext(params: {
   const sessionKey = resolveSessionKey({
     req: params.req,
     agentId,
+    senderIsOwner: params.senderIsOwner,
     user: params.user,
     prefix: params.sessionPrefix,
   });

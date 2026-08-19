@@ -611,6 +611,7 @@ export async function handleOpenResponsesHttpRequest(
       req,
       model,
       user,
+      senderIsOwner,
       sessionPrefix: "openresponses",
       defaultMessageChannel: "webchat",
       useMessageChannelHeader: true,
