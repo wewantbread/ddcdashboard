@@ -1,4 +1,4 @@
-import { createDeferred } from "../shared/deferred.js";
+import { createDeferredCore as createDeferred } from "../shared/deferred.js";
 
 export type RuntimeConfigWriteApplicationOutcome =
   | { status: "applied" }
@@ -67,5 +67,6 @@ export function attachRuntimeConfigWriteApplication<T extends object>(
 export function getRuntimeConfigWriteApplication(
   target: object,
 ): RuntimeConfigWriteApplication | undefined {
+  // SAFETY: this private symbol is attached only by attachRuntimeConfigWriteApplication.
   return (target as RuntimeConfigWriteApplicationCarrier)[runtimeConfigWriteApplication];
 }

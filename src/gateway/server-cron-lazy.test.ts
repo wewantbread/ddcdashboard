@@ -409,7 +409,7 @@ function createCronState(cron: GatewayCronServiceContract): GatewayCronState {
     stopExitWatchers: vi.fn(),
     reconcileStreamWatchers: vi.fn(async () => {}),
     stopStreamWatchers: vi.fn(async () => {}),
-    reconcileHeartbeatJobs: vi.fn(async () => {}),
+    reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
   } satisfies GatewayCronState;
 }
 

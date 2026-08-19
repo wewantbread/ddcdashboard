@@ -102,6 +102,11 @@ import {
 import { buildGatewaySessionEventFields } from "./session-event-payload.js";
 import { loadGatewaySessionRow } from "./session-utils.js";
 
+export type GatewayHeartbeatReconciliationResult =
+  | { status: "converged" }
+  | { status: "retry-scheduled" }
+  | { status: "superseded" };
+
 export type GatewayCronState = {
   cron: GatewayCronServiceContract;
   storePath: string;
@@ -114,7 +119,7 @@ export type GatewayCronState = {
   stopExitWatchers: () => void;
   reconcileStreamWatchers: () => Promise<void>;
   stopStreamWatchers: () => Promise<void>;
-  reconcileHeartbeatJobs: (cfg?: OpenClawConfig) => Promise<void>;
+  reconcileHeartbeatJobs: (cfg?: OpenClawConfig) => Promise<GatewayHeartbeatReconciliationResult>;
 };
 
 function classifyCronScriptFailure(code: CronTriggerFailureCode): CronRunErrorClassification {
@@ -1402,7 +1407,9 @@ export function buildGatewayCronService(params: {
   // executes, so an older reload's convergence can never clobber a newer one.
   // A failed pass schedules one bounded retry; a newer request supersedes it.
   let heartbeatReconcileEpoch = 0;
-  let heartbeatReconcileTail: Promise<void> = Promise.resolve();
+  let heartbeatReconcileTail: Promise<GatewayHeartbeatReconciliationResult> = Promise.resolve({
+    status: "converged",
+  });
   let heartbeatRetryTimer: NodeJS.Timeout | undefined;
   const stopHeartbeatReconcileRetry = () => {
     // Also invalidate any in-flight pass so a post-stop retry cannot fire.
@@ -1412,15 +1419,17 @@ export function buildGatewayCronService(params: {
       heartbeatRetryTimer = undefined;
     }
   };
-  const reconcileHeartbeatJobs = (cfgOverride?: OpenClawConfig): Promise<void> => {
+  const reconcileHeartbeatJobs = (
+    cfgOverride?: OpenClawConfig,
+  ): Promise<GatewayHeartbeatReconciliationResult> => {
     const epoch = ++heartbeatReconcileEpoch;
     if (heartbeatRetryTimer) {
       clearTimeout(heartbeatRetryTimer);
       heartbeatRetryTimer = undefined;
     }
-    const pass = async () => {
+    const pass = async (): Promise<GatewayHeartbeatReconciliationResult> => {
       if (epoch !== heartbeatReconcileEpoch) {
-        return;
+        return { status: "superseded" };
       }
       const { ok } = await reconcileHeartbeatMonitorJobs({
         cron,
@@ -1434,6 +1443,7 @@ export function buildGatewayCronService(params: {
         }, 30_000);
         heartbeatRetryTimer.unref?.();
       }
+      return { status: ok ? "converged" : "retry-scheduled" };
     };
     heartbeatReconcileTail = heartbeatReconcileTail.then(pass, pass);
     return heartbeatReconcileTail;

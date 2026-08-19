@@ -177,7 +177,7 @@ function createTestCronState(overrides: Partial<GatewayCronState> = {}): Gateway
     stopExitWatchers: vi.fn(),
     reconcileStreamWatchers: vi.fn(async () => {}),
     stopStreamWatchers: vi.fn(async () => {}),
-    reconcileHeartbeatJobs: vi.fn(async () => {}),
+    reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     ...overrides,
   };
 }
@@ -284,7 +284,7 @@ const hoisted = vi.hoisted(() => ({
     stopExitWatchers: vi.fn(),
     reconcileStreamWatchers: vi.fn(async () => {}),
     stopStreamWatchers: vi.fn(async () => {}),
-    reconcileHeartbeatJobs: vi.fn(async () => {}),
+    reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
   })),
 }));
 
@@ -621,7 +621,9 @@ function createReloadHandlersForTest(
 ) {
   const cron = { start: vi.fn(async () => {}), stop: vi.fn() };
   const stopExitWatchers = vi.fn();
-  const reconcileHeartbeatJobs = vi.fn(async () => {});
+  const reconcileHeartbeatJobs = vi.fn<GatewayCronState["reconcileHeartbeatJobs"]>(async () => ({
+    status: "converged",
+  }));
   const heartbeatRunner = {
     stop: vi.fn(),
     updateConfig: vi.fn(),
@@ -1228,7 +1230,7 @@ describe("gateway hot reload model state", () => {
       stopExitWatchers: vi.fn(),
       reconcileStreamWatchers: vi.fn(async () => {}),
       stopStreamWatchers: vi.fn(async () => {}),
-      reconcileHeartbeatJobs: vi.fn(async () => {}),
+      reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     };
     hoisted.buildGatewayCronService.mockImplementationOnce(() => {
       order.push("build-new");
@@ -1291,7 +1293,7 @@ describe("gateway hot reload model state", () => {
       stopExitWatchers: vi.fn(),
       reconcileStreamWatchers: vi.fn(async () => {}),
       stopStreamWatchers: vi.fn(async () => {}),
-      reconcileHeartbeatJobs: vi.fn(async () => {}),
+      reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     };
     hoisted.buildGatewayCronService.mockReturnValueOnce(rebuiltCronState);
     const { applyHotReload, cronReconciliation } = createReloadHandlersForTest();
@@ -1330,20 +1332,46 @@ describe("gateway hot reload model state", () => {
     expect(cron.stop).not.toHaveBeenCalled();
   });
 
-  it("applies an in-place heartbeat update without a recovery restart owner", async () => {
+  it("waits for heartbeat monitor reconciliation before publishing a hot reload", async () => {
     const { applyHotReload, heartbeatRunner, reconcileHeartbeatJobs, setState } =
       createReloadHandlersForTest(undefined, undefined, undefined, vi.fn(), false);
     const nextConfig = { agents: { defaults: { heartbeat: { every: "1h" } } } } as OpenClawConfig;
+    let releaseReconciliation!: () => void;
+    const reconciliation = new Promise<{ status: "converged" }>((resolve) => {
+      releaseReconciliation = () => resolve({ status: "converged" });
+    });
+    reconcileHeartbeatJobs.mockImplementationOnce(async () => await reconciliation);
 
-    await expect(
-      applyHotReload(createHotTailPlan({ restartHeartbeat: true }), nextConfig),
-    ).resolves.toBeUndefined();
+    const reload = applyHotReload(createHotTailPlan({ restartHeartbeat: true }), nextConfig);
+    await waitForFast(() => expect(reconcileHeartbeatJobs).toHaveBeenCalledWith(nextConfig));
 
     expect(heartbeatRunner.updateConfig).toHaveBeenCalledWith(nextConfig);
-    // Heartbeat cadence lives in system-owned cron monitor jobs; the reload
-    // must reconverge them or `heartbeat.every` changes silently never apply.
-    await waitForFast(() => expect(reconcileHeartbeatJobs).toHaveBeenCalledWith(nextConfig));
+    expect(setState).not.toHaveBeenCalled();
+
+    releaseReconciliation();
+    await expect(reload).resolves.toBeUndefined();
     expect(setState).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an ownerless heartbeat reconciliation that schedules a retry", async () => {
+    const { applyHotReload, reconcileHeartbeatJobs, setState } = createReloadHandlersForTest(
+      undefined,
+      undefined,
+      undefined,
+      vi.fn(),
+      false,
+    );
+    reconcileHeartbeatJobs.mockResolvedValueOnce({ status: "retry-scheduled" });
+
+    await expect(
+      applyHotReload(createHotTailPlan({ restartHeartbeat: true }), {
+        agents: { defaults: { heartbeat: { every: "0m" } } },
+      } as OpenClawConfig),
+    ).rejects.toThrow(
+      "config hot reload committed but could not schedule recovery for heartbeat monitor",
+    );
+
+    expect(setState).not.toHaveBeenCalled();
   });
 
   it("rejects an ownerless heartbeat update failure before runtime commit", async () => {
@@ -1399,7 +1427,7 @@ describe("gateway hot reload model state", () => {
         stopExitWatchers: vi.fn(),
         reconcileStreamWatchers: vi.fn(async () => {}),
         stopStreamWatchers: vi.fn(async () => {}),
-        reconcileHeartbeatJobs: vi.fn(async () => {}),
+        reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
       });
       const { applyHotReload, setState } = createReloadHandlersForTest(logReload);
 
@@ -1435,7 +1463,7 @@ describe("gateway hot reload model state", () => {
       stopExitWatchers: vi.fn(),
       reconcileStreamWatchers: vi.fn(async () => {}),
       stopStreamWatchers: vi.fn(async () => {}),
-      reconcileHeartbeatJobs: vi.fn(async () => {}),
+      reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     };
     const secondCronState = {
       cron: { start: vi.fn(async () => {}), stop: vi.fn() },
@@ -1445,7 +1473,7 @@ describe("gateway hot reload model state", () => {
       stopExitWatchers: vi.fn(),
       reconcileStreamWatchers: vi.fn(async () => {}),
       stopStreamWatchers: vi.fn(async () => {}),
-      reconcileHeartbeatJobs: vi.fn(async () => {}),
+      reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     };
     hoisted.buildGatewayCronService
       .mockReturnValueOnce(firstCronState)
@@ -5168,7 +5196,7 @@ describe("gateway plugin hot reload handlers", () => {
       stopExitWatchers: vi.fn(),
       reconcileStreamWatchers: vi.fn(async () => {}),
       stopStreamWatchers: vi.fn(async () => {}),
-      reconcileHeartbeatJobs: vi.fn(async () => {}),
+      reconcileHeartbeatJobs: vi.fn(async () => ({ status: "converged" as const })),
     };
     hoisted.buildGatewayCronService.mockImplementationOnce((params) => {
       events.push(`cron-build:${params?.env?.[envKey]}:${targetEnv[envKey]}`);
