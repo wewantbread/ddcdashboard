@@ -2,7 +2,6 @@ import { kindFromMime, normalizeMimeType } from "@openclaw/media-core/mime";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 // DashScope-compatible video provider adapts DashScope-style generation APIs.
-import { readResponseWithLimit } from "../infra/http-body.js";
 import { resolveGeneratedMediaMaxBytes } from "../media/configured-max-bytes.js";
 import {
   assertOkOrThrowHttpError,
@@ -11,6 +10,7 @@ import {
   executeProviderOperationWithRetry,
   fetchWithTimeoutGuarded,
   postJsonRequest,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   resolveProviderOperationTimeoutMs,
   waitProviderOperationPollInterval,
@@ -652,20 +652,18 @@ export async function downloadDashscopeGeneratedVideos(params: {
         void result.response.body?.cancel(error).catch(() => undefined);
         throw error;
       }
-      buffer = await readResponseWithLimit(result.response, params.maxBytes, {
-        chunkTimeoutMs: downloadTimeoutMs,
-        onOverflow: ({ maxBytes }) =>
-          new Error(`${params.providerLabel} generated video download exceeds ${maxBytes} bytes`),
-        onIdleTimeout: ({ chunkTimeoutMs }) =>
-          new Error(
-            `${params.providerLabel} generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
-          ),
-      });
-      if (buffer.byteLength === 0) {
-        throw new Error(
-          `${params.providerLabel} generated video download: malformed video response`,
-        );
-      }
+      buffer = Buffer.from(
+        await readProviderBinaryResponse(result.response, downloadLabel, "video", {
+          maxBytes: params.maxBytes,
+          chunkTimeoutMs: downloadTimeoutMs,
+          onOverflow: ({ maxBytes }) =>
+            new Error(`${params.providerLabel} generated video download exceeds ${maxBytes} bytes`),
+          onIdleTimeout: ({ chunkTimeoutMs }) =>
+            new Error(
+              `${params.providerLabel} generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+            ),
+        }),
+      );
       mimeType = result.response.headers.get("content-type")?.trim() || "video/mp4";
     } finally {
       await result.release();

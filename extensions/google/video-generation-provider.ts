@@ -2,9 +2,9 @@
 import { resolveGeneratedMediaMaxBytes } from "openclaw/plugin-sdk/media-generation-runtime";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
 import {
-  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
   executeProviderOperationWithRetry,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   resolveProviderOperationTimeoutMs,
   waitProviderOperationPollInterval,
@@ -247,24 +247,16 @@ async function downloadGeneratedVideoFromUri(params: {
             `Failed to download Google generated video: ${response.status} ${response.statusText}`,
           );
         }
-        try {
-          assertProviderBinaryResponseContent(response, "Google generated video download", "video");
-        } catch (error) {
-          // Same tee constraint as the non-ok branch above: cancel fire-and-forget so the
-          // rejected response cannot hold the dispatcher past release().
-          void response.body?.cancel().catch(() => undefined);
-          throw error;
-        }
-        const buffer = await readResponseWithLimit(response, params.maxBytes, {
-          chunkTimeoutMs: params.timeoutMs,
-          onOverflow: ({ maxBytes }) =>
-            new Error(`Google generated video download exceeds ${maxBytes} bytes`),
-          onIdleTimeout: ({ chunkTimeoutMs }) =>
-            new Error(`Google generated video download stalled after ${chunkTimeoutMs}ms`),
-        });
-        if (buffer.byteLength === 0) {
-          throw new Error("Google generated video download: malformed video response");
-        }
+        const buffer = Buffer.from(
+          await readProviderBinaryResponse(response, "Google generated video download", "video", {
+            maxBytes: params.maxBytes,
+            chunkTimeoutMs: params.timeoutMs,
+            onOverflow: ({ maxBytes }) =>
+              new Error(`Google generated video download exceeds ${maxBytes} bytes`),
+            onIdleTimeout: ({ chunkTimeoutMs }) =>
+              new Error(`Google generated video download stalled after ${chunkTimeoutMs}ms`),
+          }),
+        );
         return {
           buffer,
           mimeType:

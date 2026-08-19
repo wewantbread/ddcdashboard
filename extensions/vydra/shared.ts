@@ -4,17 +4,16 @@ import { extensionForMime, type MediaKind } from "openclaw/plugin-sdk/media-mime
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
 import {
   assertOkOrThrowHttpError,
-  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
   createProviderOperationTimeoutResolver,
   fetchWithTimeoutGuarded,
   pollProviderOperationJson,
+  readProviderBinaryResponse,
   resolveProviderHttpRequestConfig,
   sanitizeConfiguredModelProviderRequest,
   type ProviderOperationDeadline,
   type ProviderOperationTimeoutMs,
 } from "openclaw/plugin-sdk/provider-http";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   asOptionalRecord,
@@ -288,18 +287,6 @@ export async function downloadVydraAsset(params: {
         bodyTimeoutMs: resolveTimeoutMs,
         onBodyTimeout: () => createVydraTimeoutError(deadline),
       });
-      try {
-        assertProviderBinaryResponseContent(
-          result.response,
-          `Vydra ${params.kind} download`,
-          params.kind,
-        );
-      } catch (error) {
-        // A debug-capture clone can keep the tee open, so waiting for cancel would hang
-        // before the rejected response and its dispatcher can be released.
-        void result.response.body?.cancel().catch(() => undefined);
-        throw error;
-      }
       const mimeType =
         result.response.headers.get("content-type")?.trim() ||
         (params.kind === "image"
@@ -307,15 +294,20 @@ export async function downloadVydraAsset(params: {
           : params.kind === "audio"
             ? "audio/mpeg"
             : "video/mp4");
-      const buffer = await readResponseWithLimit(result.response, params.maxBytes, {
-        timeoutMs: resolveTimeoutMs,
-        onTimeout: () => createVydraTimeoutError(deadline),
-        onOverflow: ({ maxBytes }) =>
-          new Error(`Vydra ${params.kind} download exceeds ${maxBytes} bytes`),
-      });
-      if (buffer.byteLength === 0) {
-        throw new Error(`Vydra ${params.kind} download: malformed ${params.kind} response`);
-      }
+      const buffer = Buffer.from(
+        await readProviderBinaryResponse(
+          result.response,
+          `Vydra ${params.kind} download`,
+          params.kind,
+          {
+            maxBytes: params.maxBytes,
+            timeoutMs: resolveTimeoutMs,
+            onTimeout: () => createVydraTimeoutError(deadline),
+            onOverflow: ({ maxBytes }) =>
+              new Error(`Vydra ${params.kind} download exceeds ${maxBytes} bytes`),
+          },
+        ),
+      );
       const extension = resolveVydraFileExtension(params.kind, mimeType);
       const fileStem =
         params.kind === "image" ? "image" : params.kind === "audio" ? "audio" : "video";

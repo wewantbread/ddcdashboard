@@ -5,12 +5,11 @@ import { resolvePositiveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtim
 import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import {
   assertOkOrThrowHttpError,
-  assertProviderBinaryResponseContent,
   createProviderOperationDeadline,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   type ProviderOperationDeadline,
 } from "openclaw/plugin-sdk/provider-http";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   fetchWithSsrFGuard,
   type SsrFPolicy,
@@ -205,25 +204,20 @@ async function downloadFalVideo(
   });
   try {
     await assertOkOrThrowHttpError(response, "fal generated video download failed");
-    try {
-      assertProviderBinaryResponseContent(response, "fal generated video download", "video");
-    } catch (error) {
-      // A debug-capture clone can keep the tee open, so waiting for cancel would hang
-      // before the rejected response and its dispatcher can be released.
-      void response.body?.cancel().catch(() => undefined);
-      throw error;
-    }
     const mimeType = normalizeOptionalString(response.headers.get("content-type")) ?? "video/mp4";
     const fileName = `video-1.${extensionForMime(mimeType)?.slice(1) ?? "mp4"}`;
     let exceededMaxBytes = false;
     let buffer: Buffer;
     try {
-      buffer = await readResponseWithLimit(response, maxBytes, {
-        onOverflow: ({ maxBytes: maxBytesLocal }) => {
-          exceededMaxBytes = true;
-          return new Error(`fal generated video download exceeds ${maxBytesLocal} bytes`);
-        },
-      });
+      buffer = Buffer.from(
+        await readProviderBinaryResponse(response, "fal generated video download", "video", {
+          maxBytes,
+          onOverflow: ({ maxBytes: maxBytesLocal }) => {
+            exceededMaxBytes = true;
+            return new Error(`fal generated video download exceeds ${maxBytesLocal} bytes`);
+          },
+        }),
+      );
     } catch (error) {
       if (exceededMaxBytes) {
         return {
@@ -233,9 +227,6 @@ async function downloadFalVideo(
         };
       }
       throw error;
-    }
-    if (buffer.byteLength === 0) {
-      throw new Error("fal generated video download: malformed video response");
     }
     return {
       url,

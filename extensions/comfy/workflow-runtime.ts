@@ -12,12 +12,11 @@ import {
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
 import {
   assertOkOrThrowHttpError,
-  assertProviderBinaryResponseContent,
   normalizeBaseUrl,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   resolveProviderHttpRequestConfig,
 } from "openclaw/plugin-sdk/provider-http";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   normalizeSecretInputString,
   resolveSecretInputString,
@@ -584,26 +583,18 @@ async function downloadOutputFile(params: {
   const downloadLabel = `Comfy ${params.capability} output download`;
   try {
     await assertOkOrThrowHttpError(firstResponse.response, "Comfy output download failed");
-    try {
-      assertProviderBinaryResponseContent(firstResponse.response, downloadLabel, params.capability);
-    } catch (error) {
-      // A debug-capture clone can keep the tee open, so waiting for cancel would hang
-      // before the rejected response and its dispatcher can be released.
-      void firstResponse.response.body?.cancel().catch(() => undefined);
-      throw error;
-    }
     const mimeType =
       normalizeOptionalString(firstResponse.response.headers.get("content-type")) ||
       "application/octet-stream";
-    const buffer = await readResponseWithLimit(firstResponse.response, params.maxBytes, {
-      chunkTimeoutMs: params.timeoutMs,
-      onOverflow: ({ maxBytes }) => new Error(`${downloadLabel} exceeds ${maxBytes} bytes`),
-      onIdleTimeout: ({ chunkTimeoutMs }) =>
-        new Error(`${downloadLabel} stalled after ${chunkTimeoutMs}ms`),
-    });
-    if (buffer.byteLength === 0) {
-      throw new Error(`${downloadLabel}: malformed ${params.capability} response`);
-    }
+    const buffer = Buffer.from(
+      await readProviderBinaryResponse(firstResponse.response, downloadLabel, params.capability, {
+        maxBytes: params.maxBytes,
+        chunkTimeoutMs: params.timeoutMs,
+        onOverflow: ({ maxBytes }) => new Error(`${downloadLabel} exceeds ${maxBytes} bytes`),
+        onIdleTimeout: ({ chunkTimeoutMs }) =>
+          new Error(`${downloadLabel} stalled after ${chunkTimeoutMs}ms`),
+      }),
+    );
     return { buffer, mimeType };
   } finally {
     await firstResponse.release();
