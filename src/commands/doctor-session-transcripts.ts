@@ -19,6 +19,7 @@ import {
 } from "../config/sessions/transcript-tree.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HealthFinding, HealthRepairEffect } from "../flows/health-checks.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { replaceFileAtomic } from "../infra/replace-file.js";
 import { runPostSessionPluginDoctorStateRepairs } from "../infra/state-migrations.doctor.js";
 import { shortenHomePath } from "../utils.js";
@@ -386,12 +387,12 @@ async function repairBrokenSessionTranscriptFile(params: {
   } catch (err) {
     return {
       filePath: params.filePath,
-      broken: false,
+      broken: params.shouldRepair,
       repaired: false,
       originalEntries: 0,
       activeEntries: 0,
       legacyOpenAICodexEntries: 0,
-      reason: String(err),
+      reason: formatErrorMessage(err),
     };
   }
 }
@@ -498,12 +499,17 @@ export async function noteSessionTranscriptHealth(params?: {
       `- Found ${broken.length} transcript file${broken.length === 1 ? "" : "s"} with legacy state.`,
       ...broken.slice(0, 20).map((result) => {
         const backup = result.backupPath ? ` backup=${shortenHomePath(result.backupPath)}` : "";
-        const status = result.repaired ? "repaired" : "needs repair";
+        const status = result.repaired
+          ? "repaired"
+          : result.reason && result.reason !== "no active branch"
+            ? "repair failed"
+            : "needs repair";
         const metadata =
           result.legacyOpenAICodexEntries > 0
             ? ` openai-codex=${result.legacyOpenAICodexEntries}`
             : "";
-        return `- ${shortenHomePath(result.filePath)} ${status} entries=${result.originalEntries}->${result.activeEntries + 1}${metadata}${backup}`;
+        const reason = result.reason ? ` error=${result.reason.replace(/\s+/g, " ").trim()}` : "";
+        return `- ${shortenHomePath(result.filePath)} ${status} entries=${result.originalEntries}->${result.activeEntries + 1}${metadata}${backup}${reason}`;
       }),
     ];
     if (broken.length > 20) {
