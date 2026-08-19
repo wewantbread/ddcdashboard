@@ -1078,15 +1078,16 @@ function resolveFeishuDmFieldBasePath(params: {
   field: "dmPolicy" | "allowFrom";
 }): string {
   const accountId = params.accountId?.trim() || DEFAULT_ACCOUNT_ID;
-  const channelConfig = params.cfg.channels?.feishu as FeishuConfig | undefined;
-  const accountConfig = channelConfig?.accounts?.[accountId];
-  if (accountConfig?.[params.field] !== undefined) {
+  const channelConfig: unknown = params.cfg.channels?.feishu;
+  const accounts = isRecord(channelConfig) ? channelConfig.accounts : undefined;
+  const accountConfig = isRecord(accounts) ? accounts[accountId] : undefined;
+  if (isRecord(accountConfig) && accountConfig[params.field] !== undefined) {
     return `channels.feishu.accounts.${accountId}.`;
   }
-  if (channelConfig?.[params.field] !== undefined) {
+  if (isRecord(channelConfig) && channelConfig[params.field] !== undefined) {
     return "channels.feishu.";
   }
-  return accountConfig ? `channels.feishu.accounts.${accountId}.` : "channels.feishu.";
+  return isRecord(accountConfig) ? `channels.feishu.accounts.${accountId}.` : "channels.feishu.";
 }
 
 const resolveFeishuDmPolicy = (params: Parameters<typeof resolveFeishuDmPolicyBase>[0]) => {
