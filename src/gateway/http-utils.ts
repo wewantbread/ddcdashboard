@@ -255,7 +255,13 @@ function resolveSessionKey(params: {
   }
 
   const user = params.user?.trim();
-  const mainKey = user ? `${params.prefix}-user:${user}` : `${params.prefix}:${randomUUID()}`;
+  // OpenAI `user` is an abuse-tracking field. Bind a durable session only when
+  // the value looks like a conversation id (`conv:…`, `raycast:chat:…`).
+  // Bare app constants such as `raycast-extension` must not share one transcript.
+  const mainKey =
+    user && user.includes(":")
+      ? `${params.prefix}-user:${user}`
+      : `${params.prefix}:${randomUUID()}`;
   return buildAgentMainSessionKey({ agentId: params.agentId, mainKey });
 }
 

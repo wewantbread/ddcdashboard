@@ -102,7 +102,9 @@ Optional request headers:
 
 By default the endpoint is **stateless per request** (a new session key is generated each call).
 
-If the request includes an OpenAI `user` string, the Gateway derives a stable session key from it so repeated calls can share an agent session. For custom apps, reuse the same `user` value per conversation thread; avoid account-level identifiers unless you want multiple conversations/devices to share one OpenClaw session. Use `x-openclaw-session-key` only when you need explicit routing control across multiple clients/threads, with application-owned keys that avoid the reserved namespaces above.
+If the request includes an OpenAI `user` string **that contains `:`** (for example `conv:YOUR_CONVERSATION_ID`), the Gateway derives a stable session key from it so repeated calls can share an agent session. Bare values such as `alice` or `raycast-extension` are treated as OpenAI abuse-tracking identifiers and stay **stateless** — they do not pin one growing transcript.
+
+For custom apps, reuse a conversation-shaped `user` per thread, or send `x-openclaw-session-key` when you need explicit routing control across clients. Application-owned keys must avoid the reserved namespaces above.
 
 ## Request limits
 

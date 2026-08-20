@@ -404,13 +404,28 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       {
         mockAgentOnce([{ text: "hello" }]);
         const res = await postChatCompletions(port, {
-          user: "alice",
+          user: "conv:alice",
           model: "openclaw",
           messages: [{ role: "user", content: "hi" }],
         });
         expect(res.status).toBe(200);
 
-        expect(firstAgentCommandOptions()?.sessionKey ?? "").toContain("openai-user:alice");
+        expect(firstAgentCommandOptions()?.sessionKey ?? "").toContain("openai-user:conv:alice");
+        await res.text();
+      }
+
+      {
+        mockAgentOnce([{ text: "hello" }]);
+        const res = await postChatCompletions(port, {
+          user: "raycast-extension",
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        });
+        expect(res.status).toBe(200);
+
+        expect(firstAgentCommandOptions()?.sessionKey ?? "").not.toContain(
+          "openai-user:raycast-extension",
+        );
         await res.text();
       }
 
