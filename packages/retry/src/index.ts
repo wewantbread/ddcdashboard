@@ -247,7 +247,26 @@ export function toRetryError(value: unknown, fallbackMessage = "Non-Error thrown
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
+    // Object.assign minus __proto__: enumerate own string and Symbol keys and
+    // recheck each key's current enumerability inside the loop, mirroring
+    // Object.assign (which calls [[GetOwnProperty]] per step, so an earlier
+    // getter that makes a later field non-enumerable is respected — Object.keys
+    // snapshots before any getter runs). Mirrors toErrorObject; retry stays
+    // zero-dependency so the loop is inlined. [[Set]] preserves existing Error
+    // field descriptors and propagates throwing source accessors; skipping
+    // __proto__ alone blocks the prototype-hijack (a JSON.parse'd own enumerable
+    // __proto__ would otherwise replace the Error's prototype). Reflect.get
+    // avoids a type assertion — value is already narrowed above.
+    for (const key of Reflect.ownKeys(value)) {
+      if (key === "__proto__") {
+        continue;
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable) {
+        continue;
+      }
+      Reflect.set(error, key, Reflect.get(value, key));
+    }
   }
   return error;
 }

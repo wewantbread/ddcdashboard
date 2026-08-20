@@ -8,6 +8,11 @@ export type FormatErrorMessageOptions = {
 const STRUCTURED_ERROR_OWNED_FIELDS = new Set(["cause", "message", "name", "stack"]);
 const STRUCTURED_ERROR_PROTOTYPE_FIELDS = new Set(["__proto__", "constructor", "prototype"]);
 
+// toErrorObject copies with Object.assign semantics (only __proto__ skipped, so
+// [[Set]] preserves existing Error descriptors and propagates throwing accessors);
+// toStructuredErrorObject below uses stricter isolation (skips owned + prototype
+// fields, swallows failures) so a hostile proxy cannot crash it.
+
 function readProperty(value: object, key: "cause" | "code" | "status"): unknown {
   try {
     return (value as Record<string, unknown>)[key];
@@ -141,7 +146,24 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
+    // Object.assign minus __proto__: enumerate own string and Symbol keys and
+    // recheck each key's current enumerability inside the loop, mirroring
+    // Object.assign (which calls [[GetOwnProperty]] per step, so an earlier
+    // getter that makes a later field non-enumerable is respected — Object.keys
+    // snapshots string keys before any getter runs). [[Set]] preserves existing
+    // Error field descriptors and propagates throwing source accessors; skipping
+    // __proto__ alone blocks the prototype-setter hijack. Reflect.get avoids a
+    // type assertion — value is already narrowed to an object/function above.
+    for (const key of Reflect.ownKeys(value)) {
+      if (key === "__proto__") {
+        continue;
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable) {
+        continue;
+      }
+      Reflect.set(error, key, Reflect.get(value, key));
+    }
   }
   return error;
 }
@@ -156,6 +178,9 @@ export function toStructuredErrorObject(value: unknown): Error {
     return toErrorObject(value, message);
   }
   const error = new Error(message, { cause: value });
+  // Stricter isolation than toErrorObject: skip owned Error fields (keep the
+  // construction-time message/stack/cause) and prototype-accessor keys, and
+  // swallow descriptor/getter failures so a hostile proxy cannot crash it.
   try {
     const detailKeys = Reflect.ownKeys(value).filter(
       (key) =>
