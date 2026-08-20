@@ -120,6 +120,8 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
     let inboundReplayClaim:
       | import("openclaw/plugin-sdk/persistent-dedupe").ChannelReplayClaimHandle
       | undefined;
+    let inboundReplayCommitted = false;
+    let retainPendingReplay = false;
     let draftControllerRef: Awaited<ReturnType<typeof createMatrixDraftController>> | undefined;
     try {
       const eventType = event.type;
@@ -160,6 +162,8 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         }
         await inboundReplayClaim.commit();
         inboundReplayClaim = undefined;
+        inboundReplayCommitted = true;
+        retainPendingReplay = false;
       };
       const readIngressPrefix = () =>
         readMatrixIngressPrefix({
@@ -179,6 +183,10 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           directTracker,
           claimInboundReplay: (handle) => {
             inboundReplayClaim = handle;
+            retainPendingReplay = true;
+          },
+          retainInboundReplay: () => {
+            retainPendingReplay = true;
           },
         });
       const continueIngress = async (paramsLocal: {
@@ -622,6 +630,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         // A Matrix-accepted preview is the only visible reply after an abort.
         draftController.markDraftRetained();
       }
+      if (!inboundReplayCommitted) {
+        retainPendingReplay = true;
+      }
       runtime.error?.(`matrix handler failed: ${String(err)}`);
     } finally {
       // Stop the draft stream timer so partial drafts don't leak if the
@@ -634,6 +645,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         }
       }
       inboundReplayClaim?.release();
+      if (!retainPendingReplay && eventId) {
+        client.markInboundEventSettled(roomId, eventId);
+      }
     }
   };
 }

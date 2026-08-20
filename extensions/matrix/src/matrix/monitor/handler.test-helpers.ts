@@ -284,6 +284,7 @@ export function createMatrixHandlerTestHarness(
     client: {
       getUserId: async () => "@bot:example.org",
       getEvent: async () => ({ sender: "@bot:example.org" }),
+      markInboundEventSettled: () => {},
       ...options.client,
     } as never,
     core: {
