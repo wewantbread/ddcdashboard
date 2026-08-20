@@ -1084,6 +1084,7 @@ export async function handleOpenAiHttpRequest(
       agentId,
       sessionKey,
       modelOverride,
+      messageChannel,
     }),
   });
 

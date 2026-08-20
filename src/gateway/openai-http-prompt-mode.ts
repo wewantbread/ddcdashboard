@@ -5,6 +5,7 @@
 import { resolveEffectiveToolPolicy } from "../agents/agent-tools.policy.js";
 import { parseModelRef } from "../agents/model-selection-normalize.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
+import { resolveChannelModelOverride } from "../channels/model-overrides.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredModelOverride } from "../sessions/stored-model-overrides.js";
@@ -17,11 +18,19 @@ export function resolveHttpChatPromptModeFromInputs(params: {
   modelOverride?: string;
   storedProvider?: string;
   storedModel?: string;
+  messageChannel?: string;
 }): "minimal" | undefined {
   const defaultModelRef = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: params.agentId,
   });
+  const channelOverride =
+    params.modelOverride || params.storedModel
+      ? null
+      : resolveChannelModelOverride({
+          cfg: params.cfg,
+          channel: params.messageChannel,
+        });
   const parsed = params.modelOverride
     ? parseModelRef(params.modelOverride, defaultModelRef.provider)
     : params.storedModel
@@ -29,7 +38,9 @@ export function resolveHttpChatPromptModeFromInputs(params: {
           provider: params.storedProvider ?? defaultModelRef.provider,
           model: params.storedModel,
         }
-      : defaultModelRef;
+      : channelOverride?.model
+        ? parseModelRef(channelOverride.model, defaultModelRef.provider)
+        : defaultModelRef;
   const policy = resolveEffectiveToolPolicy({
     config: params.cfg,
     agentId: params.agentId,
@@ -45,6 +56,7 @@ export function resolveHttpChatPromptMode(params: {
   agentId: string;
   sessionKey?: string;
   modelOverride?: string;
+  messageChannel?: string;
 }): "minimal" | undefined {
   const cfg = getRuntimeConfig();
   const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId: params.agentId });
@@ -67,5 +79,6 @@ export function resolveHttpChatPromptMode(params: {
     modelOverride: params.modelOverride,
     storedProvider: stored?.provider,
     storedModel: stored?.model,
+    messageChannel: params.messageChannel,
   });
 }

@@ -40,6 +40,33 @@ describe("resolveHttpChatPromptModeFromInputs", () => {
     ).toBe("minimal");
   });
 
+  it("uses a channel modelByChannel mapping when no stored or explicit model exists", () => {
+    const cfg = {
+      ...codingBaseOpenAiMinimal,
+      channels: {
+        modelByChannel: {
+          telegram: { "*": "openai/gpt-5.4" },
+        },
+      },
+    } as never;
+    expect(
+      resolveHttpChatPromptModeFromInputs({
+        cfg,
+        agentId,
+        messageChannel: "telegram",
+      }),
+    ).toBe("minimal");
+    expect(
+      resolveHttpChatPromptModeFromInputs({
+        cfg,
+        agentId,
+        messageChannel: "telegram",
+        storedProvider: "anthropic",
+        storedModel: "claude-sonnet-4-6",
+      }),
+    ).toBeUndefined();
+  });
+
   it("lets an explicit HTTP model override win over a stored session model", () => {
     expect(
       resolveHttpChatPromptModeFromInputs({
