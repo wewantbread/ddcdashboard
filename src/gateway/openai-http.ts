@@ -9,10 +9,12 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
-import { resolveAgentConfig } from "../agents/agent-scope.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
+import { resolveEffectiveToolPolicy } from "../agents/agent-tools.policy.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
+import { parseModelRef } from "../agents/model-selection-normalize.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import { toOpenAiChatCompletionsUsage, type OpenAiChatCompletionsUsage } from "../agents/usage.js";
 import { createDefaultDeps } from "../cli/deps.js";
@@ -154,9 +156,24 @@ function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function resolveHttpChatPromptMode(agentId: string): "minimal" | undefined {
+function resolveHttpChatPromptMode(params: {
+  agentId: string;
+  sessionKey?: string;
+  modelOverride?: string;
+}): "minimal" | undefined {
   const cfg = getRuntimeConfig();
-  const profile = resolveAgentConfig(cfg, agentId)?.tools?.profile ?? cfg.tools?.profile;
+  const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId: params.agentId });
+  const parsed = params.modelOverride
+    ? parseModelRef(params.modelOverride, defaultModelRef.provider)
+    : defaultModelRef;
+  const policy = resolveEffectiveToolPolicy({
+    config: cfg,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    modelProvider: parsed?.provider,
+    modelId: parsed?.model,
+  });
+  const profile = policy.providerProfile ?? policy.profile;
   return profile === "minimal" ? "minimal" : undefined;
 }
 
@@ -1086,7 +1103,11 @@ export async function handleOpenAiHttpRequest(
     senderIsOwner,
     abortSignal: abortController.signal,
     streamParams,
-    promptMode: resolveHttpChatPromptMode(agentId),
+    promptMode: resolveHttpChatPromptMode({
+      agentId,
+      sessionKey,
+      modelOverride,
+    }),
   });
 
   if (!stream) {

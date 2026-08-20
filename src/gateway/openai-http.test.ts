@@ -1687,6 +1687,84 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
     }
   });
 
+  it("uses promptMode minimal when a provider profile overrides a coding base", async () => {
+    const port = enabledPort;
+    await writeGatewayConfig({
+      tools: {
+        profile: "coding",
+        byProvider: { openai: { profile: "minimal" } },
+      },
+      agents: {
+        list: [{ id: "main" }],
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          models: { "openai/gpt-5.4": {} },
+        },
+      },
+    });
+    resetConfigRuntimeState();
+    try {
+      agentCommandMock.mockClear();
+      agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "PONG" }],
+        },
+        {
+          "x-openclaw-model": "openai/gpt-5.4",
+          "x-openclaw-scopes": "operator.admin, operator.write",
+        },
+      );
+      expect(res.status).toBe(200);
+      expect(firstAgentCommandOptions()?.promptMode).toBe("minimal");
+      await res.text();
+    } finally {
+      await writeGatewayConfig({});
+      resetConfigRuntimeState();
+    }
+  });
+
+  it("does not use promptMode minimal when a provider profile overrides a minimal base", async () => {
+    const port = enabledPort;
+    await writeGatewayConfig({
+      tools: {
+        profile: "minimal",
+        byProvider: { openai: { profile: "coding" } },
+      },
+      agents: {
+        list: [{ id: "main" }],
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          models: { "openai/gpt-5.4": {} },
+        },
+      },
+    });
+    resetConfigRuntimeState();
+    try {
+      agentCommandMock.mockClear();
+      agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "PONG" }],
+        },
+        {
+          "x-openclaw-model": "openai/gpt-5.4",
+          "x-openclaw-scopes": "operator.admin, operator.write",
+        },
+      );
+      expect(res.status).toBe(200);
+      expect(firstAgentCommandOptions()?.promptMode).toBeUndefined();
+      await res.text();
+    } finally {
+      await writeGatewayConfig({});
+      resetConfigRuntimeState();
+    }
+  });
+
   it("validates and forwards max_completion_tokens and max_tokens into streamParams", async () => {
     const port = enabledPort;
     const mockAgentOnce = () => {
