@@ -217,13 +217,13 @@ function toCatalogEntry(
 }
 
 function shouldCatalogTool(tool: AnyAgentTool): boolean {
-  if (TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) || tool.catalogMode === "direct-only") {
-    return false;
-  }
+  return !(TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) || tool.catalogMode === "direct-only");
+}
+
+/** Trusted core file/shell tools. Structured Tool Search keeps these native; Code Mode still catalogs them. */
+export function isTrustedCoreCodingSurfaceTool(tool: AnyAgentTool): boolean {
   const classified = classifyTool(tool);
-  // Core file/shell primitives stay model-visible. Cataloging them next to
-  // tool_call makes openai-completions models wrap read/exec in the meta tool.
-  return !(
+  return (
     classified.source === "openclaw" &&
     classified.sourceName === "core" &&
     isCoreCodingSurfaceToolName(tool.name)
@@ -264,7 +264,7 @@ export function registerHeadlessToolSearchCatalog(params: {
 }): void {
   const { catalogRef, tools, hookContext } = params;
   const entries = tools
-    .filter((tool) => shouldCatalogTool(tool))
+    .filter((tool) => shouldCatalogTool(tool) && !isTrustedCoreCodingSurfaceTool(tool))
     .map((tool) => {
       const scopedTool =
         hookContext && isToolWrappedWithBeforeToolCallHook(tool)

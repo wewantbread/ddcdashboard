@@ -4,6 +4,7 @@ import {
   applyToolCatalogCompaction,
   collectUniqueCatalogToolNames,
   isDirectVisibleCatalogTool,
+  isTrustedCoreCodingSurfaceTool,
   resolveCatalog,
   visibleCatalogEntries,
 } from "./tool-search-catalog.js";
@@ -66,6 +67,7 @@ export function applyToolSchemaDirectoryCatalog(params: {
     // shared trust check runs.
     isVisibleCatalogTool: (tool) =>
       uniqueCatalogToolNames.has(tool.name) && isDirectVisibleCatalogTool(tool, directToolNames),
+    shouldCatalogTool: (tool) => !isTrustedCoreCodingSurfaceTool(tool),
   });
 }
 

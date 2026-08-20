@@ -12,6 +12,7 @@ import {
   applyToolCatalogCompaction,
   getReusableCatalogSnapshotCountForTest,
   isDirectVisibleCatalogTool,
+  isTrustedCoreCodingSurfaceTool,
   resolveCatalog,
 } from "./tool-search-catalog.js";
 import {
@@ -243,6 +244,8 @@ export function applyToolSearchCatalog(params: {
       TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) &&
       shouldExposeControlTool(tool.name, config.mode),
     isVisibleCatalogTool: (tool) => isDirectVisibleCatalogTool(tool, directToolNames),
+    shouldCatalogTool: (tool) =>
+      !isTrustedCoreCodingSurfaceTool(tool) && (params.shouldCatalogTool?.(tool) ?? true),
   });
 }
 
