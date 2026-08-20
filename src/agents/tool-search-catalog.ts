@@ -248,13 +248,19 @@ function collectDirectCoreCodingToolNames(tools: readonly { name: string }[]): s
 export function isDirectVisibleCatalogTool(
   tool: AnyAgentTool,
   directToolNames: ReadonlySet<string>,
+  options: { includeTrustedCore?: boolean } = {},
 ): boolean {
   const classified = classifyTool(tool);
-  return (
-    classified.source === "openclaw" &&
-    (directToolNames.has(tool.name) ||
-      (isCoreCodingSurfaceToolName(tool.name) && classified.sourceName === "core"))
-  );
+  if (classified.source !== "openclaw") {
+    return false;
+  }
+  if (directToolNames.has(tool.name)) {
+    return true;
+  }
+  if (options.includeTrustedCore === false) {
+    return false;
+  }
+  return isCoreCodingSurfaceToolName(tool.name) && classified.sourceName === "core";
 }
 
 export function registerHeadlessToolSearchCatalog(params: {
@@ -264,7 +270,7 @@ export function registerHeadlessToolSearchCatalog(params: {
 }): void {
   const { catalogRef, tools, hookContext } = params;
   const entries = tools
-    .filter((tool) => shouldCatalogTool(tool) && !isTrustedCoreCodingSurfaceTool(tool))
+    .filter((tool) => shouldCatalogTool(tool))
     .map((tool) => {
       const scopedTool =
         hookContext && isToolWrappedWithBeforeToolCallHook(tool)

@@ -237,15 +237,20 @@ export function applyToolSearchCatalog(params: {
 }) {
   const config = resolveToolSearchConfig(params.config);
   const directToolNames = new Set(normalizeStringEntries(Array.from(params.directToolNames ?? [])));
+  // Structured tools/directory keep core file/shell native. Tool Search code mode
+  // has no native core surface; those tools must stay in the compact catalog.
+  const keepCoreNative = config.mode !== "code";
   return applyToolCatalogCompaction({
     ...params,
     enabled: config.enabled,
     isVisibleControlTool: (tool) =>
       TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) &&
       shouldExposeControlTool(tool.name, config.mode),
-    isVisibleCatalogTool: (tool) => isDirectVisibleCatalogTool(tool, directToolNames),
+    isVisibleCatalogTool: (tool) =>
+      isDirectVisibleCatalogTool(tool, directToolNames, { includeTrustedCore: keepCoreNative }),
     shouldCatalogTool: (tool) =>
-      !isTrustedCoreCodingSurfaceTool(tool) && (params.shouldCatalogTool?.(tool) ?? true),
+      (keepCoreNative ? !isTrustedCoreCodingSurfaceTool(tool) : true) &&
+      (params.shouldCatalogTool?.(tool) ?? true),
   });
 }
 

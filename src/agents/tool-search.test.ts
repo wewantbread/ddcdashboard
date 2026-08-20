@@ -837,6 +837,28 @@ describe("Tool Search", () => {
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
   });
 
+  it("catalogs core coding tools in Tool Search code mode", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const compacted = applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_CODE_MODE_TOOL_NAME, "code mode"),
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool("read", "Read files"),
+        fakeTool("exec", "Run shell"),
+        pluginTool("fake_lookup", "Look up a record"),
+      ],
+      config: { tools: { toolSearch: { enabled: true, mode: "code" } } } as never,
+      catalogRef,
+    });
+
+    expect(compacted.tools.map((tool) => tool.name)).toEqual([TOOL_SEARCH_CODE_MODE_TOOL_NAME]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual([
+      "exec",
+      "read",
+      "fake_lookup",
+    ]);
+  });
+
   it("defers plugin tools that reuse a core coding tool name", () => {
     const catalogRef = createToolSearchCatalogRef();
     const compacted = applyToolSearchCatalog({
@@ -916,6 +938,24 @@ describe("Tool Search", () => {
     });
 
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
+  });
+
+  it("catalogs core coding tools in headless catalogs", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    registerHeadlessToolSearchCatalog({
+      catalogRef,
+      tools: [
+        fakeTool("read", "Read files"),
+        fakeTool("exec", "Run shell"),
+        pluginTool("fake_lookup", "Look up a record"),
+      ],
+    });
+
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual([
+      "exec",
+      "read",
+      "fake_lookup",
+    ]);
   });
 
   it.each([
@@ -3417,7 +3457,7 @@ describe("Tool Search", () => {
         },
       ),
     ).rejects.toThrow(
-      "Unknown tool id: file_write. Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
+      "Unknown tool id: file_write. Did you mean: write? Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
     );
     expect(writeTool.execute).not.toHaveBeenCalled();
   });
