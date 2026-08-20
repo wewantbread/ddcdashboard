@@ -290,8 +290,10 @@ async function resolveIneligibleAutomaticMemoryFiles(params: {
   );
 }
 
-/** Resolves hook-adjusted, session-filtered bootstrap files for a run. */
-export async function resolveBootstrapFilesForRun(params: {
+/** Shared parameters for the bootstrap-file resolvers. Kept internal so the
+ * public `resolveBootstrapFilesForRun` SDK signature stays callback-free while
+ * the timing-aware variant extends it with the substage-timing callback. */
+type ResolveBootstrapFilesParams = {
   workspaceDir: string;
   config?: OpenClawConfig;
   sessionKey?: string;
@@ -302,7 +304,12 @@ export async function resolveBootstrapFilesForRun(params: {
   contextMode?: BootstrapContextMode;
   runKind?: BootstrapContextRunKind;
   readOnlyState?: boolean;
-}): Promise<WorkspaceBootstrapFile[]> {
+};
+
+/** Resolves hook-adjusted, session-filtered bootstrap files for a run. */
+export async function resolveBootstrapFilesForRun(
+  params: ResolveBootstrapFilesParams,
+): Promise<WorkspaceBootstrapFile[]> {
   return resolveBootstrapFilesForRunWithTiming(params);
 }
 
@@ -312,22 +319,14 @@ export async function resolveBootstrapFilesForRun(params: {
  * `src/plugin-sdk/agent-harness-runtime.ts`) so the public
  * `resolveBootstrapFilesForRun` signature stays callback-free.
  */
-export async function resolveBootstrapFilesForRunWithTiming(params: {
-  workspaceDir: string;
-  config?: OpenClawConfig;
-  sessionKey?: string;
-  sessionId?: string;
-  chatType?: ChatType;
-  agentId?: string;
-  warn?: (message: string) => void;
-  contextMode?: BootstrapContextMode;
-  runKind?: BootstrapContextRunKind;
-  readOnlyState?: boolean;
-  onBootstrapSubstageTiming?: (
-    name: "workspace-setup-state" | "workspace-file-load" | "hook-overrides",
-    durationMs: number,
-  ) => void;
-}): Promise<WorkspaceBootstrapFile[]> {
+export async function resolveBootstrapFilesForRunWithTiming(
+  params: ResolveBootstrapFilesParams & {
+    onBootstrapSubstageTiming?: (
+      name: "workspace-setup-state" | "workspace-file-load" | "hook-overrides",
+      durationMs: number,
+    ) => void;
+  },
+): Promise<WorkspaceBootstrapFile[]> {
   const sessionKey = params.sessionKey ?? params.sessionId;
   const session = {
     sessionKey,
