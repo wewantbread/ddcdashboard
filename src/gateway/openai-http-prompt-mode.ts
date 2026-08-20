@@ -3,7 +3,7 @@
  * Resolves after model override / stored session model / channel mapping.
  */
 import { resolveEffectiveToolPolicy } from "../agents/agent-tools.policy.js";
-import { parseModelRef } from "../agents/model-selection-normalize.js";
+import { parseAgentCommandModelRef } from "../agents/command/model-ref.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { resolveChannelModelOverride } from "../channels/model-overrides.js";
 import { getRuntimeConfig } from "../config/io.js";
@@ -45,14 +45,26 @@ export function resolveHttpChatPromptModeFromInputs(params: {
           directUserIds: params.directUserIds,
         });
   const parsed = params.modelOverride
-    ? parseModelRef(params.modelOverride, defaultModelRef.provider)
+    ? parseAgentCommandModelRef(
+        params.cfg,
+        params.agentId,
+        params.modelOverride,
+        defaultModelRef.provider,
+        {},
+      )
     : params.storedModel
       ? {
           provider: params.storedProvider ?? defaultModelRef.provider,
           model: params.storedModel,
         }
       : channelOverride?.model
-        ? parseModelRef(channelOverride.model, defaultModelRef.provider)
+        ? parseAgentCommandModelRef(
+            params.cfg,
+            params.agentId,
+            channelOverride.model,
+            defaultModelRef.provider,
+            {},
+          )
         : defaultModelRef;
   const policy = resolveEffectiveToolPolicy({
     config: params.cfg,

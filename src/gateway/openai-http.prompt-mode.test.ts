@@ -95,6 +95,29 @@ describe("resolveHttpChatPromptModeFromInputs", () => {
     ).toBe("minimal");
   });
 
+  it("resolves a bare model alias through the command model index", () => {
+    const cfg = {
+      ...codingBaseOpenAiMinimal,
+      agents: {
+        list: [{ id: "main" }],
+        defaults: {
+          model: { primary: "anthropic/claude-sonnet-4-6" },
+          models: {
+            "anthropic/claude-sonnet-4-6": {},
+            "openai/gpt-5.4": { alias: "gpt-5.4" },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    expect(
+      resolveHttpChatPromptModeFromInputs({
+        cfg,
+        agentId,
+        modelOverride: "gpt-5.4",
+      }),
+    ).toBe("minimal");
+  });
+
   it("lets an explicit HTTP model override win over a stored session model", () => {
     expect(
       resolveHttpChatPromptModeFromInputs({
