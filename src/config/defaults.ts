@@ -327,11 +327,19 @@ export function applyModelDefaults(
             : isPositiveNumber(providerMaxTokens)
               ? providerMaxTokens
               : undefined;
-        // maxTokens is a wire-level output cap. Unknown custom reasoning
-        // proxies keep it absent so the provider applies its own limit.
+        const api = raw.api ?? providerApi;
+        if (raw.api !== api) {
+          modelMutated = true;
+        }
+        // maxTokens is a wire-level output cap. Unknown OpenAI Completions
+        // reasoning proxies keep it absent so the provider applies its own
+        // limit. Anthropic Messages requires max_tokens and keeps 8192.
+        const omitUnknownOutputCap = reasoning && api === "openai-completions";
         const rawMaxTokens =
           authoredOrCatalogMaxTokens ??
-          (reasoning ? undefined : Math.min(DEFAULT_MODEL_MAX_TOKENS, maxTokenContextWindow));
+          (omitUnknownOutputCap
+            ? undefined
+            : Math.min(DEFAULT_MODEL_MAX_TOKENS, maxTokenContextWindow));
         const maxTokens =
           rawMaxTokens === undefined
             ? undefined
@@ -342,10 +350,6 @@ export function applyModelDefaults(
                 rawMaxTokens,
               });
         if (raw.maxTokens !== maxTokens) {
-          modelMutated = true;
-        }
-        const api = raw.api ?? providerApi;
-        if (raw.api !== api) {
           modelMutated = true;
         }
 

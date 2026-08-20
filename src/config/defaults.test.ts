@@ -494,4 +494,36 @@ describe("applyModelDefaults catalog seeding", () => {
     );
     expect(model.maxTokens).toBe(8_192);
   });
+
+  it("keeps omitted maxTokens at 8192 for custom anthropic-messages reasoning models", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "anthropic-messages",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 200_000,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized anthropic reasoning model entry",
+    );
+    expect(model.reasoning).toBe(true);
+    expect(model.api).toBe("anthropic-messages");
+    expect(model.maxTokens).toBe(8192);
+  });
 });
