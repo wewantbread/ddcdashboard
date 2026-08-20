@@ -433,7 +433,7 @@ describe("applyModelDefaults catalog seeding", () => {
     expect(model.maxTokens).toBe(8192);
   });
 
-  it("defaults omitted maxTokens to 32768 for custom reasoning models", async () => {
+  it("leaves omitted maxTokens unset for custom reasoning models", async () => {
     const { applyModelDefaults } = await import("./defaults.js");
     const cfg = applyModelDefaults(
       {
@@ -461,7 +461,7 @@ describe("applyModelDefaults catalog seeding", () => {
       "materialized reasoning model entry",
     );
     expect(model.reasoning).toBe(true);
-    expect(model.maxTokens).toBe(32_768);
+    expect(model.maxTokens).toBeUndefined();
   });
 
   it("keeps an explicit custom-provider maxTokens below the reasoning fallback", async () => {
