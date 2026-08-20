@@ -1,5 +1,5 @@
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveEffectiveToolPolicy } from "../agent-tools.policy.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PromptMode } from "../system-prompt.types.js";
 
 /** Compact prompt when this attempt's effective tools profile is minimal. */

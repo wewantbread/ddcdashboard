@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCandidatePromptMode } from "./prompt-mode-from-tools-profile.js";
 
 const agentId = "main";
