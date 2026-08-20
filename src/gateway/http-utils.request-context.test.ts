@@ -59,15 +59,17 @@ describe("resolveGatewayRequestContext", () => {
   });
 
   it("includes session prefix and user in generated session key", () => {
-    const result = resolveGatewayRequestContext({
-      req: createReq(),
-      model: "openclaw",
-      user: "alice",
-      sessionPrefix: "openresponses",
-      defaultMessageChannel: "webchat",
-    });
+    for (const user of ["alice", "raycast:extension"]) {
+      const result = resolveGatewayRequestContext({
+        req: createReq(),
+        model: "openclaw",
+        user,
+        sessionPrefix: "openresponses",
+        defaultMessageChannel: "webchat",
+      });
 
-    expect(result.sessionKey).toContain("openresponses-user:alice");
+      expect(result.sessionKey).toContain(`openresponses-user:${user}`);
+    }
   });
 
   it("does not bind Chat Completions sessions from OpenAI user values", () => {
