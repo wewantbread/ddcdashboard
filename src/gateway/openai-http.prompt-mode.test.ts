@@ -1,5 +1,6 @@
 // HTTP Chat promptMode follows the effective tools profile after final model selection.
 import { describe, expect, it } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHttpChatPromptModeFromInputs } from "./openai-http-prompt-mode.js";
 
 const agentId = "main";
@@ -18,7 +19,7 @@ const codingBaseOpenAiMinimal = {
       },
     },
   },
-} as never;
+} as OpenClawConfig;
 
 describe("resolveHttpChatPromptModeFromInputs", () => {
   it("uses a stored session model instead of the agent default", () => {
@@ -48,7 +49,7 @@ describe("resolveHttpChatPromptModeFromInputs", () => {
           telegram: { "*": "openai/gpt-5.4" },
         },
       },
-    } as never;
+    } as OpenClawConfig;
     expect(
       resolveHttpChatPromptModeFromInputs({
         cfg,
@@ -75,7 +76,7 @@ describe("resolveHttpChatPromptModeFromInputs", () => {
           telegram: { "-100123": "openai/gpt-5.4" },
         },
       },
-    } as never;
+    } as OpenClawConfig;
     expect(
       resolveHttpChatPromptModeFromInputs({
         cfg,
