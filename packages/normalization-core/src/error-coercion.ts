@@ -151,9 +151,12 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
     // Object.assign (which calls [[GetOwnProperty]] per step, so an earlier
     // getter that makes a later field non-enumerable is respected — Object.keys
     // snapshots string keys before any getter runs). [[Set]] preserves existing
-    // Error field descriptors and propagates throwing source accessors; skipping
-    // __proto__ alone blocks the prototype-setter hijack. Reflect.get avoids a
-    // type assertion — value is already narrowed to an object/function above.
+    // Error field descriptors and propagates throwing source accessors; a
+    // non-writable target field (hardened prototype / frozen subclass) makes
+    // [[Set]] throw under Object.assign, so Reflect.set returning false is
+    // re-raised to keep that throwing path. Skipping __proto__ alone blocks the
+    // prototype-setter hijack. Reflect.get avoids a type assertion — value is
+    // already narrowed to an object/function above.
     for (const key of Reflect.ownKeys(value)) {
       if (key === "__proto__") {
         continue;
@@ -162,7 +165,9 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
       if (descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
-      Reflect.set(error, key, Reflect.get(value, key));
+      if (!Reflect.set(error, key, Reflect.get(value, key))) {
+        throw new TypeError(`Cannot assign property ${String(key)} to error target`);
+      }
     }
   }
   return error;

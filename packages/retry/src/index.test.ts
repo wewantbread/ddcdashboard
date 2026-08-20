@@ -229,6 +229,31 @@ describe("toRetryError", () => {
     );
   });
 
+  it("propagates failed target assignments like Object.assign, not Reflect.set", () => {
+    // A non-writable inherited Error field (hardened prototype / frozen subclass)
+    // makes Object.assign throw on [[Set]]; the copy must preserve that throwing
+    // path instead of silently dropping the field the way Reflect.set does (it
+    // returns false). Mirrors toErrorObject; retry inlines the same loop.
+    // Probe the hardened-prototype contract (CS [P2]): a non-writable inherited
+    // Error field must make [[Set]] throw under Object.assign semantics.
+    // eslint-disable-next-line no-extend-native -- intentional contract probe; restored in finally.
+    Object.defineProperty(Error.prototype, "sealed", {
+      value: "inherited",
+      writable: false,
+      configurable: true,
+      enumerable: true,
+    });
+    const source = { sealed: "override", code: "E_UPSTREAM" };
+    try {
+      // paired contract: Object.assign throws on the same non-writable field
+      expect(() => Object.assign(new Error("fallback"), source)).toThrow(TypeError);
+      // the coercer must throw too, preserving Object.assign semantics
+      expect(() => toRetryError(source, "fallback")).toThrow(TypeError);
+    } finally {
+      Reflect.deleteProperty(Error.prototype, "sealed");
+    }
+  });
+
   it("preserves enumerable Symbol-keyed diagnostics", () => {
     // Object.assign copies own enumerable Symbol properties; Object.keys
     // excludes Symbols, so the prior loop silently dropped them.

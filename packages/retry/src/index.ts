@@ -253,10 +253,13 @@ export function toRetryError(value: unknown, fallbackMessage = "Non-Error thrown
     // getter that makes a later field non-enumerable is respected — Object.keys
     // snapshots before any getter runs). Mirrors toErrorObject; retry stays
     // zero-dependency so the loop is inlined. [[Set]] preserves existing Error
-    // field descriptors and propagates throwing source accessors; skipping
-    // __proto__ alone blocks the prototype-hijack (a JSON.parse'd own enumerable
-    // __proto__ would otherwise replace the Error's prototype). Reflect.get
-    // avoids a type assertion — value is already narrowed above.
+    // field descriptors and propagates throwing source accessors; a non-writable
+    // target field (hardened prototype / frozen subclass) makes [[Set]] throw
+    // under Object.assign, so Reflect.set returning false is re-raised to keep
+    // that throwing path. Skipping __proto__ alone blocks the prototype-hijack
+    // (a JSON.parse'd own enumerable __proto__ would otherwise replace the
+    // Error's prototype). Reflect.get avoids a type assertion — value is
+    // already narrowed above.
     for (const key of Reflect.ownKeys(value)) {
       if (key === "__proto__") {
         continue;
@@ -265,7 +268,9 @@ export function toRetryError(value: unknown, fallbackMessage = "Non-Error thrown
       if (descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
-      Reflect.set(error, key, Reflect.get(value, key));
+      if (!Reflect.set(error, key, Reflect.get(value, key))) {
+        throw new TypeError(`Cannot assign property ${String(key)} to error target`);
+      }
     }
   }
   return error;
