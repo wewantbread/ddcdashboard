@@ -980,6 +980,7 @@ export async function handleOpenAiHttpRequest(
       req,
       model,
       user,
+      senderIsOwner,
       sessionPrefix: "openai",
       defaultMessageChannel: "webchat",
       useMessageChannelHeader: true,

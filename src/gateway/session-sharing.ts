@@ -191,15 +191,21 @@ function incognitoSessionNotFound(sessionKey: string): ErrorShape {
   return errorShape(ErrorCodes.INVALID_REQUEST, `Incognito session "${sessionKey}" was not found.`);
 }
 
+export function isIncognitoSessionTarget(params: {
+  sessionKey: string;
+  target: { canonicalKey: string; entry?: Pick<SessionEntry, "incognito"> } | null;
+}): boolean {
+  return params.target
+    ? params.target.entry?.incognito === true || isIncognitoSessionKey(params.target.canonicalKey)
+    : isIncognitoSessionKey(params.sessionKey);
+}
+
 export function authorizeIncognitoSessionTarget(params: {
   client: GatewayClient | null;
   sessionKey: string;
   target: SessionSharingTarget | null;
 }): ErrorShape | null {
-  const incognito = params.target
-    ? params.target.entry.incognito === true || isIncognitoSessionKey(params.target.canonicalKey)
-    : isIncognitoSessionKey(params.sessionKey);
-  if (!incognito) {
+  if (!isIncognitoSessionTarget(params)) {
     return null;
   }
   if (isGatewayAdmin(params.client)) {
