@@ -994,6 +994,26 @@ describe("Tool Search", () => {
     expect(directory).not.toContain("process");
   });
 
+  it("keeps Call read directly when the deferred catalog is empty", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const config = { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never;
+    applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        fakeTool("read", "Read a file"),
+      ],
+      config,
+      catalogRef,
+    });
+    expect(catalogRef.current?.entries ?? []).toEqual([]);
+    const directory = buildToolSchemaDirectoryPrompt({ config, catalogRef });
+    expect(directory).toContain("Available deferred-schema tools: none.");
+    expect(directory).toContain("Call read directly.");
+    expect(directory).not.toContain("exec");
+  });
+
   it("omits direct-call guidance when no core coding tools are visible", () => {
     const catalogRef = createToolSearchCatalogRef();
     const config = { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never;

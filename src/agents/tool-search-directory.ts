@@ -192,7 +192,10 @@ function formatToolSearchCatalogDirectory(
   directCoreToolNames: readonly string[],
 ): string {
   if (entries.length === 0) {
-    return "Available deferred-schema tools: none.";
+    const direct = formatDirectCallGuidance(directCoreToolNames);
+    return direct
+      ? `Available deferred-schema tools: none.\n\n${direct}`
+      : "Available deferred-schema tools: none.";
   }
   const nameCounts = new Map<string, number>();
   for (const entry of entries) {
