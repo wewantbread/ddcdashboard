@@ -221,7 +221,7 @@ export type AgentCommandOpts = {
   modelRun?: boolean;
   /** Internal prompt-mode override for trusted local/gateway callsites. */
   promptMode?: PromptMode;
-  /** Derive promptMode from each attempt model's effective tools profile. */
+  /** Internal: derive promptMode from each attempt model's effective tools profile. */
   promptModeFromToolsProfile?: boolean;
   /** Internal ACP-ready session turn source. Manual spawn turns bypass only the dispatch gate. */
   acpTurnSource?: AcpTurnSource;
@@ -243,6 +243,7 @@ export type AgentCommandIngressOpts = Omit<
   | "operationalRunInstance"
   | "cronCreatorAuthorityCapability"
   | "onAdmittedRunContext"
+  | "promptModeFromToolsProfile"
 > & {
   /** Trusted sender identity bit for command/channel-action auth; defaults false for ingress. */
   senderIsOwner?: boolean;
@@ -261,4 +262,5 @@ export type AgentCommandGatewayIngressOpts = AgentCommandIngressOpts &
     | "operationalRunInstance"
     | "cronCreatorAuthorityCapability"
     | "onAdmittedRunContext"
+    | "promptModeFromToolsProfile"
   >;
