@@ -9,6 +9,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
+import { resolveAgentConfig } from "../agents/agent-scope.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
@@ -16,6 +17,7 @@ import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import { toOpenAiChatCompletionsUsage, type OpenAiChatCompletionsUsage } from "../agents/usage.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommandFromIngress } from "../commands/agent.js";
+import { getRuntimeConfig } from "../config/io.js";
 import type { GatewayHttpChatCompletionsConfig } from "../config/types.gateway.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -152,6 +154,12 @@ function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function resolveHttpChatPromptMode(agentId: string): "minimal" | undefined {
+  const cfg = getRuntimeConfig();
+  const profile = resolveAgentConfig(cfg, agentId)?.tools?.profile ?? cfg.tools?.profile;
+  return profile === "minimal" ? "minimal" : undefined;
+}
+
 function buildAgentCommandInput(params: {
   prompt: { message: string; extraSystemPrompt?: string; images?: ImageContent[] };
   clientTools?: ClientToolDefinition[];
@@ -162,6 +170,7 @@ function buildAgentCommandInput(params: {
   senderIsOwner: boolean;
   abortSignal?: AbortSignal;
   streamParams?: AgentStreamParams;
+  promptMode?: "minimal";
 }) {
   return {
     message: params.prompt.message,
@@ -178,6 +187,7 @@ function buildAgentCommandInput(params: {
     allowModelOverride: params.modelOverride !== undefined,
     abortSignal: params.abortSignal,
     streamParams: params.streamParams,
+    promptMode: params.promptMode,
   };
 }
 
@@ -1076,6 +1086,7 @@ export async function handleOpenAiHttpRequest(
     senderIsOwner,
     abortSignal: abortController.signal,
     streamParams,
+    promptMode: resolveHttpChatPromptMode(agentId),
   });
 
   if (!stream) {

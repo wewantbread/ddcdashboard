@@ -150,6 +150,7 @@ type FirstAgentCommandOptions = {
   model?: string;
   senderIsOwner?: boolean;
   sessionKey?: string;
+  promptMode?: string;
   streamParams?: {
     frequencyPenalty?: number;
     maxTokens?: number;
@@ -1659,6 +1660,29 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       }
     } finally {
       testState.agentsConfig = undefined;
+      resetConfigRuntimeState();
+    }
+  });
+
+  it("uses promptMode minimal when tools.profile is minimal", async () => {
+    const port = enabledPort;
+    await writeGatewayConfig({
+      tools: { profile: "minimal" },
+      agents: { list: [{ id: "main" }] },
+    });
+    resetConfigRuntimeState();
+    try {
+      agentCommandMock.mockClear();
+      agentCommandMock.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const res = await postChatCompletions(port, {
+        model: "openclaw",
+        messages: [{ role: "user", content: "PONG" }],
+      });
+      expect(res.status).toBe(200);
+      expect(firstAgentCommandOptions()?.promptMode).toBe("minimal");
+      await res.text();
+    } finally {
+      await writeGatewayConfig({});
       resetConfigRuntimeState();
     }
   });
