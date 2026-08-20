@@ -3,7 +3,10 @@ import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion"
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeChatType, type ChatType } from "../channels/chat-type.js";
-import { parseSqliteSessionEntryRecord } from "../config/sessions/session-entry-json.js";
+import {
+  parseSqliteSessionEntryRecord,
+  hasValidSessionEntryIdentity,
+} from "../config/sessions/session-entry-json.js";
 import { normalizeAccountId } from "../routing/account-id.js";
 import { buildConversationRef, normalizeConversationPeerId } from "../routing/conversation-ref.js";
 import { deriveSessionChatTypeFromKey } from "../sessions/session-chat-type-shared.js";
@@ -301,22 +304,17 @@ export function ensureSessionEntryValidityProjection(db: DatabaseSync): void {
       "ALTER TABLE session_nodes ADD COLUMN entry_valid INTEGER NOT NULL DEFAULT 0 CHECK (entry_valid IN (-1, 0, 1))",
     );
   }
+  // The entry_valid write-triggers were retired: they raced every session_nodes write
+  // against a pending (0) marker that only well-formed write paths settled. Interrupted
+  // paths (shutdown drain, aborted turns) left rows stuck at 0, which the canonical-key
+  // runtime validation then rejected with SessionCanonicalKeyMigrationRequiredError —
+  // including rejecting doctor's own repair pass. All current write paths set
+  // entry_valid explicitly (1 for entries, -1 for cleared shells), so the triggers are
+  // redundant; drop any installed by older binaries.
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_insert
-    AFTER INSERT ON session_nodes
-    BEGIN
-      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-    END;
-    CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_entry_update
-    AFTER UPDATE OF entry_json ON session_nodes
-    BEGIN
-      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-    END;
-    CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_identity_update
-    AFTER UPDATE OF current_session_id, updated_at ON session_nodes
-    BEGIN
-      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-    END;
+    DROP TRIGGER IF EXISTS session_nodes_entry_valid_after_insert;
+    DROP TRIGGER IF EXISTS session_nodes_entry_valid_after_entry_update;
+    DROP TRIGGER IF EXISTS session_nodes_entry_valid_after_identity_update;
   `);
   const selectPending = db.prepare(
     "SELECT current_session_id, entry_json, session_key, updated_at FROM session_nodes WHERE entry_valid = 0 ORDER BY session_key LIMIT 256",
@@ -338,6 +336,69 @@ export function ensureSessionEntryValidityProjection(db: DatabaseSync): void {
       update.run(parseSqliteSessionEntryRecord(row) ? 1 : -1, row.session_key);
     }
   }
+  // Rows left by older binaries can carry an explicit -1 with a non-{} entry_json
+  // (their cleared-shell encoding was {"delivery":{"kind":"none"}}). The canonical-key
+  // validator only accepts -1 paired with "{}" plus a retained window, so those proven
+  // legacy cleared shells are normalized here. Conversion is deliberately restricted to
+  // that exact shell signature with a matching retained window: any other malformed or
+  // partially recoverable row is left untouched so Doctor's repair inventory can hydrate
+  // it from promoted columns instead of losing recovery evidence.
+  const selectShells = db.prepare(
+    `SELECT n.session_key, n.current_session_id, n.entry_json
+       FROM session_nodes n
+      WHERE n.entry_valid = -1
+        AND n.entry_json != '{}'
+        AND n.entry_json IS NOT NULL`,
+  );
+  // session_windows may not exist yet on very old schemas; the retained-window check is
+  // only a safety gate for the legacy-shell normalization, so degrade gracefully.
+  const windowsTable = readSqliteTableColumns(db, "session_windows");
+  const retainedWindow = windowsTable
+    ? db.prepare("SELECT session_id FROM session_windows WHERE session_id = ? AND session_key = ?")
+    : null;
+  const settleShell = db.prepare(
+    "UPDATE session_nodes SET entry_valid = -1, entry_json = ? WHERE session_key = ?",
+  );
+  for (const row of selectShells.all() as Array<{
+    session_key: string;
+    current_session_id: string;
+    entry_json: string;
+  }>) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.entry_json);
+    } catch {
+      parsed = undefined;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      continue;
+    }
+    const record = parsed as Record<string, unknown>;
+    // Legacy cleared-shell signature: no entry identity and only the delivery marker.
+    if (
+      hasValidSessionEntryIdentity(record as { sessionId?: unknown; updatedAt?: unknown }) ||
+      Object.keys(record).length !== 1 ||
+      !isLegacyClearedShellDelivery(record.delivery)
+    ) {
+      continue;
+    }
+    if (
+      !retainedWindow ||
+      (!retainedWindow.get(row.current_session_id, row.session_key) &&
+        !retainedWindow.get(row.session_key, row.session_key))
+    ) {
+      continue;
+    }
+    settleShell.run("{}", row.session_key);
+  }
+}
+
+function isLegacyClearedShellDelivery(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const delivery = value as Record<string, unknown>;
+  return Object.keys(delivery).length === 1 && delivery.kind === "none";
 }
 
 export function migrateSessionEntryStatusProjection(
