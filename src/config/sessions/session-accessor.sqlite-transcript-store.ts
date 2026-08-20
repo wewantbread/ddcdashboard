@@ -103,18 +103,29 @@ export function appendTranscriptEventInTransaction(
     scheduleTranscriptProjectionReconcile(database, scope, projectionNeedsRebuild, options);
     return true;
   }
-  // Caller-checked appends may retain a duplicate key in the payload, but the
-  // identity index can point at only one row.
-  const indexedMessageIdempotencyKey =
-    identity.messageIdempotencyKey &&
-    !options.dedupeByMessageIdempotency &&
-    readTranscriptIdentityByMessageIdempotencyKey(
-      database,
-      scope.sessionId,
-      identity.messageIdempotencyKey,
-    )
-      ? undefined
-      : identity.messageIdempotencyKey;
+  // Caller-checked appends may retain a duplicate key in the payload when
+  // superseding an abandoned branch (transcript rewrite replay, worker commit
+  // recovery). The identity index can point at only one row, so move it to
+  // this append instead of leaving a future duplicate delivery resolve to the
+  // row being replaced.
+  const supersededIdentity =
+    identity.messageIdempotencyKey && !options.dedupeByMessageIdempotency
+      ? readTranscriptIdentityByMessageIdempotencyKey(
+          database,
+          scope.sessionId,
+          identity.messageIdempotencyKey,
+        )
+      : undefined;
+  if (supersededIdentity) {
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("transcript_event_identities")
+        .set({ message_idempotency_key: null })
+        .where("session_id", "=", scope.sessionId)
+        .where("event_id", "=", supersededIdentity.eventId),
+    );
+  }
   executeSqliteQuerySync(
     database.db,
     db
@@ -125,7 +136,7 @@ export function appendTranscriptEventInTransaction(
         seq,
         event_type: identity.eventType,
         parent_id: identity.parentId,
-        message_idempotency_key: indexedMessageIdempotencyKey,
+        message_idempotency_key: identity.messageIdempotencyKey,
         created_at: createdAt,
       })
       .onConflict((conflict) => conflict.columns(["session_id", "event_id"]).doNothing()),

@@ -9,6 +9,7 @@ import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import {
+  appendTranscriptMessage,
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
@@ -356,5 +357,75 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect((activeMessages[1] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
       { type: "text", text: "[runtime rewrite]" },
     ]);
+  });
+
+  it("moves a replayed suffix message's idempotency key onto the active branch", async () => {
+    const dir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "openclaw-transcript-rewrite-runtime-idempotency-"),
+    );
+    const storePath = path.join(dir, "sessions.json");
+    const sessionId = "runtime-sqlite-branch-rewrite-idempotency";
+    const sessionKey = "agent:main:test-idempotency";
+    const sessionFile = formatSqliteSessionFileMarker({
+      agentId: "main",
+      sessionId,
+      storePath,
+    });
+    const target = {
+      agentId: "main",
+      sessionId,
+      sessionKey,
+      storePath,
+    };
+    await replaceSessionEntry({ sessionKey, storePath }, {
+      sessionFile,
+      sessionId,
+      updatedAt: 10,
+    } as SessionEntry);
+    const sessionManager = SessionManager.open(target, dir);
+    const keyedMessage = asAppendMessage({
+      role: "assistant",
+      content: createTextContent("summarized"),
+      idempotencyKey: "replay-suffix-key",
+      timestamp: 3,
+    });
+    const [, toolResultEntryId, keyedEntryId] = appendSessionMessages(sessionManager, [
+      asAppendMessage({ role: "user", content: "run tool", timestamp: 1 }),
+      asAppendMessage(createToolResultReplacement("exec", "before rewrite", 2)),
+      keyedMessage,
+    ]);
+
+    const result = rewriteTranscriptEntriesInSessionManager({
+      sessionManager,
+      replacements: [
+        {
+          entryId: expectDefined(toolResultEntryId, "persisted tool result entry id"),
+          message: createToolResultReplacement("exec", "[runtime rewrite]", 2),
+        },
+      ],
+    });
+
+    expect(result.changed).toBe(true);
+    const reopened = SessionManager.open(target, dir);
+    const activeMessages = getBranchMessages(reopened);
+    expect(activeMessages.map((message) => message.role)).toEqual([
+      "user",
+      "toolResult",
+      "assistant",
+    ]);
+    const activeKeyedEntry = reopened
+      .getBranch()
+      .find((entry) => entry.type === "message" && entry.message.role === "assistant");
+    const activeKeyedEntryId = expectDefined(activeKeyedEntry?.id, "active keyed entry id");
+    expect(activeKeyedEntryId).not.toBe(keyedEntryId);
+
+    // A later duplicate delivery of the replayed keyed message must resolve to
+    // the row now on the active branch, not the abandoned original row.
+    const duplicate = await appendTranscriptMessage(target, {
+      message: keyedMessage,
+      idempotencyLookup: "scan",
+    });
+    expect(duplicate.appended).toBe(false);
+    expect(duplicate.messageId).toBe(activeKeyedEntryId);
   });
 });
