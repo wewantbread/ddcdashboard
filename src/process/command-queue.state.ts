@@ -29,6 +29,8 @@ export type QueueEntry = {
 
 export type LaneState = {
   lane: string;
+  /** When this exact resident lane state was created; unknown for legacy hot-reload state. */
+  createdAtMs?: number;
   queue: QueueEntry[];
   activeTaskIds: Set<number>;
   maxConcurrent: number;

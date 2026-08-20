@@ -6,6 +6,7 @@ import { getStatusSummary } from "../../status/summary.js";
 import type { GatewayHotReloadStatus } from "../config-reload-status.types.js";
 import { buildContextEngineHealthSummary } from "../health/context-engine.js";
 import { buildDeliveryQueueHealthSummary } from "../health/delivery-queue.js";
+import { buildSessionLaneHealthSummary } from "../health/session-lanes.js";
 import type { ChannelHealthSummary, HealthSummary } from "../health/types.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import { HEALTH_REFRESH_INTERVAL_MS } from "../server-constants.js";
@@ -114,6 +115,7 @@ function mergeCachedHealthRuntimeState(params: {
   const contextEngines = buildContextEngineHealthSummary();
   return {
     ...cached,
+    sessionLanes: buildSessionLaneHealthSummary(),
     ...(params.eventLoop ? { eventLoop: params.eventLoop } : {}),
     ...(contextEngines ? { contextEngines } : {}),
     ...(deliveryQueues ? { deliveryQueues } : {}),
