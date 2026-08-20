@@ -1,6 +1,6 @@
 // HTTP Chat promptMode follows the effective tools profile after final model selection.
 import { describe, expect, it } from "vitest";
-import { resolveHttpChatPromptModeFromInputs } from "./openai-http.js";
+import { resolveHttpChatPromptModeFromInputs } from "./openai-http-prompt-mode.js";
 
 const agentId = "main";
 const codingBaseOpenAiMinimal = {
