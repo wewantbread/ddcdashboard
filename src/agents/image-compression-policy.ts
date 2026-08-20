@@ -1,5 +1,5 @@
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeMediaProviderId } from "../../packages/media-understanding-common/src/provider-id.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ImageCompressionModelPolicy } from "../media/web-media.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
