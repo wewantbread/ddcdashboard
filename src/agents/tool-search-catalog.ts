@@ -137,6 +137,7 @@ function restoreToolSearchCatalog(params: {
     searchCount: 0,
     describeCount: 0,
     callCount: 0,
+    directCoreToolNames: [],
   };
   params.catalogRef.current = next;
   catalogFingerprints.set(next, params.fingerprint);
@@ -235,6 +236,17 @@ function shouldCatalogTool(tool: AnyAgentTool): boolean {
  * resolve to trusted OpenClaw tools: an MCP lookalike must never become a
  * direct delivery or core-coding tool.
  */
+export function collectDirectCoreCodingToolNames(
+  tools: readonly { name: string }[],
+): string[] {
+  const present = new Set(
+    tools.map((tool) => tool.name).filter((name) => isCoreCodingSurfaceToolName(name)),
+  );
+  return ["read", "write", "edit", "apply_patch", "exec", "process"].filter((name) =>
+    present.has(name),
+  );
+}
+
 export function isDirectVisibleCatalogTool(
   tool: AnyAgentTool,
   directToolNames: ReadonlySet<string>,
@@ -297,6 +309,7 @@ function registerToolSearchCatalog(params: {
     searchCount: prior?.searchCount ?? 0,
     describeCount: prior?.describeCount ?? 0,
     callCount: prior?.callCount ?? 0,
+    directCoreToolNames: prior?.directCoreToolNames ?? [],
   };
   catalogFingerprints.set(next, catalogEntriesFingerprint(next.entries));
   params.catalogRef.current = next;
@@ -436,9 +449,11 @@ export function applyToolCatalogCompaction(
     }
     visible.push(tool);
   }
+  const directCoreToolNames = collectDirectCoreCodingToolNames(visible);
   const incomingFingerprint = catalogEntriesFingerprint(catalog);
   const existingCatalog = catalogRef.current;
   if (existingCatalog && catalogFingerprints.get(existingCatalog) === incomingFingerprint) {
+    existingCatalog.directCoreToolNames = directCoreToolNames;
     return {
       tools: visible,
       compacted: catalog.length > 0,
@@ -465,6 +480,10 @@ export function applyToolCatalogCompaction(
       reusableCatalogSnapshots.delete(reusableKey);
       reusableCatalogSnapshots.set(reusableKey, reusableSnapshot);
     }
+    const restored = catalogRef.current;
+    if (restored) {
+      restored.directCoreToolNames = directCoreToolNames;
+    }
     return {
       tools: visible,
       compacted: catalog.length > 0,
@@ -475,6 +494,7 @@ export function applyToolCatalogCompaction(
   }
 
   const registered = registerToolSearchCatalog({ catalogRef, entries: catalog });
+  registered.directCoreToolNames = directCoreToolNames;
   rememberReusableCatalog(reusableKey, registered);
   return {
     tools: visible,

@@ -942,6 +942,12 @@ describe("Tool Search", () => {
     ];
     const tools = [
       ...controls,
+      fakeTool("read", "Read a file"),
+      fakeTool("write", "Write a file"),
+      fakeTool("edit", "Edit a file"),
+      fakeTool("apply_patch", "Apply a patch"),
+      fakeTool("exec", "Run a command"),
+      fakeTool("process", "Manage a process"),
       pluginTool("fake_weather", "Read current weather"),
       pluginTool("fake_calendar", "Schedule a calendar event"),
       directOnlyTool("computer", "Control a desktop"),
@@ -965,6 +971,46 @@ describe("Tool Search", () => {
     expect(directory).not.toContain("Control a desktop");
     expect(directory).not.toContain('"properties"');
     expect(directory.length).toBeLessThanOrEqual(testing.maxToolSchemaDirectoryPromptChars);
+  });
+
+  it("names only the core coding tools still visible after policy filtering", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const config = { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never;
+    applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        fakeTool("read", "Read a file"),
+        pluginTool("fake_weather", "Read current weather"),
+      ],
+      config,
+      catalogRef,
+    });
+    const directory = buildToolSchemaDirectoryPrompt({ config, catalogRef });
+    expect(directory).toContain("Call read directly.");
+    expect(directory).not.toContain("exec");
+    expect(directory).not.toContain("apply_patch");
+    expect(directory).not.toContain("process");
+  });
+
+  it("omits direct-call guidance when no core coding tools are visible", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const config = { tools: { toolSearch: { enabled: true, mode: "tools" } } } as never;
+    applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        pluginTool("fake_weather", "Read current weather"),
+      ],
+      config,
+      catalogRef,
+    });
+    const directory = buildToolSchemaDirectoryPrompt({ config, catalogRef });
+    expect(directory).not.toContain("Call read");
+    expect(directory).not.toContain("apply_patch");
+    expect(directory).toContain("Call tool_describe");
   });
 
   it("keeps the capability directory byte-stable across catalog insertion orders", () => {
