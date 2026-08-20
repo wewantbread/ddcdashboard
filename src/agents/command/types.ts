@@ -221,6 +221,8 @@ export type AgentCommandOpts = {
   modelRun?: boolean;
   /** Internal prompt-mode override for trusted local/gateway callsites. */
   promptMode?: PromptMode;
+  /** Derive promptMode from each attempt model's effective tools profile. */
+  promptModeFromToolsProfile?: boolean;
   /** Internal ACP-ready session turn source. Manual spawn turns bypass only the dispatch gate. */
   acpTurnSource?: AcpTurnSource;
   /** Internal handoffs can feed the model without writing the synthetic prompt to transcript. */

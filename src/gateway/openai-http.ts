@@ -66,7 +66,6 @@ import {
 import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import { resolveAgentRunUsage } from "./openai-agent-run-usage.js";
 import { resolveOpenAiCompatError, validateOpenAiSamplingParams } from "./openai-compat-errors.js";
-import { resolveHttpChatPromptMode } from "./openai-http-prompt-mode.js";
 import {
   isToolChoiceConstraintSatisfied,
   resolveUnsatisfiedToolChoiceMessage,
@@ -163,7 +162,7 @@ function buildAgentCommandInput(params: {
   senderIsOwner: boolean;
   abortSignal?: AbortSignal;
   streamParams?: AgentStreamParams;
-  promptMode?: "minimal";
+  promptModeFromToolsProfile?: boolean;
 }) {
   return {
     message: params.prompt.message,
@@ -180,7 +179,7 @@ function buildAgentCommandInput(params: {
     allowModelOverride: params.modelOverride !== undefined,
     abortSignal: params.abortSignal,
     streamParams: params.streamParams,
-    promptMode: params.promptMode,
+    promptModeFromToolsProfile: params.promptModeFromToolsProfile,
   };
 }
 
@@ -1079,12 +1078,7 @@ export async function handleOpenAiHttpRequest(
     senderIsOwner,
     abortSignal: abortController.signal,
     streamParams,
-    promptMode: resolveHttpChatPromptMode({
-      agentId,
-      sessionKey,
-      modelOverride,
-      messageChannel,
-    }),
+    promptModeFromToolsProfile: true,
   });
 
   if (!stream) {
