@@ -125,7 +125,7 @@ export type ToolSearchCatalogSession = {
   describeCount: number;
   callCount: number;
   /** Trusted core coding tools still model-visible after compaction. */
-  directCoreToolNames: string[];
+  directCoreToolNames?: string[];
 };
 
 export type ToolSearchCatalogRef = {

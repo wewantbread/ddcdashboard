@@ -76,7 +76,8 @@ export function buildToolSchemaDirectoryPrompt(
   const config = resolveToolSearchConfig(ctx.runtimeConfig ?? ctx.config);
   const catalog = resolveCatalog(ctx);
   const directCoreToolNames = catalog.directCoreToolNames ?? [];
-  const cacheKey = `${config.mode}:${options?.includeMcp === false ? "without-mcp" : "all"}:${directCoreToolNames.join(",")}`;
+  const mcpKey = options?.includeMcp === false ? "without-mcp" : "all";
+  const cacheKey = `${config.mode}:${mcpKey}:${directCoreToolNames.join(",")}`;
   let cachedPrompts = toolSchemaDirectoryPromptCache.get(catalog.entries);
   const cachedPrompt = cachedPrompts?.get(cacheKey);
   if (cachedPrompt !== undefined) {
@@ -206,7 +207,12 @@ function formatToolSearchCatalogDirectory(
     )
     .map(formatToolDirectoryEntry)
     .filter((line): line is string => Boolean(line));
-  const fullDirectory = renderToolSearchCatalogDirectory(lines, entries.length, mode, directCoreToolNames);
+  const fullDirectory = renderToolSearchCatalogDirectory(
+    lines,
+    entries.length,
+    mode,
+    directCoreToolNames,
+  );
   if (fullDirectory.length <= MAX_TOOL_SCHEMA_DIRECTORY_PROMPT_CHARS) {
     return fullDirectory;
   }
@@ -215,13 +221,22 @@ function formatToolSearchCatalogDirectory(
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
     if (
-      renderToolSearchCatalogDirectory(lines.slice(0, middle), entries.length, mode, directCoreToolNames).length <=
-      MAX_TOOL_SCHEMA_DIRECTORY_PROMPT_CHARS
+      renderToolSearchCatalogDirectory(
+        lines.slice(0, middle),
+        entries.length,
+        mode,
+        directCoreToolNames,
+      ).length <= MAX_TOOL_SCHEMA_DIRECTORY_PROMPT_CHARS
     ) {
       low = middle;
     } else {
       high = middle - 1;
     }
   }
-  return renderToolSearchCatalogDirectory(lines.slice(0, low), entries.length, mode, directCoreToolNames);
+  return renderToolSearchCatalogDirectory(
+    lines.slice(0, low),
+    entries.length,
+    mode,
+    directCoreToolNames,
+  );
 }
