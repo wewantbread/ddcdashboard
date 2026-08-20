@@ -26,8 +26,6 @@ import { resolveCliBackendConfig as resolveCliBackendConfigImpl } from "../cli-b
 import {
   isBenignCompactionSkipReason,
   isBenignCompactionSkipResult,
-  isHarnessClearedStaleBindingSkip,
-  isHarnessOwnedAutomaticCompactionSkip,
 } from "../embedded-agent-runner/compact-reasons.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../embedded-agent-runner/compaction-runtime-context.js";
 import {
@@ -525,31 +523,8 @@ async function compactNativeHarnessCliTranscript(params: {
       );
       return { compacted: false };
     }
-    if (result && isHarnessOwnedAutomaticCompactionSkip(result)) {
-      // The native harness owns automatic thread compaction (it runs inline during
-      // turns); falling back to context-engine compaction here fought that ownership
-      // and failed auth-scoped (e.g. OAuth-only) sessions with "No API key found".
-      log.info(
-        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${reason ?? "harness owns automatic compaction"}`,
-      );
-      return { compacted: false };
-    }
     const recoverableBindingFailure = isRecoverableNativeHarnessBindingFailure(result);
     const modelLocked = params.sessionEntry.modelSelectionLocked === true;
-    if (modelLocked && result && isHarnessClearedStaleBindingSkip(result)) {
-      // A model-locked (e.g. OAuth) session cannot fall back to context-engine
-      // compaction, and codex-rs cannot resume a retired thread. The harness reported that
-      // it cleared its own dead binding and guarantees the next turn lazily rebinds, so
-      // treat this as a harness-owned safe skip: keep the session entry and let the next
-      // turn rebind. Failing here dropped the turn (#119977). A recoverable-binding failure
-      // WITHOUT this disposition (a harness that preserves its binding for host recovery)
-      // is NOT a safe skip: it falls through to the non-fallback failure return below.
-      // Mirrors the core locked branch (agent-runner-memory.ts).
-      log.info(
-        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${reason ?? "stale thread binding"}`,
-      );
-      return { compacted: false };
-    }
     const fallbackToContextEngine =
       !modelLocked && (isUnsupportedNativeHarnessCompaction(result) || recoverableBindingFailure);
     // Native harness binding failures can be repaired by clearing the stored CLI

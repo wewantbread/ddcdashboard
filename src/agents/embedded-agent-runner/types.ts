@@ -281,25 +281,6 @@ export type EmbeddedAgentCompactResult = {
   compacted: boolean;
   compactionKind?: "context-engine" | "native-harness" | "server-endpoint";
   reason?: string;
-  /**
-   * Disposition set by a native harness to tell callers how to treat a non-compacting
-   * result. The signal is this typed field, never a harness's free-form reason text.
-   *
-   * - "harness_owned_automatic_compaction": ok:true live-thread defer. The harness owns
-   *   inline automatic compaction for the still-bound thread and handled (or will handle)
-   *   this trigger itself. Callers MUST treat it as a safe skip and MUST NOT fall back to
-   *   context-engine compaction (which would fight the harness and can fail an auth-scoped,
-   *   e.g. OAuth-only, session with "No API key found").
-   * - "harness_cleared_stale_binding": ok:false recoverable-binding result. The harness
-   *   cleared (or confirmed replacement of) its own dead thread binding and guarantees the
-   *   next turn will lazily rebind. A caller that cannot fall back (model-locked) MAY
-   *   safe-continue on this disposition. A recoverable-binding failure WITHOUT it (e.g. a
-   *   harness that deliberately preserves its binding for host-side recovery) is a visible
-   *   failure for a model-locked session, not a safe skip.
-   */
-  harnessCompactionDisposition?:
-    | "harness_owned_automatic_compaction"
-    | "harness_cleared_stale_binding";
   /** Structured failure metadata used by model fallback classification. */
   failure?: {
     reason?: string;

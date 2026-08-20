@@ -648,15 +648,9 @@ async function compactResolvedContextEngine(
     // terminal: it cannot reach the context engine (no API key) and codex-rs cannot resume
     // a retired thread. A recoverable binding failure is returned as-is (honest ok:false,
     // e.g. failure.reason:"stale_thread_binding"), mirroring the CLI sibling (compact.ts /
-    // cli-compaction.ts). Callers that must continue the turn — required preflight in
-    // agent-runner-memory.ts — recognize the recoverable-binding failure and continue
-    // without dropping it (#119971/#119977). We do NOT synthesize an ok:true
-    // harness_owned_automatic_compaction disposition here: that disposition is reserved for
-    // a live harness compacting its own bound thread, and laundering a context-lost
-    // dead-binding recovery through it would conflate two distinct outcomes on the public
-    // Plugin SDK contract. The dead binding is already invalidated upstream by the codex
-    // plugin before this point, so #119977 stays fixed; manual /compact still surfaces the
-    // failure to the operator.
+    // cli-compaction.ts). The dead binding is already invalidated upstream by the codex
+    // plugin before this point, so the next turn rebinds a fresh thread and #119977 stays
+    // fixed; manual /compact still surfaces the failure to the operator.
     return harnessResult
       ? { ...harnessResult, compactionKind: "native-harness" }
       : lockedCompactionRuntimeFailure(selectedHarnessRuntime);

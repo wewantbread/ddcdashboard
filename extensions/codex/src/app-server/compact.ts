@@ -61,11 +61,6 @@ const warnedIgnoredCompactionOverrides = createDedupeCache({ ttlMs: 0, maxSize: 
 const codexNativeCompactionQueue = new KeyedAsyncQueue();
 const CODEX_NATIVE_COMPACTION_INTERRUPT_GRACE_MS = 30_000;
 
-// Plugin-private diagnostic label for logs/telemetry only. Core recognizes this
-// deferral via the typed harnessCompactionDisposition field on the result, not
-// this string; keep it local so no cross-boundary literal match can form.
-const CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON = "codex app-server owns automatic compaction";
-
 type CodexAppServerCompactOptions = {
   bindingStore: CodexAppServerBindingStore;
   pluginConfig?: unknown;
@@ -470,30 +465,6 @@ async function compactCodexNativeThread(
     surface: "native compaction",
   });
   if (nativeExecutionBlock) {
-    if (guardedNativeRequest) {
-      // Native execution is unavailable (OpenClaw sandbox/exec host), so OpenClaw
-      // cannot drive a native request — but codex-rs still owns inline automatic
-      // compaction for the bound thread, so defer instead of failing the turn.
-      // Cross-boundary contract: core recognizes this deferral via the typed
-      // harnessCompactionDisposition field (isHarnessOwnedAutomaticCompactionSkip
-      // in compact-reasons.ts), not the diagnostic reason text below.
-      embeddedAgentLog.info("deferring codex app-server compaction; native execution blocked", {
-        sessionId: params.sessionId,
-        sessionKey: params.sessionKey,
-        trigger: params.trigger,
-      });
-      return codexNativeCompactionResult(params, {
-        compacted: false,
-        harnessOwnedAutomaticCompaction: true,
-        reason: CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON,
-        details: {
-          backend: "codex-app-server",
-          skipped: true,
-          reason: "native_execution_unavailable",
-          trigger: params.trigger ?? "unknown",
-        },
-      });
-    }
     return { ok: false, compacted: false, reason: nativeExecutionBlock };
   }
   if (
@@ -713,11 +684,6 @@ async function compactCodexNativeThread(
                       threadId: currentBinding?.threadId ?? binding.threadId,
                       reason: "codex app-server binding changed before native compaction",
                       recovery: "stale_thread_binding",
-                      // A concurrent turn already rebound the session to a live thread, so no
-                      // live stale binding remains and the next turn uses it. On a non-manual
-                      // (guarded) trigger this is a safe-continue for a model-locked caller;
-                      // manual /compact still surfaces the failure.
-                      guaranteesRebind: guardedNativeRequest,
                     }),
               };
             }
@@ -804,13 +770,12 @@ async function compactCodexNativeThread(
           compactionSucceeded = true;
         } catch (error) {
           if (isCodexThreadNotFoundError(error)) {
-            let clearedDeadBinding = false;
             if (guardedNativeRequest) {
               // Guarded (automatic/preflight) triggers own recovery: clear the dead
               // binding so the next turn rebinds instead of re-probing a retired thread.
               // Manual triggers surface the failure for operator-driven recovery and
               // leave the binding untouched.
-              clearedDeadBinding = await clearDeadCodexThreadBinding(
+              await clearDeadCodexThreadBinding(
                 options.bindingStore,
                 bindingIdentity,
                 binding.threadId,
@@ -820,11 +785,6 @@ async function compactCodexNativeThread(
               threadId: binding.threadId,
               reason: coerceErrorMessage(error),
               recovery: "stale_thread_binding",
-              // Advertise the safe-continue disposition only when the dead binding is
-              // actually gone (cleared or already replaced). If the clear failed the dead
-              // binding is still current, so withhold it and let the caller surface the
-              // failure.
-              guaranteesRebind: clearedDeadBinding,
             });
           }
           embeddedAgentLog.warn("codex app-server compaction failed", {
@@ -919,7 +879,6 @@ function codexNativeCompactionResult(
     compacted: boolean;
     reason?: string;
     tokensAfter?: number;
-    harnessOwnedAutomaticCompaction?: boolean;
     details: JsonObject;
   },
 ): EmbeddedAgentCompactResult {
@@ -927,9 +886,6 @@ function codexNativeCompactionResult(
     ok: true,
     compacted: outcome.compacted,
     ...(outcome.reason ? { reason: outcome.reason } : {}),
-    ...(outcome.harnessOwnedAutomaticCompaction
-      ? { harnessCompactionDisposition: "harness_owned_automatic_compaction" as const }
-      : {}),
     result: {
       summary: "",
       firstKeptEntryId: "",
@@ -971,12 +927,6 @@ function failedCodexThreadBindingCompactionResult(
     reason: string;
     recovery: "missing_thread_binding" | "stale_thread_binding";
     threadId?: string;
-    // Set only when no live stale binding remains AND the next turn will rebind: the dead
-    // binding was present-and-cleared or confirmed already-replaced under a non-manual
-    // trigger. When true the result advertises harness_cleared_stale_binding so a
-    // model-locked caller may safe-continue; otherwise the failure surfaces (manual
-    // /compact, an unresolved dead binding, or a never-bound session).
-    guaranteesRebind?: boolean;
   },
 ): EmbeddedAgentCompactResult {
   embeddedAgentLog.warn("codex app-server compaction could not use thread binding", {
@@ -990,9 +940,6 @@ function failedCodexThreadBindingCompactionResult(
     ok: false,
     compacted: false,
     reason: recovery.reason,
-    ...(recovery.guaranteesRebind
-      ? { harnessCompactionDisposition: "harness_cleared_stale_binding" as const }
-      : {}),
     failure: {
       reason: recovery.recovery,
       rawError: recovery.reason,
@@ -1050,29 +997,24 @@ async function clearDeadCodexThreadBinding(
   bindingStore: CodexAppServerBindingStore,
   identity: CodexAppServerBindingIdentity,
   deadThreadId: string,
-): Promise<boolean> {
+): Promise<void> {
   // Clear a confirmed-dead thread binding so the next turn lazily rebinds instead of
   // re-probing a thread codex-rs can no longer resume (load_thread → "thread not
   // found"). The clear is guarded by the dead threadId: if a concurrent turn already
   // rebound the session to a live thread, the mutation and the re-read both no-op, so
   // a live rebind is never clobbered (mirrors the retirement clear in retireUnconfirmed).
-  // Returns whether no live copy of the dead binding remains — the clear landed, or a
-  // concurrent turn already replaced it. Only then may the caller advertise the
-  // harness_cleared_stale_binding disposition; a still-current dead binding returns false
-  // so the caller withholds it and surfaces the failure.
   const cleared = await bindingStore.mutate(identity, { kind: "clear", threadId: deadThreadId });
   if (cleared) {
-    return true;
+    return;
   }
   const currentBinding = await bindingStore.read(identity);
   if (currentBinding?.threadId !== deadThreadId) {
-    return true;
+    return;
   }
   embeddedAgentLog.warn("codex app-server dead thread binding could not be cleared", {
     sessionId: identity.kind === "session" ? identity.sessionId : identity.bindingId,
     threadId: deadThreadId,
   });
-  return false;
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {

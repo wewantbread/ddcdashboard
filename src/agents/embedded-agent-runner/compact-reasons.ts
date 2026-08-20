@@ -12,60 +12,6 @@ const COMPACTION_PROVIDER_5XX = new Set([500, 502, 503, 504]);
 export const DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON =
   "deferred to background context-engine maintenance";
 
-/**
- * Returns whether a result is a native harness's intentional automatic-compaction
- * ownership no-op: the harness owns inline automatic compaction for the bound
- * session and handled (or will handle) this trigger itself. Callers accept this
- * deferral and must not fall back to context-engine compaction, which would fight
- * the harness's ownership and can fail an auth-scoped (e.g. OAuth-only) session with
- * "No API key found"; it is kept out of isBenignCompactionSkipResult so callers
- * recognize it explicitly rather than folding it into a generic benign skip.
- *
- * The signal is the typed harnessCompactionDisposition field, not any harness's
- * free-form reason text — core stays plugin-agnostic and does not string-match one
- * plugin's diagnostic literal.
- */
-export function isHarnessOwnedAutomaticCompactionSkip(result: {
-  ok: boolean;
-  compacted: boolean;
-  harnessCompactionDisposition?:
-    | "harness_owned_automatic_compaction"
-    | "harness_cleared_stale_binding";
-}): boolean {
-  return (
-    result.ok &&
-    !result.compacted &&
-    result.harnessCompactionDisposition === "harness_owned_automatic_compaction"
-  );
-}
-
-/**
- * Returns whether a result is a native harness's cleared-stale-binding recovery: the
- * harness cleared (or confirmed replacement of) its own dead thread binding and
- * guarantees the next turn will lazily rebind. The disposition is honored ONLY on an
- * honest ok:false failure, so a malformed ok:true result carrying it is ignored and falls
- * through to a visible failure rather than silently safe-continuing. The remaining signal
- * is the typed harnessCompactionDisposition field, never a harness's reason text.
- *
- * A model-locked caller that cannot fall back to context-engine compaction MAY
- * safe-continue on this disposition. A recoverable-binding failure WITHOUT it (a harness
- * that preserves its binding for host-side recovery, e.g. Copilot) is not a safe skip and
- * must surface as a visible failure.
- */
-export function isHarnessClearedStaleBindingSkip(result: {
-  ok: boolean;
-  compacted: boolean;
-  harnessCompactionDisposition?:
-    | "harness_owned_automatic_compaction"
-    | "harness_cleared_stale_binding";
-}): boolean {
-  return (
-    !result.ok &&
-    !result.compacted &&
-    result.harnessCompactionDisposition === "harness_cleared_stale_binding"
-  );
-}
-
 function isGenericCompactionCancelledReason(reason: string): boolean {
   const normalized = normalizeLowercaseStringOrEmpty(reason);
   return normalized === "compaction cancelled" || normalized === "error: compaction cancelled";

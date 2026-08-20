@@ -13,11 +13,7 @@ import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import { estimateMessagesTokens } from "../../agents/compaction.js";
-import {
-  isBenignCompactionSkipResult,
-  isHarnessClearedStaleBindingSkip,
-  isHarnessOwnedAutomaticCompactionSkip,
-} from "../../agents/embedded-agent-runner/compact-reasons.js";
+import { isBenignCompactionSkipResult } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import { createToolResultPromptProjectionState } from "../../agents/embedded-agent-runner/session-prompt-state.js";
 import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
@@ -1036,22 +1032,9 @@ export async function runSessionCompactionIfNeeded(params: {
     });
     assertActive();
 
-    const modelLocked = entry?.modelSelectionLocked === true;
     if (!result?.ok) {
       const reason = result?.reason ?? "not_compacted";
       if (result && isBenignCompactionSkipResult(result)) {
-        await notifyTerminalCompaction("skipped");
-        logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
-        return entry ?? params.sessionEntry;
-      }
-      if (modelLocked && result && isHarnessClearedStaleBindingSkip(result)) {
-        // A model-locked (e.g. OAuth) session cannot fall back to context-engine
-        // compaction, and codex-rs cannot resume a retired thread. The harness reported
-        // that it cleared its own dead binding and guarantees the next turn lazily
-        // rebinds, so continue rather than dropping the turn (#119971 / #119977). A
-        // recoverable-binding failure WITHOUT this disposition (a harness that preserves
-        // its binding for host recovery) falls through to the throw below — an owner-ruled
-        // visible failure. Mirrors the CLI sibling (cli-compaction.ts).
         await notifyTerminalCompaction("skipped");
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;
@@ -1064,17 +1047,6 @@ export async function runSessionCompactionIfNeeded(params: {
     if (!result.compacted) {
       const reason = normalizeOptionalString(result.reason) ?? "not_compacted";
       if (isBenignCompactionSkipResult(result)) {
-        await notifyTerminalCompaction("skipped");
-        logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
-        return entry ?? params.sessionEntry;
-      }
-      if (isHarnessOwnedAutomaticCompactionSkip(result)) {
-        // The native harness owns automatic thread compaction: it auto-compacts the
-        // bound session inline on its own auth during the next turn. Failing the
-        // required preflight here would drop the turn (#119971), and a context-engine
-        // fallback would fail an auth-scoped (e.g. OAuth-only) session with "No API
-        // key found". So defer and let the turn continue. Mirrors the sibling caller
-        // at cli-compaction.ts.
         await notifyTerminalCompaction("skipped");
         logVerbose(`preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${reason}`);
         return entry ?? params.sessionEntry;
