@@ -1,6 +1,6 @@
 /**
  * HTTP Chat Completions promptMode from the effective tools profile.
- * Resolves after model override / stored session model, not only the agent default.
+ * Resolves after model override / stored session model / channel mapping.
  */
 import { resolveEffectiveToolPolicy } from "../agents/agent-tools.policy.js";
 import { parseModelRef } from "../agents/model-selection-normalize.js";
@@ -9,6 +9,7 @@ import { resolveChannelModelOverride } from "../channels/model-overrides.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredModelOverride } from "../sessions/stored-model-overrides.js";
+import { sessionDeliveryChannel, sessionDeliveryOrigin } from "../utils/delivery-context.shared.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
 
 export function resolveHttpChatPromptModeFromInputs(params: {
@@ -19,6 +20,12 @@ export function resolveHttpChatPromptModeFromInputs(params: {
   storedProvider?: string;
   storedModel?: string;
   messageChannel?: string;
+  groupId?: string | null;
+  groupChatType?: string | null;
+  groupChannel?: string | null;
+  groupSubject?: string | null;
+  parentSessionKey?: string | null;
+  directUserIds?: (string | null | undefined)[];
 }): "minimal" | undefined {
   const defaultModelRef = resolveDefaultModelForAgent({
     cfg: params.cfg,
@@ -30,6 +37,12 @@ export function resolveHttpChatPromptModeFromInputs(params: {
       : resolveChannelModelOverride({
           cfg: params.cfg,
           channel: params.messageChannel,
+          groupId: params.groupId,
+          groupChatType: params.groupChatType,
+          groupChannel: params.groupChannel,
+          groupSubject: params.groupSubject,
+          parentSessionKey: params.parentSessionKey,
+          directUserIds: params.directUserIds,
         });
   const parsed = params.modelOverride
     ? parseModelRef(params.modelOverride, defaultModelRef.provider)
@@ -59,6 +72,12 @@ export function resolveHttpChatPromptMode(params: {
   messageChannel?: string;
 }): "minimal" | undefined {
   const cfg = getRuntimeConfig();
+  const sessionEntry = params.sessionKey
+    ? loadGatewaySessionEntryReadOnly(params.sessionKey, {
+        agentId: params.agentId,
+      })?.entry
+    : undefined;
+  const origin = sessionDeliveryOrigin(sessionEntry);
   const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId: params.agentId });
   const stored =
     params.modelOverride || !params.sessionKey
@@ -66,9 +85,7 @@ export function resolveHttpChatPromptMode(params: {
       : resolveStoredModelOverride({
           defaultProvider: defaultModelRef.provider,
           sessionKey: params.sessionKey,
-          sessionEntry: loadGatewaySessionEntryReadOnly(params.sessionKey, {
-            agentId: params.agentId,
-          })?.entry,
+          sessionEntry,
           loadSessionEntry: (sessionKey) =>
             loadGatewaySessionEntryReadOnly(sessionKey, { agentId: params.agentId })?.entry,
         });
@@ -79,6 +96,12 @@ export function resolveHttpChatPromptMode(params: {
     modelOverride: params.modelOverride,
     storedProvider: stored?.provider,
     storedModel: stored?.model,
-    messageChannel: params.messageChannel,
+    messageChannel: params.messageChannel ?? sessionDeliveryChannel(sessionEntry),
+    groupId: sessionEntry?.groupId,
+    groupChatType: sessionEntry?.chatType ?? origin?.chatType,
+    groupChannel: sessionEntry?.groupChannel,
+    groupSubject: sessionEntry?.subject,
+    parentSessionKey: sessionEntry?.parentSessionKey ?? params.sessionKey,
+    directUserIds: [origin?.nativeDirectUserId, origin?.from, origin?.to],
   });
 }

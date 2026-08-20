@@ -67,6 +67,33 @@ describe("resolveHttpChatPromptModeFromInputs", () => {
     ).toBeUndefined();
   });
 
+  it("uses a non-wildcard channel/session modelByChannel mapping", () => {
+    const cfg = {
+      ...codingBaseOpenAiMinimal,
+      channels: {
+        modelByChannel: {
+          telegram: { "-100123": "openai/gpt-5.4" },
+        },
+      },
+    } as never;
+    expect(
+      resolveHttpChatPromptModeFromInputs({
+        cfg,
+        agentId,
+        messageChannel: "telegram",
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveHttpChatPromptModeFromInputs({
+        cfg,
+        agentId,
+        messageChannel: "telegram",
+        groupId: "-100123",
+        parentSessionKey: "agent:main:telegram:group:-100123",
+      }),
+    ).toBe("minimal");
+  });
+
   it("lets an explicit HTTP model override win over a stored session model", () => {
     expect(
       resolveHttpChatPromptModeFromInputs({
