@@ -153,10 +153,10 @@ function renderToolSearchCatalogDirectory(
   const omitted = total - lines.length;
   const guidance =
     mode === "code"
-      ? "Use tool_search_code with openclaw.tools.search(query), openclaw.tools.describe(id), and openclaw.tools.call(id, args). Call read, write, edit, and exec directly."
+      ? "Use tool_search_code with openclaw.tools.search(query), openclaw.tools.describe(id), and openclaw.tools.call(id, args). Call read, write, edit, apply_patch, exec, and process directly."
       : omitted > 0
-        ? "Call read, write, edit, and exec directly. Use tool_search for remaining tools, then tool_describe before tool_call."
-        : "Call read, write, edit, and exec directly. Call tool_describe with a listed deferred tool name before tool_call.";
+        ? "Call read, write, edit, apply_patch, exec, and process directly. Use tool_search for remaining tools, then tool_describe before tool_call."
+        : "Call read, write, edit, apply_patch, exec, and process directly. Call tool_describe with a listed deferred tool name before tool_call.";
   const footer = omitted > 0 ? `${omitted} additional tools omitted. ${guidance}` : guidance;
   return [
     "Available deferred-schema tools:",
