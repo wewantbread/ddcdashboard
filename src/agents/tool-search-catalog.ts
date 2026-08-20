@@ -216,7 +216,17 @@ function toCatalogEntry(
 }
 
 function shouldCatalogTool(tool: AnyAgentTool): boolean {
-  return !TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) && tool.catalogMode !== "direct-only";
+  if (TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) || tool.catalogMode === "direct-only") {
+    return false;
+  }
+  const classified = classifyTool(tool);
+  // Core file/shell primitives stay model-visible. Cataloging them next to
+  // tool_call makes openai-completions models wrap read/exec in the meta tool.
+  return !(
+    classified.source === "openclaw" &&
+    classified.sourceName === "core" &&
+    isCoreCodingSurfaceToolName(tool.name)
+  );
 }
 
 /**

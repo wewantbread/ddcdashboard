@@ -810,7 +810,7 @@ describe("Tool Search", () => {
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["message"]);
   });
 
-  it("keeps core coding tools visible while still cataloging them", () => {
+  it("keeps core coding tools visible without cataloging them", () => {
     const catalogRef = createToolSearchCatalogRef();
     const compacted = applyToolSearchCatalog({
       tools: [
@@ -834,13 +834,7 @@ describe("Tool Search", () => {
       "edit",
       "exec",
     ]);
-    // Core tools stay searchable alongside deferred tools (catalog order is deterministic).
-    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual([
-      "edit",
-      "exec",
-      "read",
-      "fake_lookup",
-    ]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
   });
 
   it("defers plugin tools that reuse a core coding tool name", () => {
@@ -885,10 +879,7 @@ describe("Tool Search", () => {
       TOOL_CALL_RAW_TOOL_NAME,
       "write",
     ]);
-    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual([
-      "write",
-      "fake_lookup",
-    ]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_lookup"]);
   });
 
   it("keeps direct-only tools visible in schema-directory mode", () => {
@@ -934,11 +925,11 @@ describe("Tool Search", () => {
     },
     {
       mode: "tools" as const,
-      expectedGuidance: "Call tool_describe with a listed tool name",
+      expectedGuidance: "Call read, write, edit, and exec directly",
     },
     {
       mode: "directory" as const,
-      expectedGuidance: "Call tool_describe with a listed tool name",
+      expectedGuidance: "Call read, write, edit, and exec directly",
     },
   ])("builds a bounded capability directory for $mode mode", ({ mode, expectedGuidance }) => {
     const catalogRef = createToolSearchCatalogRef();
@@ -2408,7 +2399,7 @@ describe("Tool Search", () => {
       expect(directory).toContain(
         mode === "code"
           ? "Use tool_search_code with openclaw.tools.search(query)"
-          : "Use tool_search to find them",
+          : "Use tool_search for remaining tools",
       );
     },
   );
@@ -3248,7 +3239,7 @@ describe("Tool Search", () => {
         args: { path: "memory/2026-05-22.md", content: "remember this" },
       }),
     ).rejects.toThrow(
-      "Unknown tool id: file_write. Did you mean: write? Use tool_search to find a tool, tool_describe to inspect it, then tool_call with the exact id or name.",
+      "Unknown tool id: file_write. Use tool_search to find a tool, tool_describe to inspect it, then tool_call with the exact id or name.",
     );
     expect(writeTool.execute).not.toHaveBeenCalled();
   });
@@ -3337,7 +3328,7 @@ describe("Tool Search", () => {
         },
       ),
     ).rejects.toThrow(
-      "Unknown tool id: file_write. Did you mean: write? Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
+      "Unknown tool id: file_write. Use openclaw.tools.search to find a tool, openclaw.tools.describe to inspect it, then openclaw.tools.call with the exact id or name.",
     );
     expect(writeTool.execute).not.toHaveBeenCalled();
   });
