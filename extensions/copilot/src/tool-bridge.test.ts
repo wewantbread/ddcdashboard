@@ -570,6 +570,16 @@ describe("createCopilotToolBridge", () => {
 
   it("filters the hidden tool_search catalog before compacting narrowed tools", async () => {
     let catalogRef: { current?: { entries?: Array<{ name: string }> } } | undefined;
+    const pluginKeep = createOwnerBackedContractTool({
+      pluginId: "fake-catalog",
+      name: "plugin_keep",
+      result: textToolResult("ok"),
+    });
+    const pluginDrop = createOwnerBackedContractTool({
+      pluginId: "fake-catalog",
+      name: "plugin_drop",
+      result: textToolResult("ok"),
+    });
     const createOpenClawCodingTools = vi.fn(async (opts: unknown) => {
       catalogRef = (opts as { toolSearchCatalogRef?: typeof catalogRef }).toolSearchCatalogRef;
       return [
@@ -577,6 +587,8 @@ describe("createCopilotToolBridge", () => {
         makeTool({ name: "read" }),
         makeTool({ name: "edit" }),
         makeTool({ name: "write" }),
+        pluginKeep,
+        pluginDrop,
       ];
     });
 
@@ -586,7 +598,7 @@ describe("createCopilotToolBridge", () => {
         config: { tools: { toolSearch: true } },
         runId: "run-tool-search",
         sessionKey: "agent:agent-1:main",
-        toolsAllow: ["read"],
+        toolsAllow: ["read", "plugin_keep"],
       } as never,
       createOpenClawCodingTools,
       modelId: "gpt-4o",
@@ -594,7 +606,7 @@ describe("createCopilotToolBridge", () => {
       sessionId: "session-1",
     });
 
-    expect(catalogRef?.current?.entries?.map((entry) => entry.name)).toEqual(["read"]);
+    expect(catalogRef?.current?.entries?.map((entry) => entry.name)).toEqual(["plugin_keep"]);
   });
 
   it("compacts the Copilot tool surface behind code-mode exec/wait when enabled", async () => {
