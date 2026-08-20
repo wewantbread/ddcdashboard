@@ -5,6 +5,7 @@ import path from "node:path";
 import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
 
 const MAX_CATALOG_JSON_CACHE_ENTRIES = 4_000;
+export const MAX_CATALOG_JSON_FILE_BYTES = 16 * 1024 * 1024;
 export const CLAUDE_CATALOG_IO_CONCURRENCY = 32;
 
 type CatalogJsonCacheEntry = {
@@ -134,6 +135,10 @@ export async function readJsonFile(
   });
   if (!stat?.isFile()) {
     catalogJsonCache.delete(filePath);
+    return undefined;
+  }
+  if (stat.size > MAX_CATALOG_JSON_FILE_BYTES) {
+    options.onIoFailure?.();
     return undefined;
   }
   const cached = catalogJsonCache.get(filePath);
