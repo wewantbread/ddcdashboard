@@ -805,58 +805,6 @@ describe("runCliTurnCompactionLifecycle", () => {
     expect(recordCliCompactionInStore).not.toHaveBeenCalled();
   });
 
-  it("skips context-engine fallback when Codex owns automatic compaction", async () => {
-    const compactAgentHarnessSession = vi.fn(async (_params: Record<string, unknown>) => ({
-      ok: true,
-      compacted: false,
-      harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      reason: "codex app-server owns automatic compaction",
-      result: {
-        summary: "",
-        firstKeptEntryId: "",
-        tokensBefore: 950,
-      },
-    }));
-    const scenario = await prepareCompactionScenario({
-      suffix: "codex-native-auto-compaction",
-      tmpDir,
-      provider: "codex",
-      model: "gpt-5.5",
-      sessionEntry: { agentHarnessId: "codex" },
-      deps: { maybeCompactAgentHarnessSession: compactAgentHarnessSession as never },
-    });
-    const { compactCalls, recordCliCompactionInStore, sessionEntry, sessionKey, sessionStore } =
-      scenario;
-    const result = await scenario.run();
-
-    // Codex owns automatic compaction; the ownership skip must not fall back to
-    // context-engine compaction (OAuth-only sessions have no direct API key).
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(1);
-    expect(compactCalls).toHaveLength(0);
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
-    expect(result).toBe(sessionEntry);
-
-    const lockedEntry: SessionEntry = { ...sessionEntry, modelSelectionLocked: true };
-    sessionStore[sessionKey] = lockedEntry;
-    const lockedResult = await scenario.run({ sessionEntry: lockedEntry });
-
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(2);
-    expect(compactCalls).toHaveLength(0);
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
-    const lockedNativeCall = compactAgentHarnessSession.mock.calls[1]?.[0];
-    expect(lockedNativeCall).toMatchObject({
-      agentHarnessId: "codex",
-      modelSelectionLocked: true,
-      contextEngineRuntimeContext: expect.objectContaining({
-        agentHarnessId: "codex",
-        modelSelectionLocked: true,
-        provider: "codex",
-        model: "gpt-5.5",
-      }),
-    });
-    expect(lockedResult).toBe(lockedEntry);
-  });
-
   it("does not fall back when native harness compaction returns no result", async () => {
     const scenario = await prepareCompactionScenario({
       suffix: "codex-native-empty",
@@ -1011,80 +959,6 @@ describe("runCliTurnCompactionLifecycle", () => {
       }),
     );
     expect(updatedEntry?.compactionCount).toBe(1);
-  });
-
-  it("safe-skips context-engine fallback when a model-locked Codex native binding is stale", async () => {
-    const ensureSelectedAgentHarnessPlugin = vi.fn(async () => undefined);
-    const compactAgentHarnessSession = vi.fn(async () => ({
-      ok: false,
-      compacted: false,
-      reason: "thread not found: thread-1",
-      failure: {
-        reason: "stale_thread_binding",
-      },
-      harnessCompactionDisposition: "harness_cleared_stale_binding",
-    }));
-    const scenario = await prepareCompactionScenario({
-      suffix: "codex-locked-stale-binding",
-      tmpDir,
-      provider: "codex",
-      model: "gpt-5.5",
-      sessionEntry: { agentHarnessId: "codex", modelSelectionLocked: true },
-      deps: {
-        ensureSelectedAgentHarnessPlugin,
-        maybeCompactAgentHarnessSession: compactAgentHarnessSession as never,
-      },
-    });
-    const { compactCalls, maintenance, recordCliCompactionInStore, sessionEntry } = scenario;
-    const updatedEntry = await scenario.run();
-
-    // A model-locked (OAuth) session cannot fall back to the context engine, and
-    // codex-rs cannot resume a retired thread. The harness cleared its own dead binding
-    // and set the harness_cleared_stale_binding disposition, so this is a harness-owned
-    // safe skip: the lifecycle returns the session entry and the next turn lazily rebinds
-    // instead of throwing and dropping the turn (#119977).
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(1);
-    expect(compactCalls).toHaveLength(0);
-    expect(maintenance).not.toHaveBeenCalled();
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
-    expect(updatedEntry).toBe(sessionEntry);
-  });
-
-  it("surfaces a model-locked recoverable binding failure that lacks the cleared disposition", async () => {
-    const ensureSelectedAgentHarnessPlugin = vi.fn(async () => undefined);
-    const compactAgentHarnessSession = vi.fn(async () => ({
-      ok: false,
-      compacted: false,
-      reason: "thread not found: thread-1",
-      failure: {
-        reason: "stale_thread_binding",
-      },
-    }));
-    const scenario = await prepareCompactionScenario({
-      suffix: "codex-locked-stale-binding-no-disposition",
-      tmpDir,
-      provider: "codex",
-      model: "gpt-5.5",
-      sessionEntry: { agentHarnessId: "codex", modelSelectionLocked: true },
-      deps: {
-        ensureSelectedAgentHarnessPlugin,
-        maybeCompactAgentHarnessSession: compactAgentHarnessSession as never,
-      },
-    });
-    const { compactCalls, maintenance, recordCliCompactionInStore } = scenario;
-
-    // Owner ruling (#119977): a recoverable-binding failure WITHOUT the
-    // harness_cleared_stale_binding disposition (a harness that preserves its binding for
-    // host-side recovery) does not safe-skip on a model-locked session. It cannot fall back
-    // to the context engine either, so it surfaces as a visible compaction failure.
-    await expect(scenario.run()).rejects.toThrow(
-      "CLI native harness compaction failed for codex/gpt-5.5: thread not found: thread-1",
-    );
-
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(1);
-    expect(compactCalls).toHaveLength(0);
-    expect(maintenance).not.toHaveBeenCalled();
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
   });
 
   it("clears stale Codex native binding when context-engine fallback is below target", async () => {

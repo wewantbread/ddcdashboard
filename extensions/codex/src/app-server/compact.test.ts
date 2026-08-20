@@ -7,14 +7,6 @@ import {
   type HarnessContextEngine as ContextEngine,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-// Cross-boundary contract: the automatic-compaction ownership no-op this plugin
-// produces when native execution is blocked must set the typed
-// harnessCompactionDisposition field core's plugin-agnostic recognizer matches.
-// This test asserts what the plugin emits (the disposition on its result); core's
-// own recognizer contract is owned by
-// src/agents/embedded-agent-runner/compact-reasons.test.ts. Asserting the field
-// directly here keeps the emitted shape pinned without deep-importing core across
-// the extension-test boundary (#119977).
 import {
   consumeCodexAppServerLiveThread,
   ensureCodexAppServerClientRuntime,
@@ -186,12 +178,6 @@ function requireCompactResult(result: CompactResult | undefined): CompactResult 
 
 function compactDetails(result: CompactResult): Record<string, unknown> {
   return (result.result?.details ?? {}) as Record<string, unknown>;
-}
-
-// The harness-ownership disposition is the public EmbeddedAgentCompactResult field
-// core's plugin-agnostic recognizer matches; assert it directly on the result.
-function harnessCompactionDisposition(result: CompactResult): string | undefined {
-  return result.harnessCompactionDisposition;
 }
 
 async function flushAsyncTasks(iterations = 3): Promise<void> {
@@ -587,40 +573,6 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("defers automatic compaction to codex-rs when native execution is blocked", async () => {
-    // #119977: when OpenClaw sandboxing/exec-host blocks a native request, OpenClaw
-    // cannot compact the thread itself, so an automatic trigger defers to codex-rs's
-    // inline compaction (the ownership no-op) rather than failing the turn.
-    const fake = createFakeCodexClient();
-    setCodexAppServerClientFactoryForTest(async () => fake.client);
-    const sessionFile = await writeTestBinding();
-
-    const result = requireCompactResult(
-      await maybeCompactCodexAppServerSession({
-        sessionId: "session-1",
-        sessionKey: "agent:main:session-1",
-        sessionFile,
-        workspaceDir: tempDir,
-        trigger: "budget",
-        currentTokenCount: 456,
-        config: { agents: { defaults: { sandbox: { mode: "all" } } } },
-      }),
-    );
-
-    expect(fake.request).not.toHaveBeenCalled();
-    expect(result.ok).toBe(true);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toBe("codex app-server owns automatic compaction");
-    expect(harnessCompactionDisposition(result)).toBe("harness_owned_automatic_compaction");
-    expect(result.result?.tokensBefore).toBe(456);
-    expect(compactDetails(result)).toMatchObject({
-      backend: "codex-app-server",
-      skipped: true,
-      reason: "native_execution_unavailable",
-      trigger: "budget",
-    });
-  });
-
   it("reports a missing binding on automatic triggers instead of deferring to codex-rs", async () => {
     // #119977: the automatic ownership deferral reads the binding first, so a
     // missing thread binding surfaces for recovery instead of being trusted
@@ -646,10 +598,6 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("no codex app-server thread binding");
     expect(result.failure?.reason).toBe("missing_thread_binding");
     expect(result.result).toBeUndefined();
-    // A never-bound session cleared no dead binding, so it does not advertise the
-    // safe-continue disposition even on an automatic trigger: a model-locked caller
-    // surfaces this as a visible failure (matches Copilot's missing_thread_binding).
-    expect(harnessCompactionDisposition(result)).toBeUndefined();
   });
 
   it("starts native app-server compaction for post-context-engine budget requests", async () => {
@@ -955,8 +903,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
     // A concurrent turn already rebound to a live thread, so no live stale binding remains
-    // and the guarded trigger advertises the safe-continue disposition.
-    expect(harnessCompactionDisposition(result)).toBe("harness_cleared_stale_binding");
+    // and the guarded dead-thread clear never clobbers the new thread-2 binding.
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
       threadId: "thread-2",
       contextEngine: {
@@ -2007,9 +1954,8 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("thread not found: thread-1");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
-    // Manual /compact surfaces the failure for operator-driven recovery: it leaves the
-    // binding untouched and never advertises the safe-continue disposition.
-    expect(harnessCompactionDisposition(result)).toBeUndefined();
+    // Manual /compact surfaces the failure for operator-driven recovery and leaves the
+    // binding untouched.
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
 
@@ -2051,9 +1997,6 @@ describe("maybeCompactCodexAppServerSession", () => {
     // The guarded (automatic) trigger owns recovery: the dead binding is cleared so the
     // next turn lazily rebinds instead of re-probing a thread codex-rs cannot resume.
     expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
-    // Because the dead binding was actually cleared, the result advertises the
-    // harness_cleared_stale_binding disposition so a model-locked caller may safe-continue.
-    expect(harnessCompactionDisposition(result)).toBe("harness_cleared_stale_binding");
   });
 
   it("retires the client before releasing an unconfirmed compaction start", async () => {

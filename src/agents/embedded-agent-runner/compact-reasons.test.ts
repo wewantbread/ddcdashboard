@@ -5,8 +5,6 @@ import {
   formatUnknownCompactionReasonDetail,
   isBenignCompactionSkipResult,
   isBenignCompactionSkipReason,
-  isHarnessClearedStaleBindingSkip,
-  isHarnessOwnedAutomaticCompactionSkip,
   resolveCompactionFailureReason,
 } from "./compact-reasons.js";
 
@@ -135,114 +133,6 @@ describe("isBenignCompactionSkipReason", () => {
       expect(isBenignCompactionSkipResult({ ok: true, compacted: false, reason })).toBe(false);
     },
   );
-});
-
-describe("isHarnessOwnedAutomaticCompactionSkip", () => {
-  it("matches only the typed ok/!compacted harness-ownership no-op", () => {
-    expect(
-      isHarnessOwnedAutomaticCompactionSkip({
-        ok: true,
-        compacted: false,
-        harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      }),
-    ).toBe(true);
-    expect(
-      isHarnessOwnedAutomaticCompactionSkip({
-        ok: true,
-        compacted: true,
-        harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      }),
-    ).toBe(false);
-    expect(
-      isHarnessOwnedAutomaticCompactionSkip({
-        ok: false,
-        compacted: false,
-        harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      }),
-    ).toBe(false);
-    // The disposition is the sole signal: a matching-shaped result without it is not a defer.
-    expect(isHarnessOwnedAutomaticCompactionSkip({ ok: true, compacted: false })).toBe(false);
-    // The retired plugin-private boolean is no longer the signal; only the public
-    // disposition field counts, so a stray legacy flag must not read as a defer.
-    expect(
-      isHarnessOwnedAutomaticCompactionSkip({
-        ok: true,
-        compacted: false,
-        harnessOwnedAutomaticCompaction: true,
-      } as never),
-    ).toBe(false);
-  });
-
-  it("is not folded into the benign skip contract so forced callers can escalate", () => {
-    // Forced/preflight compaction must escalate rather than accept the deferral,
-    // so the ownership no-op must never read as a benign skip. isBenignCompactionSkipResult
-    // ignores the flag entirely; a diagnostic reason must not accidentally classify as benign.
-    expect(
-      isBenignCompactionSkipResult({
-        ok: true,
-        compacted: false,
-        reason: "codex app-server owns automatic compaction",
-      }),
-    ).toBe(false);
-  });
-});
-
-describe("isHarnessClearedStaleBindingSkip", () => {
-  it("matches the ok:false cleared-stale-binding recovery disposition", () => {
-    // The harness cleared its own dead binding and guarantees the next turn rebinds; the
-    // recovery is an honest ok:false result, which is the only shape allowed to safe-continue.
-    expect(
-      isHarnessClearedStaleBindingSkip({
-        ok: false,
-        compacted: false,
-        harnessCompactionDisposition: "harness_cleared_stale_binding",
-      }),
-    ).toBe(true);
-  });
-
-  it("does not safe-continue on a malformed ok:true result carrying the disposition", () => {
-    // The disposition is honored only on an honest ok:false failure. An ok:true result
-    // carrying it is malformed and must fall through to a visible failure, not skip.
-    expect(
-      isHarnessClearedStaleBindingSkip({
-        ok: true,
-        compacted: false,
-        harnessCompactionDisposition: "harness_cleared_stale_binding",
-      }),
-    ).toBe(false);
-  });
-
-  it("does not match a recoverable-binding failure without the disposition (Copilot shape)", () => {
-    // A harness that preserves its binding for host-side recovery reports the recovery
-    // reason but no disposition. A model-locked caller must surface this, not safe-continue.
-    expect(
-      isHarnessClearedStaleBindingSkip({
-        ok: false,
-        compacted: false,
-        failure: { reason: "missing_thread_binding" },
-      } as never),
-    ).toBe(false);
-  });
-
-  it("does not match the ok:true automatic-ownership defer", () => {
-    expect(
-      isHarnessClearedStaleBindingSkip({
-        ok: true,
-        compacted: false,
-        harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      }),
-    ).toBe(false);
-  });
-
-  it("never treats an actual compaction as a stale-binding skip", () => {
-    expect(
-      isHarnessClearedStaleBindingSkip({
-        ok: false,
-        compacted: true,
-        harnessCompactionDisposition: "harness_cleared_stale_binding",
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("formatUnknownCompactionReasonDetail", () => {

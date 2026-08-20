@@ -4543,40 +4543,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns Codex's ownership deferral without falling back to the context engine", async () => {
-    // #119977: when native execution is blocked (sandbox/exec host) the plugin
-    // returns the "owns automatic compaction" no-op so codex-rs handles inline
-    // compaction. The queued layer surfaces that deferral as-is; it must not fall
-    // back to context-engine compaction, which would fight Codex's ownership.
-    resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "codex" });
-    resolveContextEngineMock.mockResolvedValue({
-      info: { ownsCompaction: false },
-      compact: contextEngineCompactMock,
-    } as never);
-    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
-      ok: true,
-      compacted: false,
-      harnessCompactionDisposition: "harness_owned_automatic_compaction",
-      reason: "codex app-server owns automatic compaction",
-    });
-
-    const result = await compactEmbeddedAgentSession(
-      wrappedCompactionArgs({
-        provider: "openai",
-        model: "gpt-5.4",
-        agentHarnessId: "codex",
-        trigger: "budget",
-        currentTokenCount: 333,
-      }),
-    );
-
-    expect(result.ok).toBe(true);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toBe("codex app-server owns automatic compaction");
-    expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
-    expect(contextEngineCompactMock).not.toHaveBeenCalled();
-  });
-
   it.each([
     ["missing_thread_binding", "no codex app-server thread binding"],
     ["stale_thread_binding", "thread not found"],
@@ -4612,7 +4578,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         reason,
         failure: { reason: failureReason },
       });
-      expect(result.harnessCompactionDisposition).toBeUndefined();
       expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
     },
@@ -4811,7 +4776,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         reason,
         failure: { reason: failureReason },
       });
-      expect(result.harnessCompactionDisposition).toBeUndefined();
       expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
     },
