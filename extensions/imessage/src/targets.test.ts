@@ -202,6 +202,40 @@ describe("imessage targets", () => {
       chatIdentifier: identifier,
     });
   });
+
+  it.each(["5", "+123456"])(
+    "rejects a bare or too-short numeric %s before send (#125461)",
+    (value) => {
+      // A bare digit string looks like a Messages chat row id, not a phone
+      // handle; pre-fix it normalized to `+<digits>` and the channel send
+      // silently failed (-1728). The error must steer the caller to chat_id /
+      // full E.164 / sms:.
+      expect(() => parseIMessageTarget(value)).toThrow(/chat_id/);
+      expect(() => parseIMessageTarget(value)).toThrow(/sms:/);
+    },
+  );
+
+  it("keeps deliverable targets and explicit sms short codes accepted (#125461)", () => {
+    expect(parseIMessageTarget("chat_id:5")).toEqual({ kind: "chat_id", chatId: 5 });
+    expect(parseIMessageTarget("+15552223333")).toEqual({
+      kind: "handle",
+      to: "+15552223333",
+      service: "auto",
+    });
+    expect(parseIMessageTarget("user@example.com")).toEqual({
+      kind: "handle",
+      to: "user@example.com",
+      service: "auto",
+    });
+    // Explicit service prefix declares intent, so short codes bypass the
+    // bare-numeric rejection.
+    expect(parseIMessageTarget("sms:12345")).toEqual({
+      kind: "handle",
+      to: "12345",
+      service: "sms",
+      serviceExplicit: true,
+    });
+  });
 });
 
 describe("imessage group policy", () => {

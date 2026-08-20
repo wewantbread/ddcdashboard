@@ -99,6 +99,12 @@ export function normalizeIMessageHandle(raw: string): string {
   return trimmed.replace(/\s+/g, "");
 }
 
+// iMessage phone handles are real numbers; a value with fewer than 7 digits (a
+// Messages chat row id typo like `5`, or `+123456`) is not deliverable. Reject
+// it at parse so the caller learns the typed forms instead of normalizing to
+// `+5` and silently failing the send. National/E.164 handles stay deliverable.
+const MIN_PHONE_HANDLE_DIGITS = 7;
+
 export function parseIMessageTarget(raw: string): IMessageTarget {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -146,6 +152,14 @@ export function parseIMessageTarget(raw: string): IMessageTarget {
     return { kind: "chat_identifier", chatIdentifier: bareChatIdentifier };
   }
 
+  const tooShortForAPhone =
+    isIMessagePhoneLikeHandle(trimmed) &&
+    trimmed.replace(/\D/g, "").length < MIN_PHONE_HANDLE_DIGITS;
+  if (tooShortForAPhone) {
+    throw new Error(
+      `iMessage target "${trimmed}" is not a deliverable handle. Use chat_id:<rowid> for a Messages chat row, a full E.164 handle beginning with +, or sms:<short-code> for an SMS short code.`,
+    );
+  }
   return { kind: "handle", to: trimmed, service: "auto" };
 }
 
