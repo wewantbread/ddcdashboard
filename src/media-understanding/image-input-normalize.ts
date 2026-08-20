@@ -70,7 +70,7 @@ export async function optimizeImageDescriptionInput(params: {
   // would regress custom providers that already accept their own image formats.
   if (!readImageMetadataFromHeader(params.buffer)) {
     if (params.buffer.length > maxBytes) {
-      throw new ImageOptimizationLimitError(`Image exceeds maxBytes ${maxBytes}`);
+      throw new ImageOptimizationLimitError(`Image exceeds maxBytes ${maxBytes}`, maxBytes);
     }
     return { buffer: params.buffer, fileName: params.fileName, mime: params.mime };
   }

@@ -4,14 +4,17 @@ import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { readImageMetadataFromHeader } from "../media/media-services.js";
+import type { ImageCompressionModelPolicy } from "../media/web-media.js";
 import type { MediaAttachmentCache } from "./attachments.js";
 import type { ImageDescriptionRequest, MediaUnderstandingProvider } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
-  resolveImageCompressionModelPolicy: vi.fn(async () => ({
-    maxSidePx: 1600,
-    preferredSidePx: 1400,
-  })),
+  resolveImageCompressionModelPolicy: vi.fn(
+    async (): Promise<ImageCompressionModelPolicy> => ({
+      maxSidePx: 1600,
+      preferredSidePx: 1400,
+    }),
+  ),
 }));
 
 vi.mock("../agents/image-compression-policy.js", () => ({
@@ -138,6 +141,42 @@ describe("runProviderEntry image resize boundary", () => {
       name: "MediaUnderstandingSkipError",
       reason: "maxBytes",
       message: "Attachment 1 exceeds maxBytes 10485760",
+    });
+    expect(describeImage).not.toHaveBeenCalled();
+  });
+
+  it("reports the stricter model byte cap when optimization rejects an image", async () => {
+    const source = Buffer.alloc(10);
+    source.write("GIF89a", 0, "ascii");
+    source.writeUInt16LE(1, 6);
+    source.writeUInt16LE(1, 8);
+    const describeImage = vi.fn();
+    mocks.resolveImageCompressionModelPolicy.mockResolvedValueOnce({ maxBytes: 8 });
+
+    await expect(
+      runProviderEntry({
+        capability: "image",
+        entry: { provider: "vision-plugin", model: "vision-v1" },
+        cfg: {} as OpenClawConfig,
+        ctx: {} as MsgContext,
+        attachmentIndex: 0,
+        cache: {
+          getBuffer: vi.fn(async () => ({
+            buffer: source,
+            fileName: "phone.gif",
+            mime: "image/gif",
+            size: source.length,
+          })),
+        } as unknown as MediaAttachmentCache,
+        agentDir: "/tmp/agent",
+        providerRegistry: new Map<string, MediaUnderstandingProvider>([
+          ["vision-plugin", { id: "vision-plugin", capabilities: ["image"], describeImage }],
+        ]),
+      }),
+    ).rejects.toMatchObject({
+      name: "MediaUnderstandingSkipError",
+      reason: "maxBytes",
+      message: "Attachment 1 exceeds maxBytes 8",
     });
     expect(describeImage).not.toHaveBeenCalled();
   });

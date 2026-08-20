@@ -829,7 +829,7 @@ export async function runProviderEntry(params: {
       if (error instanceof ImageOptimizationLimitError) {
         throw new MediaUnderstandingSkipError(
           "maxBytes",
-          `Attachment ${params.attachmentIndex + 1} exceeds maxBytes ${maxBytes}`,
+          `Attachment ${params.attachmentIndex + 1} exceeds maxBytes ${error.maxBytes}`,
         );
       }
       throw error;
