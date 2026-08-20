@@ -52,12 +52,11 @@ import {
   createAgentAttemptLifecycleCallbacks,
   type AgentAttemptLifecycleState,
 } from "./attempt-callbacks.js";
-import { persistAgentSession } from "./attempt-execution.shared.js";
+import { persistAgentSession, withCandidatePromptMode } from "./attempt-execution.shared.js";
 import { createAgentCommandLifecycle } from "./lifecycle.js";
 import { normalizeAgentCommandModelRef } from "./model-ref.js";
 import type { EmbeddedModelSelection } from "./model-selection.js";
 import type { PreparedAgentCommandExecution } from "./prepare.js";
-import { resolveCandidatePromptMode } from "./prompt-mode-from-tools-profile.js";
 import { loadAttemptExecutionRuntime, type AgentAttemptResult } from "./runtime-loaders.js";
 import { resolveInternalSessionEffectsSource } from "./session-helpers.js";
 import type { EmbeddedSessionState } from "./session-preparation.js";
@@ -477,18 +476,13 @@ export async function runEmbeddedAgentAttempt(params: {
             runTimeoutOverrideMs,
             runId,
             lifecycleGeneration,
-            opts: {
-              ...params.opts,
-              promptMode: resolveCandidatePromptMode({
-                cfg,
-                agentId: sessionAgentId,
-                sessionKey,
-                modelProvider: providerOverride,
-                modelId: modelOverride,
-                promptMode: params.opts.promptMode,
-                promptModeFromToolsProfile: params.opts.promptModeFromToolsProfile,
-              }),
-            },
+            opts: withCandidatePromptMode(params.opts, {
+              cfg,
+              agentId: sessionAgentId,
+              sessionKey,
+              modelProvider: providerOverride,
+              modelId: modelOverride,
+            }),
             runContext,
             spawnedBy,
             messageChannel,

@@ -2,8 +2,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveEffectiveToolPolicy } from "../agent-tools.policy.js";
 import type { PromptMode } from "../system-prompt.types.js";
 
-/** Compact prompt when this attempt's effective tools profile is minimal. */
-export function resolvePromptModeFromToolsProfile(params: {
+function resolvePromptModeFromToolsProfile(params: {
   cfg?: OpenClawConfig;
   agentId?: string;
   sessionKey?: string;
@@ -21,7 +20,6 @@ export function resolvePromptModeFromToolsProfile(params: {
   return profile === "minimal" ? "minimal" : undefined;
 }
 
-/** Explicit promptMode wins; otherwise each candidate can follow its tools profile. */
 export function resolveCandidatePromptMode(params: {
   cfg?: OpenClawConfig;
   agentId?: string;
