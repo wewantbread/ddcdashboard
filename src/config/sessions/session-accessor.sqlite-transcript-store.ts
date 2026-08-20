@@ -50,6 +50,7 @@ export function appendTranscriptEventInTransaction(
     allowStoredAlias?: boolean;
     dedupeByMessageIdempotency?: boolean;
     onProjectionReconcileNeeded?: () => void;
+    relocateSupersededIdempotencyKey?: boolean;
     scheduleProjectionReconcile?: boolean;
     touchMutation?: boolean;
   } = {},
@@ -103,11 +104,13 @@ export function appendTranscriptEventInTransaction(
     scheduleTranscriptProjectionReconcile(database, scope, projectionNeedsRebuild, options);
     return true;
   }
-  // Caller-checked appends may retain a duplicate key in the payload when
-  // superseding an abandoned branch (transcript rewrite replay, worker commit
-  // recovery). The identity index can point at only one row, so move it to
-  // this append instead of leaving a future duplicate delivery resolve to the
-  // row being replaced.
+  // Caller-checked replay appends may retain a duplicate key in the payload
+  // when superseding an abandoned branch (transcript rewrite replay, worker
+  // commit recovery). The identity index can point at only one row, so move
+  // it to this append instead of leaving a future duplicate delivery resolve
+  // to the row being replaced. scan-assistant appends collide with a
+  // different role on purpose (see chat.abort-persistence.test.ts) and must
+  // not steal the key from that row: drop it from this append instead.
   const supersededIdentity =
     identity.messageIdempotencyKey && !options.dedupeByMessageIdempotency
       ? readTranscriptIdentityByMessageIdempotencyKey(
@@ -116,7 +119,7 @@ export function appendTranscriptEventInTransaction(
           identity.messageIdempotencyKey,
         )
       : undefined;
-  if (supersededIdentity) {
+  if (supersededIdentity && options.relocateSupersededIdempotencyKey) {
     executeSqliteQuerySync(
       database.db,
       db
@@ -126,6 +129,10 @@ export function appendTranscriptEventInTransaction(
         .where("event_id", "=", supersededIdentity.eventId),
     );
   }
+  const indexedMessageIdempotencyKey =
+    supersededIdentity && !options.relocateSupersededIdempotencyKey
+      ? undefined
+      : identity.messageIdempotencyKey;
   executeSqliteQuerySync(
     database.db,
     db
@@ -136,7 +143,7 @@ export function appendTranscriptEventInTransaction(
         seq,
         event_type: identity.eventType,
         parent_id: identity.parentId,
-        message_idempotency_key: identity.messageIdempotencyKey,
+        message_idempotency_key: indexedMessageIdempotencyKey,
         created_at: createdAt,
       })
       .onConflict((conflict) => conflict.columns(["session_id", "event_id"]).doNothing()),

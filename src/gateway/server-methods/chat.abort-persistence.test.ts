@@ -368,6 +368,46 @@ describe("chat abort transcript persistence", () => {
     });
   });
 
+  it("keeps a later user retry resolving to its own row after a scan-assistant key collision", async () => {
+    const { sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-idempotency-retry-",
+    );
+    const runId = "idem-abort-retry";
+    const idempotencyKey = `${runId}:assistant`;
+    const userMessage = { role: "user", content: "colliding user key", timestamp: 1 };
+    const scope = { agentId: "main", sessionId, sessionKey: "main", storePath };
+    const firstUserAppend = appendTranscriptMessageSync(scope, {
+      idempotencyLookup: "caller-checked",
+      message: { ...userMessage, idempotencyKey },
+      now: 1,
+    });
+
+    const respond = vi.fn();
+    const context = createChatAbortContext({
+      chatAbortControllers: new Map([[runId, createActiveRun("main", { sessionId })]]),
+      chatRunState: createAbortTestRunState([
+        [runId, { buffer: "Partial after retry collision", deltaSentAt: Date.now() }],
+      ]),
+      logGateway: { warn: vi.fn() },
+    });
+    await invokeChatAbortHandler({
+      handler: expectDefined(
+        chatHandlers["chat.abort"],
+        'chatHandlers["chat.abort"] test invariant',
+      ),
+      context,
+      request: { sessionKey: "main", runId },
+      respond,
+    });
+
+    const retryAppend = appendTranscriptMessageSync(scope, {
+      message: { ...userMessage, idempotencyKey },
+    });
+
+    expect(retryAppend?.appended).toBe(false);
+    expect(retryAppend?.messageId).toBe(firstUserAppend?.messageId);
+  });
+
   it("persists session-scoped abort partials with rpc metadata", async () => {
     const { transcriptPath, sessionId } = await createTranscriptFixture(
       "openclaw-chat-abort-session-",
