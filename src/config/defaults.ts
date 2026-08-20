@@ -54,6 +54,8 @@ const DEFAULT_MODEL_COST: ModelDefinitionConfig["cost"] = {
 };
 const DEFAULT_MODEL_INPUT: ModelDefinitionConfig["input"] = ["text"];
 const DEFAULT_MODEL_MAX_TOKENS = 8192;
+/** Output cap when a custom catalog row sets `reasoning: true` but omits `maxTokens`. */
+const DEFAULT_REASONING_MODEL_MAX_TOKENS = 32_768;
 const MISTRAL_SAFE_MAX_TOKENS_BY_MODEL = {
   "devstral-medium-latest": 32_768,
   "magistral-small": 40_000,
@@ -320,8 +322,11 @@ export function applyModelDefaults(
         }
 
         const maxTokenContextWindow = contextWindow ?? DEFAULT_CONTEXT_TOKENS;
+        const genericMaxTokens = reasoning
+          ? DEFAULT_REASONING_MODEL_MAX_TOKENS
+          : DEFAULT_MODEL_MAX_TOKENS;
         const defaultMaxTokens = Math.min(
-          providerMaxTokens ?? DEFAULT_MODEL_MAX_TOKENS,
+          providerMaxTokens ?? genericMaxTokens,
           maxTokenContextWindow,
         );
         const rawMaxTokens = isPositiveNumber(raw.maxTokens)

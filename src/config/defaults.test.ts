@@ -430,5 +430,68 @@ describe("applyModelDefaults catalog seeding", () => {
     );
     expect(model.input).toEqual(["text"]);
     expect(model.reasoning).toBe(false);
+    expect(model.maxTokens).toBe(8192);
+  });
+
+  it("defaults omitted maxTokens to 32768 for custom reasoning models", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 131_072,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized reasoning model entry",
+    );
+    expect(model.reasoning).toBe(true);
+    expect(model.maxTokens).toBe(32_768);
+  });
+
+  it("keeps an explicit custom-provider maxTokens below the reasoning fallback", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 131_072,
+                  maxTokens: 8_192,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized reasoning model entry",
+    );
+    expect(model.maxTokens).toBe(8_192);
   });
 });

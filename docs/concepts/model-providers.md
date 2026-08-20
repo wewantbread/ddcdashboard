@@ -689,11 +689,11 @@ Example (OpenAI-compatible):
     - `reasoning: false`
     - `input: ["text"]`
     - `cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }`
-    - `maxTokens: 8192`
+    - `maxTokens: 8192` when `reasoning` is false, or `32768` when `reasoning` is true (clamped to the resolved context window)
 
     An omitted `contextWindow` remains unset so authored native-window metadata is unambiguous. When neither discovery nor per-model context metadata is available, context-budget callers use the standard `200000`-token fallback.
 
-    Recommended: set explicit values that match your proxy/model limits.
+    Recommended: set explicit values that match your proxy/model limits. Reasoning models that omit `maxTokens` previously inherited `8192`, which truncates tool-call JSON once thinking consumes the budget.
 
   </Accordion>
   <Accordion title="Proxy-route shaping rules">
