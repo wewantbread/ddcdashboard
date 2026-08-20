@@ -180,4 +180,37 @@ describe("runProviderEntry image resize boundary", () => {
     });
     expect(describeImage).not.toHaveBeenCalled();
   });
+
+  it("enforces the selected model byte cap for provider-owned image formats", async () => {
+    const source = Buffer.from("custom-image");
+    const describeImage = vi.fn(async () => ({ text: "described", model: "vision-v1" }));
+    mocks.resolveImageCompressionModelPolicy.mockResolvedValueOnce({ maxBytes: 8 });
+
+    await expect(
+      runProviderEntry({
+        capability: "image",
+        entry: { provider: "vision-plugin", model: "vision-v1" },
+        cfg: {} as OpenClawConfig,
+        ctx: {} as MsgContext,
+        attachmentIndex: 0,
+        cache: {
+          getBuffer: vi.fn(async () => ({
+            buffer: source,
+            fileName: "phone.custom",
+            mime: "image/x-custom",
+            size: source.length,
+          })),
+        } as unknown as MediaAttachmentCache,
+        agentDir: "/tmp/agent",
+        providerRegistry: new Map<string, MediaUnderstandingProvider>([
+          ["vision-plugin", { id: "vision-plugin", capabilities: ["image"], describeImage }],
+        ]),
+      }),
+    ).rejects.toMatchObject({
+      name: "MediaUnderstandingSkipError",
+      reason: "maxBytes",
+      message: "Attachment 1 exceeds maxBytes 8",
+    });
+    expect(describeImage).not.toHaveBeenCalled();
+  });
 });

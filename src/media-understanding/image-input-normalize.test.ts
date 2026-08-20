@@ -3,12 +3,15 @@ import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
 import { readImageMetadataFromHeader } from "../media/media-services.js";
+import type { ImageCompressionModelPolicy } from "../media/web-media.js";
 
 const mocks = vi.hoisted(() => ({
-  resolveImageCompressionModelPolicy: vi.fn(async () => ({
-    maxSidePx: 32,
-    preferredSidePx: 32,
-  })),
+  resolveImageCompressionModelPolicy: vi.fn(
+    async (): Promise<ImageCompressionModelPolicy> => ({
+      maxSidePx: 32,
+      preferredSidePx: 32,
+    }),
+  ),
 }));
 
 vi.mock("../agents/image-compression-policy.js", () => ({
@@ -43,7 +46,7 @@ describe("image description input optimization", () => {
     expect(readImageMetadataFromHeader(result.buffer)).toEqual({ width: 32, height: 24 });
   });
 
-  it("preserves provider-owned unknown formats while enforcing the final byte cap", async () => {
+  it("preserves provider-owned unknown formats while enforcing the effective byte cap", async () => {
     const buffer = Buffer.from("custom-provider-image");
     await expect(
       optimizeImageDescriptionInput({
@@ -54,16 +57,20 @@ describe("image description input optimization", () => {
         maxBytes: buffer.length,
       }),
     ).resolves.toEqual({ buffer, fileName: undefined, mime: "image/x-custom" });
-    expect(mocks.resolveImageCompressionModelPolicy).not.toHaveBeenCalled();
 
+    mocks.resolveImageCompressionModelPolicy.mockResolvedValueOnce({ maxBytes: buffer.length - 1 });
     await expect(
       optimizeImageDescriptionInput({
         buffer,
         mime: "image/x-custom",
         provider: "vision-plugin",
         model: "vision-v1",
-        maxBytes: buffer.length - 1,
+        maxBytes: buffer.length,
       }),
-    ).rejects.toBeInstanceOf(ImageOptimizationLimitError);
+    ).rejects.toMatchObject({
+      name: ImageOptimizationLimitError.name,
+      maxBytes: buffer.length - 1,
+    });
+    expect(mocks.resolveImageCompressionModelPolicy).toHaveBeenCalledTimes(2);
   });
 });

@@ -6,7 +6,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
 import { extractImageContentFromSource } from "../media/input-files.js";
 import { readImageMetadataFromHeader } from "../media/media-services.js";
-import { optimizeImageBufferForWebMedia } from "../media/web-media.js";
+import { effectiveImageBytesCap, optimizeImageBufferForWebMedia } from "../media/web-media.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 
 const HEIC_MIME_RE = /^image\/hei[cf]$/i;
@@ -66,22 +66,27 @@ export async function optimizeImageDescriptionInput(params: {
   workspaceDir?: string;
 }): Promise<{ buffer: Buffer; fileName?: string; mime?: string }> {
   const maxBytes = params.maxBytes ?? DEFAULT_MAX_BYTES.image;
+  const modelPolicy = await resolveImageCompressionModelPolicy(params);
+  const imageCompression = { imageCount: 1, models: [modelPolicy] };
+  const effectiveMaxBytes = effectiveImageBytesCap(maxBytes, imageCompression) ?? maxBytes;
   // Unknown formats remain provider-owned; making Rastermill decode support a new plugin contract
   // would regress custom providers that already accept their own image formats.
   if (!readImageMetadataFromHeader(params.buffer)) {
-    if (params.buffer.length > maxBytes) {
-      throw new ImageOptimizationLimitError(`Image exceeds maxBytes ${maxBytes}`, maxBytes);
+    if (params.buffer.length > effectiveMaxBytes) {
+      throw new ImageOptimizationLimitError(
+        `Image exceeds maxBytes ${effectiveMaxBytes}`,
+        effectiveMaxBytes,
+      );
     }
     return { buffer: params.buffer, fileName: params.fileName, mime: params.mime };
   }
-  const modelPolicy = await resolveImageCompressionModelPolicy(params);
   const optimized = await optimizeImageBufferForWebMedia({
     buffer: params.buffer,
     contentType:
       normalizeMimeType(params.mime) ?? mimeTypeFromFilePath(params.fileName) ?? params.mime,
     fileName: params.fileName,
     maxBytes,
-    imageCompression: { imageCount: 1, models: [modelPolicy] },
+    imageCompression,
   });
   return {
     buffer: optimized.buffer,
