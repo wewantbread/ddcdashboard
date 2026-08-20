@@ -102,7 +102,7 @@ Optional request headers:
 
 By default the endpoint is **stateless per request** (a new session key is generated each call).
 
-The OpenAI `user` field is abuse-tracking metadata on this endpoint. It does **not** select an OpenClaw session, including values that contain `:` such as `conv:…` or `raycast:extension`.
+**Breaking change:** Chat Completions no longer derives a durable session from OpenAI `user`. That field is abuse-tracking metadata only, including values that contain `:` such as `conv:…` or `raycast:extension`. Clients that previously reused `user` for continuity must send `x-openclaw-session-key` instead.
 
 For a durable Chat Completions session, send `x-openclaw-session-key` with an application-owned key that avoids the reserved namespaces above. `/v1/responses` is unchanged: a non-empty `user` still routes a durable OpenResponses session.
 
@@ -244,14 +244,14 @@ Stable session for one app conversation:
 curl -sS http://127.0.0.1:18789/v1/chat/completions \
   -H 'Authorization: Bearer YOUR_TOKEN' \
   -H 'Content-Type: application/json' \
+  -H 'x-openclaw-session-key: app-conversation-123' \
   -d '{
     "model": "openclaw/default",
-    "user": "conv:YOUR_CONVERSATION_ID",
     "messages": [{"role":"user","content":"Summarize my tasks for today"}]
   }'
 ```
 
-Reuse the same `user` value on later calls for that conversation to continue the same agent session.
+Reuse the same `x-openclaw-session-key` on later calls for that conversation to continue the same agent session.
 
 Non-streaming:
 

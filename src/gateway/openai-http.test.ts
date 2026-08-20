@@ -402,17 +402,25 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       }
 
       {
-        for (const user of ["raycast-extension", "raycast:extension"]) {
+        agentCommandMock.mockClear();
+        const keys: string[] = [];
+        for (let i = 0; i < 2; i += 1) {
           mockAgentOnce([{ text: "hello" }]);
           const res = await postChatCompletions(port, {
-            user,
+            user: "raycast-extension",
             model: "openclaw",
             messages: [{ role: "user", content: "hi" }],
           });
           expect(res.status).toBe(200);
-          expect(firstAgentCommandOptions()?.sessionKey ?? "").not.toContain(`openai-user:${user}`);
+          const opts = agentCommandMock.mock.calls.at(-1)?.[0] as
+            | FirstAgentCommandOptions
+            | undefined;
+          keys.push(opts?.sessionKey ?? "");
           await res.text();
         }
+        expect(keys[0]).not.toContain("openai-user:raycast-extension");
+        expect(keys[1]).not.toContain("openai-user:raycast-extension");
+        expect(keys[0]).not.toBe(keys[1]);
       }
 
       {
