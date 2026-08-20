@@ -21,6 +21,7 @@ import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommandFromIngress } from "../commands/agent.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { GatewayHttpChatCompletionsConfig } from "../config/types.gateway.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { logWarn } from "../logger.js";
@@ -36,6 +37,7 @@ import {
 } from "../media/input-files.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
 import { defaultRuntime } from "../runtime.js";
+import { resolveStoredModelOverride } from "../sessions/stored-model-overrides.js";
 import {
   isReplaceableAssistantStreamEvent,
   resolveAssistantStreamDeltaText,
@@ -76,6 +78,7 @@ import {
   toolChoiceConstraintPrompt,
   type ToolChoiceConstraint,
 } from "./openai-tool-choice.js";
+import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
 
 type OpenAiHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -156,18 +159,25 @@ function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function resolveHttpChatPromptMode(params: {
+export function resolveHttpChatPromptModeFromInputs(params: {
+  cfg: OpenClawConfig;
   agentId: string;
   sessionKey?: string;
   modelOverride?: string;
+  storedProvider?: string;
+  storedModel?: string;
 }): "minimal" | undefined {
-  const cfg = getRuntimeConfig();
-  const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId: params.agentId });
+  const defaultModelRef = resolveDefaultModelForAgent({ cfg: params.cfg, agentId: params.agentId });
   const parsed = params.modelOverride
     ? parseModelRef(params.modelOverride, defaultModelRef.provider)
-    : defaultModelRef;
+    : params.storedModel
+      ? {
+          provider: params.storedProvider ?? defaultModelRef.provider,
+          model: params.storedModel,
+        }
+      : defaultModelRef;
   const policy = resolveEffectiveToolPolicy({
-    config: cfg,
+    config: params.cfg,
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     modelProvider: parsed?.provider,
@@ -175,6 +185,35 @@ function resolveHttpChatPromptMode(params: {
   });
   const profile = policy.providerProfile ?? policy.profile;
   return profile === "minimal" ? "minimal" : undefined;
+}
+
+function resolveHttpChatPromptMode(params: {
+  agentId: string;
+  sessionKey?: string;
+  modelOverride?: string;
+}): "minimal" | undefined {
+  const cfg = getRuntimeConfig();
+  const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId: params.agentId });
+  const stored =
+    params.modelOverride || !params.sessionKey
+      ? null
+      : resolveStoredModelOverride({
+          defaultProvider: defaultModelRef.provider,
+          sessionKey: params.sessionKey,
+          sessionEntry: loadGatewaySessionEntryReadOnly(params.sessionKey, {
+            agentId: params.agentId,
+          })?.entry,
+          loadSessionEntry: (sessionKey) =>
+            loadGatewaySessionEntryReadOnly(sessionKey, { agentId: params.agentId })?.entry,
+        });
+  return resolveHttpChatPromptModeFromInputs({
+    cfg,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    modelOverride: params.modelOverride,
+    storedProvider: stored?.provider,
+    storedModel: stored?.model,
+  });
 }
 
 function buildAgentCommandInput(params: {
