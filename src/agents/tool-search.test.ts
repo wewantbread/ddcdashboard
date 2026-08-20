@@ -1054,7 +1054,6 @@ describe("Tool Search", () => {
     expect(directory).not.toContain("exec");
   });
 
-
   it("keeps the capability directory byte-stable across catalog insertion orders", () => {
     const config = { tools: { toolSearch: true } } as never;
     const buildDirectory = (reverse: boolean) => {

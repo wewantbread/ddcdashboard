@@ -236,9 +236,7 @@ function shouldCatalogTool(tool: AnyAgentTool): boolean {
  * resolve to trusted OpenClaw tools: an MCP lookalike must never become a
  * direct delivery or core-coding tool.
  */
-export function collectDirectCoreCodingToolNames(
-  tools: readonly { name: string }[],
-): string[] {
+function collectDirectCoreCodingToolNames(tools: readonly { name: string }[]): string[] {
   const present = new Set(
     tools.map((tool) => tool.name).filter((name) => isCoreCodingSurfaceToolName(name)),
   );
