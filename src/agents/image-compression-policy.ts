@@ -97,6 +97,7 @@ async function resolvePolicyWithHooks(params: {
           : {}),
       },
     );
+    // SAFETY: model resolution preserves provider runtime fields on its narrower Model result.
     return (resolved.model as ProviderRuntimeModel | undefined)?.mediaInput?.image ?? {};
   } catch {
     return {};
