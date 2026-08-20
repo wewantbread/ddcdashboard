@@ -447,6 +447,52 @@ describe("runBeforeToolCallHook — embedded mode approvals", () => {
     expect(approvalCall.options.expectFinal).toBe(false);
   });
 
+  it("classifies a run-abort with a __proto__ payload as cancelled, not as a gateway failure", async () => {
+    setEmbeddedMode(false);
+    // First gateway call (plugin.approval.request) resolves with an id so the
+    // wait phase is reached; the second (plugin.approval.waitDecision) never
+    // resolves, so the already-aborted signal wins the race deterministically.
+    let gatewayCallCount = 0;
+    mockCallGatewayTool.mockImplementation(() => {
+      gatewayCallCount += 1;
+      return gatewayCallCount === 1
+        ? Promise.resolve({ id: "approval-abort-probe" })
+        : new Promise<never>(() => {});
+    });
+    const controller = new AbortController();
+    // JSON.parse yields a real own enumerable "__proto__"; a literal would not.
+    const reason = JSON.parse('{"__proto__":{"tag":"X"},"code":"E_UPSTREAM","status":503}');
+    controller.abort(reason);
+
+    const result = await resolveBeforeToolCallApprovalOutcome({
+      result: {
+        requireApproval: {
+          pluginId: "proto-payload",
+          title: "Needs approval",
+          description: "Abort payload approval",
+          severity: "info",
+          timeoutMs: 5_000,
+        },
+      },
+      toolName: "exec",
+      baseParams: { command: "ls" },
+      signal: controller.signal,
+    });
+
+    // Pre-fix, Object.assign(error, reason) let the parsed __proto__ replace
+    // the Error's prototype, so `err instanceof Error` failed at the catch
+    // site and the abort was misclassified as a gateway failure. Post-fix, the
+    // canonical __proto__-safe copy keeps Error identity, so the abort is
+    // recognized as a run cancellation.
+    expect(result).toMatchObject({
+      blocked: true,
+      kind: "failure",
+      reason: "Approval cancelled (run aborted)",
+    });
+    // The parsed __proto__ must not leak onto Object.prototype.
+    expect(({} as { tag?: unknown }).tag).toBeUndefined();
+  });
+
   it("preserves hook params override after an approval allow decision", async () => {
     setEmbeddedMode(true);
 

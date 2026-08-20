@@ -179,7 +179,25 @@ export function toLintErrorObject(value, fallbackMessage) {
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
+    // Object.assign minus __proto__: mirrors the canonical loop in
+    // packages/normalization-core/src/error-coercion.ts (toErrorObject). This
+    // response reader is a standalone no-workspace-dependency helper, so the
+    // loop is inlined. [[Set]] preserves existing Error field descriptors,
+    // propagates throwing source accessors, and re-raises on a non-writable
+    // target (hardened prototype / frozen subclass) to keep Object.assign
+    // semantics; skipping __proto__ alone blocks the prototype-setter hijack.
+    for (const key of Reflect.ownKeys(value)) {
+      if (key === "__proto__") {
+        continue;
+      }
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable) {
+        continue;
+      }
+      if (!Reflect.set(error, key, Reflect.get(value, key))) {
+        throw new TypeError(`Cannot assign property ${String(key)} to error target`);
+      }
+    }
   }
   return error;
 }
