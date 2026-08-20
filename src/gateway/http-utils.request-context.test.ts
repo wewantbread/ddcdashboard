@@ -58,29 +58,32 @@ describe("resolveGatewayRequestContext", () => {
     expect(result.messageChannel).toBe("webchat");
   });
 
-  it("includes session prefix and user in generated session key for conversation-shaped users", () => {
+  it("includes session prefix and user in generated session key", () => {
     const result = resolveGatewayRequestContext({
       req: createReq(),
       model: "openclaw",
-      user: "conv:alice",
+      user: "alice",
       sessionPrefix: "openresponses",
       defaultMessageChannel: "webchat",
     });
 
-    expect(result.sessionKey).toContain("openresponses-user:conv:alice");
+    expect(result.sessionKey).toContain("openresponses-user:alice");
   });
 
-  it("does not bind a durable session for a bare OpenAI user string", () => {
-    const result = resolveGatewayRequestContext({
-      req: createReq(),
-      model: "openclaw",
-      user: "raycast-extension",
-      sessionPrefix: "openai",
-      defaultMessageChannel: "webchat",
-    });
+  it("does not bind Chat Completions sessions from OpenAI user values", () => {
+    for (const user of ["raycast-extension", "raycast:extension", "conv:alice"]) {
+      const result = resolveGatewayRequestContext({
+        req: createReq(),
+        model: "openclaw",
+        user,
+        sessionPrefix: "openai",
+        defaultMessageChannel: "webchat",
+        bindUserToSession: false,
+      });
 
-    expect(result.sessionKey).not.toContain("openai-user:raycast-extension");
-    expect(result.sessionKey).toMatch(/openai:[0-9a-f-]{36}$/i);
+      expect(result.sessionKey).not.toContain(`openai-user:${user}`);
+      expect(result.sessionKey).toMatch(/openai:[0-9a-f-]{36}$/i);
+    }
   });
 
   it("preserves normal explicit session-key overrides", () => {

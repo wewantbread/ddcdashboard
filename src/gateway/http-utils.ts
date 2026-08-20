@@ -245,6 +245,7 @@ function resolveSessionKey(params: {
   agentId: string;
   user?: string | undefined;
   prefix: string;
+  bindUserToSession?: boolean;
 }): string {
   const explicit = getHeader(params.req, "x-openclaw-session-key")?.trim();
   if (explicit) {
@@ -255,11 +256,10 @@ function resolveSessionKey(params: {
   }
 
   const user = params.user?.trim();
-  // OpenAI `user` is an abuse-tracking field. Bind a durable session only when
-  // the value looks like a conversation id (`conv:…`, `raycast:chat:…`).
-  // Bare app constants such as `raycast-extension` must not share one transcript.
+  // Chat Completions treats OpenAI `user` as abuse-tracking metadata.
+  // OpenResponses still binds a durable session from any non-empty user.
   const mainKey =
-    user && user.includes(":")
+    params.bindUserToSession !== false && user
       ? `${params.prefix}-user:${user}`
       : `${params.prefix}:${randomUUID()}`;
   return buildAgentMainSessionKey({ agentId: params.agentId, mainKey });
@@ -298,6 +298,7 @@ export function resolveGatewayRequestContext(params: {
   sessionPrefix: string;
   defaultMessageChannel: string;
   useMessageChannelHeader?: boolean;
+  bindUserToSession?: boolean;
 }): { agentId: string; sessionKey: string; messageChannel: string } {
   const agentId = resolveAgentIdForRequest({ req: params.req, model: params.model });
   const sessionKey = resolveSessionKey({
@@ -305,6 +306,7 @@ export function resolveGatewayRequestContext(params: {
     agentId,
     user: params.user,
     prefix: params.sessionPrefix,
+    bindUserToSession: params.bindUserToSession,
   });
 
   const messageChannel = params.useMessageChannelHeader
