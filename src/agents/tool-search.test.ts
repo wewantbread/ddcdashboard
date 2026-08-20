@@ -1033,6 +1033,28 @@ describe("Tool Search", () => {
     expect(directory).toContain("Call tool_describe");
   });
 
+  it("keeps Call read directly when the deferred catalog is empty", () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const config = {
+      tools: { toolSearch: { enabled: true, mode: "tools" } },
+    } as never;
+    applyToolSearchCatalog({
+      tools: [
+        fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search"),
+        fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe"),
+        fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call"),
+        fakeTool("read", "Read a file"),
+      ],
+      config,
+      catalogRef,
+    });
+    const directory = buildToolSchemaDirectoryPrompt({ config, catalogRef });
+    expect(directory).toContain("Available deferred-schema tools: none.");
+    expect(directory).toContain("Call read directly.");
+    expect(directory).not.toContain("exec");
+  });
+
+
   it("keeps the capability directory byte-stable across catalog insertion orders", () => {
     const config = { tools: { toolSearch: true } } as never;
     const buildDirectory = (reverse: boolean) => {
