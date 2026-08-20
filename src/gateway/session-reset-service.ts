@@ -37,6 +37,7 @@ import { cleanupBrowserSessionsForLifecycleEnd } from "../browser-lifecycle-clea
 import { getRuntimeConfig } from "../config/io.js";
 import {
   resolveSessionWorkStartError,
+  SESSION_LIFECYCLE_CHANGED_ERROR_REASON,
   SESSION_TOTAL_TOKENS_VERSION,
   type InternalSessionEntry,
   type SessionEntry,
@@ -975,6 +976,8 @@ export async function performGatewaySessionReset(params: {
   workerPlacementContext?: SessionWorkerPlacementContext;
   assertCurrent?: () => void;
   assertAuthorizedInstance?: () => void;
+  /** Optional caller-observed session ID that must still be current at lifecycle admission. */
+  expectedSessionId?: string;
   onCommitted?: (commit: { key: string; sessionId: string }) => void;
 }): Promise<
   | {
@@ -1042,6 +1045,15 @@ export async function performGatewaySessionReset(params: {
     params.key,
     resetTarget.requestedAgentId ? { agentId: resetTarget.requestedAgentId } : undefined,
   ).entry;
+  const expectedSessionMatches = (entry: SessionEntry | undefined): boolean =>
+    params.expectedSessionId === undefined || entry?.sessionId === params.expectedSessionId;
+  const sessionChangedError = () =>
+    errorShape(ErrorCodes.INVALID_REQUEST, `Session ${params.key} changed before reset. Retry.`, {
+      details: { reason: SESSION_LIFECYCLE_CHANGED_ERROR_REASON },
+    });
+  if (!expectedSessionMatches(initialResetEntry)) {
+    return { ok: false, error: sessionChangedError() };
+  }
   if (!initialResetEntry) {
     const creationError = authorizeGatewaySessionCreation({
       cfg: resetTarget.cfg,
@@ -1136,6 +1148,10 @@ export async function performGatewaySessionReset(params: {
         params.key,
         resetTarget.requestedAgentId ? { agentId: resetTarget.requestedAgentId } : undefined,
       );
+      if (!expectedSessionMatches(currentEntry)) {
+        resetPreparationError = sessionChangedError();
+        return;
+      }
       if (!currentEntry) {
         resetPreparationError = authorizeGatewaySessionCreation({
           cfg: resetTarget.cfg,
@@ -1244,10 +1260,13 @@ export async function performGatewaySessionReset(params: {
       if (normalizeOptionalString(entry?.sessionId) !== preparedResetSessionId) {
         return {
           ok: false,
-          error: errorShape(
-            ErrorCodes.UNAVAILABLE,
-            `Session ${params.key} changed before reset. Retry.`,
-          ),
+          error:
+            params.expectedSessionId === undefined
+              ? errorShape(
+                  ErrorCodes.UNAVAILABLE,
+                  `Session ${params.key} changed before reset. Retry.`,
+                )
+              : sessionChangedError(),
         };
       }
       const currentOwnershipError = resolvePluginSessionOwnershipError({
