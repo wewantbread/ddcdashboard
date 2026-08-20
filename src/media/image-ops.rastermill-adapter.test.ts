@@ -115,6 +115,53 @@ describe("image ops Rastermill adapter", () => {
     );
   });
 
+  it("keeps generic web-media optimization on the shared pixel limit", async () => {
+    const actualRastermill = await vi.importActual<typeof import("rastermill")>("rastermill");
+    const encode = vi.fn(async () => ({
+      data: Buffer.from("jpeg"),
+      bytes: 4,
+      base64Bytes: 8,
+      width: 1,
+      height: 1,
+      format: "jpeg" as const,
+      mimeType: "image/jpeg" as const,
+      metadata: "stripped" as const,
+      resized: true,
+      chosen: { format: "jpeg" as const, maxSide: 1, quality: 80 },
+    }));
+    const createRastermill = vi.fn(() => ({ encode }));
+    vi.doMock("rastermill", () => ({
+      ...actualRastermill,
+      createRastermill,
+      readImageMetadataFromHeader: vi.fn(() => ({ width: 2, height: 2 })),
+      readImageProbeFromHeader: vi.fn(() => ({
+        width: 2,
+        height: 2,
+        format: "png",
+        hasAlpha: false,
+        orientation: null,
+        bytes: 32,
+      })),
+    }));
+
+    const { MAX_IMAGE_INPUT_PIXELS } = await import("./image-ops.js");
+    const { optimizeImageBufferForWebMedia } = await import("./web-media.js");
+    await optimizeImageBufferForWebMedia({
+      buffer: Buffer.alloc(32),
+      contentType: "image/png",
+      maxBytes: 16,
+    });
+
+    expect(createRastermill).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        limits: {
+          inputPixels: MAX_IMAGE_INPUT_PIXELS,
+          outputPixels: MAX_IMAGE_INPUT_PIXELS,
+        },
+      }),
+    );
+  });
+
   it("admits phone-sized JPEG headers only to the bounded downscale path", async () => {
     const { createImageProcessor, MAX_IMAGE_INPUT_PIXELS } = await import("./image-ops.js");
     const { createImageProcessorWithPixelLimits } = await import("./image-processor.js");
