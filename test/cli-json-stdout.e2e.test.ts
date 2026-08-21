@@ -276,6 +276,54 @@ describe("cli json stdout contract", () => {
     );
   });
 
+  it.each([
+    {
+      name: "route-first --active",
+      args: ["sessions", "--json", "--active", "0"],
+      commander: false,
+      message: "--active must be a positive number of minutes, for example --active 30.",
+    },
+    {
+      name: "Commander --active",
+      args: ["sessions", "--json", "--active", "0"],
+      commander: true,
+      message: "--active must be a positive number of minutes, for example --active 30.",
+    },
+    {
+      name: "route-first --limit",
+      args: ["sessions", "--json", "--limit", "0"],
+      commander: false,
+      message: '--limit must be a positive integer or "all", for example --limit 25.',
+    },
+    {
+      name: "Commander --limit",
+      args: ["sessions", "--json", "--limit", "0"],
+      commander: true,
+      message: '--limit must be a positive integer or "all", for example --limit 25.',
+    },
+  ])("keeps $name validation failures machine-readable", async (testCase) => {
+    await withTempHome(
+      async (tempHome) => {
+        const result = runBuiltCli(
+          tempHome,
+          testCase.args,
+          testCase.commander ? { OPENCLAW_DISABLE_ROUTE_FIRST: "1" } : {},
+        );
+
+        expect(result.status, result.stderr).toBe(1);
+        expect(JSON.parse(result.stdout)).toEqual({
+          ok: false,
+          error: {
+            type: "cli_error",
+            message: testCase.message,
+          },
+        });
+        expect(result.stderr).toBe(`${testCase.message}\n`);
+      },
+      { prefix: "openclaw-sessions-json-validation-e2e-" },
+    );
+  });
+
   it("returns one canonical document for a command that previously failed on stderr only", async () => {
     await withTempHome(
       async (tempHome) => {

@@ -20,6 +20,7 @@ import {
 } from "../agents/model-selection.js";
 import { resolveRuntimePolicySessionKey } from "../auto-reply/reply/runtime-policy-session-key.js";
 import { normalizeChatType } from "../channels/chat-type.js";
+import { formatCliJsonFailure } from "../cli/failure-output.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { resolveFreshSessionTotalTokens, resolveSessionTotalTokens } from "../config/sessions.js";
 import { resolveProjectedSessionContextTokens } from "../config/sessions/context-token-provenance.js";
@@ -337,20 +338,18 @@ export async function sessionsCommand(
     return;
   }
 
-  let activeMinutes: number | undefined;
-  if (opts.active !== undefined) {
-    const parsed = parseStrictPositiveInteger(opts.active);
-    if (parsed === undefined) {
-      runtime.error("--active must be a positive number of minutes, for example --active 30.");
-      runtime.exit(1);
-      return;
-    }
-    activeMinutes = parsed;
-  }
-
+  const activeMinutes =
+    opts.active === undefined ? undefined : parseStrictPositiveInteger(opts.active);
   const limit = parseSessionsLimit(opts.limit);
-  if (limit === null) {
-    runtime.error('--limit must be a positive integer or "all", for example --limit 25.');
+  const invalidActive = opts.active !== undefined && activeMinutes === undefined;
+  if (invalidActive || limit === null) {
+    const message = invalidActive
+      ? "--active must be a positive number of minutes, for example --active 30."
+      : '--limit must be a positive integer or "all", for example --limit 25.';
+    if (opts.json) {
+      writeRuntimeJson(runtime, formatCliJsonFailure(message));
+    }
+    runtime.error(message);
     runtime.exit(1);
     return;
   }
