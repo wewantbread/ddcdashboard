@@ -16,6 +16,13 @@ import { createConfigHandlerHarness, createConfigWriteSnapshot } from "./config.
 const configWriteMocks = vi.hoisted(() => ({
   commitGatewayConfigWrite: vi.fn(),
   readConfigFileSnapshotForWrite: vi.fn(),
+  resolveGatewayConfigRestartWriteResult: vi.fn<
+    typeof import("./config-write-flow.js").resolveGatewayConfigRestartWriteResult
+  >(async () => ({
+    payload: { kind: "config-patch", status: "ok", ts: 0 },
+    sentinelPersisted: false,
+    restart: undefined,
+  })),
 }));
 
 vi.mock("../../config/io.js", async () => {
@@ -61,11 +68,7 @@ vi.mock("./config-write-flow.js", async () => {
   return {
     ...actual,
     commitGatewayConfigWrite: configWriteMocks.commitGatewayConfigWrite,
-    resolveGatewayConfigRestartWriteResult: vi.fn(async () => ({
-      payload: { kind: "config-patch", mode: "config.patch", configPath: "/tmp/openclaw.json" },
-      sentinelPersisted: false,
-      restart: undefined,
-    })),
+    resolveGatewayConfigRestartWriteResult: configWriteMocks.resolveGatewayConfigRestartWriteResult,
   };
 });
 
@@ -136,6 +139,31 @@ async function invokeConfigSchema() {
   )(harness.options);
   return harness;
 }
+function startConfigWriteMethod(
+  method: "config.patch" | "config.apply" | "config.set",
+  raw: OpenClawConfig,
+) {
+  const harness = createConfigHandlerHarness({
+    method,
+    params: {
+      raw: JSON.stringify(raw),
+      baseHash: storedHash,
+    },
+  });
+  const completion = expectDefined(
+    configHandlers[method],
+    `configHandlers["${method}"] test invariant`,
+  )(harness.options);
+  return { ...harness, completion };
+}
+
+function deferredApplication() {
+  let resolve!: (outcome: { status: "applied" }) => void;
+  const result = new Promise<{ status: "applied" }>((done) => {
+    resolve = done;
+  });
+  return { result, resolve };
+}
 
 beforeEach(() => {
   storedConfig = {};
@@ -163,6 +191,7 @@ beforeEach(() => {
         path: "/tmp/openclaw.json",
         config: storedConfig,
         hash: storedHash,
+        acknowledgeResponse: vi.fn(),
         queueFollowUp: vi.fn(),
       };
     },
@@ -490,6 +519,163 @@ describe("config.patch hash-free ui.prefs LWW", () => {
         message: "config path owned by another writer",
       }),
     );
+  });
+});
+
+describe("config patch and apply runtime acknowledgement", () => {
+  it.each(["config.patch", "config.apply"] as const)(
+    "keeps %s pending until the exact runtime application completes",
+    async (method) => {
+      const application = deferredApplication();
+      const queueFollowUp = vi.fn();
+      const acknowledgeResponse = vi.fn();
+      configWriteMocks.commitGatewayConfigWrite.mockImplementationOnce(
+        async ({ nextConfig }: { nextConfig: OpenClawConfig }) => ({
+          path: "/tmp/openclaw.json",
+          config: nextConfig,
+          hash: "next-hash",
+          application: application.result,
+          acknowledgeResponse,
+          queueFollowUp,
+        }),
+      );
+
+      const request = startConfigWriteMethod(method, { ui: { prefs: { theme: "knot" } } });
+      await vi.waitFor(() => expect(configWriteMocks.commitGatewayConfigWrite).toHaveBeenCalled());
+
+      expect(request.respond).not.toHaveBeenCalled();
+      expect(configWriteMocks.resolveGatewayConfigRestartWriteResult).not.toHaveBeenCalled();
+      application.resolve({ status: "applied" });
+      await request.completion;
+
+      expect(request.respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ ok: true, hash: "next-hash" }),
+        undefined,
+      );
+      expect(configWriteMocks.resolveGatewayConfigRestartWriteResult).toHaveBeenCalledOnce();
+      expect(queueFollowUp).toHaveBeenCalledOnce();
+      expect(request.respond.mock.invocationCallOrder[0]).toBeLessThan(
+        queueFollowUp.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+      expect(acknowledgeResponse).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["superseded", "failed", "stopped"] as const)(
+    "returns UNAVAILABLE and skips follow-up when runtime application is %s",
+    async (status) => {
+      const queueFollowUp = vi.fn();
+      const acknowledgeResponse = vi.fn();
+      configWriteMocks.commitGatewayConfigWrite.mockImplementationOnce(
+        async ({ nextConfig }: { nextConfig: OpenClawConfig }) => ({
+          path: "/tmp/openclaw.json",
+          config: nextConfig,
+          hash: "next-hash",
+          application: Promise.resolve({ status }),
+          acknowledgeResponse,
+          queueFollowUp,
+        }),
+      );
+
+      const { respond } = await invokeConfigPatch({
+        raw: { ui: { prefs: { theme: "knot" } } },
+        baseHash: storedHash,
+      });
+
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: "UNAVAILABLE",
+          message: expect.stringMatching(/persisted but not applied.*config\.get.*retry.*restart/i),
+        }),
+      );
+      expect(acknowledgeResponse).toHaveBeenCalledOnce();
+      expect(queueFollowUp).not.toHaveBeenCalled();
+      expect(configWriteMocks.resolveGatewayConfigRestartWriteResult).not.toHaveBeenCalled();
+    },
+  );
+
+  it("queues zero-delay direct restart delivery behind the successful response", async () => {
+    vi.useFakeTimers();
+    const restartDelivered = vi.fn();
+    const queueFollowUp = vi.fn();
+    configWriteMocks.resolveGatewayConfigRestartWriteResult.mockImplementationOnce(async () => {
+      setTimeout(restartDelivered, 0);
+      return {
+        payload: { kind: "config-patch", status: "ok", ts: 0 },
+        sentinelPersisted: true,
+        restart: {
+          ok: true,
+          pid: process.pid,
+          signal: "SIGUSR1" as const,
+          delayMs: 0,
+          mode: "emit" as const,
+          coalesced: false,
+          cooldownMsApplied: 0,
+          emitHooksQueued: false,
+        },
+      };
+    });
+    configWriteMocks.commitGatewayConfigWrite.mockImplementationOnce(
+      async ({ nextConfig }: { nextConfig: OpenClawConfig }) => ({
+        path: "/tmp/openclaw.json",
+        config: nextConfig,
+        hash: "next-hash",
+        application: Promise.resolve({ status: "reload-disabled" as const }),
+        acknowledgeResponse: vi.fn(),
+        queueFollowUp,
+      }),
+    );
+
+    const request = startConfigWriteMethod("config.patch", {
+      gateway: { reload: { mode: "off" } },
+    });
+    await request.completion;
+
+    expect(request.respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        restart: expect.objectContaining({ delayMs: 0 }),
+      }),
+      undefined,
+    );
+    expect(queueFollowUp).toHaveBeenCalledOnce();
+    expect(restartDelivered).not.toHaveBeenCalled();
+
+    await vi.runAllTimersAsync();
+
+    expect(restartDelivered).toHaveBeenCalledOnce();
+    expect(request.respond.mock.invocationCallOrder[0]).toBeLessThan(
+      restartDelivered.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("keeps config.set as a persistence acknowledgement", async () => {
+    const application = deferredApplication();
+    const queueFollowUp = vi.fn();
+    configWriteMocks.commitGatewayConfigWrite.mockImplementationOnce(
+      async ({ nextConfig }: { nextConfig: OpenClawConfig }) => ({
+        path: "/tmp/openclaw.json",
+        config: nextConfig,
+        hash: "next-hash",
+        application: application.result,
+        acknowledgeResponse: vi.fn(),
+        queueFollowUp,
+      }),
+    );
+
+    const request = startConfigWriteMethod("config.set", { ui: { prefs: { theme: "knot" } } });
+    await request.completion;
+
+    expect(request.respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ ok: true, hash: "next-hash" }),
+      undefined,
+    );
+    expect(queueFollowUp).toHaveBeenCalledOnce();
   });
 });
 

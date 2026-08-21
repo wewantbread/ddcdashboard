@@ -408,6 +408,7 @@ class GatewayRestartTransaction {
     let emissionPrepared = true;
     const prepareForEmit = async () => {
       try {
+        await options?.beforeRestartEmission?.();
         await params.assertRestartReady?.();
         if (!this.isCurrentRequest(requestGeneration)) {
           return false;
@@ -430,7 +431,12 @@ class GatewayRestartTransaction {
 
     const active = this.options.getActiveCounts();
 
-    if (active.totalActive > 0 || options?.prepareRuntimeConfig || params.assertRestartReady) {
+    if (
+      active.totalActive > 0 ||
+      options?.prepareRuntimeConfig ||
+      options?.beforeRestartEmission ||
+      params.assertRestartReady
+    ) {
       // Avoid spinning up duplicate polling loops from repeated config changes.
       if (this.restartPending) {
         params.logReload.info(

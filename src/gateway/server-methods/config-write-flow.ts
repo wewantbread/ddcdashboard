@@ -7,6 +7,11 @@ import {
   replaceConfigFile,
   resolveConfigSnapshotHash,
 } from "../../config/config.js";
+import {
+  attachRuntimeConfigWriteApplication,
+  createRuntimeConfigWriteApplication,
+  type RuntimeConfigWriteApplicationOutcome,
+} from "../../config/runtime-write-application.js";
 import { extractDeliveryInfo } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -288,21 +293,29 @@ export async function commitGatewayConfigWrite(params: {
   path: string;
   config: OpenClawConfig;
   hash: string | null;
+  application?: Promise<RuntimeConfigWriteApplicationOutcome>;
+  acknowledgeResponse: () => void;
   queueFollowUp: () => void;
 }> {
+  const application = createRuntimeConfigWriteApplication({
+    deferSharedAuthDisconnect: params.disconnectSharedAuthClients,
+  });
   const result = await replaceConfigFile({
     nextConfig: params.nextConfig,
     // The early RPC hash check is only advisory until this lock-time CAS. Without
     // it, concurrent writers can both succeed and overwrite each other's config.
     baseHash: resolveConfigSnapshotHash(params.snapshot) ?? undefined,
-    writeOptions: {
-      ...params.writeOptions,
-      auditOrigin: "config-rpc",
-      runtimeRefresh: {
-        ...params.writeOptions.runtimeRefresh,
-        includeAuthStoreRefs: false,
+    writeOptions: attachRuntimeConfigWriteApplication<ConfigWriteOptions>(
+      {
+        ...params.writeOptions,
+        auditOrigin: "config-rpc",
+        runtimeRefresh: {
+          ...params.writeOptions.runtimeRefresh,
+          includeAuthStoreRefs: false,
+        },
       },
-    },
+      application,
+    ),
     afterWrite: { mode: "auto" },
   });
   // Watcher acceptance is debounced; clear now so the writer's immediate
@@ -314,7 +327,10 @@ export async function commitGatewayConfigWrite(params: {
     // Persisted hash of the re-read file (resolveConfigSnapshotHash), i.e.
     // exactly what a follow-up config.get reports — writers ack against it.
     hash: result.persistedHash,
+    ...(application.claimed ? { application: application.result } : {}),
+    acknowledgeResponse: application.acknowledgeResponse,
     queueFollowUp: () => {
+      application.acknowledgeResponse();
       // Defer generation refresh/disconnect until after the RPC response so
       // the writer receives the success payload before its connection is closed.
       queueSharedGatewayAuthGenerationRefresh(true, result.nextConfig, params.context);

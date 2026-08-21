@@ -334,7 +334,7 @@ describe("mcp connection resolver helpers", () => {
           stopExitWatchers: () => {},
           reconcileStreamWatchers: async () => {},
           stopStreamWatchers: async () => {},
-          reconcileHeartbeatJobs: async () => {},
+          reconcileHeartbeatJobs: async () => ({ status: "converged" as const }),
         },
         channelHealthMonitor: null,
       };

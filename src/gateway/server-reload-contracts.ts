@@ -85,6 +85,8 @@ export type GatewayRestartRequestOptions = {
   retainDebtAcrossConfigChanges?: boolean;
   prepareRuntimeConfig?: () => Promise<OpenClawConfig>;
   debtConfig?: OpenClawConfig;
+  /** Blocks every immediate, deferred, and retried emission without delaying admission. */
+  beforeRestartEmission?: () => Promise<void>;
 };
 
 export type AcceptedRestartTarget = {

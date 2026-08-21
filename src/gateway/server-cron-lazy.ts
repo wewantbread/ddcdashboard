@@ -337,7 +337,7 @@ export function createLazyGatewayCronState(params: LazyGatewayCronParams): Gatew
       await loaded?.state.stopStreamWatchers();
     },
     async reconcileHeartbeatJobs(cfg) {
-      await (await load()).state.reconcileHeartbeatJobs(cfg);
+      return await (await load()).state.reconcileHeartbeatJobs(cfg);
     },
   };
 }
