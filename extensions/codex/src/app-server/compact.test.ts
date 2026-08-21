@@ -1999,6 +1999,56 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
   });
 
+  it.each([
+    {
+      name: "wrong RPC code",
+      error: new CodexAppServerRpcError(
+        // Right message, wrong code (INTERNAL_ERROR, not INVALID_REQUEST).
+        { code: -32_603, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    },
+    {
+      name: "unrelated RPC message",
+      error: new CodexAppServerRpcError(
+        // Right code, but not the codex-rs load_thread "thread not found" message.
+        { code: -32_600, message: "compaction temporarily unavailable" },
+        "thread/compact/start",
+      ),
+    },
+  ])(
+    "does not clear the binding on automatic triggers for a non-thread-not-found RPC error ($name)",
+    async ({ error }) => {
+      // #119977: the stale_thread_binding self-heal is gated on the full structured
+      // codex-rs contract (CodexAppServerRpcError + code -32600 + "thread not found").
+      // An RPC error missing the exact code or the exact message must surface as a
+      // generic failure and must NOT clear the live binding; otherwise an automatic
+      // trigger would discard a healthy thread on an unrelated server error.
+      const fake = createFakeCodexClient();
+      fake.request.mockRejectedValueOnce(error);
+      setCodexAppServerClientFactoryForTest(async () => fake.client);
+      const sessionFile = await writeTestBinding();
+
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession({
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.compacted).toBe(false);
+      expect(result.reason).toBe(error.message);
+      // Not the stale-binding recovery path, so no recovery failure and no binding clear.
+      expect(result.failure).toBeUndefined();
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
+    },
+  );
+
   it("retires the client before releasing an unconfirmed compaction start", async () => {
     const fake = createFakeCodexClient();
     fake.request.mockRejectedValueOnce(new Error("thread/compact/start timed out"));

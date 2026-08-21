@@ -1018,14 +1018,21 @@ async function clearDeadCodexThreadBinding(
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {
-  // codex-rs exposes no dedicated error code for a missing compaction thread:
-  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
-  // app-server's own contract/test asserts the "thread not found" MESSAGE as
-  // the discriminator (thread_processor.rs load_thread → invalid_request;
-  // compaction.rs asserts message.contains("thread not found")). So the message
-  // is the authoritative positive signal here, not the generic code. This is a
-  // self-heal recovery gate, not user-facing classification.
-  return coerceErrorMessage(error).toLowerCase().includes("thread not found");
+  // Structured retired-thread gate for the stale_thread_binding self-heal. codex-rs
+  // maps a missing compaction thread through the app-server load_thread path
+  // (thread_processor.rs get_thread failure → invalid_request) to a JSON-RPC
+  // INVALID_REQUEST error: code -32600 (error_code.rs INVALID_REQUEST_ERROR_CODE)
+  // with message "thread not found: <id>". The app-server contract test asserts
+  // BOTH facts (app-server/tests/suite/v2/compaction.rs: code == INVALID_REQUEST
+  // and message.contains("thread not found")), so this recovery gate enforces the
+  // full structured contract — a real RPC error, that exact code, and that
+  // message. Matching the message alone would let an unrelated server error or a
+  // wrong-code failure clear a live binding and discard a healthy thread.
+  return (
+    error instanceof CodexAppServerRpcError &&
+    error.code === -32_600 &&
+    error.message.toLowerCase().includes("thread not found")
+  );
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
