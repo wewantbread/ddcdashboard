@@ -224,7 +224,7 @@ function resolveSuspiciousSignature(
 
 // `missing-meta-vs-last-good` is intentionally excluded from auto-restore: the
 // writer always stamps `meta`, so a valid config lacking it was hand-authored,
-// and restoring would silently revert a read-only load (#126806). Observe warns.
+// and restoring would silently revert a read-only load. Observe warns.
 function isRecoverableConfigReadSuspiciousReason(reason: string): boolean {
   return (
     reason === "gateway-mode-missing-vs-last-good" ||
