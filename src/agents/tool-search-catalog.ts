@@ -300,6 +300,7 @@ function registerToolSearchCatalog(params: {
   catalogRef: ToolSearchCatalogRef;
   entries: ToolSearchCatalogEntry[];
   append?: boolean;
+  fingerprint?: string;
 }): ToolSearchCatalogSession {
   const prior = params.append ? params.catalogRef.current : undefined;
   const byId = new Map((prior?.entries ?? []).map((entry) => [entry.id, entry]));
@@ -316,7 +317,13 @@ function registerToolSearchCatalog(params: {
     callCount: prior?.callCount ?? 0,
     directCoreToolNames: prior?.directCoreToolNames ?? [],
   };
-  catalogFingerprints.set(next, catalogEntriesFingerprint(next.entries));
+  // The supplied fingerprint describes the input entries. Duplicate IDs are
+  // last-write-wins, so recompute when registration changed the entry set.
+  const fingerprint =
+    params.fingerprint !== undefined && next.entries.length === params.entries.length
+      ? params.fingerprint
+      : catalogEntriesFingerprint(next.entries);
+  catalogFingerprints.set(next, fingerprint);
   params.catalogRef.current = next;
   params.catalogRef.onChange?.();
   return next;
@@ -465,8 +472,15 @@ export function applyToolCatalogCompaction(
     visible.push(tool);
   }
   const directCoreToolNames = collectDirectCoreCodingToolNames(visible);
-  const incomingFingerprint = catalogEntriesFingerprint(catalog);
+  // Hook-wrapped entries carry run context and have fresh executable identities, so
+  // their snapshots cannot be reused and would only retain the completed run.
+  const hasHookBoundEntry = catalog.some((entry) =>
+    isToolWrappedWithBeforeToolCallHook(entry.tool as AnyAgentTool),
+  );
+  const reusableKey = hasHookBoundEntry ? undefined : reusableCatalogKey(params);
   const existingCatalog = catalogRef.current;
+  const incomingFingerprint =
+    existingCatalog || reusableKey ? catalogEntriesFingerprint(catalog) : undefined;
   if (existingCatalog && catalogFingerprints.get(existingCatalog) === incomingFingerprint) {
     existingCatalog.directCoreToolNames = directCoreToolNames;
     return {
@@ -478,14 +492,8 @@ export function applyToolCatalogCompaction(
     };
   }
 
-  // Hook-wrapped entries carry run context and have fresh executable identities, so
-  // their snapshots cannot be reused and would only retain the completed run.
-  const hasHookBoundEntry = catalog.some((entry) =>
-    isToolWrappedWithBeforeToolCallHook(entry.tool as AnyAgentTool),
-  );
-  const reusableKey = hasHookBoundEntry ? undefined : reusableCatalogKey(params);
   const reusableSnapshot = reusableKey ? reusableCatalogSnapshots.get(reusableKey) : undefined;
-  if (reusableSnapshot?.fingerprint === incomingFingerprint) {
+  if (reusableSnapshot && reusableSnapshot.fingerprint === incomingFingerprint) {
     restoreToolSearchCatalog({
       catalogRef,
       entries: reusableSnapshot.entries,
@@ -508,7 +516,11 @@ export function applyToolCatalogCompaction(
     };
   }
 
-  const registered = registerToolSearchCatalog({ catalogRef, entries: catalog });
+  const registered = registerToolSearchCatalog({
+    catalogRef,
+    entries: catalog,
+    fingerprint: incomingFingerprint,
+  });
   registered.directCoreToolNames = directCoreToolNames;
   rememberReusableCatalog(reusableKey, registered);
   return {
