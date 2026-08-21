@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { coerceErrorMessage, stableStringify } from "@openclaw/normalization-core";
-import { listAgentEntries } from "../agents/agent-scope.js";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { preserveAdoptedAgentDefault } from "./adopted-agent-update.js";
+import { resolveCanonicalClawAgent, resolveClawAgentRosterKey } from "./agent-adoption-apply.js";
 import { clawTargetPackages } from "./application-provenance.js";
 import {
   applyClawCronUpdate,
@@ -181,7 +182,7 @@ export async function applyClawUpdatePlan(
     }
     return new ClawUpdateMutationError("update_partial", message);
   };
-  const targetAddPlan = await buildAddPlan({
+  const rawTargetAddPlan = await buildAddPlan({
     manifest: params.targetManifest,
     clawMarkdownBody: params.targetClawMarkdownBody,
     includePackageBootstrap: false,
@@ -221,6 +222,18 @@ export async function applyClawUpdatePlan(
       },
     },
   });
+  const liveAgent = resolveCanonicalClawAgent(options.config, fresh.agentId);
+  const targetAddPlan = preserveAdoptedAgentDefault({
+    plan: rawTargetAddPlan,
+    install: currentInstall,
+    liveAgent,
+  });
+  if (!targetAddPlan) {
+    throw new ClawUpdateMutationError(
+      "agent_changed",
+      "The adopted agent changed before update materialization.",
+    );
+  }
   if (
     targetAddPlan.blockers.some(
       (blocker) => blocker.code !== "agent_id_collision" && blocker.code !== "workspace_collision",
@@ -229,6 +242,13 @@ export async function applyClawUpdatePlan(
     throw new ClawUpdateMutationError(
       "update_target_blocked",
       "The target Claw cannot be safely materialized for update.",
+    );
+  }
+  const agentAction = fresh.actions.find((action) => action.kind === "agent");
+  if (agentAction && agentAction.desiredDigest !== digest(targetAddPlan.agent.config)) {
+    throw new ClawUpdateMutationError(
+      "update_changed",
+      "The materialized agent configuration changed after update planning.",
     );
   }
   const targetPackages = clawTargetPackages(params.targetManifest, params.targetOpenClawProfile);
@@ -363,7 +383,6 @@ export async function applyClawUpdatePlan(
     throw new ClawUpdateMutationError("package_update_failed", coerceErrorMessage(error));
   }
 
-  const agentAction = fresh.actions.find((action) => action.kind === "agent");
   const commit: ConfigCommit =
     options.commitConfig ??
     (async (transform) => {
@@ -373,13 +392,14 @@ export async function applyClawUpdatePlan(
       });
     });
   let previousAgent: AgentConfig | undefined;
+  let previousAgentKey: string | undefined;
   let agentChanged = false;
   const rollbackAgent = async (): Promise<void> => {
     if (!agentChanged) {
       return;
     }
     await commit((config) => {
-      const current = listAgentEntries(config).find((agent) => agent.id === fresh.agentId);
+      const current = resolveCanonicalClawAgent(config, fresh.agentId);
       const targetDigest = `sha256:${createHash("sha256").update(stableStringify(targetAddPlan.agent.config)).digest("hex")}`;
       const liveDigest = current
         ? `sha256:${createHash("sha256").update(stableStringify(current)).digest("hex")}`
@@ -388,11 +408,13 @@ export async function applyClawUpdatePlan(
         throw new Error("The agent changed before rollback.");
       }
       const nextEntries = { ...config.agents?.entries };
+      const currentKey = resolveClawAgentRosterKey(config, fresh.agentId);
+      if (currentKey) {
+        delete nextEntries[currentKey];
+      }
       if (previousAgent) {
         const { id: _id, ...previousEntry } = previousAgent;
-        nextEntries[fresh.agentId] = previousEntry;
-      } else {
-        delete nextEntries[fresh.agentId];
+        nextEntries[previousAgentKey ?? fresh.agentId] = previousEntry;
       }
       return { ...config, agents: { ...config.agents, entries: nextEntries } };
     });
@@ -401,8 +423,9 @@ export async function applyClawUpdatePlan(
   if (agentAction?.action === "change") {
     try {
       await commit((config) => {
-        const current = listAgentEntries(config).find((agent) => agent.id === fresh.agentId);
+        const current = resolveCanonicalClawAgent(config, fresh.agentId);
         previousAgent = current;
+        previousAgentKey = resolveClawAgentRosterKey(config, fresh.agentId);
         if (agentAction.currentDigest !== undefined) {
           if (!current) {
             throw new ClawUpdateMutationError(
@@ -419,6 +442,9 @@ export async function applyClawUpdatePlan(
           }
         }
         const nextEntries = { ...config.agents?.entries };
+        if (previousAgentKey) {
+          delete nextEntries[previousAgentKey];
+        }
         const { id: _id, ...targetEntry } = targetAddPlan.agent.config;
         nextEntries[fresh.agentId] = targetEntry;
         agentChanged = true;
