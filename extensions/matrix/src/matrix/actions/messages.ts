@@ -267,7 +267,9 @@ export async function readMatrixMessages(
         continue;
       }
       seenPollRoots.add(pollRootId);
-      const pollSummary = await fetchMatrixPollMessageSummary(client, resolvedRoom, event);
+      const pollSummary = await fetchMatrixPollMessageSummary(client, resolvedRoom, event, {
+        selfUserId,
+      });
       if (pollSummary) {
         messages.push(pollSummary);
       }
@@ -333,7 +335,10 @@ async function fetchDisplayableThreadRootSummary(
     return summarizeMatrixRawEvent(rootEvent, { selfUserId });
   }
   if (isPollStartType(rootEvent.type)) {
-    return (await fetchMatrixPollMessageSummary(client, resolvedRoom, rootEvent)) ?? undefined;
+    const pollSummary = await fetchMatrixPollMessageSummary(client, resolvedRoom, rootEvent, {
+      selfUserId,
+    });
+    return pollSummary ?? undefined;
   }
   return undefined;
 }
