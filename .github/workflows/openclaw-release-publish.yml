@@ -63,7 +63,7 @@ on:
         required: false
         type: string
       publish_openclaw_npm:
-        description: Publish the OpenClaw npm package after plugin npm succeeds; ClawHub may still run
+        description: Publish OpenClaw npm after plugin npm succeeds; normal ClawHub publication is staged under exact protected tooling and verified after this parent succeeds
         required: true
         default: true
         type: boolean
@@ -83,7 +83,7 @@ on:
           - stable
           - full
       wait_for_clawhub:
-        description: Wait for and auto-approve ClawHub plugin publish; otherwise approve and monitor the detached runs separately
+        description: Wait for ClawHub bootstrap/repair completion; normal OIDC publication always stops at staged success and verifies after this exact parent succeeds
         required: true
         default: false
         type: boolean
@@ -892,6 +892,148 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Prepare ClawHub parent authorization
+        id: clawhub_authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT_WORKFLOW_FULL_REF: ${{ github.ref }}
+          PARENT_WORKFLOW_REF: ${{ github.ref_name }}
+          PARENT_WORKFLOW_SHA: ${{ github.sha }}
+          PLAN_PATH: ${{ runner.temp }}/openclaw-release-clawhub-plan.json
+        run: |
+          set -euo pipefail
+          should_dispatch="$(jq -r '.normal.shouldDispatch' "${PLAN_PATH}")"
+          if [[ "${should_dispatch}" != "true" ]]; then
+            echo "normal_run_id=" >> "${GITHUB_OUTPUT}"
+            echo "normal_run_attempt=" >> "${GITHUB_OUTPUT}"
+            echo "authorization_artifact_name=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          workflow="$(jq -er '.normal.workflow' "${PLAN_PATH}")"
+          workflow_ref="$(jq -er '.normal.ref' "${PLAN_PATH}")"
+          expected_sha="$(jq -er '.bootstrapWorkflowSha' "${PLAN_PATH}")"
+          inputs_json="$(jq -c '.normal.inputs' "${PLAN_PATH}")"
+          encoded_ref="$(jq -rn --arg value "${workflow_ref}" '$value | @uri')"
+          resolved_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}" \
+              --jq '.sha | select(test("^[a-f0-9]{40}$"))'
+          )"
+          [[ "${resolved_sha}" == "${expected_sha}" ]] || {
+            echo "ClawHub tooling ref resolved to ${resolved_sha}, expected ${expected_sha}." >&2
+            exit 1
+          }
+          expected_full_ref="refs/tags/${workflow_ref}"
+          if [[ "${workflow_ref}" == "main" ]]; then
+            expected_full_ref="refs/heads/main"
+          fi
+          [[ "${PARENT_WORKFLOW_REF}" == "${workflow_ref}" &&
+            "${PARENT_WORKFLOW_FULL_REF}" == "${expected_full_ref}" &&
+            "${PARENT_WORKFLOW_SHA}" == "${expected_sha}" ]] || {
+            echo "ClawHub parent tooling identity does not match the protected child ref." >&2
+            exit 1
+          }
+
+          dispatch_path="${RUNNER_TEMP}/clawhub-dispatch.json"
+          jq -n --arg ref "${workflow_ref}" --argjson inputs "${inputs_json}" \
+            '{ref: $ref, inputs: $inputs}' > "${dispatch_path}"
+          dispatch_response="$(
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" \
+              --input "${dispatch_path}"
+          )"
+          child_run_id="$(jq -er '.workflow_run_id | tostring' <<<"${dispatch_response}")"
+          child_run_attempt="1"
+          child_run="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${child_run_id}/attempts/${child_run_attempt}"
+          )"
+          jq -e \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg run_id "${child_run_id}" \
+            --arg sha "${expected_sha}" \
+            --arg ref "${workflow_ref}" \
+            '.repository.full_name == $repository and
+             (.id | tostring) == $run_id and .run_attempt == 1 and
+             .path == ".github/workflows/plugin-clawhub-release.yml" and
+             .head_branch == $ref and .head_sha == $sha and
+             .event == "workflow_dispatch"' <<<"${child_run}" >/dev/null
+
+          transaction_artifact="openclaw-clawhub-transactions-v2-${child_run_id}-${child_run_attempt}"
+          deadline=$((SECONDS + 5400))
+          while true; do
+            artifact_count="$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${child_run_id}/artifacts?name=${transaction_artifact}" \
+                --jq '[.artifacts[] | select(.expired == false)] | length'
+            )"
+            if [[ "${artifact_count}" == "1" ]]; then
+              break
+            fi
+            if (( artifact_count > 1 )); then
+              echo "ClawHub child produced duplicate transaction manifest artifacts." >&2
+              exit 1
+            fi
+            run_state="$(gh run view "${child_run_id}" --repo "${GITHUB_REPOSITORY}" --json status,conclusion)"
+            if [[ "$(jq -r '.status' <<<"${run_state}")" == "completed" ]]; then
+              echo "ClawHub child completed before producing its transaction manifest." >&2
+              exit 1
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "ClawHub child did not produce its transaction manifest within 90 minutes." >&2
+              exit 1
+            fi
+            sleep 20
+          done
+
+          transaction_dir="${RUNNER_TEMP}/openclaw-clawhub-transactions"
+          authorization_dir="${RUNNER_TEMP}/openclaw-clawhub-parent-authorization"
+          mkdir -p "${transaction_dir}" "${authorization_dir}"
+          gh run download "${child_run_id}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${transaction_artifact}" \
+            --dir "${transaction_dir}"
+          final_resolved_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_ref}" \
+              --jq '.sha | select(test("^[a-f0-9]{40}$"))'
+          )"
+          [[ "${final_resolved_sha}" == "${expected_sha}" ]] || {
+            echo "ClawHub tooling ref moved from ${expected_sha} to ${final_resolved_sha} before parent authorization." >&2
+            exit 1
+          }
+          node --import tsx \
+            "${GITHUB_WORKSPACE}/.release-harness/scripts/lib/openclaw-clawhub-authorization.mts" \
+            authorization \
+            --manifest "${transaction_dir}/transactions.json" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --child-run-id "${child_run_id}" \
+            --child-run-attempt "${child_run_attempt}" \
+            --ref "${PARENT_WORKFLOW_REF}" \
+            --full-ref "${PARENT_WORKFLOW_FULL_REF}" \
+            --head-sha "${PARENT_WORKFLOW_SHA}" \
+            --output "${authorization_dir}/authorization.json"
+
+          authorization_artifact="openclaw-clawhub-parent-authorization-v2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${child_run_id}-${child_run_attempt}"
+          {
+            echo "normal_run_id=${child_run_id}"
+            echo "normal_run_attempt=${child_run_attempt}"
+            echo "authorization_artifact_name=${authorization_artifact}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "- Plugin ClawHub run ID: \`${child_run_id}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload ClawHub parent authorization
+        if: ${{ steps.clawhub_authorization.outputs.normal_run_id != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.clawhub_authorization.outputs.authorization_artifact_name }}
+          path: ${{ runner.temp }}/openclaw-clawhub-parent-authorization/authorization.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Prepare GitHub release notes
         if: ${{ inputs.publish_openclaw_npm }}
         env:
@@ -962,6 +1104,8 @@ jobs:
           CHILD_WORKFLOW_REF: ${{ github.ref_name }}
           PARENT_WORKFLOW_SHA: ${{ github.sha }}
           PARENT_WORKFLOW_BRANCH: ${{ github.ref_name }}
+          PARENT_WORKFLOW_FULL_REF: ${{ github.ref }}
+          PREPARED_CLAWHUB_RUN_ID: ${{ steps.clawhub_authorization.outputs.normal_run_id }}
           RELEASE_TAG: ${{ inputs.tag }}
           PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
           FULL_RELEASE_VALIDATION_RUN_ID: ${{ inputs.full_release_validation_run_id }}
@@ -1294,6 +1438,7 @@ jobs:
             local run_id="$2"
             local job_name="$3"
             local expected_sha="$4"
+            local allow_skipped="${5:-true}"
             local jobs_json job_json run_status run_conclusion status conclusion url deadline
 
             if ! verify_child_run_sha "$workflow" "$run_id" "$expected_sha"; then
@@ -1310,7 +1455,8 @@ jobs:
                 conclusion="$(printf '%s' "$job_json" | jq -r '.conclusion // ""')"
                 url="$(printf '%s' "$job_json" | jq -r '.url // ""')"
                 if [[ "$status" == "completed" ]]; then
-                  if [[ "$conclusion" == "success" || "$conclusion" == "skipped" ]]; then
+                  if [[ "$conclusion" == "success" ||
+                    ( "$allow_skipped" == "true" && "$conclusion" == "skipped" ) ]]; then
                     if ! verify_child_run_sha "$workflow" "$run_id" "$expected_sha"; then
                       return 1
                     fi
@@ -2227,16 +2373,17 @@ jobs:
 
           bootstrap_summary_ref="$(jq -er '.bootstrap.ref | select(type == "string" and length > 0)' "${CLAWHUB_PLAN_PATH}")"
           bootstrap_summary_sha="$(jq -er '.bootstrapWorkflowSha | select(test("^[a-f0-9]{40}$"))' "${CLAWHUB_PLAN_PATH}")"
+          normal_summary_ref="$(jq -er '.normal.ref | select(type == "string" and length > 0)' "${CLAWHUB_PLAN_PATH}")"
           {
             echo "### Publish sequence"
             echo
             echo "- Workflow ref: \`${CHILD_WORKFLOW_REF}\`"
-            echo "- Normal ClawHub workflow ref: release tag \`${RELEASE_TAG}\`"
+            echo "- Normal ClawHub tooling ref: \`${normal_summary_ref}\` at \`${bootstrap_summary_sha}\`"
             echo "- ClawHub bootstrap workflow ref: \`${bootstrap_summary_ref}\` at \`${bootstrap_summary_sha}\`"
             echo "- Release tag: \`${RELEASE_TAG}\`"
             echo "- Release SHA: \`${TARGET_SHA}\`"
             echo "- Release approval: this workflow job"
-            echo "- Plugin npm and ClawHub publish: dispatched in parallel"
+            echo "- Normal ClawHub publication: staged under exact tooling; detached verification requires this exact parent attempt to succeed"
             if [[ "${PUBLISH_OPENCLAW_NPM}" == "true" ]]; then
               echo "- OpenClaw npm publish: starts after plugin npm succeeds"
             else
@@ -2249,9 +2396,9 @@ jobs:
               echo "- Windows Hub promotion: promoted concurrently with the OpenClaw npm publish; required before the GitHub release can be published"
             fi
             if [[ "${WAIT_FOR_CLAWHUB}" == "true" ]]; then
-              echo "- Workflow completion waits for ClawHub"
+              echo "- ClawHub bootstrap/repair completion: awaited"
             else
-              echo "- Workflow completion does not wait for ClawHub; monitor the dispatched ClawHub run separately"
+              echo "- ClawHub bootstrap/repair completion: detached; monitor that bootstrap run separately"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -2279,16 +2426,20 @@ jobs:
           fi
 
           plugin_npm_run_id="$(dispatch_workflow plugin-npm-release.yml "${npm_args[@]}")"
-          plugin_clawhub_run_id=""
+          plugin_clawhub_run_id="${PREPARED_CLAWHUB_RUN_ID}"
           if [[ "$(jq -r '.normal.shouldDispatch' "${clawhub_plan_path}")" == "true" ]]; then
-            clawhub_dispatch_args=()
-            append_clawhub_dispatch_args normal
-            plugin_clawhub_run_id="$(dispatch_workflow_at_ref \
-              "$(jq -r '.normal.ref' "${clawhub_plan_path}")" \
-              "${TARGET_SHA}" \
-              "$(jq -r '.normal.workflow' "${clawhub_plan_path}")" \
-              "${clawhub_dispatch_args[@]}")"
+            [[ -n "${plugin_clawhub_run_id}" ]] || {
+              echo "Normal ClawHub publication was planned without a prepared authorized child run." >&2
+              exit 1
+            }
+            verify_child_run_sha plugin-clawhub-release.yml \
+              "${plugin_clawhub_run_id}" \
+              "${PARENT_WORKFLOW_SHA}"
           else
+            [[ -z "${plugin_clawhub_run_id}" ]] || {
+              echo "Prepared ClawHub child exists when the release plan has no normal candidates." >&2
+              exit 1
+            }
             echo "- plugin-clawhub-release.yml: no normal OIDC candidates" >> "$GITHUB_STEP_SUMMARY"
           fi
           plugin_clawhub_bootstrap_run_id=""
@@ -2319,6 +2470,20 @@ jobs:
               gh run cancel --repo "$GITHUB_REPOSITORY" "${plugin_clawhub_bootstrap_run_id}" >/dev/null 2>&1 || true
             fi
             exit 1
+          fi
+
+          if [[ -n "${plugin_clawhub_run_id}" ]]; then
+            approve_child_publish_environment \
+              plugin-clawhub-release.yml \
+              "${plugin_clawhub_run_id}" \
+              "${PARENT_WORKFLOW_SHA}"
+            wait_for_job_success \
+              plugin-clawhub-release.yml \
+              "${plugin_clawhub_run_id}" \
+              "Confirm staged ClawHub publication" \
+              "${PARENT_WORKFLOW_SHA}" \
+              false
+            echo "- plugin-clawhub-release.yml: staged; detached verification awaits exact parent success (${plugin_clawhub_run_id})" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           if [[ -n "${plugin_clawhub_bootstrap_run_id}" && "${WAIT_FOR_CLAWHUB}" == "true" ]]; then
@@ -2358,17 +2523,9 @@ jobs:
             echo "- OpenClaw npm publish: skipped by input" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          clawhub_result=""
-          clawhub_pid=""
           clawhub_bootstrap_result=""
           clawhub_bootstrap_pid=""
           if [[ "${WAIT_FOR_CLAWHUB}" == "true" ]]; then
-            if [[ -n "${plugin_clawhub_run_id}" ]]; then
-              clawhub_result="$RUNNER_TEMP/clawhub-result.txt"
-              wait_run_pid=""
-              wait_for_run_background plugin-clawhub-release.yml "${plugin_clawhub_run_id}" "${TARGET_SHA}" "${clawhub_result}"
-              clawhub_pid="${wait_run_pid}"
-            fi
             if [[ -n "${plugin_clawhub_bootstrap_run_id}" ]]; then
               if [[ "${plugin_clawhub_bootstrap_completed}" == "true" ]]; then
                 echo "- plugin-clawhub-new.yml: bootstrap already completed before continuing" >> "$GITHUB_STEP_SUMMARY"
@@ -2380,11 +2537,8 @@ jobs:
               fi
             fi
           else
-            # Detached mode deliberately leaves protected ClawHub approvals to
-            # the operator monitoring the linked child runs. Polling for those
-            # gates here would put plugin fan-out back on the core release path.
             if [[ -n "${plugin_clawhub_run_id}" ]]; then
-              echo "- plugin-clawhub-release.yml: detached; approval and publish not awaited (${plugin_clawhub_run_id})" >> "$GITHUB_STEP_SUMMARY"
+              echo "- plugin-clawhub-release.yml: staged; detached verification awaits exact parent success (${plugin_clawhub_run_id})" >> "$GITHUB_STEP_SUMMARY"
             else
               echo "- plugin-clawhub-release.yml: no normal OIDC publish to await" >> "$GITHUB_STEP_SUMMARY"
             fi
@@ -2447,14 +2601,6 @@ jobs:
           fi
 
           clawhub_failed=0
-          if [[ -n "${clawhub_pid}" ]] && ! wait "${clawhub_pid}"; then
-            failed=1
-            clawhub_failed=1
-          fi
-          if [[ -f "${clawhub_result}" && "$(cat "${clawhub_result}")" != "success" ]]; then
-            failed=1
-            clawhub_failed=1
-          fi
           if [[ -n "${clawhub_bootstrap_pid}" ]] && ! wait "${clawhub_bootstrap_pid}"; then
             failed=1
             clawhub_failed=1

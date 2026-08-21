@@ -2,6 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -514,6 +515,160 @@ function expectTextToIncludeAll(text: string | undefined, snippets: string[]): v
   for (const snippet of snippets) {
     expect(text).toContain(snippet);
   }
+}
+
+function runClawHubParentAuthorizationStep(
+  overrides: {
+    artifactCount?: number;
+    manifestChildRunAttempt?: string;
+    manifestChildRunId?: string;
+    refShas?: string[];
+    runAttempt?: number;
+    runId?: string;
+  } = {},
+) {
+  const step = workflowStep(
+    workflowJob(RELEASE_PUBLISH_WORKFLOW, "publish"),
+    "Prepare ClawHub parent authorization",
+  );
+  const script = (step.run ?? "").replaceAll("${GITHUB_WORKSPACE}/.release-harness", REPO_ROOT);
+  const workdir = tempDirs.make("clawhub-parent-authorization-");
+  const fakeBin = resolve(workdir, "bin");
+  const callsPath = resolve(workdir, "gh-calls.jsonl");
+  const outputPath = resolve(workdir, "github-output");
+  const summaryPath = resolve(workdir, "github-summary");
+  const manifestPath = resolve(workdir, "transactions.json");
+  const planPath = resolve(workdir, "plan.json");
+  const refPollsPath = resolve(workdir, "ref-polls");
+  const toolingSha = "d".repeat(40);
+  const toolingRef = `release-publish/${toolingSha.slice(0, 12)}-12345`;
+  const childRunId = "456";
+  const childRunAttempt = "1";
+  mkdirSync(fakeBin);
+  writeFileSync(outputPath, "");
+  writeFileSync(summaryPath, "");
+  writeFileSync(callsPath, "");
+  writeFileSync(
+    planPath,
+    `${JSON.stringify({
+      bootstrapWorkflowSha: toolingSha,
+      normal: {
+        inputs: {},
+        ref: toolingRef,
+        shouldDispatch: true,
+        workflow: "plugin-clawhub-release.yml",
+      },
+    })}\n`,
+  );
+  writeFileSync(
+    manifestPath,
+    `${JSON.stringify({
+      version: 2,
+      candidateRepository: "openclaw/openclaw",
+      candidateSha: "a".repeat(40),
+      childRepository: "openclaw/openclaw",
+      childWorkflow: ".github/workflows/plugin-clawhub-release.yml",
+      childRunId: overrides.manifestChildRunId ?? childRunId,
+      childRunAttempt: overrides.manifestChildRunAttempt ?? childRunAttempt,
+      childRef: toolingRef,
+      childFullRef: `refs/tags/${toolingRef}`,
+      childHeadSha: toolingSha,
+      toolingRef,
+      toolingFullRef: `refs/tags/${toolingRef}`,
+      toolingSha,
+      packages: [
+        {
+          name: "@openclaw/demo-plugin",
+          version: "2026.8.1-beta.3",
+          inventoryDigest: "e".repeat(64),
+        },
+      ],
+    })}\n`,
+  );
+  writeFileSync(
+    resolve(fakeBin, "gh"),
+    `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.MOCK_GH_CALLS, JSON.stringify(args) + "\\n");
+if (args[0] === "api" && args.some((arg) => arg.includes("/commits/"))) {
+  const shas = JSON.parse(process.env.MOCK_GH_REF_SHAS);
+  let index = 0;
+  try { index = Number(fs.readFileSync(process.env.MOCK_GH_REF_POLLS, "utf8")); } catch {}
+  fs.writeFileSync(process.env.MOCK_GH_REF_POLLS, String(index + 1));
+  console.log(shas[Math.min(index, shas.length - 1)]);
+} else if (args[0] === "api" && args.includes("--method") && args.includes("POST")) {
+  console.log(JSON.stringify({ workflow_run_id: Number(process.env.MOCK_GH_CHILD_RUN_ID) }));
+} else if (args[0] === "api" && args.some((arg) => arg.includes("/attempts/"))) {
+  console.log(JSON.stringify({
+    repository: { full_name: "openclaw/openclaw" },
+    id: Number(process.env.MOCK_GH_RUN_RESPONSE_ID),
+    run_attempt: Number(process.env.MOCK_GH_RUN_RESPONSE_ATTEMPT),
+    path: ".github/workflows/plugin-clawhub-release.yml",
+    head_branch: process.env.MOCK_GH_TOOLING_REF,
+    head_sha: process.env.MOCK_GH_TOOLING_SHA,
+    event: "workflow_dispatch",
+  }));
+} else if (args[0] === "api" && args.some((arg) => arg.includes("/artifacts?name="))) {
+  console.log(process.env.MOCK_GH_ARTIFACT_COUNT);
+} else if (args[0] === "run" && args[1] === "download") {
+  const dir = args[args.indexOf("--dir") + 1];
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(process.env.MOCK_GH_MANIFEST, path.join(dir, "transactions.json"));
+} else if (args[0] === "run" && args[1] === "view") {
+  console.log(JSON.stringify({ status: "in_progress", conclusion: "" }));
+} else {
+  console.error("Unexpected mock gh invocation: " + JSON.stringify(args));
+  process.exit(64);
+}
+`,
+    { mode: 0o755 },
+  );
+
+  const result = spawnSync("bash", ["-c", script], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GH_TOKEN: "test-token",
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_REPOSITORY: "openclaw/openclaw",
+      GITHUB_RUN_ATTEMPT: "2",
+      GITHUB_RUN_ID: "123",
+      GITHUB_STEP_SUMMARY: summaryPath,
+      GITHUB_WORKSPACE: REPO_ROOT,
+      MOCK_GH_ARTIFACT_COUNT: String(overrides.artifactCount ?? 1),
+      MOCK_GH_CHILD_RUN_ID: childRunId,
+      MOCK_GH_CALLS: callsPath,
+      MOCK_GH_MANIFEST: manifestPath,
+      MOCK_GH_REF_POLLS: refPollsPath,
+      MOCK_GH_REF_SHAS: JSON.stringify(overrides.refShas ?? [toolingSha]),
+      MOCK_GH_RUN_RESPONSE_ATTEMPT: String(overrides.runAttempt ?? 1),
+      MOCK_GH_RUN_RESPONSE_ID: overrides.runId ?? childRunId,
+      MOCK_GH_TOOLING_REF: toolingRef,
+      MOCK_GH_TOOLING_SHA: toolingSha,
+      PARENT_WORKFLOW_FULL_REF: `refs/tags/${toolingRef}`,
+      PARENT_WORKFLOW_REF: toolingRef,
+      PARENT_WORKFLOW_SHA: toolingSha,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      PLAN_PATH: planPath,
+      RUNNER_TEMP: workdir,
+    },
+  });
+  const authorizationPath = resolve(
+    workdir,
+    "openclaw-clawhub-parent-authorization",
+    "authorization.json",
+  );
+  return {
+    authorization: existsSync(authorizationPath)
+      ? JSON.parse(readFileSync(authorizationPath, "utf8"))
+      : undefined,
+    calls: readFileSync(callsPath, "utf8"),
+    output: readFileSync(outputPath, "utf8"),
+    result,
+  };
 }
 
 function runFullReleaseChildDispatch(
@@ -1947,8 +2102,12 @@ describe("package acceptance workflow", () => {
 
     expect(publishOrchestration.env?.PARENT_WORKFLOW_SHA).toBe("${{ github.sha }}");
     expect(publishOrchestration.env?.CHILD_WORKFLOW_REF).toBe("${{ github.ref_name }}");
-    expect(readFileSync(RELEASE_PUBLISH_WORKFLOW, "utf8")).toContain(
-      "otherwise approve and monitor the detached runs separately",
+    const releasePublishWorkflow = readFileSync(RELEASE_PUBLISH_WORKFLOW, "utf8");
+    expect(releasePublishWorkflow).toContain(
+      "normal OIDC publication always stops at staged success and verifies after this exact parent succeeds",
+    );
+    expect(releasePublishWorkflow).not.toContain(
+      "Wait for and auto-approve ClawHub plugin publish",
     );
     expectTextToIncludeAll(publishOrchestration.run, [
       'gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_workflow_ref}"',
@@ -1960,9 +2119,60 @@ describe("package acceptance workflow", () => {
       'wait_for_run android-release.yml "${android_release_run_id}" "${TARGET_SHA}"',
       'wait_for_run plugin-npm-release.yml "${plugin_npm_run_id}" "${PARENT_WORKFLOW_SHA}"',
       'wait_for_run_background openclaw-npm-release.yml "${openclaw_npm_run_id}" "${PARENT_WORKFLOW_SHA}"',
-      "plugin-clawhub-release.yml: detached; approval and publish not awaited",
+      "plugin-clawhub-release.yml: staged; detached verification awaits exact parent success",
       "plugin-clawhub-new.yml: detached; approvals and bootstrap not awaited",
+      'echo "- Normal ClawHub tooling ref: \\`${normal_summary_ref}\\` at \\`${bootstrap_summary_sha}\\`"',
+      "Normal ClawHub publication: staged under exact tooling; detached verification requires this exact parent attempt to succeed",
+      "ClawHub bootstrap/repair completion: awaited",
+      "ClawHub bootstrap/repair completion: detached; monitor that bootstrap run separately",
     ]);
+    expect(publishOrchestration.run).not.toContain(
+      'echo "- Normal ClawHub workflow ref: release tag \\`${RELEASE_TAG}\\`"',
+    );
+    expect(publishOrchestration.run).not.toContain("Workflow completion waits for ClawHub");
+  });
+
+  it("executes fail-closed parent authorization against exact child and tooling evidence", () => {
+    const valid = runClawHubParentAuthorizationStep();
+    expect(valid.authorization, JSON.stringify(valid, null, 2)).toBeDefined();
+    expect(valid).toMatchObject({
+      result: { status: 0 },
+      authorization: {
+        childRunId: "456",
+        childRunAttempt: "1",
+        runId: "123",
+        runAttempt: "2",
+      },
+    });
+  });
+
+  it.each([
+    ["child run id", { runId: "789" }],
+    ["child run attempt", { runAttempt: 2 }],
+    ["manifest child run id", { manifestChildRunId: "789" }],
+    ["manifest child run attempt", { manifestChildRunAttempt: "2" }],
+  ])("rejects %s substitution before parent authorization", (_label, overrides) => {
+    const result = runClawHubParentAuthorizationStep(overrides);
+    expect(result.result.status).not.toBe(0);
+    expect(result.authorization).toBeUndefined();
+  });
+
+  it("rejects ambiguous transaction artifacts before download", () => {
+    const result = runClawHubParentAuthorizationStep({ artifactCount: 2 });
+    expect(result.result.status).not.toBe(0);
+    expect(result.result.stderr).toContain(
+      "ClawHub child produced duplicate transaction manifest artifacts.",
+    );
+    expect(result.authorization).toBeUndefined();
+  });
+
+  it("rejects protected tooling ref movement before parent authorization", () => {
+    const result = runClawHubParentAuthorizationStep({
+      refShas: ["d".repeat(40), "f".repeat(40)],
+    });
+    expect(result.result.status).not.toBe(0);
+    expect(result.result.stderr).toContain("ClawHub tooling ref moved");
+    expect(result.authorization).toBeUndefined();
   });
 
   it("compares dependency evidence zip contents independently of archive timestamps", () => {
@@ -7148,6 +7358,78 @@ describe("package artifact reuse", () => {
     ]);
   });
 
+  it("resolves the exact parent attempt for direct ClawHub recovery", () => {
+    const previewJob = workflowJob(PLUGIN_CLAWHUB_RELEASE_WORKFLOW, "preview_plugins_clawhub");
+    const resolveAttempt = workflowStep(previewJob, "Resolve release parent attempt");
+    const workdir = tempDirs.make("clawhub-parent-attempt-");
+    const binDir = resolve(workdir, "bin");
+    const outputPath = resolve(workdir, "output");
+    const callsPath = resolve(workdir, "calls");
+    mkdirSync(binDir);
+    writeFileSync(outputPath, "");
+    writeFileSync(callsPath, "");
+    writeFileSync(
+      resolve(binDir, "gh"),
+      `#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_GH_CALLS"
+if [ "$1" = "api" ] &&
+  [ "$2" = "repos/openclaw/openclaw/actions/runs/456" ] &&
+  [ "$3" = "--jq" ] &&
+  [ "$4" = ".run_attempt" ]; then
+  printf '%s\n' 3
+  exit 0
+fi
+exit 64
+`,
+      { mode: 0o755 },
+    );
+
+    const result = spawnSync("bash", ["-c", resolveAttempt.run ?? ""], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GH_TOKEN: "test-token",
+        GITHUB_ACTOR: "release-maintainer",
+        GITHUB_OUTPUT: outputPath,
+        GITHUB_REPOSITORY: "openclaw/openclaw",
+        MOCK_GH_CALLS: callsPath,
+        PARENT_RUN_ATTEMPT: "",
+        PARENT_RUN_ID: "456",
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toBe("attempt=3\n");
+    expect(readFileSync(callsPath, "utf8")).toBe(
+      "api repos/openclaw/openclaw/actions/runs/456 --jq .run_attempt\n",
+    );
+    expect(previewJob.permissions).toMatchObject({ actions: "read", contents: "read" });
+    expect(previewJob.outputs?.parent_run_attempt).toBe(
+      "${{ steps.parent_attempt.outputs.attempt }}",
+    );
+    expect(
+      workflowStep(previewJob, "Capture trusted tooling identity").env?.PARENT_RUN_ATTEMPT,
+    ).toBe("${{ steps.parent_attempt.outputs.attempt }}");
+    expect(
+      workflowStep(previewJob, "Validate OIDC source matches workflow ref").env
+        ?.RELEASE_PUBLISH_RUN_ATTEMPT,
+    ).toBe("${{ steps.parent_attempt.outputs.attempt }}");
+    expect(
+      workflowStep(
+        workflowJob(PLUGIN_CLAWHUB_RELEASE_WORKFLOW, "validate_release_publish_approval"),
+        "Validate release publish approval run",
+      ).env?.EXPECTED_RUN_ATTEMPT,
+    ).toBe("${{ needs.preview_plugins_clawhub.outputs.parent_run_attempt }}");
+    expect(
+      workflowStep(
+        workflowJob(PLUGIN_CLAWHUB_RELEASE_WORKFLOW, "verify_published_clawhub_package"),
+        "Require exact successful release parent attempt",
+      ).env?.PARENT_RUN_ATTEMPT,
+    ).toBe("${{ needs.preview_plugins_clawhub.outputs.parent_run_attempt }}");
+  });
+
   it("keeps release publication ownership and artifact boundaries wired", () => {
     const packageJson = JSON.parse(readFileSync(PACKAGE_JSON, "utf8")) as {
       scripts?: Record<string, string>;
@@ -7184,44 +7466,69 @@ describe("package artifact reuse", () => {
       workflowStep(releasePublishJob, "Install trusted release tooling dependencies"),
     ).toBeDefined();
     expect(workflowStep(releasePublishJob, "Resolve ClawHub release plan")).toBeDefined();
+    expect(workflowStep(releasePublishJob, "Prepare ClawHub parent authorization")).toBeDefined();
+    expect(workflowStep(releasePublishJob, "Upload ClawHub parent authorization")).toBeDefined();
     expect(workflowStep(releasePublishJob, "Dispatch publish workflows")).toBeDefined();
 
     expect(clawHubApproval.environment).toBe("clawhub-plugin-release");
     expect(clawHubPublish.needs).toEqual([
       "preview_plugins_clawhub",
       "pack_plugins_clawhub_artifacts",
+      "aggregate_clawhub_transactions",
       "approve_plugins_clawhub_release",
     ]);
     expect(clawHubPublish.uses).toBe(
-      "openclaw/clawhub/.github/workflows/package-publish.yml@d8096dfc039e86ab942ddf9ef117d04849fd84c1",
+      "openclaw/clawhub/.github/workflows/package-publish.yml@845c6d3bdb1a36573d8d28be2a8fb85a3c476720",
     );
     expect(clawHubPublish.permissions).toMatchObject({
       actions: "read",
       contents: "read",
       "id-token": "write",
     });
-    expect(clawHubPublish.with?.trusted_tooling_identity_json).toBeUndefined();
+    expect(clawHubPublish.with).toMatchObject({
+      wait_for_publication: false,
+      source_commit: "${{ needs.preview_plugins_clawhub.outputs.ref_revision }}",
+      source_ref:
+        "${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}",
+      trusted_tooling_identity_json:
+        "${{ needs.preview_plugins_clawhub.outputs.trusted_tooling_identity_json }}",
+    });
     const clawHubPreview = workflowJob(PLUGIN_CLAWHUB_RELEASE_WORKFLOW, "preview_plugins_clawhub");
     expect(
       readWorkflow(PLUGIN_CLAWHUB_RELEASE_WORKFLOW).on?.workflow_dispatch?.inputs
         ?.release_publish_run_attempt,
-    ).toBeUndefined();
+    ).toMatchObject({ required: false, type: "string" });
     expect(
       readWorkflow(PLUGIN_CLAWHUB_RELEASE_WORKFLOW).on?.workflow_dispatch?.inputs
         ?.release_publish_full_ref,
-    ).toBeUndefined();
+    ).toMatchObject({ required: false, type: "string" });
     expect(
       readWorkflow(PLUGIN_CLAWHUB_RELEASE_WORKFLOW).on?.workflow_dispatch?.inputs
         ?.release_publish_workflow_sha,
-    ).toBeUndefined();
-    expect(clawHubPreview.outputs?.trusted_tooling_identity_json).toBeUndefined();
-    const publishOrchestration = workflowStep(releasePublishJob, "Dispatch publish workflows");
-    expect(publishOrchestration.env?.PARENT_WORKFLOW_FULL_REF).toBeUndefined();
-    expect(publishOrchestration.run).toContain(
-      'wait_for_run_background plugin-clawhub-release.yml "${plugin_clawhub_run_id}" "${TARGET_SHA}"',
+    ).toMatchObject({ required: false, type: "string" });
+    expect(clawHubPreview.outputs?.trusted_tooling_identity_json).toBe(
+      "${{ steps.tooling_identity.outputs.json }}",
     );
-    expect(publishOrchestration.run).not.toContain("release_publish_full_ref");
-    expect(publishOrchestration.run).not.toContain("release_publish_workflow_sha");
+    const publishOrchestration = workflowStep(releasePublishJob, "Dispatch publish workflows");
+    expect(publishOrchestration.env?.PARENT_WORKFLOW_FULL_REF).toBe("${{ github.ref }}");
+    expect(publishOrchestration.env?.PREPARED_CLAWHUB_RUN_ID).toBe(
+      "${{ steps.clawhub_authorization.outputs.normal_run_id }}",
+    );
+    expect(publishOrchestration.run).toContain('"Confirm staged ClawHub publication"');
+    expect(publishOrchestration.run).not.toContain(
+      "wait_for_run_background plugin-clawhub-release.yml",
+    );
+    expect(workflowJob(PLUGIN_CLAWHUB_RELEASE_WORKFLOW, "clawhub_staged").name).toBe(
+      "Confirm staged ClawHub publication",
+    );
+    const detachedVerifier = workflowJob(
+      PLUGIN_CLAWHUB_RELEASE_WORKFLOW,
+      "verify_published_clawhub_package",
+    );
+    expect(detachedVerifier.needs).toContain("clawhub_staged");
+    expect(
+      workflowStep(detachedVerifier, "Require exact successful release parent attempt").run,
+    ).toContain("Exact release parent attempt finished with");
     expect(clawHubBootstrapValidation.environment).toBe("clawhub-plugin-bootstrap");
     expect(clawHubBootstrapPublish.environment).toBe("clawhub-plugin-bootstrap");
 

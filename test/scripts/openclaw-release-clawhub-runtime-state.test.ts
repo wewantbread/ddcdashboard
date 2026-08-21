@@ -12,7 +12,7 @@ function runRuntimeStateScript(args: string[]) {
 }
 
 describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
-  it("emits verifier args and proof lines for awaited ClawHub runs", () => {
+  it("keeps normal verification detached while retaining completed bootstrap evidence", () => {
     const result = runRuntimeStateScript([
       "--repository",
       "openclaw/openclaw",
@@ -30,9 +30,10 @@ describe("scripts/openclaw-release-clawhub-runtime-state.ts", () => {
 
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      verifierArgs: ["--plugin-clawhub-run", "123", "--plugin-clawhub-bootstrap-run", "456"],
+      verifierArgs: ["--plugin-clawhub-bootstrap-run", "456"],
       proofLines: {
-        normal: "- plugin ClawHub publish: https://github.com/openclaw/openclaw/actions/runs/123",
+        normal:
+          "- plugin ClawHub publish: staged; detached verification follows exact parent success: https://github.com/openclaw/openclaw/actions/runs/123",
         bootstrap:
           "- plugin ClawHub bootstrap: https://github.com/openclaw/openclaw/actions/runs/456",
       },

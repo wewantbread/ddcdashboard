@@ -142,6 +142,8 @@ function createDispatchTarget(params: {
   bootstrapWorkflowSha?: string;
   releaseTag?: string;
   releasePublishRunAttempt?: string;
+  releasePublishFullRef?: string;
+  releasePublishWorkflowSha?: string;
   targetRef?: string;
 }): ClawHubDispatchTarget {
   if (params.packages.length === 0) {
@@ -170,6 +172,12 @@ function createDispatchTarget(params: {
       ...(params.releasePublishRunAttempt
         ? { release_publish_run_attempt: params.releasePublishRunAttempt }
         : {}),
+      ...(params.releasePublishFullRef
+        ? { release_publish_full_ref: params.releasePublishFullRef }
+        : {}),
+      ...(params.releasePublishWorkflowSha
+        ? { release_publish_workflow_sha: params.releasePublishWorkflowSha }
+        : {}),
       plugins,
       release_publish_run_id: params.releasePublishRunId,
       release_publish_branch: params.releasePublishBranch,
@@ -184,30 +192,18 @@ export function buildOpenClawReleaseClawHubRuntimeState(
   const normalRunId = optionalArg(args.normalRunId);
   const bootstrapRunId = optionalArg(args.bootstrapRunId);
 
-  const shouldIncludeNormalRun =
-    !args.forceSkipClawHub && normalRunId !== undefined && args.waitForClawHub;
   const shouldIncludeBootstrapRun =
     !args.forceSkipClawHub && bootstrapRunId !== undefined && args.bootstrapCompleted;
-  const shouldVerifyClawHubPackages =
-    bootstrapRunId !== undefined &&
-    args.bootstrapCompleted &&
-    (normalRunId === undefined || args.waitForClawHub);
-  const shouldSkipClawHubPackages =
-    args.forceSkipClawHub || !(shouldIncludeNormalRun || shouldVerifyClawHubPackages);
+  const shouldSkipClawHubPackages = args.forceSkipClawHub || !shouldIncludeBootstrapRun;
 
   const verifierArgs = shouldSkipClawHubPackages ? ["--skip-clawhub"] : [];
-  if (shouldIncludeNormalRun) {
-    verifierArgs.push("--plugin-clawhub-run", normalRunId);
-  }
   if (shouldIncludeBootstrapRun) {
     verifierArgs.push("--plugin-clawhub-bootstrap-run", bootstrapRunId);
   }
 
   let normalProofLine = "- plugin ClawHub publish: no normal OIDC candidates";
-  if (normalRunId !== undefined && args.waitForClawHub) {
-    normalProofLine = `- plugin ClawHub publish: ${runUrl(repository, normalRunId)}`;
-  } else if (normalRunId !== undefined) {
-    normalProofLine = `- plugin ClawHub publish: dispatched separately, not awaited by this proof: ${runUrl(repository, normalRunId)}`;
+  if (normalRunId !== undefined) {
+    normalProofLine = `- plugin ClawHub publish: staged; detached verification follows exact parent success: ${runUrl(repository, normalRunId)}`;
   }
 
   let bootstrapProofLine = "- plugin ClawHub bootstrap: not needed";
@@ -335,6 +331,11 @@ export async function buildOpenClawReleaseClawHubPlan(
     "releasePublishRunAttempt",
   );
   const releasePublishRunId = requireArg(args.releasePublishRunId, "releasePublishRunId");
+  if (releasePublishBranch !== bootstrapWorkflowRef) {
+    throw new Error("releasePublishBranch must match the exact trusted workflow ref.");
+  }
+  const releasePublishFullRef =
+    bootstrapWorkflowRef === "main" ? "refs/heads/main" : `refs/tags/${bootstrapWorkflowRef}`;
   const plan = await collectPluginClawHubReleasePlan({
     rootDir: options.rootDir ?? resolve("."),
     selection: args.plugins,
@@ -357,11 +358,16 @@ export async function buildOpenClawReleaseClawHubPlan(
     releasePublishBranch,
     normal: createDispatchTarget({
       workflow: "plugin-clawhub-release.yml",
-      ref: releaseTag,
+      ref: bootstrapWorkflowRef,
       packages: normalPackages,
       releasePublishRunId,
       releasePublishBranch,
+      releasePublishRunAttempt,
+      releasePublishFullRef,
+      releasePublishWorkflowSha: bootstrapWorkflowSha,
       includePublishScope: true,
+      releaseTag,
+      targetRef: releaseSha,
     }),
     bootstrap: createDispatchTarget({
       workflow: "plugin-clawhub-new.yml",

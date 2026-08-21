@@ -13,6 +13,11 @@ import { delimiter, join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildClawHubInventoryDigest,
+  buildClawHubParentAuthorization,
+  buildClawHubTransactionManifest,
+} from "../scripts/lib/openclaw-clawhub-authorization.mts";
+import {
   buildOpenClawReleaseClawHubPlan,
   buildOpenClawReleaseClawHubRuntimeState,
   parseOpenClawReleaseClawHubPlanArgs,
@@ -96,6 +101,196 @@ function createClawPackBytes(
     ]),
   );
 }
+
+describe("ClawHub v2 release authorization", () => {
+  const toolingSha = "d".repeat(40);
+  const toolingRef = `release-publish/${toolingSha.slice(0, 12)}-12345`;
+  const toolingFullRef = `refs/tags/${toolingRef}`;
+
+  it("builds the exact ClawHub-compatible inventory digest", () => {
+    const files = [
+      {
+        path: "package/z.txt",
+        sizeBytes: 3,
+        sha256: createHash("sha256").update("zzz").digest("hex"),
+        type: "file",
+      },
+      { path: "package/dir", sizeBytes: 0, type: "directory" },
+      {
+        path: "package/a.txt",
+        sizeBytes: 1,
+        sha256: createHash("sha256").update("a").digest("hex"),
+        type: "file",
+      },
+    ];
+    const expectedPayload = [
+      `a.txt\0${files[2].sizeBytes}\0${files[2].sha256}`,
+      `z.txt\0${files[0].sizeBytes}\0${files[0].sha256}`,
+    ].join("\n");
+
+    expect(buildClawHubInventoryDigest(files)).toBe(
+      createHash("sha256").update(expectedPayload).digest("hex"),
+    );
+  });
+
+  it("binds candidate, protected tooling, child run, and exact package inventory", () => {
+    const artifactsDir = makeTempRepoRoot(tempDirs, "clawhub-v2-artifacts-");
+    const artifactName = "clawhub-package-openclaw-demo-plugin-2026.4.1";
+    const artifactDir = join(artifactsDir, artifactName);
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      join(artifactDir, "openclaw-demo-plugin-2026.4.1.tgz"),
+      createClawPackBytes("@openclaw/demo-plugin", "2026.4.1"),
+    );
+
+    const manifest = buildClawHubTransactionManifest({
+      artifactsDir,
+      matrix: [
+        {
+          artifactName,
+          packageName: "@openclaw/demo-plugin",
+          version: "2026.4.1",
+        },
+      ],
+      candidateRepository: "openclaw/openclaw",
+      candidateSha: "a".repeat(40),
+      childRepository: "openclaw/openclaw",
+      childRunId: "456",
+      childRunAttempt: "1",
+      childRef: toolingRef,
+      childFullRef: toolingFullRef,
+      childHeadSha: toolingSha,
+      toolingRef,
+      toolingFullRef,
+      toolingSha,
+    });
+    expect(manifest).toMatchObject({
+      version: 2,
+      candidateRepository: "openclaw/openclaw",
+      candidateSha: "a".repeat(40),
+      childRunId: "456",
+      childRunAttempt: "1",
+      childHeadSha: toolingSha,
+      toolingSha,
+      packages: [
+        {
+          name: "@openclaw/demo-plugin",
+          version: "2026.4.1",
+          inventoryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+      ],
+    });
+
+    const authorization = buildClawHubParentAuthorization({
+      manifest,
+      repository: "openclaw/openclaw",
+      runId: "123",
+      runAttempt: "2",
+      childRunId: "456",
+      childRunAttempt: "1",
+      ref: toolingRef,
+      fullRef: toolingFullRef,
+      headSha: toolingSha,
+    });
+    expect(Object.keys(authorization).sort()).toEqual([
+      "authorizationRoute",
+      "candidateRepository",
+      "candidateSha",
+      "childFullRef",
+      "childHeadSha",
+      "childRef",
+      "childRepository",
+      "childRunAttempt",
+      "childRunId",
+      "childWorkflow",
+      "fullRef",
+      "headSha",
+      "kind",
+      "packages",
+      "ref",
+      "repository",
+      "runAttempt",
+      "runId",
+      "toolingFullRef",
+      "toolingRef",
+      "toolingSha",
+      "version",
+      "workflow",
+    ]);
+    expect(authorization).toMatchObject({
+      authorizationRoute: "automated-awaited",
+      kind: "openclaw-clawhub-parent-authorization",
+      runId: "123",
+      runAttempt: "2",
+      packages: manifest.packages,
+    });
+  });
+
+  it("rejects protected-tag substitution before producing authorization", () => {
+    const manifest = {
+      version: 2 as const,
+      candidateRepository: "openclaw/openclaw",
+      candidateSha: "a".repeat(40),
+      childRepository: "openclaw/openclaw",
+      childWorkflow: ".github/workflows/plugin-clawhub-release.yml" as const,
+      childRunId: "456",
+      childRunAttempt: "1",
+      childRef: toolingRef,
+      childFullRef: toolingFullRef,
+      childHeadSha: toolingSha,
+      toolingRef,
+      toolingFullRef,
+      toolingSha,
+      packages: [
+        {
+          name: "@openclaw/demo-plugin",
+          version: "2026.4.1",
+          inventoryDigest: "e".repeat(64),
+        },
+      ],
+    };
+
+    expect(() =>
+      buildClawHubParentAuthorization({
+        manifest,
+        repository: "openclaw/openclaw",
+        runId: "123",
+        runAttempt: "2",
+        childRunId: "456",
+        childRunAttempt: "1",
+        ref: toolingRef,
+        fullRef: `refs/heads/${toolingRef}`,
+        headSha: toolingSha,
+      }),
+    ).toThrow("does not match the protected tooling identity");
+    expect(() =>
+      buildClawHubParentAuthorization({
+        manifest,
+        repository: "openclaw/openclaw",
+        runId: "123",
+        runAttempt: "2",
+        childRunId: "456",
+        childRunAttempt: "1",
+        ref: toolingRef,
+        fullRef: toolingFullRef,
+        headSha: "b".repeat(40),
+      }),
+    ).toThrow("does not match the protected tooling identity");
+    expect(() =>
+      buildClawHubParentAuthorization({
+        manifest,
+        repository: "openclaw/openclaw",
+        runId: "123",
+        runAttempt: "2",
+        childRunId: "789",
+        childRunAttempt: "1",
+        ref: toolingRef,
+        fullRef: toolingFullRef,
+        headSha: toolingSha,
+      }),
+    ).toThrow("does not match the protected tooling identity");
+  });
+});
 
 describe("resolveChangedClawHubPublishablePluginPackages", () => {
   const publishablePlugins: PublishablePluginPackage[] = [
@@ -1249,7 +1444,8 @@ describe("collectPluginClawHubReleasePlan", () => {
 });
 
 describe("buildOpenClawReleaseClawHubPlan", () => {
-  it("emits a dispatch plan that keeps ClawHub children on the release tag", async () => {
+  it("emits a split-ref plan with protected tooling and a frozen candidate", async () => {
+    const toolingRef = `release-publish/${"d".repeat(12)}-12345`;
     const repoDir = createTempPluginRepo({
       extraExtensionIds: ["demo-two", "demo-three"],
     });
@@ -1298,11 +1494,11 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
 
     const plan = await buildOpenClawReleaseClawHubPlan(
       {
-        bootstrapWorkflowRef: `release-publish/${"d".repeat(12)}-12345`,
+        bootstrapWorkflowRef: toolingRef,
         bootstrapWorkflowSha: "d".repeat(40),
         releaseTag: "v2026.4.1-beta.1",
         releaseSha: "a".repeat(40),
-        releasePublishBranch: "main",
+        releasePublishBranch: toolingRef,
         releasePublishRunAttempt: "2",
         releasePublishRunId: "12345",
         pluginPublishScope: "all-publishable",
@@ -1317,22 +1513,27 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
 
     expect(plan.clawHubWorkflowRef).toBe("v2026.4.1-beta.1");
     expect(plan.bootstrapWorkflowSha).toBe("d".repeat(40));
-    expect(plan.releasePublishBranch).toBe("main");
+    expect(plan.releasePublishBranch).toBe(toolingRef);
     expect(plan.normal).toEqual({
       workflow: "plugin-clawhub-release.yml",
-      ref: "v2026.4.1-beta.1",
+      ref: toolingRef,
       shouldDispatch: true,
       packages: ["@openclaw/demo-plugin"],
       inputs: {
         publish_scope: "selected",
+        ref: "a".repeat(40),
+        release_tag: "v2026.4.1-beta.1",
         plugins: "@openclaw/demo-plugin",
+        release_publish_run_attempt: "2",
         release_publish_run_id: "12345",
-        release_publish_branch: "main",
+        release_publish_branch: toolingRef,
+        release_publish_full_ref: `refs/tags/${toolingRef}`,
+        release_publish_workflow_sha: "d".repeat(40),
       },
     });
     expect(plan.bootstrap).toEqual({
       workflow: "plugin-clawhub-new.yml",
-      ref: `release-publish/${"d".repeat(12)}-12345`,
+      ref: toolingRef,
       shouldDispatch: true,
       packages: ["@openclaw/demo-two", "@openclaw/demo-three"],
       inputs: {
@@ -1342,7 +1543,7 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
         plugins: "@openclaw/demo-two,@openclaw/demo-three",
         release_publish_run_attempt: "2",
         release_publish_run_id: "12345",
-        release_publish_branch: "main",
+        release_publish_branch: toolingRef,
       },
     });
     expect(new Set([...plan.normal.packages, ...plan.bootstrap.packages]).size).toBe(3);
@@ -1360,6 +1561,7 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
   });
 
   it("routes already-published packages missing trusted publisher config to bootstrap repair", async () => {
+    const toolingRef = `release-publish/${"d".repeat(12)}-12345`;
     const repoDir = createTempPluginRepo();
     const { fetchImpl } = createClawHubPlanFetch({
       packages: {
@@ -1386,11 +1588,11 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
 
     const plan = await buildOpenClawReleaseClawHubPlan(
       {
-        bootstrapWorkflowRef: `release-publish/${"d".repeat(12)}-12345`,
+        bootstrapWorkflowRef: toolingRef,
         bootstrapWorkflowSha: "d".repeat(40),
         releaseTag: "v2026.4.1-beta.1",
         releaseSha: "b".repeat(40),
-        releasePublishBranch: "release/2026.4.1",
+        releasePublishBranch: toolingRef,
         releasePublishRunAttempt: "3",
         releasePublishRunId: "12345",
         pluginPublishScope: "selected",
@@ -1406,7 +1608,7 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
     expect(plan.normal.shouldDispatch).toBe(false);
     expect(plan.bootstrap).toMatchObject({
       workflow: "plugin-clawhub-new.yml",
-      ref: `release-publish/${"d".repeat(12)}-12345`,
+      ref: toolingRef,
       shouldDispatch: true,
       packages: ["@openclaw/demo-plugin"],
       inputs: {
@@ -1416,7 +1618,7 @@ describe("buildOpenClawReleaseClawHubPlan", () => {
         plugins: "@openclaw/demo-plugin",
         release_publish_run_attempt: "3",
         release_publish_run_id: "12345",
-        release_publish_branch: "release/2026.4.1",
+        release_publish_branch: toolingRef,
       },
     });
     expect(plan.summary).toMatchObject({
@@ -1553,7 +1755,7 @@ describe("runPluginClawHubReleaseCheck", () => {
 });
 
 describe("buildOpenClawReleaseClawHubRuntimeState", () => {
-  it("includes the normal ClawHub run in verifier args when the release waits for it", () => {
+  it("keeps normal ClawHub verification detached from the release parent", () => {
     const state = buildOpenClawReleaseClawHubRuntimeState({
       repository: "openclaw/openclaw",
       waitForClawHub: true,
@@ -1563,9 +1765,9 @@ describe("buildOpenClawReleaseClawHubRuntimeState", () => {
       bootstrapCompleted: false,
     });
 
-    expect(state.verifierArgs).toEqual(["--plugin-clawhub-run", "111"]);
+    expect(state.verifierArgs).toEqual(["--skip-clawhub"]);
     expect(state.proofLines.normal).toBe(
-      "- plugin ClawHub publish: https://github.com/openclaw/openclaw/actions/runs/111",
+      "- plugin ClawHub publish: staged; detached verification follows exact parent success: https://github.com/openclaw/openclaw/actions/runs/111",
     );
     expect(state.proofLines.bootstrap).toBe("- plugin ClawHub bootstrap: not needed");
   });
@@ -1599,7 +1801,7 @@ describe("buildOpenClawReleaseClawHubRuntimeState", () => {
 
     expect(state.verifierArgs).toEqual(["--skip-clawhub"]);
     expect(state.proofLines.normal).toBe(
-      "- plugin ClawHub publish: dispatched separately, not awaited by this proof: https://github.com/openclaw/openclaw/actions/runs/111",
+      "- plugin ClawHub publish: staged; detached verification follows exact parent success: https://github.com/openclaw/openclaw/actions/runs/111",
     );
     expect(state.proofLines.bootstrap).toBe(
       "- plugin ClawHub bootstrap: dispatched separately, not awaited by this proof: https://github.com/openclaw/openclaw/actions/runs/222",
@@ -1616,9 +1818,9 @@ describe("buildOpenClawReleaseClawHubRuntimeState", () => {
       bootstrapCompleted: true,
     });
 
-    expect(state.verifierArgs).toEqual(["--skip-clawhub", "--plugin-clawhub-bootstrap-run", "222"]);
+    expect(state.verifierArgs).toEqual(["--plugin-clawhub-bootstrap-run", "222"]);
     expect(state.proofLines.normal).toBe(
-      "- plugin ClawHub publish: dispatched separately, not awaited by this proof: https://github.com/openclaw/openclaw/actions/runs/111",
+      "- plugin ClawHub publish: staged; detached verification follows exact parent success: https://github.com/openclaw/openclaw/actions/runs/111",
     );
     expect(state.proofLines.bootstrap).toBe(
       "- plugin ClawHub bootstrap: https://github.com/openclaw/openclaw/actions/runs/222",
@@ -1637,7 +1839,7 @@ describe("buildOpenClawReleaseClawHubRuntimeState", () => {
 
     expect(state.verifierArgs).toEqual(["--skip-clawhub"]);
     expect(state.proofLines.normal).toBe(
-      "- plugin ClawHub publish: https://github.com/openclaw/openclaw/actions/runs/111",
+      "- plugin ClawHub publish: staged; detached verification follows exact parent success: https://github.com/openclaw/openclaw/actions/runs/111",
     );
     expect(state.proofLines.bootstrap).toBe(
       "- plugin ClawHub bootstrap: https://github.com/openclaw/openclaw/actions/runs/222",
