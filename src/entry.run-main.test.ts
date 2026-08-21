@@ -29,7 +29,7 @@ describe("entry run-main boundary", () => {
     process.exitCode = undefined;
 
     try {
-      await runMainOrRootHelp(["node", "openclaw", "workboard", "list"], {
+      await runMainOrRootHelp(["node", "openclaw", "status"], {
         loadRunCli: async () => ({
           runCli: vi.fn(async () => {
             throw error;
