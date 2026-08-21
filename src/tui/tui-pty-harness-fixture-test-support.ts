@@ -169,10 +169,13 @@ export async function writeTuiPtyFixtureScript(dir: string) {
         const entryFastMode = isModeSource ? true : isModeTarget ? undefined : fastMode;
         const entryVerboseLevel = isModeSource ? "full" : isModeTarget ? undefined : verboseLevel;
         const entryTraceLevel = isModeSource ? "raw" : isModeTarget ? modeTargetTraceLevel : undefined;
-        const entryReasoningLevel = isModeSource ? "stream" : undefined;
         return {
           key,
-          displayName: key === pickerSessionKey ? pickerSessionDisplayName : "Main",
+          ...(isModeSource
+            ? { displayName: "Production incident" }
+            : isModeTarget
+              ? {}
+              : { displayName: key === pickerSessionKey ? pickerSessionDisplayName : "Main" }),
           model: currentModel,
           modelProvider: "fixture-provider",
           contextTokens: 128,
@@ -180,7 +183,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
           ...(currentThinkingLevel ? { thinkingLevel: currentThinkingLevel } : {}),
           ...(entryVerboseLevel ? { verboseLevel: entryVerboseLevel } : {}),
           ...(entryTraceLevel ? { traceLevel: entryTraceLevel } : {}),
-          ...(entryReasoningLevel ? { reasoningLevel: entryReasoningLevel } : {}),
+          ...(isModeSource ? { reasoningLevel: "stream" } : {}),
           thinkingLevels,
         };
       }
@@ -212,12 +215,7 @@ export async function writeTuiPtyFixtureScript(dir: string) {
         ${TUI_PTY_SESSION_SUBSCRIPTION_FIXTURE_SCRIPT}
 
         async sendChat(opts: Parameters<TuiBackend["sendChat"]>[0]) {
-          record("sendChat", {
-            sessionKey: opts.sessionKey,
-            message: opts.message,
-            deliver: opts.deliver,
-            thinking: opts.thinking,
-          });
+          record("sendChat", opts);
           const runId = opts.runId ?? "run-pty-fixture";
           ${TUI_PTY_RECONNECT_FIXTURE.sendChat}
           if (opts.message.startsWith("live reply dedupe proof: ")) {
@@ -510,8 +508,8 @@ export async function writeTuiPtyFixtureScript(dir: string) {
         async listSessions(opts?: Parameters<TuiBackend["listSessions"]>[0]) {
           ${TUI_PTY_STARTUP_SESSION_FIXTURE.listSessionsSetup}
           record("listSessions", {
+            ...opts,
             purpose: opts?.includeDerivedTitles ? "picker" : "refresh",
-            search: opts?.search,
           });
           ${TUI_PTY_STARTUP_SESSION_FIXTURE.listSessionsDelay}
           const sessions = enablePickerFixture
@@ -524,11 +522,14 @@ export async function writeTuiPtyFixtureScript(dir: string) {
                 },
               ]
             : [];
+          const visibleSessions = sessions.filter(
+            (session) => session.key !== "global" || opts?.includeGlobal === true,
+          );
           return {
             ts: Date.now(),
             path: "",
-            count: sessions.length,
-            sessions,
+            count: visibleSessions.length,
+            sessions: visibleSessions,
             defaults: {
               model: currentModel,
               modelProvider: "fixture-provider",

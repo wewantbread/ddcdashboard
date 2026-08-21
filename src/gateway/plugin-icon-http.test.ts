@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./http-utils.js", () => ({
-  authorizeGatewayHttpRequestOrReply: (...args: unknown[]) => mocks.authorize(...args),
+  authorizeControlUiReadRequestOrReply: (...args: unknown[]) => mocks.authorize(...args),
 }));
 
 vi.mock("../media/fetch.js", () => ({
@@ -109,7 +109,7 @@ beforeEach(() => {
   mocks.authorize.mockReset();
   mocks.authorize.mockResolvedValue({
     authMethod: "token",
-    trustDeclaredOperatorScopes: false,
+    operatorScopes: ["operator.admin", "operator.read"],
   });
   mocks.resolveIconUrl.mockResolvedValue("https://cdn.example.test/plugin.svg");
   mocks.resolveCatalogIconUrl.mockImplementation(({ iconUrl }) => iconUrl);
@@ -135,7 +135,10 @@ function request(pathname: string, options?: { token?: string; method?: string }
 }
 
 describe("Control UI plugin and catalog icon routes", () => {
-  it("keeps link favicon fetching off by default", async () => {
+  it("keeps link favicon fetching off when explicitly disabled", async () => {
+    configForRequest = () => ({
+      gateway: { controlUi: { automaticallyFetchFavicons: false } },
+    });
     const response = await request("/__openclaw__/link-favicon/example.com");
 
     expect(response.status).toBe(404);
@@ -180,11 +183,7 @@ describe("Control UI plugin and catalog icon routes", () => {
     expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
   });
 
-  it("fetches only the fixed HTTPS favicon path through the strict media guard", async () => {
-    configForRequest = () => ({
-      gateway: { controlUi: { automaticallyFetchFavicons: true } },
-    });
-
+  it("fetches by default only through the fixed HTTPS path and strict media guard", async () => {
     const response = await request("/__openclaw__/link-favicon/Example.COM");
 
     expect(response.status).toBe(200);

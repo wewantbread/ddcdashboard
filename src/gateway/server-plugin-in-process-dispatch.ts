@@ -15,6 +15,7 @@ import type { TrustedSessionCreation } from "./server-methods/session-creation-p
 import type {
   GatewayAgentRunTaskOwner,
   GatewayContextResolver,
+  GatewayNodeInvokeStream,
   GatewayRequestContext,
   GatewayRequestOptions,
   TrustedAgentToolCaller,
@@ -42,11 +43,13 @@ type DispatchGatewayMethodInProcessOptions = {
   forceSyntheticClient?: boolean;
   internalDeliveryMediaUrls?: string[];
   internalDeliverySuppressText?: boolean;
+  nodeInvokeStream?: GatewayNodeInvokeStream;
   onAccepted?: (payload: unknown) => void;
   onSignalAbort?: () => Promise<void> | void;
   pluginRuntimeOwnerId?: string;
   pluginSubagentRequester?: PluginSubagentRequesterContext;
   runtimePluginToolGrant?: RuntimePluginToolGrant;
+  pluginSubagentToolsAllow?: string[];
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
   sessionCreation?: TrustedSessionCreation;
   requireScopedClient?: boolean;
@@ -68,7 +71,8 @@ function resolveInProcessGatewayDispatch(
   options?: DispatchGatewayMethodInProcessOptions,
 ): ResolvedInProcessGatewayDispatch {
   const scope = getPluginRuntimeGatewayRequestScope();
-  const context = scope?.context ?? options?.resolveGatewayContext?.();
+  const context =
+    options?.resolveGatewayContext?.() ?? scope?.resolveGatewayContext?.() ?? scope?.context;
   const isWebchatConnect = scope?.isWebchatConnect ?? (() => false);
   if (!context) {
     throw new Error(
@@ -85,6 +89,12 @@ function resolveInProcessGatewayDispatch(
     typeof options?.pluginRuntimeOwnerId === "string" && options.pluginRuntimeOwnerId.trim()
       ? options.pluginRuntimeOwnerId.trim()
       : undefined;
+  if (
+    options?.nodeInvokeStream &&
+    (method !== "node.invoke" || !pluginRuntimeOwnerId || options.forceSyntheticClient !== true)
+  ) {
+    throw new Error("Node invoke streaming requires an owner-bound trusted synthetic client.");
+  }
   const delegatedToolPolicyHandoffId = options?.delegatedToolPolicyHandoff
     ? registerSubagentCompletionToolHandoff(options.delegatedToolPolicyHandoff)
     : undefined;
@@ -102,23 +112,44 @@ function resolveInProcessGatewayDispatch(
     ...(options?.runtimePluginToolGrant
       ? { runtimePluginToolGrant: options.runtimePluginToolGrant }
       : {}),
+    ...(options?.pluginSubagentToolsAllow
+      ? { pluginSubagentToolsAllow: options.pluginSubagentToolsAllow }
+      : {}),
     delegatedToolPolicyHandoffId,
     ...(options?.sessionCreation ? { sessionCreation: options.sessionCreation } : {}),
     scopes: options?.syntheticScopes,
   });
-  const agentRuntimeIdentity = readInProcessAgentRuntimeIdentity(options);
-  const syntheticClient = agentRuntimeIdentity
-    ? {
-        ...baseSyntheticClient,
-        internal: { ...baseSyntheticClient.internal, agentRuntimeIdentity },
-      }
-    : baseSyntheticClient;
+  const scopedStreamClient = options?.nodeInvokeStream ? scope?.client : undefined;
+  const agentRuntimeIdentity =
+    scopedStreamClient?.internal?.agentRuntimeIdentity ??
+    readInProcessAgentRuntimeIdentity(options);
+  const syntheticClient =
+    agentRuntimeIdentity || options?.nodeInvokeStream
+      ? {
+          ...(scopedStreamClient ?? baseSyntheticClient),
+          ...(scopedStreamClient
+            ? {
+                connect: {
+                  ...scopedStreamClient.connect,
+                  scopes: baseSyntheticClient.connect.scopes,
+                },
+              }
+            : {}),
+          internal: {
+            ...scopedStreamClient?.internal,
+            ...baseSyntheticClient.internal,
+            ...(agentRuntimeIdentity ? { agentRuntimeIdentity } : {}),
+            ...(options?.nodeInvokeStream ? { nodeInvokeStream: options.nodeInvokeStream } : {}),
+          },
+        }
+      : baseSyntheticClient;
   const scopedClient = mergePluginRuntimeClientInternal(
     scope?.client,
     pluginRuntimeOwnerId ||
       options?.agentRunTracking ||
       options?.pluginSubagentRequester ||
       options?.runtimePluginToolGrant ||
+      options?.pluginSubagentToolsAllow ||
       options?.delegatedToolPolicyHandoff ||
       scope?.client?.internal?.delegatedToolPolicyHandoffId
       ? {
@@ -128,6 +159,7 @@ function resolveInProcessGatewayDispatch(
             ? { pluginSubagentRequester: options.pluginSubagentRequester }
             : {}),
           runtimePluginToolGrant: options?.runtimePluginToolGrant,
+          pluginSubagentToolsAllow: options?.pluginSubagentToolsAllow,
           delegatedToolPolicyHandoffId,
         }
       : undefined,
@@ -188,7 +220,8 @@ export async function dispatchGatewayMethodInProcessRaw(
 export function getInProcessGatewayRequestContext(
   resolveGatewayContext?: GatewayContextResolver,
 ): GatewayRequestContext | undefined {
-  return getPluginRuntimeGatewayRequestScope()?.context ?? resolveGatewayContext?.();
+  const scope = getPluginRuntimeGatewayRequestScope();
+  return resolveGatewayContext?.() ?? scope?.resolveGatewayContext?.() ?? scope?.context;
 }
 
 export async function dispatchGatewayMethodInProcess<T>(

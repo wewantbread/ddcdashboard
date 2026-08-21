@@ -23,6 +23,7 @@ import {
   filterVisibleSessionRows,
   isSystemCreatedSessionRow,
   resolveSessionNavigation,
+  sessionMatchesVisibleSessionScope,
 } from "../lib/sessions/index.ts";
 import {
   resolveSessionPreferredFace,
@@ -494,6 +495,19 @@ export function resolveLatestSidebarAgentSession(input: {
   });
 }
 
+export function collectSidebarSessionCandidateRows(input: {
+  rows: readonly GatewaySessionRow[];
+  childRowsByParent: Readonly<Record<string, readonly GatewaySessionRow[]>>;
+}): GatewaySessionRow[] {
+  return [
+    ...new Map(
+      [...Object.values(input.childRowsByParent).flat(), ...input.rows].map(
+        (row) => [row.key, row] as const,
+      ),
+    ).values(),
+  ];
+}
+
 /**
  * Promote the hidden main session's children to top-level threads, with the
  * same visibility rules as ordinary roots so archived, cron, or
@@ -501,13 +515,12 @@ export function resolveLatestSidebarAgentSession(input: {
  */
 export function collectPromotedMainChildRows(input: {
   rows: readonly GatewaySessionRow[];
-  childRowsByParent: Readonly<Record<string, readonly GatewaySessionRow[]>>;
   mainSessionKeys: ReadonlySet<string>;
   scopedRootKeys: ReadonlySet<string>;
   showCron: boolean;
   showSystem: boolean;
 }): GatewaySessionRow[] {
-  return [...input.rows, ...Object.values(input.childRowsByParent).flat()].filter((row) => {
+  return input.rows.filter((row) => {
     const parentKey = resolveUiSessionNavigationParentKey(row);
     return (
       parentKey != null &&
@@ -520,6 +533,21 @@ export function collectPromotedMainChildRows(input: {
   });
 }
 
+export function collectCategorizedChildRootRows(input: {
+  rows: readonly GatewaySessionRow[];
+  scopedRoots: readonly GatewaySessionRow[];
+  visibilityOptions: Parameters<typeof filterVisibleSessionRows>[1];
+}): GatewaySessionRow[] {
+  const scopedRootKeys = new Set(input.scopedRoots.map((row) => row.key));
+  return input.rows.filter(
+    (row) =>
+      !scopedRootKeys.has(row.key) &&
+      normalizeOptionalString(row.category) != null &&
+      resolveUiSessionNavigationParentKey(row) != null &&
+      sessionMatchesVisibleSessionScope(row, input.visibilityOptions),
+  );
+}
+
 export function resolveSidebarAgentResumeKey(
   latest: SessionRow | null,
   agentId: string,
@@ -529,7 +557,7 @@ export function resolveSidebarAgentResumeKey(
 }
 
 export function resolveSidebarAgentChipSubtitle(latest: SessionRow | null): string {
-  if (latest?.hasActiveRun) {
+  if (latest && isSessionRunActive(latest)) {
     return t("agentChip.working");
   }
   return latest ? resolveSessionDisplayName(latest.key, latest) : t("agentChip.ready");
@@ -585,6 +613,26 @@ export function collectKnownSidebarSessionGroups(
     .filter((name): name is string => typeof name === "string" && !catalogSet.has(name))
     .toSorted((a, b) => a.localeCompare(b));
   return [...catalog, ...new Set(discovered)];
+}
+
+/** Depth-first search across a projected session tree, including descendants.
+ *  Both callers ask "does any row match", so this short-circuits rather than
+ *  flattening: the answer usually resolves in the first few rows. */
+export function someSidebarSessionInTree(
+  roots: readonly SidebarRecentSession[],
+  predicate: (row: SidebarRecentSession) => boolean,
+): boolean {
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const row = pending.pop();
+    if (row) {
+      if (predicate(row)) {
+        return true;
+      }
+      pending.push(...row.children);
+    }
+  }
+  return false;
 }
 
 export function findProjectedSidebarSession(input: {
@@ -645,23 +693,9 @@ export function applySidebarSessionOwnerFilter(input: {
   const ownerOptions = selfOwner
     ? [selfOwner, ...facetOwners.filter((owner) => owner.id !== selfOwner.id)]
     : facetOwners;
-  let hasParticipants = false;
-  if (ownerOptions.length < 2) {
-    const pending = [...input.projected];
-    let index = 0;
-    while (index < pending.length) {
-      const row = pending[index];
-      index += 1;
-      if (!row) {
-        continue;
-      }
-      if ((row.participantCount ?? 0) > 0) {
-        hasParticipants = true;
-        break;
-      }
-      pending.push(...row.children);
-    }
-  }
+  const hasParticipants =
+    ownerOptions.length < 2 &&
+    someSidebarSessionInTree(input.projected, (row) => (row.participantCount ?? 0) > 0);
   const ownershipVisible = ownerOptions.length >= 2 || hasParticipants;
   const activeOwnerId = ownershipVisible
     ? ownerOptions.some((owner) => owner.id === input.selectedOwnerId)

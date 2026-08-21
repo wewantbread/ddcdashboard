@@ -45,12 +45,10 @@ type CrabboxProfile = {
   setup?: string;
 };
 
-const CRABBOX_MACHINE_OPTIONS = [
-  { id: "standard", label: "Standard" },
-  { id: "fast", label: "Fast" },
-  { id: "large", label: "Large" },
-  { id: "beast", label: "Beast" },
-] as const;
+const CRABBOX_FALLBACK_MACHINE_CLASSES = ["standard", "fast", "large", "beast"] as const;
+const MAX_CRABBOX_MACHINE_CLASS_LENGTH = 128;
+const MAX_CRABBOX_MACHINE_OPTIONS = 32;
+const CRABBOX_DESKTOP_PROVIDERS = new Set(["aws", "hetzner"]);
 
 export type CrabboxMachineShape = Readonly<{
   class: string;
@@ -146,6 +144,11 @@ export function parseCrabboxProfile(profile: WorkerProfile): CrabboxProfile {
   if (desktop !== undefined && typeof desktop !== "boolean") {
     throw new WorkerProviderError("Crabbox profile desktop must be a boolean");
   }
+  if (desktop && !CRABBOX_DESKTOP_PROVIDERS.has(provider)) {
+    throw new WorkerProviderError(
+      "Crabbox desktop profiles support only AWS and coordinator-backed Hetzner",
+    );
+  }
   return {
     binary,
     class: machineClass,
@@ -162,24 +165,40 @@ export function listCrabboxMachineOptions(
   configuredClass: string,
   shapes: readonly CrabboxMachineShape[] | undefined,
 ): readonly WorkerMachineOption[] {
+  const seen = new Set<string>();
+  const reportedShapes = shapes?.filter((shape) => {
+    if (shape.class.length > MAX_CRABBOX_MACHINE_CLASS_LENGTH || seen.has(shape.class)) {
+      return false;
+    }
+    seen.add(shape.class);
+    return true;
+  });
+  const candidates: readonly CrabboxMachineShape[] = reportedShapes?.length
+    ? reportedShapes
+    : CRABBOX_FALLBACK_MACHINE_CLASSES.map((machineClass) => ({ class: machineClass }));
+  const catalogLimit = candidates
+    .slice(0, MAX_CRABBOX_MACHINE_OPTIONS)
+    .some((shape) => shape.class === configuredClass)
+    ? MAX_CRABBOX_MACHINE_OPTIONS
+    : MAX_CRABBOX_MACHINE_OPTIONS - 1;
   // Built by assignment rather than conditional spread: oxlint's no-map-spread
   // rejects spreading to shape objects inside a map callback.
-  const options = CRABBOX_MACHINE_OPTIONS.map((option) => {
-    const shape = shapes?.find((candidate) => candidate.class === option.id);
+  const options = candidates.slice(0, catalogLimit).map((shape) => {
+    const id = shape.class;
     const result: {
       id: string;
       label: string;
       cpu?: number;
       memoryGb?: number;
       default?: boolean;
-    } = { id: option.id, label: option.label };
+    } = { id, label: id.replace(/^./u, (initial) => initial.toUpperCase()) };
     if (shape?.cpu !== undefined) {
       result.cpu = shape.cpu;
     }
     if (shape?.memoryGb !== undefined) {
       result.memoryGb = shape.memoryGb;
     }
-    if (option.id === configuredClass) {
+    if (id === configuredClass) {
       result.default = true;
     }
     return result;
@@ -222,7 +241,7 @@ export function buildCrabboxWarmupArgs(
     "--keep=true",
   ];
   if (profile.desktop) {
-    args.push("--desktop", "--browser");
+    args.push("--desktop", "--browser", "--desktop-env", "xfce");
   }
   return args;
 }

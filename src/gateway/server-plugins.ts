@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import type { AgentWaitResult } from "../agents/run-wait.types.js";
 import type { AmbientEnvTriggerPolicy } from "../channels/config-presence.js";
 import { allowsProcessHomeSessionScan } from "../config/paths.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
@@ -20,6 +21,7 @@ import { getActivePluginRegistry } from "../plugins/runtime.js";
 import {
   bindGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeGatewayContextResolver,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { createPluginRuntimeLoaderLogger } from "../plugins/runtime/load-context.js";
 import { resolvePluginSubagentCompletionRequester } from "../plugins/runtime/subagent-requester-context.js";
@@ -29,8 +31,9 @@ import type {
   RuntimeGatewayRequestOptions,
 } from "../plugins/runtime/types.js";
 import type { PluginLogger, PluginOrigin } from "../plugins/types.js";
-import { ADMIN_SCOPE } from "./method-scopes.js";
+import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "./method-scopes.js";
 import { normalizeOperatorScopeList, type OperatorScope } from "./operator-scopes.js";
+import type { GatewayNodeInvokeStream } from "./server-methods/shared-types.js";
 import type {
   GatewayContextResolver,
   GatewayRequestHandler,
@@ -49,6 +52,7 @@ import {
 } from "./server-plugin-subagent-runtime.js";
 import {
   hasInProcessGatewayContext,
+  openGatewayNodeDuplex,
   projectGatewayRuntimeNodes,
 } from "./server-plugins-node-runtime.js";
 
@@ -249,6 +253,9 @@ export function createGatewaySubagentRuntime(
 
   const subagentRuntime: PluginRuntime["subagent"] = {
     async run(params) {
+      if (params.disableTools === true && (params.toolsAlsoAllow?.length ?? 0) > 0) {
+        throw new Error("Tool-free plugin subagent runs cannot request additive tools.");
+      }
       const pluginSubagentRequester = resolvePluginSubagentCompletionRequester(
         params.completionDelivery,
       );
@@ -309,6 +316,7 @@ export function createGatewaySubagentRuntime(
           ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
           ...(pluginSubagentRequester ? { pluginSubagentRequester } : {}),
           ...(runtimePluginToolGrant ? { runtimePluginToolGrant } : {}),
+          ...(params.disableTools === true ? { pluginSubagentToolsAllow: [] } : {}),
           resolveGatewayContext,
         },
       );
@@ -321,7 +329,9 @@ export function createGatewaySubagentRuntime(
       return { runId, sessionKey, ...(runtime ? { runtime } : {}) };
     },
     async waitForRun(params) {
-      const payload = await dispatchGatewayMethodInProcess<{ status?: string; error?: string }>(
+      const payload = await dispatchGatewayMethodInProcess<
+        Omit<AgentWaitResult, "status"> & { status?: string }
+      >(
         "agent.wait",
         {
           runId: params.runId,
@@ -329,20 +339,20 @@ export function createGatewaySubagentRuntime(
         },
         { resolveGatewayContext },
       );
-      let status = payload?.status;
+      const { status: rawStatus, error, ...metadata } = payload;
+      let status = rawStatus;
       if (status === "completed" || status === "succeeded") {
         status = "ok";
-      } else if (status === "error" && payload?.error?.trim().toLowerCase() === "completed") {
+      } else if (status === "error" && error?.trim().toLowerCase() === "completed") {
         status = "ok";
       }
-      if (status !== "ok" && status !== "error" && status !== "timeout") {
-        throw new Error(`Gateway agent.wait returned unexpected status: ${payload?.status}`);
+      if (status !== "ok" && status !== "error" && status !== "timeout" && status !== "pending") {
+        throw new Error(`Gateway agent.wait returned unexpected status: ${rawStatus}`);
       }
       return {
+        ...metadata,
         status,
-        ...(status !== "ok" &&
-          typeof payload?.error === "string" &&
-          payload.error && { error: payload.error }),
+        ...(status !== "ok" && error ? { error } : {}),
       };
     },
     getSessionMessages,
@@ -383,7 +393,57 @@ type GatewayRuntimeNodes = Awaited<ReturnType<PluginRuntime["nodes"]["list"]>>["
 
 export function createGatewayNodesRuntime(
   resolveGatewayContext?: GatewayContextResolver,
+  runtimeLifetime?: AbortSignal,
 ): PluginRuntime["nodes"] {
+  const invokeNode = async (
+    params: Parameters<PluginRuntime["nodes"]["invoke"]>[0],
+    stream?: GatewayNodeInvokeStream,
+    signal = params.signal,
+  ) => {
+    const scope = getPluginRuntimeGatewayRequestScope();
+    const pluginId = scope?.pluginId?.trim() || undefined;
+    const requestedScopes = resolveRuntimeNodeInvokeSyntheticScopes({
+      pluginId,
+      pluginOrigin: scope?.pluginOrigin,
+      pluginTrustedOfficialInstall: scope?.pluginTrustedOfficialInstall,
+      requestedScopes: normalizeOperatorScopeList(params.scopes),
+    });
+    const callerScopes =
+      stream && scope?.client
+        ? (normalizeOperatorScopeList(scope.client.connect.scopes) ?? [])
+        : undefined;
+    if (
+      callerScopes &&
+      requestedScopes?.some(
+        (requestedScope) =>
+          !authorizeOperatorScopesForRequiredScope(requestedScope, callerScopes).allowed,
+      )
+    ) {
+      throw new Error("Requested node scopes exceed the authenticated Gateway caller's authority.");
+    }
+    // Forced synthetic stream clients must retain their authenticated caller's exact scopes.
+    const syntheticScopes = requestedScopes ?? callerScopes;
+    return dispatchGatewayMethodInProcess<unknown>(
+      "node.invoke",
+      {
+        nodeId: params.nodeId,
+        command: params.command,
+        ...(params.params !== undefined && { params: params.params }),
+        timeoutMs: params.timeoutMs,
+        idempotencyKey: params.idempotencyKey || randomUUID(),
+        ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+      },
+      {
+        ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
+        ...(syntheticScopes ? { syntheticScopes } : {}),
+        ...(stream || syntheticScopes ? { forceSyntheticClient: true } : {}),
+        ...(stream ? { nodeInvokeStream: stream } : {}),
+        ...(signal ? { signal } : {}),
+        resolveGatewayContext,
+      },
+    );
+  };
+
   return {
     async list(params) {
       const context = getInProcessGatewayRequestContext(resolveGatewayContext);
@@ -407,36 +467,9 @@ export function createGatewayNodesRuntime(
         nodes: projectGatewayRuntimeNodes(filteredNodes, context) as GatewayRuntimeNodes,
       };
     },
-    async invoke(params) {
-      const scope = getPluginRuntimeGatewayRequestScope();
-      const pluginId =
-        typeof scope?.pluginId === "string" && scope.pluginId.trim()
-          ? scope.pluginId.trim()
-          : undefined;
-      const syntheticScopes = resolveRuntimeNodeInvokeSyntheticScopes({
-        pluginId,
-        pluginOrigin: scope?.pluginOrigin,
-        pluginTrustedOfficialInstall: scope?.pluginTrustedOfficialInstall,
-        requestedScopes: normalizeOperatorScopeList(params.scopes),
-      });
-      return await dispatchGatewayMethodInProcess<unknown>(
-        "node.invoke",
-        {
-          nodeId: params.nodeId,
-          command: params.command,
-          ...(params.params !== undefined && { params: params.params }),
-          timeoutMs: params.timeoutMs,
-          idempotencyKey: params.idempotencyKey || randomUUID(),
-          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-        },
-        {
-          ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
-          ...(syntheticScopes ? { forceSyntheticClient: true, syntheticScopes } : {}),
-          ...(params.signal ? { signal: params.signal } : {}),
-          resolveGatewayContext,
-        },
-      );
-    },
+    invoke: invokeNode,
+    openDuplex: (params) =>
+      openGatewayNodeDuplex({ params, invokeNode, resolveGatewayContext, runtimeLifetime }),
   };
 }
 
@@ -449,9 +482,11 @@ function createGatewayPluginRuntimeBindings(
   retire: () => void;
 } {
   let active = true;
+  const lifetime = new AbortController();
   const resolveBoundGatewayContext = () => (active ? resolveGatewayContext() : undefined);
   return {
     retire: () => {
+      lifetime.abort(new Error("Plugin Gateway runtime retired; duplex invocation cancelled."));
       active = false;
     },
     runtime: {
@@ -461,17 +496,21 @@ function createGatewayPluginRuntimeBindings(
         const sessionWorkerPlacementContext = getInProcessGatewayRequestContext(
           resolveBoundGatewayContext,
         );
-        return await dispatchReplyFromConfig({
-          ...params,
-          ...(sessionWorkerPlacementContext ? { sessionWorkerPlacementContext } : {}),
-        });
+        return await withPluginRuntimeGatewayContextResolver(
+          resolveBoundGatewayContext,
+          async () =>
+            await dispatchReplyFromConfig({
+              ...params,
+              ...(sessionWorkerPlacementContext ? { sessionWorkerPlacementContext } : {}),
+            }),
+        );
       },
       gateway: {
         isAvailable: async () => hasInProcessGatewayContext(resolveBoundGatewayContext),
         request: (method, params, options) =>
           dispatchTrustedPluginGatewayMethod(method, params, options, resolveBoundGatewayContext),
       },
-      nodes: createGatewayNodesRuntime(resolveBoundGatewayContext),
+      nodes: createGatewayNodesRuntime(resolveBoundGatewayContext, lifetime.signal),
       subagent: createGatewaySubagentRuntime(resolveBoundGatewayContext, overridePolicies),
     },
   };
