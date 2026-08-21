@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ExpectedCliError } from "./cli/failure-output.js";
 import { runMainOrRootHelp } from "./entry.js";
+import { enableConsoleCapture } from "./logging.js";
 
 vi.mock("./logging.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./logging.js")>();
@@ -33,6 +34,7 @@ describe("entry run-main boundary", () => {
       humanOutput: message,
       machineOutput: message,
     });
+    enableConsoleCapture();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     process.exitCode = undefined;
 
