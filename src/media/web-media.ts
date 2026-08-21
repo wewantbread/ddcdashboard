@@ -38,7 +38,6 @@ import { chunkItems } from "../utils/chunk-items.js";
 import { readOutboundMediaFile } from "./bounded-read-file.js";
 import { readRemoteMediaBuffer } from "./fetch.js";
 import { ImageOptimizationLimitError } from "./image-optimization-error.js";
-import { createImageProcessorWithPixelLimits } from "./image-processor.js";
 import type { OutboundMediaReadFile } from "./load-options.js";
 import {
   assertLocalMediaAllowed,
@@ -50,7 +49,6 @@ import {
 import { MediaReferenceError, resolveInboundMediaReference } from "./media-reference.js";
 import {
   createImageProcessor,
-  MAX_IMAGE_INPUT_PIXELS,
   readImageMetadataFromHeader,
   readImageProbeFromHeader,
 } from "./media-services.js";
@@ -915,15 +913,13 @@ async function optimizeImageWithFallback(params: {
   cap: number;
   meta?: { contentType?: string; fileName?: string };
   imageCompression?: ImageCompressionPolicy;
+  maxInputPixels?: number;
 }): Promise<OptimizedImage> {
   const { buffer, cap } = params;
   const grid = resolveImageCompressionGrid(params.imageCompression);
-  // Rastermill validates input dimensions before resizing. Admit 8K camera/display inputs only
-  // here; every encoded result stays under the shared output pixel limit.
-  const optimized = await createImageProcessorWithPixelLimits({
-    inputPixels: 40_000_000,
-    outputPixels: MAX_IMAGE_INPUT_PIXELS,
-  }).encode(buffer, {
+  // Generic callers keep the shared decode limit. An owner with a bounded downscale path may
+  // widen source admission explicitly, while every encoded result remains under the output cap.
+  const optimized = await createImageProcessor(params.maxInputPixels).encode(buffer, {
     format: "auto",
     maxBytes: cap,
     opaque: { format: "jpeg" },
@@ -957,6 +953,7 @@ export async function optimizeImageBufferForWebMedia(params: {
   fileName?: string;
   maxBytes?: number;
   imageCompression?: ImageCompressionPolicy;
+  maxInputPixels?: number;
 }): Promise<WebMediaResult> {
   const baseCap = params.maxBytes ?? maxBytesForKind("image");
   const cap = effectiveImageBytesCap(baseCap, params.imageCompression) ?? baseCap;
@@ -993,6 +990,7 @@ export async function optimizeImageBufferForWebMedia(params: {
     cap,
     meta,
     imageCompression: params.imageCompression,
+    ...(params.maxInputPixels === undefined ? {} : { maxInputPixels: params.maxInputPixels }),
   });
   logOptimizedImage({ originalSize: params.buffer.length, optimized });
   if (optimized.buffer.length > cap) {

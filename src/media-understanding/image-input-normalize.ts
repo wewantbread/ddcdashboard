@@ -11,6 +11,7 @@ import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 
 const HEIC_MIME_RE = /^image\/hei[cf]$/i;
 const HEIC_EXT_RE = /\.(heic|heif)$/i;
+const MEDIA_UNDERSTANDING_MAX_SOURCE_PIXELS = 40_000_000;
 
 function isHeicInput(params: { mime?: string; fileName?: string }): boolean {
   const mime = normalizeMimeType(params.mime);
@@ -87,6 +88,7 @@ export async function optimizeImageDescriptionInput(params: {
     fileName: params.fileName,
     maxBytes,
     imageCompression,
+    maxInputPixels: MEDIA_UNDERSTANDING_MAX_SOURCE_PIXELS,
   });
   return {
     buffer: optimized.buffer,

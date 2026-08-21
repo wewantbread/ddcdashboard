@@ -20,6 +20,7 @@ describe("image ops Rastermill adapter", () => {
     vi.doUnmock("rastermill");
     vi.doUnmock("@silvia-odwyer/photon-node");
     vi.doUnmock("../infra/resolve-system-bin.js");
+    vi.doUnmock("../agents/image-compression-policy.js");
     vi.resetModules();
   });
 
@@ -115,7 +116,7 @@ describe("image ops Rastermill adapter", () => {
     );
   });
 
-  it("keeps generic web-media optimization on the shared pixel limit", async () => {
+  it("scopes the larger source admission to media understanding", async () => {
     const actualRastermill = await vi.importActual<typeof import("rastermill")>("rastermill");
     const encode = vi.fn(async () => ({
       data: Buffer.from("jpeg"),
@@ -156,6 +157,29 @@ describe("image ops Rastermill adapter", () => {
       expect.objectContaining({
         limits: {
           inputPixels: MAX_IMAGE_INPUT_PIXELS,
+          outputPixels: MAX_IMAGE_INPUT_PIXELS,
+        },
+      }),
+    );
+
+    createRastermill.mockClear();
+    vi.doMock("../agents/image-compression-policy.js", () => ({
+      resolveImageCompressionModelPolicy: vi.fn(async () => ({ maxSidePx: 1 })),
+    }));
+    const { optimizeImageDescriptionInput } =
+      await import("../media-understanding/image-input-normalize.js");
+    await optimizeImageDescriptionInput({
+      buffer: Buffer.alloc(32),
+      mime: "image/png",
+      maxBytes: 16,
+      provider: "vision-plugin",
+      model: "vision-v1",
+    });
+
+    expect(createRastermill).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        limits: {
+          inputPixels: 40_000_000,
           outputPixels: MAX_IMAGE_INPUT_PIXELS,
         },
       }),

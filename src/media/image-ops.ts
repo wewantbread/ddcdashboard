@@ -42,9 +42,9 @@ export const MAX_IMAGE_INPUT_PIXELS = 25_000_000;
 const loadPhotonRuntime = createLazyRuntimeModule(() => import("./photon.runtime.js"));
 
 /** Creates a Rastermill processor with OpenClaw temp-dir, pixel-limit, and command trust policy. */
-export function createImageProcessor() {
+export function createImageProcessor(inputPixels = MAX_IMAGE_INPUT_PIXELS) {
   return createImageProcessorWithPixelLimits({
-    inputPixels: MAX_IMAGE_INPUT_PIXELS,
+    inputPixels,
     outputPixels: MAX_IMAGE_INPUT_PIXELS,
   });
 }
