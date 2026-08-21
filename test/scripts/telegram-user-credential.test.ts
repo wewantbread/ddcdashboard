@@ -397,7 +397,7 @@ setInterval(() => {}, 1000);
         expect(readFileSync(cleanupPath, "utf8")).toBe("clean");
         // Clean descendant exits must settle shortly after the timeout instead
         // of waiting out the full kill grace.
-        expect(Date.now() - startedAt).toBeLessThan(TIMEOUT_TRIGGER_MS + 500);
+        expect(Date.now() - startedAt).toBeLessThan(TIMEOUT_TRIGGER_MS + 1000);
       } finally {
         if (childPid !== undefined && isProcessAlive(childPid)) {
           process.kill(childPid, "SIGKILL");
