@@ -449,6 +449,31 @@ describe("runDoctorLintCli", () => {
       },
       path: "/tmp/openclaw.json",
     });
+    const previousResolveChecks =
+      mocks.resolveDoctorContributionHealthChecks.getMockImplementation();
+    mocks.resolveDoctorContributionHealthChecks.mockResolvedValue([
+      {
+        id: CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID,
+        kind: "plugin",
+        description: "Verify configured Crabbox cloud worker profiles before dispatch.",
+        async detect() {
+          return [
+            {
+              checkId: CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID,
+              severity: "warning",
+              message: `Cloud worker profile "aws" cannot use Crabbox because ${binary} is not an executable file.`,
+              path: binary,
+              target: "aws",
+              fixHint:
+                "Install Crabbox 0.41.1 or newer at /nonexistent/path/to/crabbox, or set cloudWorkers.profiles.aws.settings.binary to an executable absolute path, then rerun `openclaw doctor --json`.",
+            },
+          ];
+        },
+      },
+    ]);
+    const registerChecks = vi
+      .spyOn(bundledHealthChecks, "registerBundledHealthChecks")
+      .mockImplementation(() => {});
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const exitCode = await runDoctorLintCli(runtime, {
@@ -474,6 +499,12 @@ describe("runDoctorLintCli", () => {
       expect(payload.findings[0].fixHint).toContain("cloudWorkers.profiles.aws.settings.binary");
     } finally {
       stdout.mockRestore();
+      registerChecks.mockRestore();
+      if (previousResolveChecks) {
+        mocks.resolveDoctorContributionHealthChecks.mockImplementation(previousResolveChecks);
+      } else {
+        mocks.resolveDoctorContributionHealthChecks.mockReset();
+      }
     }
   });
 
