@@ -200,25 +200,34 @@ function hasMatchingTranscriptByteCompactionLatch(
 
 async function persistTranscriptByteCompactionLatch(params: {
   entry: SessionEntry;
+  expectedSession?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
   latch?: NonNullable<SessionEntry["transcriptByteCompactionLatch"]>;
   sessionKey: string;
   sessionStore?: Record<string, SessionEntry>;
   storePath: string;
-}): Promise<SessionEntry | undefined> {
+}): Promise<{ committed: boolean; entry?: SessionEntry }> {
+  const expectedSession = params.expectedSession ?? params.entry;
+  let committed = false;
   const updatedEntry = await memoryDeps.updateSessionEntry({
     storePath: params.storePath,
     sessionKey: params.sessionKey,
     skipMaintenance: true,
     takeCacheOwnership: true,
-    update: (current) =>
-      current.sessionId === params.entry.sessionId
-        ? { transcriptByteCompactionLatch: params.latch }
-        : null,
+    update: (current) => {
+      if (
+        current.sessionId !== expectedSession.sessionId ||
+        current.lifecycleRevision !== expectedSession.lifecycleRevision
+      ) {
+        return null;
+      }
+      committed = true;
+      return { transcriptByteCompactionLatch: params.latch };
+    },
   });
   if (updatedEntry && params.sessionStore) {
     params.sessionStore[params.sessionKey] = updatedEntry;
   }
-  return updatedEntry ?? undefined;
+  return { committed, entry: updatedEntry ?? undefined };
 }
 
 /** Overrides memory helper dependencies for tests. */
@@ -909,13 +918,13 @@ export async function runSessionCompactionIfNeeded(params: {
       maxActiveTranscriptBytes,
     );
   if (entry.transcriptByteCompactionLatch !== undefined && !transcriptByteCompactionLatched) {
-    entry =
-      (await persistTranscriptByteCompactionLatch({
-        entry,
-        sessionKey: compactionSessionKey,
-        sessionStore: params.sessionStore,
-        storePath: compactionStorePath,
-      })) ?? entry;
+    const clearedLatch = await persistTranscriptByteCompactionLatch({
+      entry,
+      sessionKey: compactionSessionKey,
+      sessionStore: params.sessionStore,
+      storePath: compactionStorePath,
+    });
+    entry = clearedLatch.entry ?? entry;
     transcriptByteCompactionLatched =
       exceedsTranscriptByteThreshold &&
       hasMatchingTranscriptByteCompactionLatch(
@@ -994,6 +1003,10 @@ export async function runSessionCompactionIfNeeded(params: {
   }
 
   const compactionTrigger = shouldCompactByTranscriptBytes ? "transcript_bytes" : "tokens";
+  const compactionSession = {
+    sessionId: entry.sessionId,
+    lifecycleRevision: entry.lifecycleRevision,
+  };
   logVerbose(
     `preflightCompaction triggered: sessionKey=${params.sessionKey} ` +
       `tokenCount=${tokenCountForCompaction ?? freshPersistedTokens ?? "undefined"} ` +
@@ -1121,34 +1134,63 @@ export async function runSessionCompactionIfNeeded(params: {
       throw new Error(`Preflight compaction required but failed: ${reason}`);
     }
 
-    const compactionCount = await deps.incrementCompactionCount({
+    const declaredCompactionSessionId = normalizeOptionalString(result.result?.sessionId);
+    const durablePostCompactionEntry = loadSessionEntry({
       agentId: compactionAgentId,
-      cfg: params.cfg,
-      sessionEntry: entry,
-      sessionStore: params.sessionStore,
       sessionKey: compactionSessionKey,
       storePath: compactionStorePath,
-      tokensAfter: result.result?.tokensAfter,
-      newSessionId: result.result?.sessionId,
-      compactionKind: result.compactionKind,
-      ...(expectedSession ? { expectedSession, authorize: params.authorize } : {}),
     });
+    const accountingEntry =
+      durablePostCompactionEntry ?? params.sessionStore?.[compactionSessionKey] ?? entry;
+    const isAcceptedCompactionEntry = (candidate: SessionEntry) =>
+      candidate.lifecycleRevision === compactionSession.lifecycleRevision &&
+      (candidate.sessionId === compactionSession.sessionId ||
+        candidate.sessionId === declaredCompactionSessionId);
+    // Compaction may publish its declared successor before returning. Adopt only
+    // that successor or the source in the initiating lifecycle; concurrent resets win.
+    let compactionCount: number | undefined;
+    if (isAcceptedCompactionEntry(accountingEntry)) {
+      if (params.sessionStore) {
+        params.sessionStore[compactionSessionKey] = accountingEntry;
+      }
+      compactionCount = await deps.incrementCompactionCount({
+        agentId: compactionAgentId,
+        cfg: params.cfg,
+        sessionEntry: accountingEntry,
+        sessionStore: params.sessionStore,
+        sessionKey: compactionSessionKey,
+        storePath: compactionStorePath,
+        tokensAfter: result.result?.tokensAfter,
+        newSessionId: declaredCompactionSessionId,
+        compactionKind: result.compactionKind,
+        compactionSourceEntry: entry,
+        expectedSession: {
+          sessionId: accountingEntry.sessionId,
+          lifecycleRevision: compactionSession.lifecycleRevision,
+        },
+        authorize: params.authorize,
+      });
+    }
     assertActive();
     if (expectedSession && compactionCount === undefined) {
       throw new Error("Session changed before compaction maintenance could be recorded");
     }
     entry =
-      params.sessionStore?.[compactionSessionKey] ??
       loadSessionEntry({
         agentId: compactionAgentId,
         sessionKey: compactionSessionKey,
         storePath: compactionStorePath,
       }) ??
+      params.sessionStore?.[compactionSessionKey] ??
       entry;
+    if (params.sessionStore) {
+      params.sessionStore[compactionSessionKey] = entry;
+    }
     if (
       compactionTrigger === "transcript_bytes" &&
       typeof maxActiveTranscriptBytes === "number" &&
-      entry
+      entry &&
+      isAcceptedCompactionEntry(entry)
     ) {
       const postCompactionBytes = readSessionLogSnapshot({
         agentId: compactionAgentId,
@@ -1162,8 +1204,12 @@ export async function runSessionCompactionIfNeeded(params: {
         typeof postCompactionBytes === "number" &&
         postCompactionBytes >= maxActiveTranscriptBytes
       ) {
-        const latchedEntry = await persistTranscriptByteCompactionLatch({
+        const latchWrite = await persistTranscriptByteCompactionLatch({
           entry,
+          expectedSession: {
+            sessionId: entry.sessionId,
+            lifecycleRevision: compactionSession.lifecycleRevision,
+          },
           latch: {
             activeBytes: postCompactionBytes,
             sessionId: entry.sessionId,
@@ -1173,8 +1219,10 @@ export async function runSessionCompactionIfNeeded(params: {
           sessionStore: params.sessionStore,
           storePath: compactionStorePath,
         });
-        if (latchedEntry) {
-          entry = latchedEntry;
+        if (latchWrite.entry) {
+          entry = latchWrite.entry;
+        }
+        if (latchWrite.committed) {
           preflightCompactionLog.warn(
             "byte-triggered compaction left the active transcript above its limit; suppressing repeats until it grows by another threshold",
             {
@@ -1199,7 +1247,17 @@ export async function runSessionCompactionIfNeeded(params: {
         : undefined;
     await notifyTerminalCompaction("end", serverNotice);
     assertActive();
-    entry = params.sessionStore?.[params.sessionKey] ?? entry;
+    entry =
+      loadSessionEntry({
+        agentId: compactionAgentId,
+        sessionKey: compactionSessionKey,
+        storePath: compactionStorePath,
+      }) ??
+      params.sessionStore?.[compactionSessionKey] ??
+      entry;
+    if (params.sessionStore) {
+      params.sessionStore[compactionSessionKey] = entry;
+    }
     if (entry) {
       const previousSessionId = params.followupRun.run.sessionId;
       params.followupRun.run.sessionId = entry.sessionId;
