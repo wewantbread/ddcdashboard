@@ -23,10 +23,7 @@ import {
 } from "./gateway-process-argv.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "./node-sqlite.js";
 import { acquireGatewayLifecycleCoordinator } from "./state-database-coordinator.js";
-import {
-  readWindowsProcessArgsSync,
-  readWindowsProcessStartTimeSync,
-} from "./windows-port-pids.js";
+import { readWindowsProcessArgsSync } from "./windows-port-pids.js";
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -168,9 +165,10 @@ function readProcessStartTime(pid: number, platform: NodeJS.Platform): number | 
   if (platform !== process.platform) {
     return null;
   }
-  return platform === "win32"
-    ? readWindowsProcessStartTimeSync(pid, CMDLINE_EXEC_TIMEOUT_MS)
-    : getFileLockProcessStartTime(pid);
+  // Keeps this owner probe on the same short budget as the cmdline probe beside
+  // it: a timeout here degrades to the cmdline liveness check rather than
+  // failing an operation closed, so waiting longer buys nothing.
+  return getFileLockProcessStartTime(pid, CMDLINE_EXEC_TIMEOUT_MS);
 }
 
 function defaultReadProcessCmdline(pid: number, platform: NodeJS.Platform): string[] | null {

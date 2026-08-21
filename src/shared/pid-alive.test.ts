@@ -10,8 +10,18 @@ import {
   isPidDefinitelyDead,
 } from "./pid-alive.js";
 
+const mockReadWindowsProcessStartTime = vi.hoisted(() =>
+  vi.fn<(pid: number, timeoutMs?: number) => number | null>(() => null),
+);
+
+vi.mock("../infra/windows-port-pids.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/windows-port-pids.js")>()),
+  readWindowsProcessStartTimeSync: mockReadWindowsProcessStartTime,
+}));
+
 afterEach(() => {
   vi.restoreAllMocks();
+  mockReadWindowsProcessStartTime.mockReset();
 });
 
 function mockProcReads(entries: Record<string, string>) {
@@ -223,8 +233,85 @@ describe("process start times", () => {
     });
   });
 
-  it("returns null on unsupported platforms", () => {
+  it("reads Windows file-lock owner start times through a bounded probe", () => {
+    mockReadWindowsProcessStartTime.mockReturnValue(1_752_000_000_123);
+
     return withMockedPlatform("win32", async () => {
+      // The Linux-only runtime-state reader stays Linux-only; the file-lock
+      // identity owner is what has to answer on Windows.
+      expect(getProcessStartTime(process.pid)).toBeNull();
+      expect(getFileLockProcessStartTime(42)).toBe(1_752_000_000_123);
+      // The first Get-CimInstance in a process can exceed a second on a cold
+      // host, and timing out fails the caller closed, so the default keeps the
+      // reader's full per-attempt tolerance.
+      expect(mockReadWindowsProcessStartTime).toHaveBeenCalledWith(42, 5000);
+    });
+  });
+
+  it("lets a caller bound the Windows probe harder than the default", () => {
+    mockReadWindowsProcessStartTime.mockReturnValue(1_752_000_000_123);
+
+    return withMockedPlatform("win32", async () => {
+      // The gateway lock owner probe degrades to a cmdline check on timeout, so
+      // it deliberately waits less than a caller that would fail closed.
+      expect(getFileLockProcessStartTime(42, 1000)).toBe(1_752_000_000_123);
+      expect(mockReadWindowsProcessStartTime).toHaveBeenCalledWith(42, 1000);
+    });
+  });
+
+  it("probes our own start identity once and reuses it", () => {
+    mockReadWindowsProcessStartTime.mockReturnValue(1_752_000_000_123);
+
+    return withMockedPlatform("win32", async () => {
+      expect(getFileLockProcessStartTime(process.pid)).toBe(1_752_000_000_123);
+      expect(getFileLockProcessStartTime(process.pid)).toBe(1_752_000_000_123);
+      // Cron re-reads this every tick; our own start time cannot change while
+      // we are alive, so the spawn must not repeat.
+      expect(mockReadWindowsProcessStartTime).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("re-reads our own identity on platforms that do not spawn for it", async () => {
+    // Only the Windows spawn is memoized. Gateway lock ownership relies on a
+    // failed procfs read reporting no identity, so Linux must stay live.
+    mockProcReads({
+      [`/proc/${process.pid}/stat`]: `${process.pid} (node) S 1 ${process.pid} ${process.pid} 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 4242 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0`,
+    });
+
+    await withMockedPlatform("linux", async () => {
+      expect(getFileLockProcessStartTime(process.pid)).toBe(4242);
+    });
+
+    vi.restoreAllMocks();
+    vi.spyOn(fsSync, "readFileSync").mockImplementation(() => {
+      throw new Error("no proc access");
+    });
+
+    await withMockedPlatform("linux", async () => {
+      expect(getFileLockProcessStartTime(process.pid)).toBeNull();
+    });
+  });
+
+  it("does not memoize a foreign PID, so reuse is still observed live", () => {
+    mockReadWindowsProcessStartTime.mockReturnValue(111);
+
+    return withMockedPlatform("win32", async () => {
+      expect(getFileLockProcessStartTime(42)).toBe(111);
+      mockReadWindowsProcessStartTime.mockReturnValue(222);
+      expect(getFileLockProcessStartTime(42)).toBe(222);
+    });
+  });
+
+  it("fails conservatively when the Windows file-lock start-time probe finds nothing", () => {
+    mockReadWindowsProcessStartTime.mockReturnValue(null);
+
+    return withMockedPlatform("win32", async () => {
+      expect(getFileLockProcessStartTime(42)).toBeNull();
+    });
+  });
+
+  it("returns null on platforms with no start-identity source", () => {
+    return withMockedPlatform("freebsd", async () => {
       expect(getProcessStartTime(process.pid)).toBeNull();
       expect(getFileLockProcessStartTime(process.pid)).toBeNull();
     });

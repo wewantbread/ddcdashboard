@@ -29,6 +29,23 @@ describe("detectChangedScope Windows routing", () => {
     }
   });
 
+  it("routes file-lock process identity and its forwarding consumers to Windows", () => {
+    // The owner and both consumers carry Windows-specific process-identity
+    // behavior, and the real-host regression suite only runs on this lane. If
+    // any of them stops routing here, a Windows regression merges unchecked.
+    for (const identityPath of [
+      "src/shared/pid-alive.ts",
+      "src/shared/pid-alive.file-lock-identity.test.ts",
+      "src/infra/gateway-lock.ts",
+      "src/node-host/node-worker-process-identity.ts",
+    ]) {
+      expect(detectChangedScope([identityPath]), identityPath).toMatchObject({
+        runNode: true,
+        runWindows: true,
+      });
+    }
+  });
+
   it("routes core SQLite state changes to Windows", () => {
     for (const sqlitePath of [
       "src/commands/doctor-sqlite-compact.ts",
