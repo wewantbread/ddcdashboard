@@ -54,6 +54,7 @@ import {
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import {
   authorizeOpenAiCompatibleHttpModelOverride,
+  authorizeOpenAiCompatibleHttpSession,
   isAgentSelectionRequiredError,
   isGatewaySessionKeyOverrideError,
   isInvalidGatewayModelError,
@@ -998,6 +999,15 @@ export async function handleOpenAiHttpRequest(
       return true;
     }
     throw err;
+  }
+  const sessionAuth = authorizeOpenAiCompatibleHttpSession({
+    agentId,
+    sessionKey,
+    senderIsOwner,
+  });
+  if (!sessionAuth.allowed) {
+    sendMissingScopeForbidden(res, sessionAuth.missingScope);
+    return true;
   }
   const { modelOverride, errorMessage: modelError } = await resolveOpenAiCompatModelOverride({
     req,
