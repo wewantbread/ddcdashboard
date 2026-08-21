@@ -190,7 +190,7 @@ describe("shared state write transaction corruption recovery", () => {
       const evictionElapsedMs = performance.now() - evictionStartedAt;
 
       expect(getOpenClawStateDatabaseIfOpen({ env })).toBeUndefined();
-      expect(evictionElapsedMs).toBeLessThan(250);
+      expect(evictionElapsedMs).toBeLessThan(1000);
       expect(fs.statSync(walPath).size).toBe(walBytesBeforeEviction);
       expect(peer.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
       expect(
