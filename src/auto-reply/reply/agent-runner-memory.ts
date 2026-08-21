@@ -917,7 +917,16 @@ export async function runSessionCompactionIfNeeded(params: {
       activeTranscriptBytes,
       maxActiveTranscriptBytes,
     );
-  if (entry.transcriptByteCompactionLatch !== undefined && !transcriptByteCompactionLatched) {
+  const persistedTranscriptByteCompactionLatch = entry.transcriptByteCompactionLatch;
+  // Projection rebuilds make byte size temporarily unavailable. An unknown
+  // measurement cannot invalidate a latch whose identity and threshold still apply.
+  const shouldClearTranscriptByteCompactionLatch =
+    persistedTranscriptByteCompactionLatch !== undefined &&
+    (typeof maxActiveTranscriptBytes !== "number" ||
+      persistedTranscriptByteCompactionLatch.sessionId !== entry.sessionId ||
+      persistedTranscriptByteCompactionLatch.maxBytes !== maxActiveTranscriptBytes ||
+      (typeof activeTranscriptBytes === "number" && !transcriptByteCompactionLatched));
+  if (shouldClearTranscriptByteCompactionLatch) {
     const clearedLatch = await persistTranscriptByteCompactionLatch({
       entry,
       sessionKey: compactionSessionKey,

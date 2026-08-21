@@ -19,8 +19,13 @@ import {
   upsertSessionEntryCore,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptReadScope,
+  toDatabaseOptions,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import {
   clearMemoryPluginState,
   registerMemoryCapability,
@@ -29,6 +34,7 @@ import {
 } from "../../plugins/memory-state.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ReplyPayload } from "../types.js";
 import {
   runMemoryFlushIfNeeded as runMemoryFlushIfNeededRaw,
@@ -3418,6 +3424,34 @@ describe("runMemoryFlushIfNeeded", () => {
     await fixture.run(fixture.sessionEntry);
     await fixture.run(loadMainSessionEntry(fixture.storePath));
 
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the byte-compaction latch while the active projection rebuilds", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const scope = {
+      agentId: "main",
+      sessionId: "session",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    await fixture.run(fixture.sessionEntry);
+    const latchedEntry = loadMainSessionEntry(fixture.storePath);
+    const databaseOptions = toDatabaseOptions(resolveSqliteTranscriptReadScope(scope));
+    openOpenClawAgentDatabase(databaseOptions)
+      .db.prepare(
+        "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
+      )
+      .run(scope.sessionId);
+
+    await fixture.run(latchedEntry);
+    const duringRebuild = loadMainSessionEntry(fixture.storePath);
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
+    await fixture.run(duringRebuild);
+
+    expect(duringRebuild.transcriptByteCompactionLatch).toEqual(
+      latchedEntry.transcriptByteCompactionLatch,
+    );
     expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
   });
 
