@@ -14,6 +14,10 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   DOCKERHUB_REGISTRY: docker.io
   DOCKERHUB_IMAGE_NAME: openclaw/openclaw
+  RELEASE_TOOLING_ALLOW_PREVALIDATED_REF: "false"
+  RELEASE_TOOLING_FULL_REF: ${{ github.ref }}
+  RELEASE_TOOLING_REF: ${{ github.ref_name }}
+  RELEASE_TOOLING_SHA: ${{ github.workflow_sha }}
 
 jobs:
   resolve:
@@ -108,6 +112,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
@@ -164,6 +169,7 @@ jobs:
 
       - name: Promote and verify channel aliases
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve.outputs.version }}
           GHCR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}

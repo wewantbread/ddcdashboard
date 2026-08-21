@@ -21,6 +21,7 @@ on:
     - cron: "17 3 * * 1"
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -130,9 +131,14 @@ jobs:
       tag: ${{ matrix.tag }}
       release_sha: ${{ matrix.release_sha }}
       image_tag_suffix: ${{ needs.plan.outputs.image_tag_suffix }}
+      trusted_workflow_allow_prevalidated_ref: false
+      trusted_workflow_full_ref: ${{ github.ref }}
+      trusted_workflow_ref: ${{ github.ref_name }}
+      trusted_workflow_sha: ${{ github.workflow_sha }}
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
+      actions: read
       contents: read
       packages: write

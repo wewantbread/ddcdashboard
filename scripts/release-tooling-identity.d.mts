@@ -36,6 +36,13 @@ export function verifyReleaseToolingIdentity(
   },
 ): ReleaseToolingIdentity;
 
+export function verifyReleaseToolingIdentityFromEnvironment(
+  env?: Record<string, string | undefined>,
+  options?: {
+    runGh?: (args: string[]) => string;
+  },
+): ReleaseToolingIdentity;
+
 export function validateReleasePublishParentRun(input: {
   identity: Pick<ReleaseToolingIdentity, "fullRef" | "ref" | "sha">;
   releasePublishRunAttempt: string;

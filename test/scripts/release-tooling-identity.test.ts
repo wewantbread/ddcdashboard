@@ -3,6 +3,7 @@ import {
   resolveReleaseToolingIdentity,
   validateReleaseToolingIdentity,
   verifyReleaseToolingIdentity,
+  verifyReleaseToolingIdentityFromEnvironment,
 } from "../../scripts/release-tooling-identity.mjs";
 
 const SHA = "a".repeat(40);
@@ -26,6 +27,58 @@ function protectedIdentity(
 }
 
 describe("release tooling identity", () => {
+  it("verifies the complete mutation-boundary identity from environment state", () => {
+    const runGh = vi.fn((args: string[]) => {
+      if (args[1]?.includes("/compare/")) {
+        return JSON.stringify({ status: "identical" });
+      }
+      if (args[1]?.includes("/actions/runs/")) {
+        return JSON.stringify({
+          event: "workflow_dispatch",
+          head_branch: "main",
+          head_sha: SHA,
+          id: Number(PARENT_RUN_ID),
+          path: ".github/workflows/openclaw-release-publish.yml@refs/heads/main",
+          repository: { full_name: "openclaw/openclaw" },
+          run_attempt: Number(PARENT_RUN_ATTEMPT),
+        });
+      }
+      throw new Error(`Unexpected gh call: ${args.join(" ")}`);
+    });
+
+    expect(
+      verifyReleaseToolingIdentityFromEnvironment(
+        {
+          GITHUB_REPOSITORY: "openclaw/openclaw",
+          RELEASE_PUBLISH_RUN_ATTEMPT: PARENT_RUN_ATTEMPT,
+          RELEASE_PUBLISH_RUN_ID: PARENT_RUN_ID,
+          RELEASE_TOOLING_ALLOW_PREVALIDATED_REF: "false",
+          RELEASE_TOOLING_FULL_REF: "refs/heads/main",
+          RELEASE_TOOLING_REF: "main",
+          RELEASE_TOOLING_SHA: SHA,
+        },
+        { runGh },
+      ),
+    ).toEqual({
+      fullRef: "refs/heads/main",
+      ref: "main",
+      route: "main",
+      sha: SHA,
+    });
+  });
+
+  it("rejects ambiguous mutation-boundary prevalidated-ref policy", () => {
+    expect(() =>
+      verifyReleaseToolingIdentityFromEnvironment({
+        GITHUB_REPOSITORY: "openclaw/openclaw",
+        RELEASE_TOOLING_ALLOW_PREVALIDATED_REF: "yes",
+        RELEASE_TOOLING_FULL_REF: "refs/heads/main",
+        RELEASE_TOOLING_REF: "main",
+        RELEASE_TOOLING_SHA: SHA,
+      }),
+    ).toThrow("RELEASE_TOOLING_ALLOW_PREVALIDATED_REF must be true or false");
+  });
+
   it.each([
     ["1", "main", "refs/heads/main"],
     ["2", "release/2026.8.1", "refs/heads/release/2026.8.1"],

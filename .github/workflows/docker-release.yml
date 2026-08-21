@@ -16,6 +16,32 @@ on:
         required: false
         default: ""
         type: string
+      trusted_workflow_ref:
+        description: Trusted release tooling ref name
+        required: true
+        type: string
+      trusted_workflow_full_ref:
+        description: Trusted release tooling full ref
+        required: true
+        type: string
+      trusted_workflow_sha:
+        description: Trusted release tooling commit SHA
+        required: true
+        type: string
+      trusted_workflow_allow_prevalidated_ref:
+        description: Allow an exact live branch outside main as trusted release tooling
+        required: true
+        type: boolean
+      release_publish_run_id:
+        description: Exact parent OpenClaw Release Publish run id when release-orchestrated
+        required: false
+        default: ""
+        type: string
+      release_publish_run_attempt:
+        description: Exact parent OpenClaw Release Publish run attempt when release-orchestrated
+        required: false
+        default: ""
+        type: string
     outputs:
       version:
         description: Resolved Docker release version without the v prefix
@@ -45,11 +71,18 @@ env:
   IMAGE_NAME: ${{ github.repository }}
   DOCKERHUB_REGISTRY: docker.io
   DOCKERHUB_IMAGE_NAME: openclaw/openclaw
+  RELEASE_PUBLISH_RUN_ATTEMPT: ${{ inputs.release_publish_run_attempt }}
+  RELEASE_PUBLISH_RUN_ID: ${{ inputs.release_publish_run_id }}
+  RELEASE_TOOLING_ALLOW_PREVALIDATED_REF: ${{ inputs.trusted_workflow_allow_prevalidated_ref }}
+  RELEASE_TOOLING_FULL_REF: ${{ inputs.trusted_workflow_full_ref }}
+  RELEASE_TOOLING_REF: ${{ inputs.trusted_workflow_ref }}
+  RELEASE_TOOLING_SHA: ${{ inputs.trusted_workflow_sha }}
 
 jobs:
   validate_release_identity:
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Validate immutable tag and SHA inputs
@@ -101,6 +134,21 @@ jobs:
             exit 1
           fi
 
+      - &trusted_release_tooling_checkout
+        name: Checkout trusted release tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.trusted_workflow_sha }}
+          path: .release-tooling
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - &verify_release_tooling_step
+        name: Revalidate trusted release tooling
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .release-tooling/scripts/release-tooling-identity.mjs verify-env
+
   resolve_release_policy:
     needs: validate_release_identity
     runs-on: ubuntu-24.04
@@ -113,7 +161,7 @@ jobs:
       - name: Checkout trusted workflow helpers
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.trusted_workflow_sha }}
           path: workflow-source
           persist-credentials: false
 
@@ -206,6 +254,7 @@ jobs:
     # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       packages: write
       contents: read
     outputs:
@@ -217,6 +266,8 @@ jobs:
         with:
           ref: ${{ needs.resolve_build_provenance.outputs.source_sha }}
           fetch-depth: 0
+
+      - *trusted_release_tooling_checkout
 
       - &buildkit_prepull_step
         name: Pre-pull BuildKit image
@@ -323,6 +374,8 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - *verify_release_tooling_step
+
       - name: Build and push amd64 image
         id: build
         # WARNING: KEEP THE OFFICIAL DOCKER ACTION HERE; DO NOT SWITCH THIS BACK TO BLACKSMITH BLINDLY.
@@ -341,6 +394,12 @@ jobs:
           sbom: true
           provenance: mode=max
           push: true
+
+      - name: Revalidate trusted release tooling before browser push
+        if: steps.tags.outputs.browser != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .release-tooling/scripts/release-tooling-identity.mjs verify-env
 
       - name: Build and push amd64 browser image
         id: build-browser
@@ -435,6 +494,7 @@ jobs:
     # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
     runs-on: ubuntu-24.04-arm
     permissions:
+      actions: read
       packages: write
       contents: read
     outputs:
@@ -446,6 +506,8 @@ jobs:
         with:
           ref: ${{ needs.resolve_build_provenance.outputs.source_sha }}
           fetch-depth: 0
+
+      - *trusted_release_tooling_checkout
 
       - *buildkit_prepull_step
       - name: Set up Docker Builder
@@ -533,6 +595,8 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - *verify_release_tooling_step
+
       - name: Build and push arm64 image
         id: build
         # WARNING: KEEP THE OFFICIAL DOCKER ACTION HERE; DO NOT SWITCH THIS BACK TO BLACKSMITH BLINDLY.
@@ -551,6 +615,12 @@ jobs:
           sbom: true
           provenance: mode=max
           push: true
+
+      - name: Revalidate trusted release tooling before browser push
+        if: steps.tags.outputs.browser != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .release-tooling/scripts/release-tooling-identity.mjs verify-env
 
       - name: Build and push arm64 browser image
         id: build-browser
@@ -653,6 +723,7 @@ jobs:
     # WARNING: DO NOT REVERT THIS TO A BLACKSMITH RUNNER WITHOUT RE-VALIDATING TAG BACKFILLS.
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       packages: write
       contents: read
     outputs:
@@ -663,6 +734,8 @@ jobs:
         with:
           ref: ${{ needs.resolve_build_provenance.outputs.source_sha }}
           fetch-depth: 0
+
+      - *trusted_release_tooling_checkout
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -737,6 +810,7 @@ jobs:
       - name: Create and push manifest
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}
           SOURCE_REF: ${{ format('refs/tags/{0}', inputs.tag) }}
           TAGS: ${{ steps.tags.outputs.value }}
@@ -763,6 +837,7 @@ jobs:
               [ -z "$tag" ] && continue
               args+=("-t" "$tag")
             done
+            node .release-tooling/scripts/release-tooling-identity.mjs verify-env
             docker buildx imagetools create "${args[@]}" "$amd64_digest" "$arm64_digest"
           }
           create_manifest "${AMD64_DIGEST}" "${ARM64_DIGEST}" "${tags[@]}"
@@ -791,6 +866,7 @@ jobs:
     outputs:
       vcr_source_refs: ${{ steps.vcr_source_refs.outputs.value }}
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
@@ -799,6 +875,8 @@ jobs:
         with:
           ref: ${{ needs.resolve_build_provenance.outputs.source_sha }}
           fetch-depth: 1
+
+      - *trusted_release_tooling_checkout
 
       - *buildkit_prepull_step
       - name: Set up Docker Builder
@@ -919,24 +997,24 @@ jobs:
           mapfile -t dockerhub_amd64_refs <<< "${DOCKERHUB_AMD64_REFS}"
           mapfile -t dockerhub_arm64_refs <<< "${DOCKERHUB_ARM64_REFS}"
 
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/amd64 \
             --platform linux/arm64 \
             "${multi_refs[@]}"
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/amd64 \
             "${amd64_refs[@]}"
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/arm64 \
             "${arm64_refs[@]}"
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/amd64 \
             --platform linux/arm64 \
             "${dockerhub_multi_refs[@]}"
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/amd64 \
             "${dockerhub_amd64_refs[@]}"
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/arm64 \
             "${dockerhub_arm64_refs[@]}"
 
@@ -981,7 +1059,7 @@ jobs:
             immutable_refs+=("${immutable_ref}")
           done
 
-          node scripts/verify-docker-attestations.mjs \
+          node .release-tooling/scripts/verify-docker-attestations.mjs \
             --platform linux/amd64 \
             --platform linux/arm64 \
             "${immutable_refs[@]}"
@@ -995,13 +1073,14 @@ jobs:
       - name: Promote and verify channel aliases
         if: ${{ needs.resolve_release_policy.outputs.channel != 'beta' }}
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve_release_policy.outputs.version }}
           IMAGE_TAG_SUFFIX: ${{ inputs.image_tag_suffix }}
           GHCR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}
         run: |
           set -euo pipefail
-          node scripts/docker-channel-promote.mjs \
+          node .release-tooling/scripts/docker-channel-promote.mjs \
             --version "${VERSION}" \
             --image-tag-suffix "${IMAGE_TAG_SUFFIX}" \
             --image "${GHCR_IMAGE}" \

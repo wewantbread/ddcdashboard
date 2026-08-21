@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { resolveDockerReleasePolicy } from "./lib/docker-release-policy.mjs";
 import { compareReleaseVersions } from "./lib/release-version.mjs";
+import { verifyReleaseToolingIdentityFromEnvironment } from "./release-tooling-identity.mjs";
 import { parsePlatform, verifyDockerAttestations } from "./verify-docker-attestations.mjs";
 
 const DOCKER_TIMEOUT_MS = 120_000;
@@ -40,6 +41,7 @@ const VARIANTS = Object.freeze([
  * @typedef {object} DockerPromotionOptions
  * @property {boolean} [allowRollback]
  * @property {DockerExec} [execFileSyncImpl]
+ * @property {() => void} [beforeMutation]
  * @property {(message: string) => void} [log]
  * @property {(params: DockerAttestationParams) => void} [verifyAttestationsImpl]
  */
@@ -223,6 +225,7 @@ function preventChannelRollback(resolved, version, execFileSyncImpl) {
  */
 export function promoteDockerChannel({ version, imageTagSuffix = "", images }, options = {}) {
   const execFileSyncImpl = options.execFileSyncImpl ?? execFileSync;
+  const beforeMutation = options.beforeMutation ?? (() => {});
   const log = options.log ?? console.log;
   const verifyAttestationsImpl = options.verifyAttestationsImpl ?? verifyDockerAttestations;
   const plan = createDockerChannelPromotionPlan({
@@ -257,6 +260,7 @@ export function promoteDockerChannel({ version, imageTagSuffix = "", images }, o
 
   for (const promotion of resolved) {
     const targetArgs = promotion.targetRefs.flatMap((targetRef) => ["--tag", targetRef]);
+    beforeMutation();
     runDocker(
       [
         "buildx",
@@ -313,7 +317,10 @@ function main() {
   }
   const plan = promoteDockerChannel(
     { version, imageTagSuffix: values["image-tag-suffix"], images },
-    { allowRollback: values["allow-rollback"] },
+    {
+      allowRollback: values["allow-rollback"],
+      beforeMutation: verifyReleaseToolingIdentityFromEnvironment,
+    },
   );
   console.log(`Promoted Docker ${plan.channel} aliases for ${plan.version}.`);
 }

@@ -2556,10 +2556,17 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       release_sha: ${{ needs.resolve_release_target.outputs.sha }}
+      release_publish_run_attempt: ${{ github.run_attempt }}
+      release_publish_run_id: ${{ github.run_id }}
+      trusted_workflow_allow_prevalidated_ref: ${{ github.ref_type == 'branch' && github.ref_name != 'main' }}
+      trusted_workflow_full_ref: ${{ github.ref }}
+      trusted_workflow_ref: ${{ github.ref_name }}
+      trusted_workflow_sha: ${{ github.workflow_sha }}
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
+      actions: read
       contents: read
       packages: write
 

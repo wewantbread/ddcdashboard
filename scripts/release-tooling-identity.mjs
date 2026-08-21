@@ -376,6 +376,23 @@ export function verifyReleaseToolingIdentity({
   return validated;
 }
 
+export function verifyReleaseToolingIdentityFromEnvironment(env = process.env, { runGh } = {}) {
+  const allowPrevalidatedRef = env.RELEASE_TOOLING_ALLOW_PREVALIDATED_REF ?? "false";
+  if (allowPrevalidatedRef !== "true" && allowPrevalidatedRef !== "false") {
+    fail("RELEASE_TOOLING_ALLOW_PREVALIDATED_REF must be true or false.");
+  }
+  return verifyReleaseToolingIdentity({
+    allowPrevalidatedRef: allowPrevalidatedRef === "true",
+    releasePublishRunAttempt: env.RELEASE_PUBLISH_RUN_ATTEMPT,
+    releasePublishRunId: env.RELEASE_PUBLISH_RUN_ID,
+    repository: env.GITHUB_REPOSITORY,
+    runGh,
+    workflowFullRef: env.RELEASE_TOOLING_FULL_REF,
+    workflowRef: env.RELEASE_TOOLING_REF,
+    workflowSha: env.RELEASE_TOOLING_SHA,
+  });
+}
+
 function validateParentRunIfRequested({
   identity,
   releasePublishRunAttempt,
@@ -455,6 +472,13 @@ function parseArgs(argv) {
 }
 
 function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "verify-env") {
+    if (argv.length !== 1) {
+      fail("usage: release-tooling-identity.mjs verify-env");
+    }
+    process.stdout.write(`${JSON.stringify(verifyReleaseToolingIdentityFromEnvironment())}\n`);
+    return;
+  }
   const options = parseArgs([...argv]);
   let identity;
   if (options.command === "resolve") {

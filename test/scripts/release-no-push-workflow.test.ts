@@ -1043,6 +1043,13 @@ describe("release validation no-push transport", () => {
     expect(dockerCall.with).toEqual({
       tag: "${{ inputs.tag }}",
       release_sha: "${{ needs.resolve_release_target.outputs.sha }}",
+      release_publish_run_attempt: "${{ github.run_attempt }}",
+      release_publish_run_id: "${{ github.run_id }}",
+      trusted_workflow_allow_prevalidated_ref:
+        "${{ github.ref_type == 'branch' && github.ref_name != 'main' }}",
+      trusted_workflow_full_ref: "${{ github.ref }}",
+      trusted_workflow_ref: "${{ github.ref_name }}",
+      trusted_workflow_sha: "${{ github.workflow_sha }}",
     });
     expect(dockerCall.secrets).toEqual({
       DOCKERHUB_USERNAME: "${{ secrets.DOCKERHUB_USERNAME }}",

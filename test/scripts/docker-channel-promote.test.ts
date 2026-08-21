@@ -67,11 +67,17 @@ type WorkflowJob = {
 
 type Workflow = {
   concurrency?: { group?: string; "cancel-in-progress"?: boolean; queue?: string };
+  env?: Record<string, string>;
   jobs?: Record<string, WorkflowJob>;
+  on?: {
+    workflow_call?: {
+      inputs?: Record<string, { required?: boolean; type?: string }>;
+    };
+  };
 };
 
-function readWorkflow(path: string): Workflow {
-  return parse(readFileSync(path, "utf8")) as Workflow;
+function readWorkflow(workflowPath: string): Workflow {
+  return parse(readFileSync(workflowPath, "utf8")) as Workflow;
 }
 
 function requireJob(workflow: Workflow, name: string): WorkflowJob {
@@ -256,6 +262,33 @@ describe("Docker channel promotion", () => {
       ],
       expect.objectContaining({ timeout: 120_000 }),
     );
+  });
+
+  it("revalidates trusted tooling immediately before every alias mutation", () => {
+    const events: string[] = [];
+    const docker = createDockerMock({
+      candidateVersion: "2026.6.33",
+      currentVersion: "2026.6.33",
+    });
+    const execFileSyncImpl = vi.fn((command: string, args: string[]) => {
+      if (args[2] === "create") {
+        events.push("create");
+      }
+      return docker(command, args);
+    });
+    const beforeMutation = vi.fn(() => events.push("verify"));
+
+    promoteDockerChannel(
+      { version: "2026.6.33", images },
+      {
+        beforeMutation,
+        execFileSyncImpl,
+        verifyAttestationsImpl: skipAttestationVerification,
+      },
+    );
+
+    expect(beforeMutation).toHaveBeenCalledTimes(6);
+    expect(events).toEqual(Array.from({ length: 6 }, () => ["verify", "create"]).flat());
   });
 
   it("fails without mutating when any version-specific source is missing", () => {
@@ -669,7 +702,11 @@ describe("Docker channel promotion", () => {
       "cancel-in-progress": false,
       queue: "max",
     });
-    expect(verifyAttestations.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(verifyAttestations.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      packages: "write",
+    });
 
     const manifestTagStep = createManifest.steps?.find(
       (step) => step.name === "Resolve manifest tags",
@@ -693,7 +730,7 @@ describe("Docker channel promotion", () => {
       "${{ needs.resolve_release_policy.outputs.channel != 'beta' }}",
     );
     expect(releaseSteps[releasePromotionIndex]?.run).toContain(
-      "node scripts/docker-channel-promote.mjs",
+      "node .release-tooling/scripts/docker-channel-promote.mjs",
     );
     expect(releaseSteps[releasePromotionIndex]?.run).not.toContain("--allow-rollback");
     expect(
@@ -710,7 +747,11 @@ describe("Docker channel promotion", () => {
     expect(approve.environment).toBe("docker-release");
     expect(approve.permissions).toEqual({});
     expect(promote.needs).toEqual(["resolve", "approve"]);
-    expect(promote.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(promote.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      packages: "write",
+    });
     expect(promote.concurrency).toEqual({
       group: "docker-release-publish",
       "cancel-in-progress": false,
@@ -728,11 +769,79 @@ describe("Docker channel promotion", () => {
     expect(promotionIndex).toBeGreaterThan(-1);
     expect(steps[promotionIndex]?.run).toContain("node scripts/docker-channel-promote.mjs");
     expect(steps[promotionIndex]?.run).toContain("--allow-rollback");
+    expect(steps[promotionIndex]?.env?.GH_TOKEN).toBe("${{ github.token }}");
 
     const packageWriters = Object.entries(workflow.jobs ?? {}).filter(
       ([, job]) => job.permissions?.packages === "write",
     );
     expect(packageWriters.map(([name]) => name)).toEqual(["promote"]);
     expect(packageWriters[0]?.[1].needs).toContain("approve");
+  });
+
+  it("binds every Docker registry mutation to live trusted tooling", () => {
+    const workflow = readWorkflow(".github/workflows/docker-release.yml");
+    expect(workflow.on?.workflow_call?.inputs).toMatchObject({
+      release_publish_run_attempt: { required: false, type: "string" },
+      release_publish_run_id: { required: false, type: "string" },
+      trusted_workflow_allow_prevalidated_ref: { required: true, type: "boolean" },
+      trusted_workflow_full_ref: { required: true, type: "string" },
+      trusted_workflow_ref: { required: true, type: "string" },
+      trusted_workflow_sha: { required: true, type: "string" },
+    });
+    expect(workflow.env).toMatchObject({
+      RELEASE_PUBLISH_RUN_ATTEMPT: "${{ inputs.release_publish_run_attempt }}",
+      RELEASE_PUBLISH_RUN_ID: "${{ inputs.release_publish_run_id }}",
+      RELEASE_TOOLING_ALLOW_PREVALIDATED_REF:
+        "${{ inputs.trusted_workflow_allow_prevalidated_ref }}",
+      RELEASE_TOOLING_FULL_REF: "${{ inputs.trusted_workflow_full_ref }}",
+      RELEASE_TOOLING_REF: "${{ inputs.trusted_workflow_ref }}",
+      RELEASE_TOOLING_SHA: "${{ inputs.trusted_workflow_sha }}",
+    });
+
+    for (const jobName of ["build-amd64", "build-arm64"]) {
+      const steps = requireJob(workflow, jobName).steps ?? [];
+      const trustedCheckout = steps.find(
+        (step) => step.name === "Checkout trusted release tooling",
+      );
+      expect(trustedCheckout?.with).toMatchObject({
+        path: ".release-tooling",
+        ref: "${{ inputs.trusted_workflow_sha }}",
+      });
+      for (const writeStepName of [
+        `Build and push ${jobName === "build-amd64" ? "amd64" : "arm64"} image`,
+        `Build and push ${jobName === "build-amd64" ? "amd64" : "arm64"} browser image`,
+      ]) {
+        const writeIndex = steps.findIndex((step) => step.name === writeStepName);
+        expect(writeIndex).toBeGreaterThan(0);
+        expect(steps[writeIndex - 1]?.run).toBe(
+          "node .release-tooling/scripts/release-tooling-identity.mjs verify-env",
+        );
+      }
+    }
+
+    const manifest = requireStep(
+      requireJob(workflow, "create-manifest"),
+      "Create and push manifest",
+    );
+    expect(manifest.env?.GH_TOKEN).toBe("${{ github.token }}");
+    expect(manifest.run).toMatch(
+      /node \.release-tooling\/scripts\/release-tooling-identity\.mjs verify-env\n\s+docker buildx imagetools create "\$\{args\[@\]\}"/u,
+    );
+
+    const attestations = requireStep(
+      requireJob(workflow, "verify-attestations"),
+      "Verify Docker attestations",
+    );
+    expect(attestations.run).toContain(
+      "node .release-tooling/scripts/verify-docker-attestations.mjs",
+    );
+    expect(attestations.run).not.toMatch(/(?:^|\n)\s*node scripts\/verify-docker-attestations/u);
+
+    const promotion = requireStep(
+      requireJob(workflow, "verify-attestations"),
+      "Promote and verify channel aliases",
+    );
+    expect(promotion.env?.GH_TOKEN).toBe("${{ github.token }}");
+    expect(promotion.run).toContain("node .release-tooling/scripts/docker-channel-promote.mjs");
   });
 });

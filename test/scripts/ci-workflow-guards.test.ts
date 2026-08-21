@@ -1846,12 +1846,20 @@ NODE
       tag: "${{ matrix.tag }}",
       release_sha: "${{ matrix.release_sha }}",
       image_tag_suffix: "${{ needs.plan.outputs.image_tag_suffix }}",
+      trusted_workflow_allow_prevalidated_ref: false,
+      trusted_workflow_full_ref: "${{ github.ref }}",
+      trusted_workflow_ref: "${{ github.ref_name }}",
+      trusted_workflow_sha: "${{ github.workflow_sha }}",
     });
     expect(publish.secrets).toEqual({
       DOCKERHUB_USERNAME: "${{ secrets.DOCKERHUB_USERNAME }}",
       DOCKERHUB_TOKEN: "${{ secrets.DOCKERHUB_TOKEN }}",
     });
-    expect(publish.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(publish.permissions).toEqual({
+      actions: "read",
+      contents: "read",
+      packages: "write",
+    });
     expect(releaseWorkflow.jobs.approve_docker_publish.environment).toBe("docker-release");
   });
 
