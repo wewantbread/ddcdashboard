@@ -2016,6 +2016,87 @@ describe("persisted CLI aggregate suppression", () => {
     expect(merged.some(isCliAggregate)).toBe(false);
   });
 
+  // A turn qualifies as covering once it carries non-text content, so two
+  // blocks are enough to stand in for the long tool-using turns real sessions
+  // produce — and they pack into a single dedupe window without overlapping.
+  function importedRepeatedTurn(index: number, offsetMs: number): Record<string, unknown>[] {
+    return [
+      importedTurnMessage({
+        content: [{ type: "text", text: "ok" }],
+        offsetMs,
+        externalId: `repeat-${index}-text`,
+      }),
+      importedTurnMessage({
+        content: [
+          {
+            type: "toolcall",
+            id: `repeat-${index}-tool`,
+            name: "Bash",
+            arguments: { command: "pwd" },
+          },
+        ],
+        offsetMs: offsetMs + 100,
+        externalId: `repeat-${index}-call`,
+      }),
+      importedTurnMessage({
+        content: "again",
+        offsetMs: offsetMs + 200,
+        externalId: `repeat-${index}-prompt`,
+        role: "user",
+      }),
+    ];
+  }
+
+  // Candidate matching is indexed by text, so a session that repeats one short
+  // reply files every one of those turns under the same key. Picking the
+  // nearest unclaimed one must not cost a pass over that key per aggregate:
+  // measured on this shape, scanning made the merge quadratic (24k turns took
+  // 9.8 s against 0.34 s for the same volume with distinct texts).
+  const REPEATED_TURNS = 200;
+  const REPEAT_SPACING_MS = 1000;
+
+  function repeatedTurnImport(count: number): Record<string, unknown>[] {
+    return Array.from({ length: count }, (_unused, index) =>
+      importedRepeatedTurn(index, index * REPEAT_SPACING_MS),
+    ).flat();
+  }
+
+  it("claims one turn per aggregate when a reply repeats verbatim many times", () => {
+    const localMessages = Array.from({ length: REPEATED_TURNS }, (_unused, index) =>
+      buildCliAggregate({
+        text: "ok",
+        timestamp: TURN_START + index * REPEAT_SPACING_MS + 50,
+        runId: `run-${index}`,
+      }),
+    );
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages,
+      importedMessages: repeatedTurnImport(REPEATED_TURNS),
+    });
+
+    expect(merged.filter(isCliAggregate)).toHaveLength(0);
+  });
+
+  it("keeps the unrepresented aggregate when repeated turns run one short", () => {
+    // One-to-one consumption has to survive at scale: retiring a claimed turn
+    // must retire that turn only, or the extra aggregate disappears too.
+    const localMessages = Array.from({ length: REPEATED_TURNS + 1 }, (_unused, index) =>
+      buildCliAggregate({
+        text: "ok",
+        timestamp: TURN_START + index * REPEAT_SPACING_MS + 50,
+        runId: `run-${index}`,
+      }),
+    );
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages,
+      importedMessages: repeatedTurnImport(REPEATED_TURNS),
+    });
+
+    expect(merged.filter(isCliAggregate)).toHaveLength(1);
+  });
+
   it.each([
     ["carries no idempotency key", { idempotencyKey: null }],
     ["carries a non-aggregate idempotency key", { idempotencyKey: "cli-hook:run-1" }],

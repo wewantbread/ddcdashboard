@@ -223,14 +223,74 @@ function isToolResultOnlyContent(role: string | undefined, rawContent: unknown):
 
 type ImportedAssistantTurn = {
   claimed: boolean;
-  importedFrom: string;
   timestamps: number[];
+  // Positions this turn owns in its sorted slot array, filled once the array is
+  // final. Claiming retires exactly these, so the cost is the turn's own block
+  // count and not the number of turns that share its text.
+  positions: number[];
 };
 
-// Keyed by the text a covering aggregate carries, so each aggregate resolves its
-// candidates with one lookup instead of a scan that grows with the imported
-// history — the same bound the per-message dedupe indexes already keep.
-type ImportedTurnIndex = Map<string, ImportedAssistantTurn[]>;
+// One timestamp of one turn. A turn spans several blocks, so it owns one slot
+// per block and any of them can be the nearest to a given aggregate.
+type TurnSlot = {
+  timestamp: number;
+  turn: ImportedAssistantTurn;
+};
+
+/**
+ * The candidates for one aggregate text from one provider, ordered by
+ * timestamp, with the claimed ones skipped in near-constant time.
+ *
+ * Keying by text alone is not enough to bound the match. A session that repeats
+ * one short reply files every one of those turns under the same key, so picking
+ * the nearest unclaimed candidate by scanning the bucket costs one pass per
+ * aggregate and the merge becomes quadratic in the length of the history.
+ * Sorting the slots lets a binary search land next to the aggregate, and the
+ * two skip lists below jump straight over runs of already-claimed turns, so
+ * each aggregate touches a handful of slots regardless of how many share its
+ * text.
+ */
+type CandidateSlots = {
+  slots: TurnSlot[];
+  // Disjoint-set forests over slot positions. `nextLive[i]` leads to the first
+  // live slot at or after `i` (`slots.length` when there is none) and
+  // `prevLive[i + 1]` to the first live slot at or before `i` (`0` when there
+  // is none). Claiming a slot points it at its neighbour; find() compresses the
+  // chain, so repeated skips stay near-constant.
+  nextLive: number[];
+  prevLive: number[];
+};
+
+// Keyed by the text a covering aggregate carries, then by the provider that
+// imported it, so provider mismatches are structural instead of a filter every
+// aggregate re-runs over the whole bucket.
+type ImportedTurnIndex = Map<string, Map<string, CandidateSlots>>;
+
+function findLive(forest: number[], start: number): number {
+  // Every position is seeded with itself, so a link always lands inside the
+  // array and the reads below can only miss if the caller passes an out-of-range
+  // start — which the two accessors clamp before calling.
+  let root = start;
+  let link = forest[root];
+  while (link !== undefined && link !== root) {
+    root = link;
+    link = forest[root];
+  }
+  let node = start;
+  let parent = forest[node];
+  while (parent !== undefined && parent !== root) {
+    forest[node] = root;
+    node = parent;
+    parent = forest[node];
+  }
+  return root;
+}
+
+/** Retires a slot from both skip lists so later searches jump over it. */
+function retireSlot(candidates: CandidateSlots, position: number): void {
+  candidates.nextLive[position] = position + 1;
+  candidates.prevLive[position + 1] = position;
+}
 
 type PartialAssistantTurn = {
   fragments: string[];
@@ -246,7 +306,9 @@ type PartialAssistantTurn = {
 function indexImportedAssistantTurns(
   importedEntries: ComparableHistoryMessage[],
 ): ImportedTurnIndex {
-  const index: ImportedTurnIndex = new Map();
+  // Collected unsorted first; each group is sorted and given its skip lists
+  // once the whole import has been walked.
+  const collected = new Map<string, Map<string, TurnSlot[]>>();
   let current: PartialAssistantTurn | undefined;
   const closeTurn = (): void => {
     const turn = current;
@@ -268,14 +330,20 @@ function indexImportedAssistantTurns(
     const aggregateText = turn.fragments.join(" ");
     const covering: ImportedAssistantTurn = {
       claimed: false,
-      importedFrom: turn.importedFrom,
       timestamps: turn.timestamps,
+      positions: [],
     };
-    const bucket = index.get(aggregateText);
-    if (bucket) {
-      bucket.push(covering);
+    let byProvider = collected.get(aggregateText);
+    if (byProvider === undefined) {
+      byProvider = new Map();
+      collected.set(aggregateText, byProvider);
+    }
+    const slots = byProvider.get(turn.importedFrom);
+    const owned = turn.timestamps.map((timestamp) => ({ timestamp, turn: covering }));
+    if (slots) {
+      slots.push(...owned);
     } else {
-      index.set(aggregateText, [covering]);
+      byProvider.set(turn.importedFrom, owned);
     }
   };
   for (const entry of importedEntries) {
@@ -300,7 +368,62 @@ function indexImportedAssistantTurns(
     closeTurn();
   }
   closeTurn();
+
+  const index: ImportedTurnIndex = new Map();
+  for (const [aggregateText, byProvider] of collected) {
+    const finalized = new Map<string, CandidateSlots>();
+    for (const [provider, slots] of byProvider) {
+      slots.sort((left, right) => left.timestamp - right.timestamp);
+      for (const [position, slot] of slots.entries()) {
+        slot.turn.positions.push(position);
+      }
+      finalized.set(provider, {
+        slots,
+        nextLive: Array.from({ length: slots.length + 1 }, (_unused, position) => position),
+        prevLive: Array.from({ length: slots.length + 1 }, (_unused, position) => position),
+      });
+    }
+    index.set(aggregateText, finalized);
+  }
   return index;
+}
+
+/** First live slot at or after `from`, or undefined past the end. */
+function liveAtOrAfter(candidates: CandidateSlots, from: number): number | undefined {
+  const position = findLive(candidates.nextLive, Math.max(from, 0));
+  return position < candidates.slots.length ? position : undefined;
+}
+
+/** First live slot at or before `from`, or undefined before the start. */
+function liveAtOrBefore(candidates: CandidateSlots, from: number): number | undefined {
+  if (from < 0) {
+    return undefined;
+  }
+  const position = findLive(candidates.prevLive, Math.min(from, candidates.slots.length - 1) + 1);
+  return position > 0 ? position - 1 : undefined;
+}
+
+/** Index of the first slot whose timestamp is >= `timestamp`. */
+function lowerBound(slots: TurnSlot[], timestamp: number): number {
+  let low = 0;
+  let high = slots.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (slots[middle]!.timestamp < timestamp) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/** Retires every slot the claimed turn owns, so no later aggregate weighs it. */
+function retireClaimedTurn(candidates: CandidateSlots, turn: ImportedAssistantTurn): void {
+  turn.claimed = true;
+  for (const position of turn.positions) {
+    retireSlot(candidates, position);
+  }
 }
 
 /** Distance from the aggregate to its nearest block, or undefined when out of window. */
@@ -336,16 +459,24 @@ function claimCoveringTurn(index: ImportedTurnIndex, entry: ComparableHistoryMes
   if (provider === undefined || text === undefined || timestamp === undefined) {
     return false;
   }
-  const candidates = index.get(text);
+  const candidates = index.get(text)?.get(provider);
   if (candidates === undefined) {
     return false;
   }
+  // The nearest live slot to the aggregate belongs to the nearest live turn, so
+  // the two slots flanking the aggregate are the only candidates worth weighing.
+  const pivot = lowerBound(candidates.slots, timestamp);
+  const after = liveAtOrAfter(candidates, pivot);
+  const before = liveAtOrBefore(candidates, pivot - 1);
   let claim: ImportedAssistantTurn | undefined;
   let claimDistance: number | undefined;
-  for (const turn of candidates) {
-    if (turn.claimed || turn.importedFrom !== provider) {
+  // `before` first, so an aggregate equidistant from two turns claims the
+  // earlier one, as the chronological scan this replaced did.
+  for (const position of [before, after]) {
+    if (position === undefined) {
       continue;
     }
+    const turn = candidates.slots[position]!.turn;
     const distance = turnDistanceToAggregate(turn, timestamp);
     if (distance === undefined) {
       continue;
@@ -358,7 +489,7 @@ function claimCoveringTurn(index: ImportedTurnIndex, entry: ComparableHistoryMes
   if (claim === undefined) {
     return false;
   }
-  claim.claimed = true;
+  retireClaimedTurn(candidates, claim);
   return true;
 }
 
