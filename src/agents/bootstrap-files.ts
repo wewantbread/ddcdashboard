@@ -322,7 +322,11 @@ export async function resolveBootstrapFilesForRun(
 export async function resolveBootstrapFilesForRunWithTiming(
   params: ResolveBootstrapFilesParams & {
     onBootstrapSubstageTiming?: (
-      name: "workspace-setup-state" | "workspace-file-load" | "hook-overrides",
+      name:
+        | "workspace-setup-state"
+        | "workspace-file-load"
+        | "automatic-memory-provenance"
+        | "hook-overrides",
       durationMs: number,
     ) => void;
   },
@@ -350,6 +354,7 @@ export async function resolveBootstrapFilesForRunWithTiming(
       })
     : await loadWorkspaceBootstrapFiles(params.workspaceDir);
   params.onBootstrapSubstageTiming?.("workspace-file-load", performance.now() - fileLoadStartedAt);
+  const provenanceStartedAt = performance.now();
   const ineligibleAutomaticMemoryFiles = await resolveIneligibleAutomaticMemoryFiles({
     files: rawFiles,
     workspaceDir: params.workspaceDir,
@@ -357,6 +362,10 @@ export async function resolveBootstrapFilesForRunWithTiming(
     agentId: params.agentId,
     warn: params.warn,
   });
+  params.onBootstrapSubstageTiming?.(
+    "automatic-memory-provenance",
+    performance.now() - provenanceStartedAt,
+  );
   const rootMemoryFile = rawFiles.find(
     (file) => file.name === DEFAULT_MEMORY_FILENAME && !file.missing,
   );
