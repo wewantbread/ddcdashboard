@@ -544,6 +544,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
+      repo_e2e_shards_available: ${{ steps.repo_e2e.outputs.repo_e2e_shards_available }}
       selected_sha: ${{ steps.validate.outputs.selected_sha }}
       trusted_reason: ${{ steps.validate.outputs.trusted_reason }}
       workflow_repository: ${{ steps.workflow.outputs.workflow_repository }}
@@ -585,6 +586,15 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
+
+      - name: Checkout trusted repo E2E capability validator
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ steps.workflow.outputs.workflow_repository }}
+          ref: ${{ steps.workflow.outputs.workflow_sha }}
+          path: .release-harness
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Validate selected ref
         id: validate
@@ -773,6 +783,29 @@ jobs:
             echo "Resolved SHA: \`$selected_sha\`"
             echo "Trust reason: \`$trusted_reason\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve repo E2E capability
+        id: repo_e2e
+        env:
+          CAPABILITY_PATH: .github/repo-e2e-capabilities.json
+          SELECTED_SHA: ${{ steps.validate.outputs.selected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_path="${RUNNER_TEMP}/repo-e2e-capabilities.json"
+          rm -f "$manifest_path"
+          if git cat-file -e "${SELECTED_SHA}:${CAPABILITY_PATH}" 2>/dev/null; then
+            manifest_size="$(git cat-file -s "${SELECTED_SHA}:${CAPABILITY_PATH}")"
+            if [[ "$manifest_size" =~ ^[0-9]+$ && "$manifest_size" -le 8192 ]]; then
+              git show "${SELECTED_SHA}:${CAPABILITY_PATH}" > "$manifest_path"
+            else
+              printf '{"invalid":"oversized"}\n' > "$manifest_path"
+            fi
+          fi
+          node .release-harness/scripts/validate-repo-e2e-capability.mjs \
+            --manifest "$manifest_path" \
+            --github-output "$GITHUB_OUTPUT" \
+            --github-step-summary "$GITHUB_STEP_SUMMARY"
 
   validate_live_suite_filter:
     runs-on: ubuntu-24.04
@@ -974,11 +1007,663 @@ jobs:
             sleep $((attempt * 15))
           done
 
-  validate_repo_e2e:
+  prepare_repo_e2e_runtime:
     needs: validate_selected_ref
-    if: inputs.include_repo_e2e && inputs.live_suite_filter == ''
-    continue-on-error: ${{ inputs.advisory }}
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
     runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}
+    timeout-minutes: 25
+    env:
+      OPENCLAW_BUILD_PRIVATE_QA: "1"
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+    outputs:
+      archive_name: ${{ steps.pack.outputs.archive_name }}
+      archive_sha256: ${{ steps.pack.outputs.archive_sha256 }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.pack.outputs.artifact_name }}
+      artifact_run_attempt: ${{ steps.pack.outputs.run_attempt }}
+      artifact_run_id: ${{ steps.pack.outputs.run_id }}
+      manifest_sha256: ${{ steps.pack.outputs.manifest_sha256 }}
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "true"
+          build-all-cache-scope: full
+
+      - name: Build private QA runtime once
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: pnpm build repoE2eRuntime
+
+      - name: Pack repo E2E runtime
+        id: pack
+        env:
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          artifact_stem="repo-e2e-runtime-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          archive_name="${artifact_stem}.tar.zst"
+          artifact_name="$archive_name"
+          archive_path="${RUNNER_TEMP}/${archive_name}"
+          bundle_root="${RUNNER_TEMP}/repo-e2e-runtime-bundle"
+          archive_root="repo-e2e-runtime"
+          runtime_root="${bundle_root}/${archive_root}"
+          manifest_path="${bundle_root}/manifest.json"
+          rm -rf "$bundle_root"
+          mkdir -p "$runtime_root/packages"
+          cp -a dist dist-runtime "$runtime_root/"
+          for package_dist in packages/*/dist; do
+            package_parent="${runtime_root}/$(dirname "$package_dist")"
+            mkdir -p "$package_parent"
+            cp -a "$package_dist" "$package_parent/"
+          done
+
+          jq -n \
+            --arg archiveRoot "$archive_root" \
+            --arg buildCommand "pnpm build repoE2eRuntime" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg sourceJob "prepare_repo_e2e_runtime" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg workflowSha "$WORKFLOW_SHA" \
+            '{
+              version: 1,
+              repository: $repository,
+              workflowSha: $workflowSha,
+              targetSha: $targetSha,
+              archiveRoot: $archiveRoot,
+              buildCommand: $buildCommand,
+              sourceJob: $sourceJob,
+              runId: $runId,
+              runAttempt: $runAttempt
+            }' > "$manifest_path"
+
+          LC_ALL=C tar \
+            --create \
+            --format=posix \
+            --sort=name \
+            --one-file-system \
+            --numeric-owner \
+            --owner=0 \
+            --group=0 \
+            --no-xattrs \
+            --no-acls \
+            --pax-option=delete=atime,delete=ctime \
+            -C "$bundle_root" \
+            manifest.json \
+            "$archive_root" |
+            zstd -T0 -3 -q -o "$archive_path"
+          {
+            echo "archive_name=$archive_name"
+            echo "archive_path=$archive_path"
+            echo "archive_sha256=$(sha256sum "$archive_path" | awk '{print $1}')"
+            echo "artifact_name=$artifact_name"
+            echo "manifest_sha256=$(sha256sum "$manifest_path" | awk '{print $1}')"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "run_id=$GITHUB_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload repo E2E runtime
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_name }}
+          path: ${{ steps.pack.outputs.archive_path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Verify uploaded repo E2E runtime digest
+        env:
+          ACTUAL_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          EXPECTED_DIGEST: ${{ steps.pack.outputs.archive_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$ACTUAL_DIGEST" == "$EXPECTED_DIGEST" ]]
+
+  prepare_repo_e2e_sandbox:
+    needs: validate_selected_ref
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 25
+    outputs:
+      archive_sha256: ${{ steps.pack.outputs.archive_sha256 }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.pack.outputs.artifact_name }}
+      artifact_run_attempt: ${{ steps.pack.outputs.run_attempt }}
+      artifact_run_id: ${{ steps.pack.outputs.run_id }}
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout trusted image artifact helper
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ needs.validate_selected_ref.outputs.workflow_repository }}
+          ref: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+          fetch-depth: 1
+          path: .release-harness
+          persist-credentials: false
+
+      - name: Build repo E2E sandbox image
+        run: scripts/sandbox-setup.sh
+
+      - name: Pack repo E2E sandbox image
+        id: pack
+        env:
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/repo-e2e-sandbox-artifact"
+          artifact_name="repo-e2e-sandbox-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash .release-harness/scripts/docker/shared-image-artifact.sh \
+            pack \
+            "$artifact_dir" \
+            repo-e2e-sandbox \
+            "$TARGET_SHA" \
+            "$WORKFLOW_SHA" \
+            openclaw-sandbox:bookworm-slim
+          archive_sha256="$(jq -er '.archive.sha256' "$artifact_dir/shared-image-artifact.json")"
+          {
+            echo "archive_sha256=$archive_sha256"
+            echo "artifact_name=$artifact_name"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "run_id=$GITHUB_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload repo E2E sandbox image
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.pack.outputs.artifact_name }}
+          path: ${{ runner.temp }}/repo-e2e-sandbox-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  validate_repo_e2e_gateway:
+    needs: [validate_selected_ref, prepare_repo_e2e_runtime, prepare_repo_e2e_sandbox]
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      OPENCLAW_BUILD_PRIVATE_QA: "1"
+      OPENCLAW_E2E_USE_PREBUILT_DIST: "1"
+      OPENCLAW_E2E_WORKERS: "1"
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout trusted artifact helper
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ needs.validate_selected_ref.outputs.workflow_repository }}
+          ref: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+          fetch-depth: 1
+          path: .release-harness
+          persist-credentials: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "true"
+
+      - name: Validate repo E2E runtime artifact binding
+        env:
+          ARTIFACT_DIGEST: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_name }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+        run: |
+          set -euo pipefail
+          expected_artifact_name="repo-e2e-runtime-${TARGET_SHA}-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}.tar.zst"
+          [[ "$ARTIFACT_NAME" == "$expected_artifact_name" ]] || {
+            echo "Repo E2E runtime artifact name does not match the target and producer run attempt." >&2
+            exit 1
+          }
+          bash .release-harness/scripts/docker/shared-image-artifact.sh \
+            verify-upload "Repo E2E runtime" \
+            "$ARTIFACT_ID" "$ARTIFACT_NAME" "$ARTIFACT_DIGEST" \
+            "$ARTIFACT_RUN_ID" "$ARTIFACT_RUN_ATTEMPT"
+
+      - name: Download repo E2E runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          path: .artifacts/repo-e2e-runtime
+          run-id: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Bounded extract repo E2E runtime
+        env:
+          ARCHIVE_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_sha256 }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          MANIFEST_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.manifest_sha256 }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          archive_path=".artifacts/repo-e2e-runtime/${ARCHIVE_NAME}"
+          extract_root="${RUNNER_TEMP}/repo-e2e-runtime-extract"
+          runtime_root="${extract_root}/repo-e2e-runtime"
+          [[ "$(sha256sum "$archive_path" | awk '{print $1}')" == "$ARCHIVE_SHA256" ]]
+          rm -rf "$extract_root"
+          python3 .release-harness/scripts/release-telegram-candidate-archive.py extract-zstd \
+            "$archive_path" \
+            "$extract_root" \
+            --allowed-root repo-e2e-runtime \
+            --max-members 250000 \
+            --max-expanded-bytes 2147483648 \
+            --max-stream-bytes 536870912 \
+            --max-extension-total-bytes 67108864 \
+            --max-path-bytes 67108864
+          manifest_path="${extract_root}/manifest.json"
+          [[ "$(sha256sum "$manifest_path" | awk '{print $1}')" == "$MANIFEST_SHA256" ]]
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runAttempt "$ARTIFACT_RUN_ATTEMPT" \
+            --arg runId "$ARTIFACT_RUN_ID" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg workflowSha "$WORKFLOW_SHA" \
+            '
+              .version == 1 and
+              .repository == $repository and
+              .workflowSha == $workflowSha and
+              .targetSha == $targetSha and
+              .archiveRoot == "repo-e2e-runtime" and
+              .buildCommand == "pnpm build repoE2eRuntime" and
+              .sourceJob == "prepare_repo_e2e_runtime" and
+              .runId == $runId and
+              .runAttempt == $runAttempt
+            ' "$manifest_path" >/dev/null
+          cp -a "${runtime_root}/." .
+
+      - name: Validate repo E2E sandbox artifact binding
+        env:
+          ARTIFACT_DIGEST: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_name }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+        run: |
+          set -euo pipefail
+          expected_artifact_name="repo-e2e-sandbox-${TARGET_SHA}-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}"
+          [[ "$ARTIFACT_NAME" == "$expected_artifact_name" ]] || {
+            echo "Repo E2E sandbox artifact name does not match the target and producer run attempt." >&2
+            exit 1
+          }
+          bash .release-harness/scripts/docker/shared-image-artifact.sh \
+            verify-upload "Repo E2E sandbox" \
+            "$ARTIFACT_ID" "$ARTIFACT_NAME" "$ARTIFACT_DIGEST" \
+            "$ARTIFACT_RUN_ID" "$ARTIFACT_RUN_ATTEMPT"
+
+      - name: Download repo E2E sandbox image
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_id }}
+          path: .artifacts/repo-e2e-sandbox
+          run-id: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Load repo E2E sandbox image
+        env:
+          OPENCLAW_SHARED_IMAGE_ARCHIVE_SHA256: ${{ needs.prepare_repo_e2e_sandbox.outputs.archive_sha256 }}
+          OPENCLAW_SHARED_IMAGE_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_attempt }}
+          OPENCLAW_SHARED_IMAGE_RUN_ID: ${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_id }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: >-
+          bash .release-harness/scripts/docker/shared-image-artifact.sh
+          load
+          .artifacts/repo-e2e-sandbox
+          repo-e2e-sandbox
+          "$TARGET_SHA"
+          "$WORKFLOW_SHA"
+          openclaw-sandbox:bookworm-slim
+
+      - name: Run repo Gateway E2E shard
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: >-
+          node scripts/run-vitest.mjs run
+          --config test/vitest/vitest.e2e.config.ts
+          --shard "$SHARD_INDEX/4"
+
+  validate_repo_e2e_agent_plugin:
+    needs: [validate_selected_ref, prepare_repo_e2e_runtime]
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 20
+    env:
+      OPENCLAW_BUILD_PRIVATE_QA: "1"
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout trusted artifact helper
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ needs.validate_selected_ref.outputs.workflow_repository }}
+          ref: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+          fetch-depth: 1
+          path: .release-harness
+          persist-credentials: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+
+      - name: Validate repo E2E runtime artifact binding
+        env:
+          ARTIFACT_DIGEST: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_name }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+        run: |
+          set -euo pipefail
+          expected_artifact_name="repo-e2e-runtime-${TARGET_SHA}-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}.tar.zst"
+          [[ "$ARTIFACT_NAME" == "$expected_artifact_name" ]] || {
+            echo "Repo E2E runtime artifact name does not match the target and producer run attempt." >&2
+            exit 1
+          }
+          bash .release-harness/scripts/docker/shared-image-artifact.sh \
+            verify-upload "Repo E2E runtime" \
+            "$ARTIFACT_ID" "$ARTIFACT_NAME" "$ARTIFACT_DIGEST" \
+            "$ARTIFACT_RUN_ID" "$ARTIFACT_RUN_ATTEMPT"
+
+      - name: Download repo E2E runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          path: .artifacts/repo-e2e-runtime
+          run-id: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Bounded extract repo E2E runtime
+        env:
+          ARCHIVE_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_sha256 }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          MANIFEST_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.manifest_sha256 }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          archive_path=".artifacts/repo-e2e-runtime/${ARCHIVE_NAME}"
+          extract_root="${RUNNER_TEMP}/repo-e2e-runtime-extract"
+          runtime_root="${extract_root}/repo-e2e-runtime"
+          [[ "$(sha256sum "$archive_path" | awk '{print $1}')" == "$ARCHIVE_SHA256" ]]
+          rm -rf "$extract_root"
+          python3 .release-harness/scripts/release-telegram-candidate-archive.py extract-zstd \
+            "$archive_path" \
+            "$extract_root" \
+            --allowed-root repo-e2e-runtime \
+            --max-members 250000 \
+            --max-expanded-bytes 2147483648 \
+            --max-stream-bytes 536870912 \
+            --max-extension-total-bytes 67108864 \
+            --max-path-bytes 67108864
+          manifest_path="${extract_root}/manifest.json"
+          [[ "$(sha256sum "$manifest_path" | awk '{print $1}')" == "$MANIFEST_SHA256" ]]
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runAttempt "$ARTIFACT_RUN_ATTEMPT" \
+            --arg runId "$ARTIFACT_RUN_ID" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg workflowSha "$WORKFLOW_SHA" \
+            '
+              .version == 1 and
+              .repository == $repository and
+              .workflowSha == $workflowSha and
+              .targetSha == $targetSha and
+              .archiveRoot == "repo-e2e-runtime" and
+              .buildCommand == "pnpm build repoE2eRuntime" and
+              .sourceJob == "prepare_repo_e2e_runtime" and
+              .runId == $runId and
+              .runAttempt == $runAttempt
+            ' "$manifest_path" >/dev/null
+          cp -a "${runtime_root}/." .
+
+      - name: Run Agent Plugin Gateway E2E
+        run: pnpm test:e2e:agent-plugin-gateway
+
+  validate_repo_e2e_ui:
+    needs: validate_selected_ref
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1"
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-1.62.1
+
+      - name: Install Playwright Chromium
+        run: node --import tsx scripts/ensure-playwright-chromium.mts
+
+      - name: Run Control UI E2E shard
+        env:
+          OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: >-
+          node scripts/run-vitest.mjs run
+          --config test/vitest/vitest.ui-e2e.config.ts
+          --configLoader runner
+          --shard "$SHARD_INDEX/4"
+
+      - name: Upload Control UI E2E timeout diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-control-ui-e2e-timeout-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  validate_repo_e2e_ui_real_gateway:
+    needs: [validate_selected_ref, prepare_repo_e2e_runtime]
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available == 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-16vcpu-ubuntu-2404' }}
+    timeout-minutes: 25
+    env:
+      OPENCLAW_BUILD_PRIVATE_QA: "1"
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout trusted artifact helper
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ needs.validate_selected_ref.outputs.workflow_repository }}
+          ref: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+          fetch-depth: 1
+          path: .release-harness
+          persist-credentials: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+
+      - name: Validate repo E2E runtime artifact binding
+        env:
+          ARTIFACT_DIGEST: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_name }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+        run: |
+          set -euo pipefail
+          expected_artifact_name="repo-e2e-runtime-${TARGET_SHA}-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}.tar.zst"
+          [[ "$ARTIFACT_NAME" == "$expected_artifact_name" ]] || {
+            echo "Repo E2E runtime artifact name does not match the target and producer run attempt." >&2
+            exit 1
+          }
+          bash .release-harness/scripts/docker/shared-image-artifact.sh \
+            verify-upload "Repo E2E runtime" \
+            "$ARTIFACT_ID" "$ARTIFACT_NAME" "$ARTIFACT_DIGEST" \
+            "$ARTIFACT_RUN_ID" "$ARTIFACT_RUN_ATTEMPT"
+
+      - name: Download repo E2E runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}
+          path: .artifacts/repo-e2e-runtime
+          run-id: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Bounded extract repo E2E runtime
+        env:
+          ARCHIVE_NAME: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.archive_sha256 }}
+          ARTIFACT_RUN_ATTEMPT: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_attempt }}
+          ARTIFACT_RUN_ID: ${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}
+          MANIFEST_SHA256: ${{ needs.prepare_repo_e2e_runtime.outputs.manifest_sha256 }}
+          TARGET_SHA: ${{ needs.validate_selected_ref.outputs.selected_sha }}
+          WORKFLOW_SHA: ${{ needs.validate_selected_ref.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          archive_path=".artifacts/repo-e2e-runtime/${ARCHIVE_NAME}"
+          extract_root="${RUNNER_TEMP}/repo-e2e-runtime-extract"
+          runtime_root="${extract_root}/repo-e2e-runtime"
+          [[ "$(sha256sum "$archive_path" | awk '{print $1}')" == "$ARCHIVE_SHA256" ]]
+          rm -rf "$extract_root"
+          python3 .release-harness/scripts/release-telegram-candidate-archive.py extract-zstd \
+            "$archive_path" \
+            "$extract_root" \
+            --allowed-root repo-e2e-runtime \
+            --max-members 250000 \
+            --max-expanded-bytes 2147483648 \
+            --max-stream-bytes 536870912 \
+            --max-extension-total-bytes 67108864 \
+            --max-path-bytes 67108864
+          manifest_path="${extract_root}/manifest.json"
+          [[ "$(sha256sum "$manifest_path" | awk '{print $1}')" == "$MANIFEST_SHA256" ]]
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runAttempt "$ARTIFACT_RUN_ATTEMPT" \
+            --arg runId "$ARTIFACT_RUN_ID" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg workflowSha "$WORKFLOW_SHA" \
+            '
+              .version == 1 and
+              .repository == $repository and
+              .workflowSha == $workflowSha and
+              .targetSha == $targetSha and
+              .archiveRoot == "repo-e2e-runtime" and
+              .buildCommand == "pnpm build repoE2eRuntime" and
+              .sourceJob == "prepare_repo_e2e_runtime" and
+              .runId == $runId and
+              .runAttempt == $runAttempt
+            ' "$manifest_path" >/dev/null
+          cp -a "${runtime_root}/." .
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-chromium-1.62.1
+
+      - name: Install Playwright Chromium
+        run: node --import tsx scripts/ensure-playwright-chromium.mts
+
+      - name: Run Control UI real-Gateway E2E
+        run: >-
+          node scripts/run-vitest.mjs run
+          --config test/vitest/vitest.ui-e2e.config.ts
+          --configLoader runner
+          ui/src/e2e/mcp-app-conformance.e2e.test.ts
+          ui/src/e2e/control-ui-auth-transports.e2e.test.ts
+          ui/src/e2e/logs-lifecycle.e2e.test.ts
+
+  validate_repo_e2e_legacy:
+    needs: validate_selected_ref
+    if: inputs.include_repo_e2e && inputs.live_suite_filter == '' && needs.validate_selected_ref.outputs.repo_e2e_shards_available != 'true'
+    runs-on: ${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
     timeout-minutes: 90
     env:
       OPENCLAW_BUILD_PRIVATE_QA: "1"
@@ -990,6 +1675,7 @@ jobs:
         with:
           ref: ${{ needs.validate_selected_ref.outputs.selected_sha }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Node environment
         uses: ./.github/actions/setup-node-env
@@ -999,7 +1685,7 @@ jobs:
           install-bun: "true"
           build-all-cache-scope: full
 
-      - name: Build dist for repo E2E
+      - name: Build dist for legacy repo E2E
         env:
           NODE_OPTIONS: --max-old-space-size=8192
         run: pnpm build
@@ -1010,8 +1696,73 @@ jobs:
       - name: Build sandbox image
         run: scripts/sandbox-setup.sh
 
-      - name: Run repo E2E suite
+      - name: Run legacy repo E2E suite
         run: pnpm test:e2e
+
+  validate_repo_e2e:
+    needs:
+      - validate_selected_ref
+      - prepare_repo_e2e_runtime
+      - prepare_repo_e2e_sandbox
+      - validate_repo_e2e_gateway
+      - validate_repo_e2e_agent_plugin
+      - validate_repo_e2e_ui
+      - validate_repo_e2e_ui_real_gateway
+      - validate_repo_e2e_legacy
+    if: ${{ always() && inputs.include_repo_e2e && inputs.live_suite_filter == '' }}
+    continue-on-error: ${{ inputs.advisory }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify repo E2E lanes
+        env:
+          AGENT_PLUGIN_RESULT: ${{ needs.validate_repo_e2e_agent_plugin.result }}
+          GATEWAY_RESULT: ${{ needs.validate_repo_e2e_gateway.result }}
+          LEGACY_RESULT: ${{ needs.validate_repo_e2e_legacy.result }}
+          REPO_E2E_SHARDS_AVAILABLE: ${{ needs.validate_selected_ref.outputs.repo_e2e_shards_available }}
+          RUNTIME_RESULT: ${{ needs.prepare_repo_e2e_runtime.result }}
+          SANDBOX_RESULT: ${{ needs.prepare_repo_e2e_sandbox.result }}
+          UI_REAL_GATEWAY_RESULT: ${{ needs.validate_repo_e2e_ui_real_gateway.result }}
+          UI_RESULT: ${{ needs.validate_repo_e2e_ui.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_result() {
+            local label="$1"
+            local actual="$2"
+            local expected="$3"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "$label result was '$actual', expected '$expected'." >&2
+              return 1
+            fi
+          }
+
+          failures=0
+          if [[ "$REPO_E2E_SHARDS_AVAILABLE" == "true" ]]; then
+            for entry in \
+              "runtime:$RUNTIME_RESULT" \
+              "sandbox:$SANDBOX_RESULT" \
+              "gateway:$GATEWAY_RESULT" \
+              "agent-plugin:$AGENT_PLUGIN_RESULT" \
+              "ui:$UI_RESULT" \
+              "ui-real-gateway:$UI_REAL_GATEWAY_RESULT"; do
+              require_result "${entry%%:*}" "${entry#*:}" success || failures=1
+            done
+            require_result legacy "$LEGACY_RESULT" skipped || failures=1
+          else
+            require_result legacy "$LEGACY_RESULT" success || failures=1
+            for entry in \
+              "runtime:$RUNTIME_RESULT" \
+              "sandbox:$SANDBOX_RESULT" \
+              "gateway:$GATEWAY_RESULT" \
+              "agent-plugin:$AGENT_PLUGIN_RESULT" \
+              "ui:$UI_RESULT" \
+              "ui-real-gateway:$UI_REAL_GATEWAY_RESULT"; do
+              require_result "${entry%%:*}" "${entry#*:}" skipped || failures=1
+            done
+          fi
+          exit "$failures"
 
   validate_special_e2e:
     needs: validate_selected_ref

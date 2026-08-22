@@ -4115,18 +4115,6 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
     const releaseChecks = parse(
       readFileSync(".github/workflows/openclaw-live-and-e2e-checks-reusable.yml", "utf8"),
     );
-    expect(releaseChecks.jobs.validate_repo_e2e.env).toMatchObject({
-      OPENCLAW_BUILD_PRIVATE_QA: "1",
-      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1",
-    });
-    expect(releaseChecks.jobs.validate_repo_e2e["timeout-minutes"]).toBe(90);
-    const repoE2eSteps = releaseChecks.jobs.validate_repo_e2e.steps as WorkflowStep[];
-    const sandboxSetupIndex = repoE2eSteps.findIndex(
-      (step) => step.name === "Build sandbox image" && step.run === "scripts/sandbox-setup.sh",
-    );
-    const repoE2eIndex = repoE2eSteps.findIndex((step) => step.name === "Run repo E2E suite");
-    expect(sandboxSetupIndex).toBeGreaterThanOrEqual(0);
-    expect(repoE2eIndex).toBeGreaterThan(sandboxSetupIndex);
     const targetedGroupStep = releaseChecks.jobs.plan_docker_lane_groups.steps.find(
       (step: WorkflowStep) => step.name === "Build targeted Docker lane groups",
     );
@@ -4136,6 +4124,407 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
     expect(releaseChecks.jobs.validate_docker_lanes["timeout-minutes"]).toBe(
       "${{ matrix.group.timeout_minutes || 60 }}",
     );
+  });
+
+  it("fans repo E2E out behind one compatibility-preserving aggregate gate", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/openclaw-live-and-e2e-checks-reusable.yml", "utf8"),
+    );
+    const jobs = workflow.jobs;
+    const validateRef = jobs.validate_selected_ref;
+    const validateStep = validateRef.steps.find(
+      (step: WorkflowStep) => step.name === "Validate selected ref",
+    );
+    const capabilityCheckout = validateRef.steps.find(
+      (step: WorkflowStep) => step.name === "Checkout trusted repo E2E capability validator",
+    );
+    const capabilityStep = validateRef.steps.find(
+      (step: WorkflowStep) => step.name === "Resolve repo E2E capability",
+    );
+
+    expect(validateRef.outputs.repo_e2e_shards_available).toBe(
+      "${{ steps.repo_e2e.outputs.repo_e2e_shards_available }}",
+    );
+    expect(capabilityCheckout?.with).toMatchObject({
+      repository: "${{ steps.workflow.outputs.workflow_repository }}",
+      ref: "${{ steps.workflow.outputs.workflow_sha }}",
+      path: ".release-harness",
+      "persist-credentials": false,
+    });
+    expect(capabilityStep?.env).toMatchObject({
+      CAPABILITY_PATH: ".github/repo-e2e-capabilities.json",
+      SELECTED_SHA: "${{ steps.validate.outputs.selected_sha }}",
+    });
+    expect(capabilityStep?.run).toContain(
+      "node .release-harness/scripts/validate-repo-e2e-capability.mjs",
+    );
+    expect(capabilityStep?.run).toContain('git show "${SELECTED_SHA}:${CAPABILITY_PATH}"');
+    expect(capabilityStep?.run).not.toContain("WORKFLOW_SHA");
+    expect(validateStep.run).not.toContain("required_repo_e2e_paths=(");
+    expect(validateStep.env).not.toHaveProperty("WORKFLOW_SHA");
+    expect(validateStep.run).not.toContain('if [[ "$selected_sha" != "$WORKFLOW_SHA" ]]');
+    expect(validateStep.run).not.toContain("repoE2eRuntime:");
+    expect(validateStep.run).not.toContain("OPENCLAW_E2E_USE_PREBUILT_DIST");
+    expect(validateStep.run).not.toContain("OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY");
+    expect(validateStep.run).not.toContain(
+      'echo "repo_e2e_shards_available=$repo_e2e_shards_available" >> "$GITHUB_OUTPUT"',
+    );
+
+    const runtime = jobs.prepare_repo_e2e_runtime;
+    expect(runtime.needs).toBe("validate_selected_ref");
+    expect(runtime.if).toContain("repo_e2e_shards_available == 'true'");
+    expect(runtime["runs-on"]).toBe(
+      "${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}",
+    );
+    expect(runtime.env).toMatchObject({
+      OPENCLAW_BUILD_PRIVATE_QA: "1",
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1",
+    });
+    expect(runtime).not.toHaveProperty("continue-on-error");
+    expect(runtime.outputs).toMatchObject({
+      archive_name: "${{ steps.pack.outputs.archive_name }}",
+      archive_sha256: "${{ steps.pack.outputs.archive_sha256 }}",
+      artifact_digest: "${{ steps.upload.outputs.artifact-digest }}",
+      artifact_id: "${{ steps.upload.outputs.artifact-id }}",
+      artifact_name: "${{ steps.pack.outputs.artifact_name }}",
+      artifact_run_attempt: "${{ steps.pack.outputs.run_attempt }}",
+      artifact_run_id: "${{ steps.pack.outputs.run_id }}",
+      manifest_sha256: "${{ steps.pack.outputs.manifest_sha256 }}",
+    });
+    expect(
+      runtime.steps.find((step: WorkflowStep) => step.name === "Build private QA runtime once")
+        ?.run,
+    ).toBe("pnpm build repoE2eRuntime");
+    const packRuntime = runtime.steps.find(
+      (step: WorkflowStep) => step.name === "Pack repo E2E runtime",
+    );
+    expect(packRuntime?.run).toContain('--arg buildCommand "pnpm build repoE2eRuntime"');
+    expect(packRuntime?.run).toContain("manifest.json");
+    expect(packRuntime?.run).toContain('archive_sha256=$(sha256sum "$archive_path"');
+    expect(packRuntime?.run).toContain('artifact_name="$archive_name"');
+    const uploadRuntime = runtime.steps.find(
+      (step: WorkflowStep) => step.name === "Upload repo E2E runtime",
+    );
+    expect(uploadRuntime).toMatchObject({
+      id: "upload",
+      uses: UPLOAD_ARTIFACT_V7,
+      with: {
+        archive: false,
+        "if-no-files-found": "error",
+        name: "${{ steps.pack.outputs.artifact_name }}",
+        path: "${{ steps.pack.outputs.archive_path }}",
+      },
+    });
+    expect(
+      runtime.steps.find(
+        (step: WorkflowStep) => step.name === "Verify uploaded repo E2E runtime digest",
+      )?.run,
+    ).toContain('[[ "$ACTUAL_DIGEST" == "$EXPECTED_DIGEST" ]]');
+
+    const sandbox = jobs.prepare_repo_e2e_sandbox;
+    expect(sandbox).not.toHaveProperty("continue-on-error");
+    expect(sandbox.outputs.archive_sha256).toBe("${{ steps.pack.outputs.archive_sha256 }}");
+    expect(sandbox.outputs).toMatchObject({
+      artifact_digest: "${{ steps.upload.outputs.artifact-digest }}",
+      artifact_id: "${{ steps.upload.outputs.artifact-id }}",
+      artifact_name: "${{ steps.pack.outputs.artifact_name }}",
+      artifact_run_attempt: "${{ steps.pack.outputs.run_attempt }}",
+      artifact_run_id: "${{ steps.pack.outputs.run_id }}",
+    });
+    expect(
+      sandbox.steps.find(
+        (step: WorkflowStep) => step.name === "Checkout trusted image artifact helper",
+      )?.with,
+    ).toMatchObject({
+      repository: "${{ needs.validate_selected_ref.outputs.workflow_repository }}",
+      ref: "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+      path: ".release-harness",
+    });
+    expect(
+      sandbox.steps.find((step: WorkflowStep) => step.name === "Build repo E2E sandbox image")?.run,
+    ).toBe("scripts/sandbox-setup.sh");
+    expect(
+      sandbox.steps.find((step: WorkflowStep) => step.name === "Pack repo E2E sandbox image")?.run,
+    ).toContain(".release-harness/scripts/docker/shared-image-artifact.sh");
+    expect(
+      sandbox.steps.find((step: WorkflowStep) => step.name === "Upload repo E2E sandbox image")
+        ?.with,
+    ).toMatchObject({ "compression-level": 0 });
+
+    const expectRuntimeConsumer = (job: { steps: WorkflowStep[]; [key: string]: unknown }) => {
+      expect(job).not.toHaveProperty("continue-on-error");
+      expect(
+        job.steps.find((step: WorkflowStep) => step.name === "Checkout trusted artifact helper")
+          ?.with,
+      ).toMatchObject({
+        repository: "${{ needs.validate_selected_ref.outputs.workflow_repository }}",
+        ref: "${{ needs.validate_selected_ref.outputs.workflow_sha }}",
+        path: ".release-harness",
+      });
+      expect(
+        job.steps.find(
+          (step: WorkflowStep) => step.name === "Validate repo E2E runtime artifact binding",
+        )?.run,
+      ).toContain('verify-upload "Repo E2E runtime"');
+      expect(
+        job.steps.find(
+          (step: WorkflowStep) => step.name === "Validate repo E2E runtime artifact binding",
+        )?.run,
+      ).toContain(
+        'expected_artifact_name="repo-e2e-runtime-${TARGET_SHA}-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}.tar.zst"',
+      );
+      expect(
+        job.steps.find((step: WorkflowStep) => step.name === "Download repo E2E runtime")?.with,
+      ).toMatchObject({
+        "artifact-ids": "${{ needs.prepare_repo_e2e_runtime.outputs.artifact_id }}",
+        "digest-mismatch": "error",
+        "github-token": "${{ github.token }}",
+        "run-id": "${{ needs.prepare_repo_e2e_runtime.outputs.artifact_run_id }}",
+        "skip-decompress": true,
+      });
+      const extractRuntime = job.steps.find(
+        (step: WorkflowStep) => step.name === "Bounded extract repo E2E runtime",
+      );
+      expect(extractRuntime?.run).toContain(
+        ".release-harness/scripts/release-telegram-candidate-archive.py extract-zstd",
+      );
+      expect(extractRuntime?.run).toContain("--allowed-root repo-e2e-runtime");
+      expect(extractRuntime?.run).toContain('.buildCommand == "pnpm build repoE2eRuntime"');
+      expect(extractRuntime?.run).not.toContain("tar --extract");
+    };
+
+    const gateway = jobs.validate_repo_e2e_gateway;
+    expectRuntimeConsumer(gateway);
+    expect(gateway.needs).toEqual([
+      "validate_selected_ref",
+      "prepare_repo_e2e_runtime",
+      "prepare_repo_e2e_sandbox",
+    ]);
+    expect(gateway.strategy).toMatchObject({
+      "fail-fast": false,
+      matrix: { shard: [1, 2, 3, 4] },
+    });
+    expect(gateway.env).toMatchObject({
+      OPENCLAW_E2E_USE_PREBUILT_DIST: "1",
+      OPENCLAW_E2E_WORKERS: "1",
+    });
+    expect(
+      gateway.steps.find((step: WorkflowStep) => step.name === "Load repo E2E sandbox image")?.run,
+    ).toContain(".release-harness/scripts/docker/shared-image-artifact.sh");
+    expect(
+      gateway.steps.find(
+        (step: WorkflowStep) => step.name === "Validate repo E2E sandbox artifact binding",
+      )?.run,
+    ).toContain('verify-upload "Repo E2E sandbox"');
+    expect(
+      gateway.steps.find((step: WorkflowStep) => step.name === "Download repo E2E sandbox image")
+        ?.with,
+    ).toMatchObject({
+      "artifact-ids": "${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_id }}",
+      "github-token": "${{ github.token }}",
+      "run-id": "${{ needs.prepare_repo_e2e_sandbox.outputs.artifact_run_id }}",
+    });
+    expect(
+      gateway.steps.find((step: WorkflowStep) => step.name === "Run repo Gateway E2E shard")?.run,
+    ).toContain('--shard "$SHARD_INDEX/4"');
+
+    const agentPlugin = jobs.validate_repo_e2e_agent_plugin;
+    expectRuntimeConsumer(agentPlugin);
+    expect(agentPlugin.needs).toEqual(["validate_selected_ref", "prepare_repo_e2e_runtime"]);
+    expect(
+      agentPlugin.steps.find((step: WorkflowStep) => step.name === "Run Agent Plugin Gateway E2E")
+        ?.run,
+    ).toBe("pnpm test:e2e:agent-plugin-gateway");
+
+    const ui = jobs.validate_repo_e2e_ui;
+    expect(ui).not.toHaveProperty("continue-on-error");
+    expect(ui.strategy).toMatchObject({
+      "fail-fast": false,
+      matrix: { shard: [1, 2, 3, 4] },
+    });
+    expect(ui.env.OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY).toBe("1");
+    expect(
+      ui.steps.find((step: WorkflowStep) => step.name === "Run Control UI E2E shard")?.run,
+    ).toContain('--shard "$SHARD_INDEX/4"');
+    expect(
+      ui.steps.find((step: WorkflowStep) => step.name === "Cache Playwright Chromium")?.uses,
+    ).toBe("actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae");
+
+    const realGateway = jobs.validate_repo_e2e_ui_real_gateway;
+    expectRuntimeConsumer(realGateway);
+    const realGatewayRun = realGateway.steps.find(
+      (step: WorkflowStep) => step.name === "Run Control UI real-Gateway E2E",
+    )?.run;
+    expect(realGatewayRun).toContain("mcp-app-conformance.e2e.test.ts");
+    expect(realGatewayRun).toContain("control-ui-auth-transports.e2e.test.ts");
+    expect(realGatewayRun).toContain("logs-lifecycle.e2e.test.ts");
+    expect(
+      realGateway.steps.find((step: WorkflowStep) => step.name === "Cache Playwright Chromium")
+        ?.uses,
+    ).toBe("actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae");
+
+    const legacy = jobs.validate_repo_e2e_legacy;
+    expect(legacy).not.toHaveProperty("continue-on-error");
+    expect(legacy.if).toContain("repo_e2e_shards_available != 'true'");
+    expect(legacy["timeout-minutes"]).toBe(90);
+    expect(
+      legacy.steps.find((step: WorkflowStep) => step.name === "Run legacy repo E2E suite")?.run,
+    ).toBe("pnpm test:e2e");
+
+    for (const [jobName, job] of Object.entries({
+      prepare_repo_e2e_runtime: runtime,
+      validate_repo_e2e_gateway: gateway,
+      validate_repo_e2e_agent_plugin: agentPlugin,
+      validate_repo_e2e_ui: ui,
+      validate_repo_e2e_ui_real_gateway: realGateway,
+      validate_repo_e2e_legacy: legacy,
+    })) {
+      expect(
+        job.steps.find((step: WorkflowStep) => step.name === "Setup Node environment")?.with?.[
+          "cache-mode"
+        ],
+        jobName,
+      ).toBe("restore");
+    }
+    for (const job of [ui, realGateway]) {
+      expect(
+        job.steps.filter((step: WorkflowStep) => step.name === "Cache Playwright Chromium"),
+      ).toEqual([
+        expect.objectContaining({
+          uses: "actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+        }),
+      ]);
+      expect(
+        job.steps.some((step: WorkflowStep) => step.uses?.startsWith("actions/cache/save@")),
+      ).toBe(false);
+    }
+
+    const gate = jobs.validate_repo_e2e;
+    expect(gate.needs).toEqual([
+      "validate_selected_ref",
+      "prepare_repo_e2e_runtime",
+      "prepare_repo_e2e_sandbox",
+      "validate_repo_e2e_gateway",
+      "validate_repo_e2e_agent_plugin",
+      "validate_repo_e2e_ui",
+      "validate_repo_e2e_ui_real_gateway",
+      "validate_repo_e2e_legacy",
+    ]);
+    expect(gate.if).toBe(
+      "${{ always() && inputs.include_repo_e2e && inputs.live_suite_filter == '' }}",
+    );
+    expect(gate["runs-on"]).toBe("ubuntu-24.04");
+    expect(gate["timeout-minutes"]).toBe(5);
+    expect(gate["continue-on-error"]).toBe("${{ inputs.advisory }}");
+    expect(
+      gate.steps.some(
+        (step: WorkflowStep) =>
+          step.uses === "./.github/actions/setup-node-env" ||
+          step.uses?.startsWith("actions/cache/"),
+      ),
+    ).toBe(false);
+    const gateStep = gate.steps.find((step: WorkflowStep) => step.name === "Verify repo E2E lanes");
+    expect(gateStep.env).toMatchObject({
+      GATEWAY_RESULT: "${{ needs.validate_repo_e2e_gateway.result }}",
+      LEGACY_RESULT: "${{ needs.validate_repo_e2e_legacy.result }}",
+      REPO_E2E_SHARDS_AVAILABLE:
+        "${{ needs.validate_selected_ref.outputs.repo_e2e_shards_available }}",
+      UI_RESULT: "${{ needs.validate_repo_e2e_ui.result }}",
+    });
+    expect(gateStep.run).toContain('require_result legacy "$LEGACY_RESULT" skipped');
+    expect(gateStep.run).toContain('require_result legacy "$LEGACY_RESULT" success');
+  });
+
+  it("uses the target-owned repo E2E capability across mixed target and tooling SHAs", () => {
+    const workflow = parse(
+      readFileSync(".github/workflows/openclaw-live-and-e2e-checks-reusable.yml", "utf8"),
+    );
+    const capabilityStep = workflow.jobs.validate_selected_ref.steps.find(
+      (step: WorkflowStep) => step.name === "Resolve repo E2E capability",
+    );
+    const root = tempDirs.make("openclaw-repo-e2e-capability-");
+    runGit(root, ["init", "-q", "-b", "main"]);
+    runGit(root, ["config", "commit.gpgsign", "false"]);
+    runGit(root, ["config", "user.email", "ci-fixture@example.com"]);
+    runGit(root, ["config", "user.name", "CI Fixture"]);
+
+    writeFileSync(path.join(root, "fixture.txt"), "legacy\n", "utf8");
+    runGit(root, ["add", "fixture.txt"]);
+    runGit(root, ["commit", "-q", "-m", "legacy target"]);
+    const legacySha = runGit(root, ["rev-parse", "HEAD"]);
+
+    mkdirSync(path.join(root, ".github"), { recursive: true });
+    writeFileSync(
+      path.join(root, ".github", "repo-e2e-capabilities.json"),
+      readFileSync(".github/repo-e2e-capabilities.json", "utf8"),
+      "utf8",
+    );
+    runGit(root, ["add", ".github/repo-e2e-capabilities.json"]);
+    runGit(root, ["commit", "-q", "-m", "capable target"]);
+    const capableSha = runGit(root, ["rev-parse", "HEAD"]);
+
+    writeFileSync(path.join(root, ".github", "repo-e2e-capabilities.json"), "{}\n", "utf8");
+    runGit(root, ["add", ".github/repo-e2e-capabilities.json"]);
+    runGit(root, ["commit", "-q", "-m", "invalid target"]);
+    const invalidSha = runGit(root, ["rev-parse", "HEAD"]);
+
+    writeFileSync(path.join(root, "fixture.txt"), "newer tooling\n", "utf8");
+    runGit(root, ["add", "fixture.txt"]);
+    runGit(root, ["commit", "-q", "-m", "newer tooling"]);
+    const toolingSha = runGit(root, ["rev-parse", "HEAD"]);
+    expect(toolingSha).not.toBe(capableSha);
+
+    const harnessScripts = path.join(root, ".release-harness", "scripts");
+    mkdirSync(harnessScripts, { recursive: true });
+    writeFileSync(
+      path.join(harnessScripts, "validate-repo-e2e-capability.mjs"),
+      readFileSync("scripts/validate-repo-e2e-capability.mjs", "utf8"),
+      "utf8",
+    );
+
+    const runCapability = (selectedSha: string) => {
+      const githubOutput = path.join(root, `output-${selectedSha}`);
+      const githubSummary = path.join(root, `summary-${selectedSha}`);
+      writeFileSync(githubOutput, "", "utf8");
+      writeFileSync(githubSummary, "", "utf8");
+      const run = runWorkflowShellScript(capabilityStep.run, {
+        cwd: root,
+        env: {
+          ...process.env,
+          CAPABILITY_PATH: ".github/repo-e2e-capabilities.json",
+          GITHUB_OUTPUT: githubOutput,
+          GITHUB_STEP_SUMMARY: githubSummary,
+          RUNNER_TEMP: root,
+          SELECTED_SHA: selectedSha,
+          WORKFLOW_SHA: toolingSha,
+        },
+      });
+      return {
+        ...run,
+        outputs: readWorkflowOutputs(githubOutput),
+      };
+    };
+
+    const capable = runCapability(capableSha);
+    expect(capable.status, `${capable.stdout}\n${capable.stderr}`).toBe(0);
+    expect(capable.outputs).toMatchObject({
+      repo_e2e_capability_reason: "contract-v1",
+      repo_e2e_shards_available: "true",
+    });
+
+    const legacy = runCapability(legacySha);
+    expect(legacy.status, `${legacy.stdout}\n${legacy.stderr}`).toBe(0);
+    expect(legacy.outputs).toMatchObject({
+      repo_e2e_capability_reason: "missing",
+      repo_e2e_shards_available: "false",
+    });
+
+    const invalid = runCapability(invalidSha);
+    expect(invalid.status, `${invalid.stdout}\n${invalid.stderr}`).toBe(0);
+    expect(invalid.outputs).toMatchObject({
+      repo_e2e_capability_reason: "invalid",
+      repo_e2e_shards_available: "false",
+    });
   });
 
   it("persists Node 22 declarations through trusted bounded artifacts", () => {
