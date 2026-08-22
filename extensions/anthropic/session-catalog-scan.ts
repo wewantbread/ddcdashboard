@@ -18,7 +18,14 @@ type CatalogJsonCacheEntry = {
 
 export type CatalogJsonReadBudget = {
   remainingBytes: number;
+  skippedFiles: number;
 };
+
+function markCatalogJsonSkipped(budget: CatalogJsonReadBudget | undefined): void {
+  if (budget) {
+    budget.skippedFiles += 1;
+  }
+}
 
 export async function reserveCatalogJsonFile(
   filePath: string,
@@ -35,10 +42,12 @@ export async function reserveCatalogJsonFile(
   }
   if (stat.size > MAX_CATALOG_JSON_FILE_BYTES) {
     deleteCatalogJsonCache(filePath);
+    budget.skippedFiles += 1;
     onIoFailure?.();
     return undefined;
   }
   if (!reserveCatalogJsonBytes(budget, stat.size)) {
+    budget.skippedFiles += 1;
     return undefined;
   }
   return stat.size;
@@ -71,7 +80,7 @@ const catalogJsonCache = new Map<string, CatalogJsonCacheEntry>();
 let catalogJsonCacheBytes = 0;
 
 export function createCatalogJsonReadBudget(): CatalogJsonReadBudget {
-  return { remainingBytes: MAX_CATALOG_JSON_SCAN_BYTES };
+  return { remainingBytes: MAX_CATALOG_JSON_SCAN_BYTES, skippedFiles: 0 };
 }
 
 function deleteCatalogJsonCache(filePath: string): void {
@@ -222,6 +231,7 @@ export async function readJsonFile(
   }
   if (stat.size > MAX_CATALOG_JSON_FILE_BYTES) {
     deleteCatalogJsonCache(filePath);
+    markCatalogJsonSkipped(options.budget);
     options.onIoFailure?.();
     return undefined;
   }
@@ -235,6 +245,7 @@ export async function readJsonFile(
       options.reservedBytes === undefined &&
       !reserveCatalogJsonBytes(options.budget, cached.size)
     ) {
+      markCatalogJsonSkipped(options.budget);
       return undefined;
     }
     touchCatalogJsonCache(filePath, cached);
@@ -246,6 +257,9 @@ export async function readJsonFile(
     const openedStat = await handle.stat();
     if (!openedStat.isFile() || openedStat.size > MAX_CATALOG_JSON_FILE_BYTES) {
       deleteCatalogJsonCache(filePath);
+      if (openedStat.size > MAX_CATALOG_JSON_FILE_BYTES) {
+        markCatalogJsonSkipped(options.budget);
+      }
       options.onIoFailure?.();
       return undefined;
     }
@@ -256,6 +270,7 @@ export async function readJsonFile(
       }
     } else if (!reserveCatalogJsonBytes(options.budget, openedStat.size)) {
       deleteCatalogJsonCache(filePath);
+      markCatalogJsonSkipped(options.budget);
       return undefined;
     }
     const buffer = Buffer.allocUnsafe(openedStat.size);

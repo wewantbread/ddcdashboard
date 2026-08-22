@@ -20,9 +20,15 @@ export type ClaudeSessionCatalogSession = {
   archived: false;
 };
 
+export type ClaudeSessionCatalogError = {
+  code: string;
+  message: string;
+};
+
 export type ClaudeSessionCatalogPage = {
   sessions: ClaudeSessionCatalogSession[];
   nextCursor?: string;
+  error?: ClaudeSessionCatalogError;
 };
 
 export type ClaudeSessionCatalogHost = ClaudeSessionCatalogPage & {
@@ -33,7 +39,7 @@ export type ClaudeSessionCatalogHost = ClaudeSessionCatalogPage & {
   nodeId?: string;
   canContinueClaude?: boolean;
   canOpenTerminalClaude?: boolean;
-  error?: { code: string; message: string };
+  error?: ClaudeSessionCatalogError;
 };
 
 export type ClaudeSessionCatalogResult = {

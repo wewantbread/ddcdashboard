@@ -8,35 +8,32 @@ import {
   normalizeBoundedOptionalString as readBoundedString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { readClaudeDesktopCustomGroups } from "./claude-desktop-groups.js";
+import { listClaudeSessionsWithStatus as listClaudeSessionsWithStatusInCache } from "./session-catalog-cache.js";
 import {
   CLAUDE_CATALOG_IO_CONCURRENCY,
   childDirectories,
   createCatalogJsonReadBudget,
   currentHomeDir,
-  desktopSessionStoreAvailable,
   desktopSessionsDir,
   type ClaudeProjectsTreeSnapshot,
   type CatalogJsonReadBudget,
   type ClaudeSessionScanContext,
   mapConcurrent,
-  projectsDir,
   readJsonFile,
-  readProjectsTreeSnapshot,
   reserveCatalogJsonFile,
   safeSessionFileForScan,
   setBoundedCache,
 } from "./session-catalog-scan.js";
 import { collectTranscriptText } from "./session-catalog-transcript.js";
-import type { ClaudeSessionCatalogSession } from "./session-catalog-types.js";
+import type {
+  ClaudeSessionCatalogError,
+  ClaudeSessionCatalogSession,
+} from "./session-catalog-types.js";
 
 export const MAX_STRING_LENGTH = 4096;
 const MAX_SESSION_PULL_REQUESTS = 20;
 const MAX_CATALOG_DISCOVERY_FILES = 10_000;
 const MAX_CATALOG_DISCOVERY_CACHE_ENTRIES = 20_000;
-const MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES = 8;
-const CLAUDE_SESSION_SCAN_HARD_TTL_MS = 5 * 60_000;
-const CLAUDE_PARTIAL_SCAN_TTL_MS = 15_000;
-const CLAUDE_DESKTOP_SCAN_TTL_MS = 60_000;
 const CLAUDE_METADATA_PREFIX_BYTES = 1024 * 1024;
 const CLAUDE_METADATA_READ_CHUNK_BYTES = 16 * 1024;
 const MAX_CATALOG_METADATA_SCAN_BYTES = 64 * 1024 * 1024;
@@ -62,20 +59,9 @@ type CatalogDiscoveryCacheEntry = {
   sidechain: boolean;
 };
 
-type ClaudeSessionScanCacheEntry = {
-  treeStamp: string;
-  hardExpiresAt: number;
-  desktopStoreAvailable: boolean;
-  desktopExpiresAt: number;
-  records: Promise<CatalogRecord[]>;
-};
-
 // Transcript discoveries stay valid only for the same root/id/inode/mtime/size and are LRU-bounded;
 // a false hit would corrupt pagination, so warm scans re-charge the original deterministic byte cost.
 const catalogDiscoveryCache = new Map<string, CatalogDiscoveryCacheEntry>();
-// Whole scans are root-scoped and bounded; tree/Desktop/hard expiries below own invalidation, avoiding
-// an unbounded home map while preserving the exact resolved records promise for concurrent callers.
-const claudeSessionScanCache = new Map<string, ClaudeSessionScanCacheEntry>();
 
 function cacheCatalogDiscovery(filePath: string, entry: CatalogDiscoveryCacheEntry): void {
   setBoundedCache(catalogDiscoveryCache, filePath, entry, MAX_CATALOG_DISCOVERY_CACHE_ENTRIES);
@@ -119,6 +105,12 @@ type DesktopPullRequestMetadata = {
 
 export type CatalogRecord = ClaudeSessionCatalogSession & {
   filePath: string;
+};
+
+export type ClaudeSessionScanResult = {
+  records: CatalogRecord[];
+  complete: boolean;
+  error?: ClaudeSessionCatalogError;
 };
 
 function pullRequestState(value: unknown): SessionCatalogPullRequestSummary["state"] | undefined {
@@ -639,11 +631,10 @@ async function scanClaudeSessions(
   homeDir: string,
   snapshot: ClaudeProjectsTreeSnapshot,
   includeDesktop: boolean,
-): Promise<{ records: CatalogRecord[]; complete: boolean }> {
+): Promise<ClaudeSessionScanResult> {
   const context: ClaudeSessionScanContext = { ...snapshot, complete: true, safeFiles: new Map() };
   const budget = createCatalogJsonReadBudget();
-  // Reserve and consume the shared JSON budget in a stable source order. Running both readers in
-  // parallel would let filesystem completion order decide which valid catalogs survive the cap.
+  // Consume the shared JSON budget in stable source order before concurrent parsing.
   const indexed = await readIndexRecords(context, budget);
   const desktop = includeDesktop
     ? await readDesktopMetadata(homeDir, budget)
@@ -686,74 +677,37 @@ async function scanClaudeSessions(
       filePath,
     });
   }
+  const complete = context.complete && budget.skippedFiles === 0;
+  const error = complete
+    ? undefined
+    : {
+        code: "LOCAL_CATALOG_PARTIAL",
+        message:
+          budget.skippedFiles > 0
+            ? `Some Local Claude session metadata was skipped by the 16 MiB per-file or 64 MiB aggregate safety limit (${budget.skippedFiles} file${budget.skippedFiles === 1 ? "" : "s"}).`
+            : "Some Local Claude session metadata could not be read.",
+      };
   return {
     records: [...records.values()].toSorted((left, right) => {
       const recency =
         (right.recencyAt ?? right.updatedAt ?? 0) - (left.recencyAt ?? left.updatedAt ?? 0);
       return recency || left.threadId.localeCompare(right.threadId);
     }),
-    complete: context.complete,
+    complete,
+    ...(error ? { error } : {}),
   };
+}
+
+export async function listClaudeSessionsWithStatus(
+  homeDir = currentHomeDir(),
+  options: { forceRefresh?: boolean; configDir?: string; includeDesktop?: boolean } = {},
+): Promise<ClaudeSessionScanResult> {
+  return listClaudeSessionsWithStatusInCache(scanClaudeSessions, homeDir, options);
 }
 
 export async function listClaudeSessions(
   homeDir = currentHomeDir(),
   options: { forceRefresh?: boolean; configDir?: string; includeDesktop?: boolean } = {},
 ): Promise<CatalogRecord[]> {
-  const root = projectsDir(homeDir, options.configDir);
-  const includeDesktop = options.includeDesktop !== false;
-  const cacheKey = `${root}\0${includeDesktop ? "desktop" : "cli"}`;
-  const [treeSnapshot, desktopStoreAvailable] = await Promise.all([
-    readProjectsTreeSnapshot(root),
-    includeDesktop ? desktopSessionStoreAvailable(homeDir) : Promise.resolve(false),
-  ]);
-  const now = Date.now();
-  const cached = claudeSessionScanCache.get(cacheKey);
-  // Child membership + file mtime/size signatures invalidate CLI rows on the next poll; five minutes
-  // backstops metadata anomalies. Desktop has a 60s bound when its macOS store exists; Linux skips it.
-  // Specific-thread force refresh bypasses both, or a stale page could hide a just-created session.
-  if (
-    options.forceRefresh !== true &&
-    cached &&
-    cached.treeStamp === treeSnapshot.treeStamp &&
-    cached.hardExpiresAt > now &&
-    cached.desktopStoreAvailable === desktopStoreAvailable &&
-    (!desktopStoreAvailable || cached.desktopExpiresAt > now)
-  ) {
-    setBoundedCache(
-      claudeSessionScanCache,
-      cacheKey,
-      cached,
-      MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES,
-    );
-    return await cached.records;
-  }
-  const scan = scanClaudeSessions(homeDir, treeSnapshot, includeDesktop);
-  let scanComplete = true;
-  const records = scan.then((result) => {
-    scanComplete = result.complete;
-    return result.records;
-  });
-  const entry = {
-    treeStamp: treeSnapshot.treeStamp,
-    hardExpiresAt: now + CLAUDE_SESSION_SCAN_HARD_TTL_MS,
-    desktopStoreAvailable,
-    desktopExpiresAt: now + CLAUDE_DESKTOP_SCAN_TTL_MS,
-    records,
-  };
-  setBoundedCache(claudeSessionScanCache, cacheKey, entry, MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES);
-  try {
-    const result = await records;
-    if (!scanComplete && claudeSessionScanCache.get(cacheKey) === entry) {
-      // Partial results still serve this caller, but retry within 15s so transient per-file I/O
-      // cannot hide recovered sessions behind the five-minute unchanged-tree backstop.
-      entry.hardExpiresAt = Date.now() + CLAUDE_PARTIAL_SCAN_TTL_MS;
-    }
-    return result;
-  } catch (error) {
-    if (claudeSessionScanCache.get(cacheKey) === entry) {
-      claudeSessionScanCache.delete(cacheKey);
-    }
-    throw error;
-  }
+  return (await listClaudeSessionsWithStatus(homeDir, options)).records;
 }
