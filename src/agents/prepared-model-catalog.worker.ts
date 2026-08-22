@@ -87,7 +87,19 @@ async function prepareWorkerGeneration(value: PreparedModelCatalogWorkerInput) {
     pluginMetadataSnapshot: prepared.pluginGeneration.pluginMetadataSnapshot,
   });
   if (reconstructedFingerprint !== value.generationFingerprint) {
-    throw new Error("prepared model catalog worker reconstructed a different runtime generation");
+    // Fork-carried: fail OPEN, not closed. Upstream throws here, and the parent caches that
+    // throw as a terminal error — so one transient fingerprint drift (plugin index touched,
+    // env delta, any racing config write between parent capture and worker spawn) permanently
+    // kills every subsequent message on the gateway until a container restart. That wedged
+    // production on 2026-08-21 within two hours of deployment, with the canary showing zero
+    // occurrences. The worker's generation was recomputed from disk moments ago — it is at
+    // least as fresh as the parent's snapshot — so proceeding with it is strictly safer than
+    // refusing all traffic. The mismatch is still logged for diagnosis.
+    console.warn(
+      "[prepared-model-catalog.worker] fingerprint mismatch (parent=%s worker=%s) — proceeding with the freshly reconstructed generation (fork-carried fail-open)",
+      value.generationFingerprint,
+      reconstructedFingerprint,
+    );
   }
   return { agentFacts, pluginGeneration: prepared.pluginGeneration };
 }
