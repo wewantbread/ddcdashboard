@@ -724,8 +724,8 @@ async function compactCodexNativeThread(
                   // (#119977). Gate on the exact stored owner — threadId AND clientId
                   // — that just failed the request, never the current request client
                   // (a fresh pooled id can never equal the retired owner's clientId).
-                  const currentBinding = await options.bindingStore.read(bindingIdentity);
-                  if (isSameCodexAppServerThreadOwner(currentBinding, binding)) {
+                  const storedOwnerNow = await options.bindingStore.read(bindingIdentity);
+                  if (isSameCodexAppServerThreadOwner(storedOwnerNow, binding)) {
                     await clearDeadCodexThreadBinding(
                       options.bindingStore,
                       bindingIdentity,
