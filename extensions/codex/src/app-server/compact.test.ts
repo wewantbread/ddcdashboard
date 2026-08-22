@@ -1999,6 +1999,76 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
   });
 
+  it("keeps a same-thread new-client rebind that lands after the guarded lease releases", async () => {
+    // #119977 regression: the dead-thread recovery clear must run inside the binding
+    // lease. If it runs after the lease releases, a concurrent startOrResumeThread can
+    // rebind {same threadId, new clientId} in the post-request window and a
+    // threadId-only clear would clobber that live replacement. The clear now runs
+    // under the lease and is gated on the exact failed owner, so the peer rebind
+    // survives. This fails against the pre-fix (clear-after-lease) placement.
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding({ clientId: "client-before-compaction" });
+
+    let peerRebindWritten = false;
+    const bindingStore = {
+      ...testCodexAppServerBindingStore,
+      withLease: (async <T>(
+        identity: Parameters<typeof testCodexAppServerBindingStore.withLease>[0],
+        run: () => Promise<T>,
+      ): Promise<T> => {
+        const result = await testCodexAppServerBindingStore.withLease(identity, run);
+        if (!peerRebindWritten) {
+          peerRebindWritten = true;
+          // A concurrent turn takes the freed lease and rebinds the same native
+          // thread to a fresh pooled client immediately after the guarded request.
+          seedCodexTestBinding(sessionFile, {
+            threadId: "thread-1",
+            clientId: "client-after-compaction",
+            cwd: tempDir,
+          });
+        }
+        return result;
+      }) as typeof testCodexAppServerBindingStore.withLease,
+    };
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        },
+        { bindingStore },
+      ),
+    );
+
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("thread not found: thread-1");
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    // The replacement survives: the dead-thread clear ran under the lease against the
+    // exact retired owner and never clobbers a rebind that lands after release.
+    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+      threadId: "thread-1",
+      clientId: "client-after-compaction",
+    });
+  });
+
   it.each([
     {
       name: "wrong RPC code",

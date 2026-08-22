@@ -715,12 +715,33 @@ async function compactCodexNativeThread(
               return { started: true as const, accepted: true as const };
             } catch (error) {
               if (error instanceof CodexAppServerRpcError) {
-                // A server rejection proves native history was untouched; an
-                // ambiguous transport failure must never restore stale context.
-                await options.bindingStore.mutate(bindingIdentity, {
-                  kind: "set",
-                  binding,
-                });
+                if (guardedNativeRequest && isCodexThreadNotFoundError(error)) {
+                  // Guarded (automatic/preflight) recovery clears the dead binding
+                  // under this same lease. Deferring the clear until the lease
+                  // releases would let a concurrent startOrResumeThread rebind
+                  // {same threadId, new clientId} in the post-request window, and a
+                  // threadId-only clear would then clobber that live replacement
+                  // (#119977). Gate on the exact stored owner — threadId AND clientId
+                  // — that just failed the request, never the current request client
+                  // (a fresh pooled id can never equal the retired owner's clientId).
+                  const currentBinding = await options.bindingStore.read(bindingIdentity);
+                  if (isSameCodexAppServerThreadOwner(currentBinding, binding)) {
+                    await clearDeadCodexThreadBinding(
+                      options.bindingStore,
+                      bindingIdentity,
+                      binding.threadId,
+                    );
+                  }
+                } else {
+                  // A server rejection proves native history was untouched; an
+                  // ambiguous transport failure must never restore stale context.
+                  // Manual thread-not-found also restores so operator-driven
+                  // recovery still sees the binding.
+                  await options.bindingStore.mutate(bindingIdentity, {
+                    kind: "set",
+                    binding,
+                  });
+                }
                 compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
               }
               // Retirement can acquire this same generation lease.
@@ -770,17 +791,9 @@ async function compactCodexNativeThread(
           compactionSucceeded = true;
         } catch (error) {
           if (isCodexThreadNotFoundError(error)) {
-            if (guardedNativeRequest) {
-              // Guarded (automatic/preflight) triggers own recovery: clear the dead
-              // binding so the next turn rebinds instead of re-probing a retired thread.
-              // Manual triggers surface the failure for operator-driven recovery and
-              // leave the binding untouched.
-              await clearDeadCodexThreadBinding(
-                options.bindingStore,
-                bindingIdentity,
-                binding.threadId,
-              );
-            }
+            // Guarded (automatic/preflight) triggers already cleared the dead
+            // binding under the request lease; manual triggers surface the failure
+            // and leave the binding for operator-driven recovery.
             return failedCodexThreadBindingCompactionResult(params, {
               threadId: binding.threadId,
               reason: coerceErrorMessage(error),
@@ -1000,9 +1013,11 @@ async function clearDeadCodexThreadBinding(
 ): Promise<void> {
   // Clear a confirmed-dead thread binding so the next turn lazily rebinds instead of
   // re-probing a thread codex-rs can no longer resume (load_thread → "thread not
-  // found"). The clear is guarded by the dead threadId: if a concurrent turn already
-  // rebound the session to a live thread, the mutation and the re-read both no-op, so
-  // a live rebind is never clobbered (mirrors the retirement clear in retireUnconfirmed).
+  // found"). Callers hold the request lease and have already confirmed this exact
+  // owner (threadId + clientId) still owns the row, so the threadId-guarded CAS
+  // clear only ever retires the binding that just failed; the re-read keeps the
+  // no-op safe if the row already moved on (mirrors the retirement clear in
+  // retireUnconfirmed).
   const cleared = await bindingStore.mutate(identity, { kind: "clear", threadId: deadThreadId });
   if (cleared) {
     return;
