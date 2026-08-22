@@ -277,7 +277,8 @@
       "autoPriority": {
         "image": 20,
         "audio": 20
-      }
+      },
+      "nativeDocumentInputs": ["pdf"]
     }
   },
   "configSchema": {
