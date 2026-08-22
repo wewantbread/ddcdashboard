@@ -22,6 +22,7 @@ import {
   projectsDir,
   readJsonFile,
   readProjectsTreeSnapshot,
+  reserveCatalogJsonFile,
   safeSessionFileForScan,
   setBoundedCache,
 } from "./session-catalog-scan.js";
@@ -227,15 +228,15 @@ async function readDesktopMetadata(
   const active = new Map<string, DesktopSessionMetadata>();
   const archived = new Set<string>();
   const customGroups = await readClaudeDesktopCustomGroups(homeDir);
-  for (const accountDir of await childDirectories(desktopSessionsDir(homeDir))) {
-    for (const workspaceDir of await childDirectories(accountDir)) {
+  for (const accountDir of (await childDirectories(desktopSessionsDir(homeDir))).toSorted()) {
+    for (const workspaceDir of (await childDirectories(accountDir)).toSorted()) {
       let entries: string[];
       try {
         entries = await fs.readdir(workspaceDir);
       } catch {
         continue;
       }
-      for (const name of entries) {
+      for (const name of entries.toSorted()) {
         if (!name.startsWith("local_") || !name.endsWith(".json")) {
           continue;
         }
@@ -276,19 +277,39 @@ async function readIndexRecords(
   if (!context.resolvedRoot) {
     return { records, sidechainIds };
   }
-  const indexes = await mapConcurrent(
-    context.projectDirectories,
-    CLAUDE_CATALOG_IO_CONCURRENCY,
-    async ({ directory, childNames }) => ({
+  const indexReads = context.projectDirectories
+    .filter(({ childNames }) => childNames.includes("sessions-index.json"))
+    .map(({ directory }) => ({ directory, filePath: path.join(directory, "sessions-index.json") }))
+    .toSorted((left, right) => left.filePath.localeCompare(right.filePath));
+  const admissions = [] as Array<{
+    directory: string;
+    filePath: string;
+    reservedBytes: number | undefined;
+  }>;
+  for (const { directory, filePath } of indexReads) {
+    admissions.push({
       directory,
-      raw: childNames.includes("sessions-index.json")
-        ? await readJsonFile(path.join(directory, "sessions-index.json"), {
-            budget,
-            onIoFailure: () => {
-              context.complete = false;
-            },
-          })
-        : undefined,
+      filePath,
+      reservedBytes: await reserveCatalogJsonFile(filePath, budget, () => {
+        context.complete = false;
+      }),
+    });
+  }
+  const indexes = await mapConcurrent(
+    admissions,
+    CLAUDE_CATALOG_IO_CONCURRENCY,
+    async ({ directory, filePath, reservedBytes }) => ({
+      directory,
+      raw:
+        reservedBytes === undefined
+          ? undefined
+          : await readJsonFile(filePath, {
+              budget,
+              reservedBytes,
+              onIoFailure: () => {
+                context.complete = false;
+              },
+            }),
     }),
   );
   const candidates: Array<{
@@ -621,12 +642,12 @@ async function scanClaudeSessions(
 ): Promise<{ records: CatalogRecord[]; complete: boolean }> {
   const context: ClaudeSessionScanContext = { ...snapshot, complete: true, safeFiles: new Map() };
   const budget = createCatalogJsonReadBudget();
-  const [indexed, desktop] = await Promise.all([
-    readIndexRecords(context, budget),
-    includeDesktop
-      ? readDesktopMetadata(homeDir, budget)
-      : Promise.resolve({ active: new Map(), archived: new Set<string>() }),
-  ]);
+  // Reserve and consume the shared JSON budget in a stable source order. Running both readers in
+  // parallel would let filesystem completion order decide which valid catalogs survive the cap.
+  const indexed = await readIndexRecords(context, budget);
+  const desktop = includeDesktop
+    ? await readDesktopMetadata(homeDir, budget)
+    : { active: new Map(), archived: new Set<string>() };
   const records = indexed.records;
   await discoverCliRecords(context, records, indexed.sidechainIds);
   for (const sessionId of desktop.archived) {
