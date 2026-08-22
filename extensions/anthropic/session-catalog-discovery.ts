@@ -11,10 +11,12 @@ import { readClaudeDesktopCustomGroups } from "./claude-desktop-groups.js";
 import {
   CLAUDE_CATALOG_IO_CONCURRENCY,
   childDirectories,
+  createCatalogJsonReadBudget,
   currentHomeDir,
   desktopSessionStoreAvailable,
   desktopSessionsDir,
   type ClaudeProjectsTreeSnapshot,
+  type CatalogJsonReadBudget,
   type ClaudeSessionScanContext,
   mapConcurrent,
   projectsDir,
@@ -215,7 +217,10 @@ function parseClaudeCatalogTimestampMs(value: unknown): number | undefined {
   return parseDateFirstTimestampMs(value);
 }
 
-async function readDesktopMetadata(homeDir: string): Promise<{
+async function readDesktopMetadata(
+  homeDir: string,
+  budget: CatalogJsonReadBudget,
+): Promise<{
   active: Map<string, DesktopSessionMetadata>;
   archived: Set<string>;
 }> {
@@ -234,7 +239,7 @@ async function readDesktopMetadata(homeDir: string): Promise<{
         if (!name.startsWith("local_") || !name.endsWith(".json")) {
           continue;
         }
-        const raw = await readJsonFile(path.join(workspaceDir, name));
+        const raw = await readJsonFile(path.join(workspaceDir, name), { budget });
         if (!isRecord(raw)) {
           continue;
         }
@@ -259,7 +264,10 @@ async function readDesktopMetadata(homeDir: string): Promise<{
   return { active, archived };
 }
 
-async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
+async function readIndexRecords(
+  context: ClaudeSessionScanContext,
+  budget: CatalogJsonReadBudget,
+): Promise<{
   records: Map<string, CatalogRecord>;
   sidechainIds: Set<string>;
 }> {
@@ -275,6 +283,7 @@ async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
       directory,
       raw: childNames.includes("sessions-index.json")
         ? await readJsonFile(path.join(directory, "sessions-index.json"), {
+            budget,
             onIoFailure: () => {
               context.complete = false;
             },
@@ -611,10 +620,11 @@ async function scanClaudeSessions(
   includeDesktop: boolean,
 ): Promise<{ records: CatalogRecord[]; complete: boolean }> {
   const context: ClaudeSessionScanContext = { ...snapshot, complete: true, safeFiles: new Map() };
+  const budget = createCatalogJsonReadBudget();
   const [indexed, desktop] = await Promise.all([
-    readIndexRecords(context),
+    readIndexRecords(context, budget),
     includeDesktop
-      ? readDesktopMetadata(homeDir)
+      ? readDesktopMetadata(homeDir, budget)
       : Promise.resolve({ active: new Map(), archived: new Set<string>() }),
   ]);
   const records = indexed.records;
