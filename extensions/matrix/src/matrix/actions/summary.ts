@@ -145,6 +145,7 @@ export async function fetchEventSummary(
   client: MatrixClient,
   roomId: string,
   eventId: string,
+  opts: { selfUserId?: string } = {},
 ): Promise<MatrixMessageSummary | null> {
   try {
     const raw = parseMatrixRawEvent(await client.getEvent(roomId, eventId));
@@ -154,11 +155,11 @@ export async function fetchEventSummary(
     if (raw.unsigned?.redacted_because) {
       return null;
     }
-    const pollSummary = await fetchMatrixPollMessageSummary(client, roomId, raw);
+    const pollSummary = await fetchMatrixPollMessageSummary(client, roomId, raw, opts);
     if (pollSummary) {
       return pollSummary;
     }
-    return summarizeMatrixRawEvent(raw);
+    return summarizeMatrixRawEvent(raw, opts);
   } catch {
     // Event not found, redacted, or inaccessible - return null
     return null;
