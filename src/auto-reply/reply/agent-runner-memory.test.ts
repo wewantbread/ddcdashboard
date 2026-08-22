@@ -3748,33 +3748,40 @@ describe("runMemoryFlushIfNeeded", () => {
       const sessionStore = { [sessionKey]: sessionEntry };
       const replyOperation = createReplyOperation();
 
-      const entry = await runSessionCompactionIfNeeded({
-        cfg: {
-          agents: {
-            defaults: {
-              compaction: { maxActiveTranscriptBytes: "10b" },
+      const runPreflight = async (entry: SessionEntry) =>
+        await runSessionCompactionIfNeeded({
+          cfg: {
+            agents: {
+              defaults: {
+                compaction: { maxActiveTranscriptBytes: "10b" },
+              },
             },
           },
-        },
-        followupRun: createTestFollowupRun({
-          provider: "openai",
-          model: "gpt-5.5",
-          sessionId: "session",
+          followupRun: createTestFollowupRun({
+            provider: "openai",
+            model: "gpt-5.5",
+            sessionId: "session",
+            sessionKey,
+          }),
+          defaultModel: "gpt-5.5",
+          modelContextTokens: 1_000_000,
+          sessionEntry: entry,
+          sessionStore,
           sessionKey,
-        }),
-        defaultModel: "gpt-5.5",
-        modelContextTokens: 1_000_000,
-        sessionEntry,
-        sessionStore,
-        sessionKey,
-        storePath,
-        isHeartbeat: false,
-        ...createCompactionLifecycle(replyOperation),
-      });
+          storePath,
+          isHeartbeat: false,
+          ...createCompactionLifecycle(replyOperation),
+        });
 
-      expect(entry?.compactionCount).toBe(1);
+      const firstEntry = await runPreflight(sessionEntry);
+      const secondEntry = await runPreflight(firstEntry ?? sessionEntry);
+
+      expect(firstEntry?.compactionCount).toBe(1);
+      expect(secondEntry?.compactionCount).toBe(2);
+      expect(secondEntry?.transcriptByteCompactionLatch).toBeUndefined();
+      expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(2);
       expect(replyOperation.setPhase).toHaveBeenCalledWith("preflight_compacting");
-      expect(requireCompactEmbeddedAgentSessionCall()).toMatchObject({
+      expect(requireCompactEmbeddedAgentSessionCall(1)).toMatchObject({
         agentHarnessId: "codex",
         contextTokenBudget: 1_000_000,
         deferOwningContextEngineCompaction: false,
