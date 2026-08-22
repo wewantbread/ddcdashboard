@@ -18,6 +18,8 @@ import { stringEnum } from "../schema/typebox.js";
 import { textResult, ToolInputError, readToolStringParam, type AnyAgentTool } from "./common.js";
 
 export type SystemAgentToolOptions = {
+  /** Host-verified route owner for agent-scoped memory prompt preparation. */
+  memoryPromptAgentId?: string;
   /** Where setup side effects run; the gateway surface never manages its own daemon. */
   surface: "cli" | "gateway";
   /**

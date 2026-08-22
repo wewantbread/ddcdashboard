@@ -12,6 +12,7 @@ import { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
 export type PreparedEmbeddedRunInput = {
   runParams: RunEmbeddedAgentParamsWithSessionFile;
   contextEngineAgentId?: string;
+  memoryPromptAgentId?: string;
   provider: string;
   modelId: string;
   agentDir: string;

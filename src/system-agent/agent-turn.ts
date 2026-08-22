@@ -344,6 +344,7 @@ async function runSystemAgentTurnWithDeps(
   // and the engine executes it after the reply.
   const directiveRef: { current?: SystemAgentTurnDirective } = {};
   const systemAgentTool = {
+    memoryPromptAgentId: plan.agentId,
     surface: params.surface,
     approvalArmed: params.approvalArmed,
     proposalRef: params.session.proposalRef,

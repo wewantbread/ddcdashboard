@@ -827,9 +827,10 @@ describe("runSystemAgentTurn", () => {
       params: { temperature: 0.2 },
       tools: { allow: ["read"], deny: ["exec"] },
     });
-    expect(requireValue(call.systemAgentTool, "missing embedded OpenClaw tool").proposalRef).toBe(
-      session.proposalRef,
-    );
+    expect(requireValue(call.systemAgentTool, "missing embedded OpenClaw tool")).toMatchObject({
+      memoryPromptAgentId: "ops",
+      proposalRef: session.proposalRef,
+    });
   });
 
   it("rejects a low-level session without verified inference before lookup or run", async () => {

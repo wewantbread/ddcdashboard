@@ -38,6 +38,7 @@ type InternalRunParams = RunEmbeddedAgentParams & {
 
 type AttemptRuntime = {
   contextEngineAgentId?: string;
+  memoryPromptAgentId?: string;
   sessionId: string;
   sessionFile: string;
   sessionKey?: string;
@@ -316,6 +317,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
       ? { sessionManager: input.transcriptOwnership.sessionManager }
       : { sessionTarget: input.transcriptOwnership.sessionTarget }),
     trajectoryRecorder: runtime.trajectoryRecorder,
+    memoryPromptAgentId: runtime.memoryPromptAgentId,
     workspaceDir: runtime.workspaceDir,
     bootstrapWorkspaceDir: runtime.bootstrapWorkspaceDir,
     cwd: params.cwd,
