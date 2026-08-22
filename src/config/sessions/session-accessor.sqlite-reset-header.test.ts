@@ -12,6 +12,7 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import {
   appendTranscriptMessage,
+  applySessionEntryLifecycleMutation,
   replaceSessionEntry,
   resetSessionEntryLifecycle,
 } from "./session-accessor.js";
@@ -37,7 +38,7 @@ describe("SQLite reset boundary transcript header", () => {
     await testState.cleanup();
   });
 
-  function readEvents(sessionId: string): { type?: unknown; version?: unknown }[] {
+  function readEvents(sessionId: string): { type?: unknown; version?: unknown; cwd?: unknown }[] {
     const target = resolveSqliteTargetFromSessionStorePath(storePath);
     if (!target.path) {
       throw new Error("expected SQLite database path");
@@ -74,12 +75,41 @@ describe("SQLite reset boundary transcript header", () => {
       storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
       resetBoundaryReason: "new",
+      resetBoundaryCwd: "/tmp/reset-session-workspace",
       buildNextEntry: () => ({ sessionId: "next-window", updatedAt: 20 }),
     });
 
     const events = readEvents("empty-window");
     expect(events[0]?.type).toBe("session");
     expect(events[0]?.version).toBe(3);
+    // The header must record the session workspace, not the service process cwd.
+    expect(events[0]?.cwd).toBe("/tmp/reset-session-workspace");
+    expect(events[1]?.type).toBe("reset");
+  });
+
+  it("records the session workspace via the batched upsert path too", async () => {
+    const sessionKey = "agent:main:projection-window-reset";
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      { sessionId: "projection-window", updatedAt: 10 },
+    );
+
+    await applySessionEntryLifecycleMutation({
+      storePath,
+      upserts: [
+        {
+          sessionKey,
+          entry: { sessionId: "next-projection", updatedAt: 20 },
+          resetBoundaryReason: "new",
+          resetBoundaryCwd: "/tmp/projection-session-workspace",
+        },
+      ],
+      skipMaintenance: true,
+    });
+
+    const events = readEvents("projection-window");
+    expect(events[0]?.type).toBe("session");
+    expect(events[0]?.cwd).toBe("/tmp/projection-session-workspace");
     expect(events[1]?.type).toBe("reset");
   });
 

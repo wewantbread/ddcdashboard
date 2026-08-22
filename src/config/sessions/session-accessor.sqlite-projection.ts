@@ -330,6 +330,7 @@ export async function applySessionEntryLifecycleMutation(params: {
         entry,
         expectedEntry,
         resetBoundaryPlan,
+        resetBoundaryCwd,
       } of projected.upsertedEntries) {
         const sameKeyRemoval = validatedRemovals.find(
           (removal) => removal.sessionKey === sessionKey,
@@ -358,7 +359,7 @@ export async function applySessionEntryLifecycleMutation(params: {
           // Same empty-window hazard as the single-target reset path: the
           // boundary must not become seq 0, or the window stays permanently
           // headerless and is rejected as a legacy transcript on every load.
-          ensureTranscriptHeader(transactionDb, boundaryScope, undefined, Date.now());
+          ensureTranscriptHeader(transactionDb, boundaryScope, resetBoundaryCwd, Date.now());
           const appended = appendTranscriptEventsInTransaction(
             transactionDb,
             boundaryScope,

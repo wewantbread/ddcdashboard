@@ -1454,6 +1454,12 @@ export async function performGatewaySessionReset(params: {
         archivePreviousTranscript: false,
         agentId: target.agentId,
         resetBoundaryReason: boundaryEntry ? params.reason : undefined,
+        // Empty-window resets create the transcript header inside the lifecycle
+        // transaction; record the session's workspace rather than falling back
+        // to the service process cwd.
+        ...(boundaryEntry
+          ? { resetBoundaryCwd: resolveAgentWorkspaceDir(params.cfg, target.agentId) }
+          : {}),
         storePath,
         target: {
           canonicalKey: target.canonicalKey,

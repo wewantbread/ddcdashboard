@@ -406,6 +406,9 @@ export async function projectSessionEntryLifecycleMutation(
       sessionKey,
       entry: cloned,
       ...(resetBoundaryPlan ? { resetBoundaryPlan } : {}),
+      ...(resetBoundaryPlan && upsert.resetBoundaryCwd
+        ? { resetBoundaryCwd: upsert.resetBoundaryCwd }
+        : {}),
     });
   }
   const referencedSessionIds = collectProjectedReferencedSessionIds({

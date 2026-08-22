@@ -68,6 +68,8 @@ export async function persistSessionResetLifecycle(params: {
   agentId?: string;
   cleanupPreviousTranscript?: boolean;
   nextEntry: SessionEntry;
+  /** Session workspace recorded in a header created for an empty window at reset time. */
+  resetBoundaryCwd?: string;
   nextSessionFile: string;
   previousEntry: SessionEntry;
   previousSessionId?: string;
@@ -83,6 +85,7 @@ export async function persistSessionResetLifecycle(params: {
         sessionKey: params.sessionKey,
         entry: params.nextEntry,
         resetBoundaryReason: "reset",
+        ...(params.resetBoundaryCwd ? { resetBoundaryCwd: params.resetBoundaryCwd } : {}),
       },
     ],
     skipMaintenance: true,
@@ -140,6 +143,8 @@ export async function commitReplySessionInitialization(params: {
     context: ReplySessionInitializationCommitContext,
   ) => Promise<SessionEntry> | SessionEntry;
   resetBoundaryReason?: import("./session-reset-boundary-event.js").SessionResetBoundaryReason;
+  /** Session workspace recorded in a header created for an empty window at reset time. */
+  resetBoundaryCwd?: string;
   previousEntry?: SessionEntry;
   retiredEntry?: SessionEntryRetirement;
   sessionEntry: SessionEntry;
@@ -202,6 +207,7 @@ export async function commitReplySessionInitialization(params: {
     {
       sessionKey: resolved.normalizedKey,
       ...(params.resetBoundaryReason ? { resetBoundaryReason: params.resetBoundaryReason } : {}),
+      ...(params.resetBoundaryCwd ? { resetBoundaryCwd: params.resetBoundaryCwd } : {}),
       buildEntry: async ({ store: currentStore }) => {
         const commitResolved = resolveSessionEntryFromStore({
           store: currentStore,

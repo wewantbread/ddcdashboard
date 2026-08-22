@@ -222,7 +222,7 @@ export async function resetSessionEntryLifecycle(
           // *empty* transcript -- so the first message append would skip it and
           // the session would stay permanently headerless, rejected on every
           // later load as a legacy transcript before the model runs.
-          ensureTranscriptHeader(transactionDb, boundaryScope, undefined, Date.now());
+          ensureTranscriptHeader(transactionDb, boundaryScope, params.resetBoundaryCwd, Date.now());
           const appended = appendTranscriptEventsInTransaction(
             transactionDb,
             boundaryScope,

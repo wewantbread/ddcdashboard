@@ -37,6 +37,8 @@ export type ProjectedLifecycleMutation = {
     entry: SessionEntry;
     expectedEntry: SessionEntry | undefined;
     resetBoundaryPlan?: SessionResetBoundaryPlan;
+    /** Session workspace for a header created at reset time. */
+    resetBoundaryCwd?: string;
     sessionKey: string;
   }>;
 };
