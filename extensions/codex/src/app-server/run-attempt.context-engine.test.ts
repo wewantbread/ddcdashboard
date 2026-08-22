@@ -475,9 +475,17 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     const inputText = getRequestInputText(harness);
     expect(inputText.length).toBe(CODEX_TURN_START_TEXT_INPUT_MAX_CHARS);
     expect(inputText).toContain("recent anchor");
-    expect(inputText).toContain("current inbound context survives");
+    expect(inputText).not.toContain("current inbound context survives");
     expect(inputText).toContain("current prompt survives");
     expect(inputText).toContain("hook append marker");
+    const additionalContext = requireRecord(
+      requireRequestParams(harness, "turn/start").additionalContext,
+      "turn/start additional context",
+    );
+    expect(additionalContext.openclaw_current_inbound).toEqual({
+      kind: "untrusted",
+      value: "current inbound context survives",
+    });
 
     await harness.completeTurn();
     await run;
@@ -1763,7 +1771,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
-  it("keeps current inbound context at the front of the Codex context-engine prompt", async () => {
+  it("separates current inbound context from Codex prompt and trusted runtime metadata", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     openFileBackedSessionManagerForTest(sessionFile, { sessionId: "session-1" }).appendMessage(
@@ -1779,6 +1787,15 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
         "#6474 Sun 2026-05-10 22:22 GMT+5:30 [reply target] OpenClaw: anchor REPLYCTX this is the old message",
         "#6498 Sun 2026-05-10 22:22 GMT+5:30 OpenClaw: filler REPLYCTX 23",
       ].join("\n"),
+      trustedDeliveryDirective: "Use the message tool for this current turn only.",
+      reply: {
+        currentMessageId: "6499",
+        threadId: "telegram-thread-1",
+        replyToId: "6474",
+        replyTargetPresent: true,
+        quotePresent: true,
+        replyChainPresent: false,
+      },
     };
 
     const run = runCodexAppServerAttempt(params);
@@ -1787,8 +1804,31 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     const inputText = getRequestInputText(harness);
     expect(inputText).toContain("OpenClaw assembled context for this turn:");
     expect(inputText).toContain("Current user request:\nhello");
-    expect(inputText).toContain("[reply target] OpenClaw: anchor REPLYCTX");
-    expect(inputText.trim().startsWith("Conversation context (chronological")).toBe(true);
+    expect(inputText).not.toContain("REPLYCTX");
+    expect(inputText).not.toContain("Use the message tool for this current turn only.");
+    expect(inputText).not.toContain('"replyToId": "6474"');
+    const additionalContext = requireRecord(
+      requireRequestParams(harness, "turn/start").additionalContext,
+      "turn/start additional context",
+    );
+    const inboundContext = requireRecord(
+      additionalContext.openclaw_current_inbound,
+      "untrusted inbound context",
+    );
+    expect(inboundContext.kind).toBe("untrusted");
+    expect(readStringValue(inboundContext.value)).toContain(
+      "[reply target] OpenClaw: anchor REPLYCTX",
+    );
+    const runtimeContext = requireRecord(
+      additionalContext.openclaw_current_runtime,
+      "trusted runtime context",
+    );
+    const runtimeValue = readStringValue(runtimeContext.value) ?? "";
+    expect(runtimeContext.kind).toBe("application");
+    expect(runtimeValue).toContain('"currentMessageId": "6499"');
+    expect(runtimeValue).toContain('"replyToId": "6474"');
+    expect(runtimeValue).toContain("Use the message tool for this current turn only.");
+    expect(runtimeValue).not.toContain("REPLYCTX");
 
     await harness.completeTurn();
     await run;

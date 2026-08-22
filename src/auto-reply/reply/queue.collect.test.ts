@@ -3330,15 +3330,25 @@ describe("followup queue collect routing", () => {
     const { calls, done, runFollowup } = createDrainRecorder();
     const settings: QueueSettings = { mode: "collect", debounceMs: 0 };
 
-    for (const [prompt, contextText] of [
-      ["first", "context one"],
-      ["second", "context two"],
+    for (const [prompt, contextText, currentMessageId, replyToId] of [
+      ["first", "context one", "1001", "991"],
+      ["second", "context two", "1002", "992"],
     ] as const) {
       enqueueFollowupRun(
         key,
         {
           ...createRun({ prompt }),
-          currentInboundContext: { text: contextText },
+          currentInboundContext: {
+            text: contextText,
+            trustedDeliveryDirective: "Use the message tool for visible delivery.",
+            reply: {
+              currentMessageId,
+              replyToId,
+              replyTargetPresent: true,
+              quotePresent: false,
+              replyChainPresent: false,
+            },
+          },
         },
         settings,
       );
@@ -3351,6 +3361,13 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.prompt).toContain("second");
     expect(calls[0]?.currentInboundContext?.text).toContain("Queued #1 context:\ncontext one");
     expect(calls[0]?.currentInboundContext?.text).toContain("Queued #2 context:\ncontext two");
+    expect(calls[0]?.currentInboundContext?.trustedDeliveryDirective).toBe(
+      "Use the message tool for visible delivery.",
+    );
+    expect(calls[0]?.currentInboundContext?.reply).toMatchObject({
+      currentMessageId: "1002",
+      replyToId: "992",
+    });
   });
 
   it("does not let one source cancel an admitted collected run", async () => {

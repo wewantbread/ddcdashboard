@@ -20,6 +20,8 @@ import {
 import { buildCodexUserInput } from "./user-input.js";
 
 const CODEX_CURRENT_SENDER_FIELD_MAX_CHARS = 256;
+const CODEX_NO_CURRENT_RUNTIME_CONTEXT =
+  "No current OpenClaw reply metadata or delivery directive.";
 
 function buildCodexCurrentSenderContextValue(params: EmbeddedRunAttemptParams): string | undefined {
   const metadata = asOptionalRecord(
@@ -48,6 +50,39 @@ function buildCodexCurrentSenderContextValue(params: EmbeddedRunAttemptParams): 
       ...(username ? { username: bound(username) } : {}),
     },
   });
+}
+
+function buildCodexCurrentInboundContextValue(
+  context: EmbeddedRunAttemptParams["currentInboundContext"],
+): string | undefined {
+  const text = context?.text.trim();
+  return text || undefined;
+}
+
+function buildCodexCurrentRuntimeContextValue(
+  context: EmbeddedRunAttemptParams["currentInboundContext"],
+): string {
+  const replyEntries = context?.reply
+    ? Object.fromEntries(
+        Object.entries(context.reply).filter(([, value]) =>
+          Array.isArray(value) ? value.length > 0 : value !== undefined,
+        ),
+      )
+    : undefined;
+  const replyMetadata =
+    replyEntries && Object.keys(replyEntries).length > 0
+      ? [
+          "Current reply metadata (trusted OpenClaw runtime metadata):",
+          "```json",
+          JSON.stringify(replyEntries, null, 2),
+          "```",
+        ].join("\n")
+      : undefined;
+  return (
+    [replyMetadata, context?.trustedDeliveryDirective?.trim()]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n") || CODEX_NO_CURRENT_RUNTIME_CONTEXT
+  );
 }
 
 export function buildTurnStartParams(
@@ -82,10 +117,20 @@ export function buildTurnStartParams(
   const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
   const currentSenderContext =
     params.trigger === "user" ? buildCodexCurrentSenderContextValue(params) : undefined;
-  // Untrusted context exposes authenticated attribution without promoting human-controlled labels.
-  const additionalContext: CodexTurnStartParams["additionalContext"] = currentSenderContext
-    ? { openclaw_current_sender: { kind: "untrusted", value: currentSenderContext } }
-    : undefined;
+  const currentInboundContext = buildCodexCurrentInboundContextValue(params.currentInboundContext);
+  const currentRuntimeContext = buildCodexCurrentRuntimeContextValue(params.currentInboundContext);
+  // Sender labels and quoted/chat context remain user-role fragments. Only
+  // runtime-owned reply identifiers and delivery policy enter developer space.
+  // The explicit empty runtime value supersedes a prior turn's scoped directive.
+  const additionalContext: NonNullable<CodexTurnStartParams["additionalContext"]> = {
+    ...(currentSenderContext
+      ? { openclaw_current_sender: { kind: "untrusted", value: currentSenderContext } }
+      : {}),
+    ...(currentInboundContext
+      ? { openclaw_current_inbound: { kind: "untrusted", value: currentInboundContext } }
+      : {}),
+    openclaw_current_runtime: { kind: "application", value: currentRuntimeContext },
+  };
   return {
     threadId: options.threadId,
     // codex-rs/app-server-protocol/src/protocol/v2/turn.rs:292-324 at 91d6f48992ad defines
@@ -95,7 +140,7 @@ export function buildTurnStartParams(
       ...buildCodexUserInput(options.promptText ?? params.prompt, params.images),
       ...(options.explicitSkillInputs ?? []),
     ],
-    ...(additionalContext ? { additionalContext } : {}),
+    additionalContext,
     cwd: options.cwd,
     ...(options.appServer.sessionRoot
       ? { runtimeWorkspaceRoots: [options.appServer.sessionRoot] }

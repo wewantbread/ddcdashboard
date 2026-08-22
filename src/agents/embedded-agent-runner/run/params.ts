@@ -78,12 +78,26 @@ type ReasoningStreamPayload = Pick<
   requiresReasoningProgressOptIn?: boolean;
 };
 
+type CurrentInboundReplyMetadata = {
+  currentMessageId?: string;
+  threadId?: string;
+  replyToId?: string;
+  replyToIdFull?: string;
+  replyTargetPresent?: boolean;
+  quotePresent?: boolean;
+  replyChainPresent?: boolean;
+  replyChainMessageIds?: string[];
+};
+
 export type CurrentInboundPromptContext = {
   text: string;
   resumableText?: string;
   promptJoiner?: "\n\n" | "\n" | " ";
+  /** Runtime-generated delivery policy; never channel-provided or user-authored text. */
+  trustedDeliveryDirective?: string;
   /** Generated goal blocks owned by inbound-context assembly, never user text. */
   injectedGoalContexts?: string[];
+  reply?: CurrentInboundReplyMetadata;
 };
 
 export type RunEmbeddedAgentParams = {
