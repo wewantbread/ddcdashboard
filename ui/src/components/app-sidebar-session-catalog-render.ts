@@ -423,6 +423,7 @@ function renderCatalogSessionRow(
     fallbackAgentId: params.newSessionAgentId,
     basePath: params.basePath,
     mainKey: params.mainKey,
+    catalogShareRoute: catalog.shareRoute,
   });
   const { href, options: navigation } = target;
   const active = params.routeSessionKey !== "" && key === params.routeSessionKey;

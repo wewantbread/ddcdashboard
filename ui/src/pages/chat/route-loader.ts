@@ -29,51 +29,19 @@ import {
   resolveUiGlobalAliasAgentId,
 } from "../../lib/sessions/session-key.ts";
 import { draftRouteDataFromLocation, draftSearchFromLocation } from "./route-draft.ts";
+import { loadCatalogShareRouteFromLocation } from "./route-loader-catalog-share.ts";
 import type { SessionRouteContext as ApplicationContext } from "./route-loader-context.ts";
 import { findCachedShortSession, sessionKeyUuid } from "./route-loader-short-cache.ts";
 import {
   resolveShortSessionReference,
   type SessionReferenceResolution,
 } from "./route-loader-short-resolve.ts";
+import type { ChatRouteData, SessionRouteCandidate } from "./session-route-data.ts";
+
+export type { ChatRouteData, SessionChatRouteData } from "./session-route-data.ts";
 
 const SESSION_REF_SEARCH_LIMIT = 20;
 const SESSION_REF_SEARCH_MAX_PAGES = 5;
-
-type SessionCandidate = {
-  agentId: string;
-  displayName: string;
-  href: string;
-  idPrefix: string;
-};
-
-export type ChatRouteData =
-  | {
-      kind: "session";
-      sessionKey: string;
-      agentId?: string;
-      draft?: string;
-      focusComposer?: boolean;
-      face: BoardFace;
-      shortId?: string;
-      canonicalLocation?: RouteLocation;
-      canonicalLocationReady?: Promise<RouteLocation | null>;
-      canonicalLocationSource?: RouteLocation;
-    }
-  | {
-      kind: "ambiguous";
-      shortId: string;
-      candidates: SessionCandidate[];
-      truncated: boolean;
-      face: BoardFace;
-    };
-
-export type SessionChatRouteData = Omit<
-  Extract<ChatRouteData, { kind: "session" }>,
-  "face" | "kind"
-> & {
-  face?: BoardFace;
-  kind?: "session";
-};
 
 type SessionReferenceSearch = { agentId: string } & (
   | { kind: "exact"; value: string }
@@ -398,7 +366,7 @@ function candidatesForResolution(
   resolution: Extract<SessionReferenceResolution, { kind: "ambiguous" }>,
   location: RouteLocation,
   preferenceDerived: boolean,
-): SessionCandidate[] {
+): SessionRouteCandidate[] {
   const resolvedRows = resolution.sessions.flatMap((row) => {
     const uuid = sessionKeyUuid(row.key);
     return uuid ? [{ row, uuid }] : [];
@@ -504,6 +472,11 @@ export async function loadChatRoute(
   face: BoardFace,
   signal: AbortSignal,
 ): Promise<ChatRouteData | ReturnType<typeof notFound>> {
+  const catalogShareRoute =
+    face === "chat" && (await loadCatalogShareRouteFromLocation(context, location, signal));
+  if (catalogShareRoute) {
+    return catalogShareRoute;
+  }
   const resolvedTarget = targetFromLocation(context, location);
   if (!resolvedTarget || resolvedTarget.target.namespace !== face) {
     return notFound({ routeId: face });

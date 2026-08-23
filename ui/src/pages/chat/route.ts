@@ -55,7 +55,13 @@ function sessionLoaderDeps(
 
 function sessionRenderOwnerKey(match: SessionOwnerMatch): string | undefined {
   const data = match.data as ChatRouteData | undefined;
-  return data?.kind === "ambiguous" ? undefined : CHAT_PAGE_OWNER_KEY;
+  return data?.kind === "ambiguous" || data?.kind === "route-error"
+    ? undefined
+    : CHAT_PAGE_OWNER_KEY;
+}
+
+function renderRouteError(data: Extract<ChatRouteData, { kind: "route-error" }>) {
+  return html`<section class="card"><p role="alert">${data.message}</p></section>`;
 }
 
 function sessionPage(face: BoardFace) {
@@ -82,7 +88,9 @@ function sessionPage(face: BoardFace) {
           }
           return routeData.kind === "ambiguous"
             ? renderAmbiguous(routeData)
-            : html`<openclaw-chat-page .data=${routeData}></openclaw-chat-page>`;
+            : routeData.kind === "route-error"
+              ? renderRouteError(routeData)
+              : html`<openclaw-chat-page .data=${routeData}></openclaw-chat-page>`;
         },
       })),
   });

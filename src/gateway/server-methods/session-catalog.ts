@@ -1,10 +1,12 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { isControlUiReservedRouteSegment } from "@openclaw/session-url-contract";
 import {
   ErrorCodes,
   errorShape,
   type SessionCatalog,
   type SessionCatalogLocator,
+  type SessionCatalogShareRoute,
   type SessionsCatalogArchiveParams,
   type SessionsCatalogContinueParams,
   type SessionsCatalogListParams,
@@ -13,6 +15,7 @@ import {
   validateSessionsCatalogContinueParams,
   validateSessionsCatalogListParams,
   validateSessionsCatalogReadParams,
+  validateSessionCatalogShareRoute,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
@@ -75,6 +78,7 @@ type CatalogRegistrationSnapshot = {
   source: PluginRegistry["sessionCatalogs"] | undefined;
   registrations: PluginRegistry["sessionCatalogs"];
   providers: SessionCatalogProvider[];
+  shareRoutes: ReadonlyMap<SessionCatalogProvider, SessionCatalogShareRoute>;
 };
 
 let cachedCatalogRegistrations: CatalogRegistrationSnapshot | undefined;
@@ -91,6 +95,23 @@ function catalogRegistrationSnapshot(): CatalogRegistrationSnapshot {
   const sortedRegistrations = (source ?? []).toSorted((left, right) =>
     left.provider.id.localeCompare(right.provider.id),
   );
+  const providerList = sortedRegistrations.map((entry) => entry.provider);
+  const validRoutes = providerList.flatMap((provider) =>
+    provider.shareRoute &&
+    validateSessionCatalogShareRoute(provider.shareRoute) &&
+    !isControlUiReservedRouteSegment(provider.shareRoute.routeSegment)
+      ? [{ provider, route: provider.shareRoute }]
+      : [],
+  );
+  const routeCounts = new Map<string, number>();
+  for (const { route } of validRoutes) {
+    routeCounts.set(route.routeSegment, (routeCounts.get(route.routeSegment) ?? 0) + 1);
+  }
+  const shareRoutes = new Map(
+    validRoutes
+      .filter(({ route }) => routeCounts.get(route.routeSegment) === 1)
+      .map(({ provider, route }) => [provider, route] as const),
+  );
   // Plugin registration arrays are process-stable until the active registry seam changes. Hoisting
   // this sort avoids rebuilding identical order every poll; registry/list identity invalidates it.
   // A stale snapshot would route requests to retired plugin instances, so callers share this owner.
@@ -98,7 +119,8 @@ function catalogRegistrationSnapshot(): CatalogRegistrationSnapshot {
     registry,
     source,
     registrations: sortedRegistrations,
-    providers: sortedRegistrations.map((entry) => entry.provider),
+    providers: providerList,
+    shareRoutes,
   };
   return cachedCatalogRegistrations;
 }
@@ -310,6 +332,7 @@ function registrationOrRespond(catalogId: string, respond: RespondFn) {
 
 function catalogResult(
   provider: SessionCatalogProvider,
+  shareRoute: SessionCatalogShareRoute | undefined,
   hosts: SessionCatalog["hosts"],
   error?: SessionCatalog["error"],
   createSession?: NonNullable<SessionCatalog["capabilities"]["createSession"]>,
@@ -323,6 +346,7 @@ function catalogResult(
       ...(provider.openTerminal ? { openTerminal: true } : {}),
       ...(createSession ? { createSession } : {}),
     },
+    ...(shareRoute ? { shareRoute } : {}),
     hosts,
   };
   if (error) {
@@ -428,6 +452,7 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       const listNodes = createSessionCatalogRequestNodeSnapshot();
       const catalogList = await Promise.all(
         selected.map(async (provider): Promise<SessionCatalog> => {
+          const shareRoute = catalogRegistrations.shareRoutes.get(provider);
           const createTarget = resolveProviderCreateTarget(provider, resolvedAgent.agentId, config);
           const createSession = createTarget.ok
             ? {
@@ -440,7 +465,13 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
               requestEntries.projectHostCreatedActors(host),
               visibility,
             );
-            const catalog = catalogResult(provider, [visibleHost], undefined, createSession);
+            const catalog = catalogResult(
+              provider,
+              shareRoute,
+              [visibleHost],
+              undefined,
+              createSession,
+            );
             // Progressive frames are an optimization. The final RPC response remains
             // authoritative when a slow client drops an intermediate host update.
             for (const subscriber of progressSubscribers.values()) {
@@ -470,6 +501,7 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
             });
             return catalogResult(
               provider,
+              shareRoute,
               hosts.map((host) =>
                 filterSessionCatalogHost(requestEntries.projectHostCreatedActors(host), visibility),
               ),
@@ -477,7 +509,7 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
               createSession,
             );
           } catch (error) {
-            return catalogResult(provider, [], catalogError(error), createSession);
+            return catalogResult(provider, shareRoute, [], catalogError(error), createSession);
           }
         }),
       );

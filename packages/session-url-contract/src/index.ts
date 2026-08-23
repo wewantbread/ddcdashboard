@@ -9,6 +9,16 @@ import {
 
 export { normalizeControlUiBasePath };
 export * from "./focus.js";
+export {
+  buildControlUiCatalogSharePath,
+  CONTROL_UI_RESERVED_ROUTE_SEGMENTS,
+  isControlUiCatalogShareId,
+  isControlUiCatalogShareRouteSegment,
+  isControlUiReservedRouteSegment,
+  matchControlUiCatalogSharePath,
+  type ControlUiCatalogShareRoute,
+  type ControlUiCatalogSharePathMatch,
+} from "./share.js";
 
 // Control UI session URL grammar shared by browser and plugin consumers.
 export type ControlUiSessionNamespace = "chat" | "dashboard";
