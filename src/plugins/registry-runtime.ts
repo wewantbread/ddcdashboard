@@ -570,6 +570,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         }
         return ownerPluginId;
       }
+      // A plugin-supplied sessionId that disagrees with its own key's persisted
+      // identity is an attempt to bind a foreign session id onto an owned key.
+      // The scoped ID scan below cannot observe ids living in other stores, so
+      // absence there would silently pass; fail closed on the mismatch itself.
       assertSessionIdentitiesOwned({
         action: "run",
         agentId: ownershipAgentId,
@@ -578,6 +582,15 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         sessionKeys: [target?.sessionKey ?? params.sessionKey],
         storePath: ownershipStorePath,
       });
+      // The scoped ID scan above cannot observe ids living in other stores, so
+      // a plugin-supplied sessionId that disagrees with its own key's persisted
+      // identity would silently pass here. Same-store mismatches already fail
+      // inside the scan with a richer ownership error; this catches the rest.
+      if (directSessionId && sessionKey && entry && entry.sessionId !== directSessionId) {
+        throw new Error(
+          `Plugin "${pluginId}" may execute session "${sessionKey}" only with its exact persisted identity.`,
+        );
+      }
       return undefined;
     };
     const assertGatewaySessionRequestOwned = (
