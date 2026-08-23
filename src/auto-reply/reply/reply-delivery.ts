@@ -154,6 +154,10 @@ export function createBlockReplyDeliveryHandler(params: {
       extractMediaDirectives: false,
     });
 
+    // Reserve visible text before media normalization yields so concurrent blocks
+    // observe call order instead of both trimming as the first text block.
+    hasAcceptedTextBlock ||= Boolean(normalized.payload.text) && !normalized.isSilent;
+
     const mediaNormalizedPayload = params.normalizeMediaPaths
       ? await params.normalizeMediaPaths(normalized.payload)
       : normalized.payload;
