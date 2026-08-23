@@ -155,6 +155,7 @@ export type GatewaySessionRow = {
   verboseLevel?: string;
   traceLevel?: string;
   reasoningLevel?: string;
+  effectiveReasoningLevel?: string;
   elevatedLevel?: string;
   sendPolicy?: "allow" | "deny";
   inputTokens?: number;

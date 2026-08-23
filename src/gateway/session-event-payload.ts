@@ -85,6 +85,7 @@ export function buildGatewaySessionEventFields(params: {
     verboseLevel: sessionRow.verboseLevel,
     traceLevel: sessionRow.traceLevel,
     reasoningLevel: sessionRow.reasoningLevel,
+    effectiveReasoningLevel: sessionRow.effectiveReasoningLevel,
     elevatedLevel: sessionRow.elevatedLevel,
     sendPolicy: sessionRow.sendPolicy,
     systemSent: sessionRow.systemSent,
