@@ -105,6 +105,7 @@ async function emitObserverAndReadToast(
       await host.updateComplete;
 
       const toast = host.querySelector<HTMLElement>(".app-toast");
+      await Promise.all(toast?.getAnimations().map((animation) => animation.finished) ?? []);
       const isVisible = (target: HTMLElement | null): target is HTMLElement => {
         if (!target?.isConnected) {
           return false;

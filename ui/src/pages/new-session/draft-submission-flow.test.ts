@@ -362,6 +362,30 @@ describe("DraftSubmissionFlow submit gates", () => {
 });
 
 describe("DraftSubmissionFlow", () => {
+  it("creates a background session without navigating away", async () => {
+    const { context, flow } = createDraftFixture({
+      request: async (method) => (method === "agent.wait" ? { status: "ok", endedAt: 1 } : {}),
+    });
+    vi.mocked(context.sessions.createResult).mockResolvedValue({
+      key: "agent:main:dashboard:background",
+      initialRun: { status: "started", runId: "run-background" },
+    });
+    flow.setMessage("start this in the background");
+
+    await flow.submit(true);
+
+    expect(context.sessions.createResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        message: "start this in the background",
+      }),
+      { reconciliation: "background" },
+    );
+    expect(context.navigateAndWait).not.toHaveBeenCalled();
+    expect(flow.message).toBe("");
+    expect(flow.submitting).toBe(false);
+  });
+
   it("surfaces navigation failure after a session has already been created", async () => {
     const { context, flow } = createDraftFixture();
     vi.mocked(context.sessions.createResult).mockResolvedValue({

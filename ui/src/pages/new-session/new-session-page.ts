@@ -626,6 +626,7 @@ export class NewSessionPage extends OpenClawLightDomElement {
             }
           },
           onSubmit: () => void this.submission.submit(),
+          onBackgroundSubmit: () => void this.submission.submit(true),
         })}
       </div>
     `;

@@ -14,6 +14,8 @@ export type ToastOptions = {
   onAction?: () => void;
   onDismiss?: (reason: ToastDismissReason) => void;
   durationMs?: number;
+  /** Queue behind the active toast so unrelated replacements keep priority. */
+  fifo?: boolean;
 };
 
 const DEFAULT_TOAST_DURATION_MS = 6_000;
@@ -31,6 +33,7 @@ let queuedToast: ToastOptions | null = null;
 
 class OpenClawToastHost extends OpenClawLightDomContentsElement {
   @state() private toast: ToastOptions | null = null;
+  private toastQueue?: ToastOptions[];
   private dismissTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 
   override connectedCallback() {
@@ -56,6 +59,10 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
   connectedMoveCallback() {}
 
   show(options: ToastOptions) {
+    if (options.fifo && this.toast) {
+      (this.toastQueue ??= []).push(options);
+      return;
+    }
     this.dismiss("replaced");
     this.toast = options;
     this.dismissTimer = globalThis.setTimeout(
@@ -76,6 +83,13 @@ class OpenClawToastHost extends OpenClawLightDomContentsElement {
     this.clearDismissTimer();
     this.toast = null;
     toast?.onDismiss?.(reason);
+    if (reason === "replaced") {
+      return;
+    }
+    const next = this.toastQueue?.shift();
+    if (next) {
+      this.show(next);
+    }
   }
 
   override render() {

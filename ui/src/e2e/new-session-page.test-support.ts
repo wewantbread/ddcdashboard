@@ -17,6 +17,7 @@ import { waitForCommittedState } from "./settle.test-support.ts";
 export { controlUiSessionPath, controlUiSessionUrl, waitForConfirmModal };
 
 const NEW_SESSION_FEATURE_METHODS = [
+  "agent.wait",
   "chat.metadata",
   "chat.startup",
   "sessions.create",

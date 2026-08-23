@@ -734,6 +734,20 @@ openclaw-session-owner-chip {
   background: var(--popover);
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
+  animation: app-toast-enter 180ms var(--ease-out) both;
+}
+
+@keyframes app-toast-enter {
+  from {
+    opacity: 0;
+    transform: translateX(calc(100% + 28px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toast {
+    animation: none;
+  }
 }
 
 /* A corner toast degenerates at phone widths, where it would span nearly the

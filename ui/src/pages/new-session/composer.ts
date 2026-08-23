@@ -67,6 +67,7 @@ type NewSessionComposerOptions = {
   onOpenImage?: (item: ImageLightboxItem) => void;
   onVisibilityChange?: (visibility: NewSessionVisibility) => void;
   onSubmit: () => void;
+  onBackgroundSubmit?: () => void;
 };
 
 function submitNewSession(
@@ -227,10 +228,22 @@ function handleComposerKeydown(
   ) {
     return;
   }
-  if (event.key !== "Enter" || event.shiftKey) {
+  if (event.key !== "Enter") {
     return;
   }
-  if (options.requiresModifier && !event.metaKey && !event.ctrlKey) {
+  const hasSubmitModifier = event.metaKey || event.ctrlKey;
+  const isBackgroundShortcut = options.requiresModifier
+    ? hasSubmitModifier && event.shiftKey
+    : hasSubmitModifier && !event.shiftKey;
+  if (!event.altKey && isBackgroundShortcut && options.onBackgroundSubmit) {
+    if (options.canSubmit || options.submitDisabledReason !== undefined) {
+      event.preventDefault();
+      resetSkillMenuState(options.textareaController.skillMenuState);
+      options.onBackgroundSubmit();
+    }
+    return;
+  }
+  if (event.shiftKey || (options.requiresModifier && !hasSubmitModifier)) {
     return;
   }
   // A reasoned gate still consumes the press: the submission flow records the
@@ -311,6 +324,7 @@ function renderNewSessionComposer(options: NewSessionComposerOptions) {
               ?disabled=${options.submitting || options.messageLocked}
               placeholder=${t("newSession.messagePlaceholder")}
               aria-label=${t("newSession.messagePlaceholder")}
+              aria-keyshortcuts=${`Control+Enter Meta+Enter${options.requiresModifier ? " Control+Shift+Enter Meta+Shift+Enter" : " Enter"}`}
               .value=${options.message}
               aria-autocomplete="list"
               aria-controls=${ifDefined(skillMenuVisible ? skillMenuListboxId : undefined)}
@@ -400,6 +414,7 @@ export function renderNewSessionDraftComposer(options: {
   onOpenImage?: (item: ImageLightboxItem) => void;
   onVisibilityChange?: (visibility: NewSessionVisibility) => void;
   onSubmit: () => void;
+  onBackgroundSubmit?: () => void;
 }) {
   const readSignal = options.attachmentDraft.readSignal;
   const commandClient = options.context?.gateway.snapshot.client;
@@ -442,5 +457,6 @@ export function renderNewSessionDraftComposer(options: {
     onOpenImage: options.onOpenImage,
     onVisibilityChange: options.onVisibilityChange,
     onSubmit: options.onSubmit,
+    onBackgroundSubmit: options.onBackgroundSubmit,
   });
 }
