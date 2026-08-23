@@ -6,24 +6,15 @@ import type {
   GatewayTailscaleConfig,
 } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  formatUnsafeGatewayTailscaleNoAuthMessage,
-  isUnsafeGatewayTailscaleNoAuth,
-} from "../shared/gateway-tailscale-auth-policy.js";
-import {
-  assertGatewayAuthConfigured,
-  type ResolvedGatewayAuth,
-  resolveGatewayAuth,
-} from "./auth.js";
+import { type ResolvedGatewayAuth, resolveGatewayAuth } from "./auth.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
 import { warnLegacyOpenClawEnvVars } from "./env-deprecation.js";
 import { commitHooksConfigReload, resolveHooksConfig } from "./hooks.js";
+import { defaultGatewayBindMode, resolveGatewayBindHost } from "./net.js";
 import {
-  defaultGatewayBindMode,
-  isLoopbackHost,
-  isValidIPv4,
-  resolveGatewayBindHost,
-} from "./net.js";
+  assertGatewayResolvedBindPolicy,
+  assertGatewayRuntimeSecurityPolicy,
+} from "./runtime-security-policy.js";
 import { mergeGatewayTailscaleConfig } from "./startup-auth.js";
 
 type GatewayRuntimeConfig = {
@@ -68,32 +59,7 @@ export async function resolveGatewayRuntimeConfig(params: {
     bindExplicit ?? (tailscaleModeEarly !== "off" ? "loopback" : defaultGatewayBindMode());
   const customBindHost = params.cfg.gateway?.customBindHost;
   const bindHost = params.host ?? (await resolveGatewayBindHost(bindMode, customBindHost));
-  if (bindMode === "loopback" && !isLoopbackHost(bindHost)) {
-    throw new Error(
-      `gateway bind=loopback resolved to non-loopback host ${bindHost}; refusing fallback to a network bind`,
-    );
-  }
-  if (bindMode === "tailnet" && bindHost === "0.0.0.0") {
-    throw new Error(
-      "gateway bind=tailnet could not resolve a Tailscale or loopback address; refusing wildcard fallback",
-    );
-  }
-  if (bindMode === "custom") {
-    const configuredCustomBindHost = customBindHost?.trim();
-    if (!configuredCustomBindHost) {
-      throw new Error("gateway.bind=custom requires gateway.customBindHost");
-    }
-    if (!isValidIPv4(configuredCustomBindHost)) {
-      throw new Error(
-        `gateway.bind=custom requires a valid IPv4 customBindHost (got ${configuredCustomBindHost})`,
-      );
-    }
-    if (bindHost !== configuredCustomBindHost) {
-      throw new Error(
-        `gateway bind=custom requested ${configuredCustomBindHost} but resolved ${bindHost}; refusing fallback`,
-      );
-    }
-  }
+  assertGatewayResolvedBindPolicy({ bindMode, bindHost, customBindHost });
   const controlUiEnabled =
     params.controlUiEnabled ?? params.cfg.gateway?.controlUi?.enabled ?? true;
   const openAiChatCompletionsConfig = params.cfg.gateway?.http?.endpoints?.chatCompletions;
@@ -129,13 +95,6 @@ export async function resolveGatewayRuntimeConfig(params: {
     tailscaleMode,
   });
   const authMode: ResolvedGatewayAuth["mode"] = resolvedAuth.mode;
-  const hasToken = typeof resolvedAuth.token === "string" && resolvedAuth.token.trim().length > 0;
-  const hasPassword =
-    typeof resolvedAuth.password === "string" && resolvedAuth.password.trim().length > 0;
-  // Non-loopback binds need a concrete shared secret unless auth is delegated to a
-  // trusted proxy; mode alone is not enough because env/config resolution may be empty.
-  const hasSharedSecret =
-    (authMode === "token" && hasToken) || (authMode === "password" && hasPassword);
   const hooksConfig = resolveHooksConfig(params.cfg);
   const trustedProxies = params.cfg.gateway?.trustedProxies ?? [];
   const controlUiAllowedOrigins = (params.cfg.gateway?.controlUi?.allowedOrigins ?? [])
@@ -144,45 +103,17 @@ export async function resolveGatewayRuntimeConfig(params: {
   const dangerouslyAllowHostHeaderOriginFallback =
     params.cfg.gateway?.controlUi?.dangerouslyAllowHostHeaderOriginFallback === true;
 
-  assertGatewayAuthConfigured(resolvedAuth, params.cfg.gateway?.auth);
-  if (tailscaleMode === "funnel" && authMode !== "password") {
-    throw new Error(
-      "tailscale funnel requires gateway auth mode=password (set gateway.auth.password or OPENCLAW_GATEWAY_PASSWORD)",
-    );
-  }
-  if (isUnsafeGatewayTailscaleNoAuth({ authMode, tailscaleMode })) {
-    throw new Error(formatUnsafeGatewayTailscaleNoAuthMessage(tailscaleMode));
-  }
-  if (tailscaleMode !== "off" && !isLoopbackHost(bindHost)) {
-    throw new Error("tailscale serve/funnel requires gateway bind=loopback (127.0.0.1)");
-  }
-  if (!isLoopbackHost(bindHost) && !hasSharedSecret && authMode !== "trusted-proxy") {
-    throw new Error(
-      `refusing to bind gateway to ${bindHost}:${params.port} without auth (set gateway.auth.token/password, or set OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD; legacy CLAWDBOT_* and MOLTBOT_* environment variables are ignored)`,
-    );
-  }
-  if (
-    controlUiEnabled &&
-    !isLoopbackHost(bindHost) &&
-    controlUiAllowedOrigins.length === 0 &&
-    !dangerouslyAllowHostHeaderOriginFallback
-  ) {
-    // Remote Control UI must use explicit origins unless the operator deliberately accepts
-    // Host-header fallback; otherwise any reachable host name can become a browser origin.
-    throw new Error(
-      "non-loopback Control UI requires gateway.controlUi.allowedOrigins (set explicit origins), or set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback=true to use Host-header origin fallback mode",
-    );
-  }
-
-  if (authMode === "trusted-proxy") {
-    // Trusted-proxy auth trusts headers only after the request has matched an allowed proxy IP.
-    // Starting without that list would convert the mode into unauthenticated header spoofing.
-    if (trustedProxies.length === 0) {
-      throw new Error(
-        "gateway auth mode=trusted-proxy requires gateway.trustedProxies to be configured with at least one proxy IP",
-      );
-    }
-  }
+  assertGatewayRuntimeSecurityPolicy({
+    resolvedAuth,
+    rawAuthConfig: params.cfg.gateway?.auth,
+    tailscaleMode,
+    bindHost,
+    port: params.port,
+    controlUiEnabled,
+    controlUiAllowedOrigins,
+    dangerouslyAllowHostHeaderOriginFallback,
+    trustedProxies,
+  });
 
   if (hooksConfig) {
     commitHooksConfigReload();

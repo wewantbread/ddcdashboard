@@ -23,6 +23,7 @@ import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 import { collectChannelSecurityFindingsCore } from "../security/audit-channel.js";
 import type { SecurityAuditFinding } from "../security/audit.types.js";
 import { collectExecFilesystemPolicyDriftHits } from "../security/exec-filesystem-policy.js";
+import { inspectTrustedProxyReadiness } from "./doctor-trusted-proxy-readiness.js";
 
 function collectImplicitHeartbeatDirectPolicyWarnings(cfg: OpenClawConfig): SecurityAuditFinding[] {
   const findings: SecurityAuditFinding[] = [];
@@ -269,6 +270,7 @@ function collectPlaintextConfigSecretWarnings(cfg: OpenClawConfig): SecurityAudi
 export async function collectSecurityWarnings(
   cfg: OpenClawConfig,
   env: NodeJS.ProcessEnv = process.env,
+  options: { allowExecSecretRefs?: boolean } = {},
 ): Promise<SecurityAuditFinding[]> {
   const findings: SecurityAuditFinding[] = [];
 
@@ -328,7 +330,48 @@ export async function collectSecurityWarnings(
   ];
 
   if (isExposed) {
-    if (!hasSharedSecret) {
+    if (resolvedAuth.mode === "trusted-proxy") {
+      const readiness = await inspectTrustedProxyReadiness({
+        cfg,
+        auth: resolvedAuth,
+        bindMode,
+        bindHost: resolvedBindHost,
+        configuredBind: gatewayBind,
+        env,
+        allowExecSecretRefs: options.allowExecSecretRefs,
+      });
+      if (readiness.problems.length > 0) {
+        findings.push({
+          checkId: "gateway.trusted_proxy_not_ready",
+          severity: "critical",
+          title: "CRITICAL",
+          detail: [
+            `Gateway bound to ${bindDescriptor} with unsafe or incomplete trusted-proxy authentication.`,
+            ...readiness.problems,
+          ].join("\n"),
+          remediation: [
+            "Fix gateway.auth.trustedProxy, gateway.trustedProxies, the explicit browser-origin policy, and any reported Gateway startup error before exposing this port.",
+            ...(readiness.execSecretRefSkipped
+              ? ["Rerun Doctor with --allow-exec to verify the configured secret provider."]
+              : []),
+          ].join("\n"),
+        });
+      } else {
+        findings.push({
+          checkId: "gateway.bind_network_accessible",
+          severity: "warn",
+          title: "WARNING",
+          detail: [
+            `Gateway bound to ${bindDescriptor} with trusted-proxy authentication configured.`,
+            "The Gateway validates each request's proxy source and identity headers; review the deep security audit before exposing this port.",
+          ].join("\n"),
+          remediation: [
+            "Ensure only configured trusted proxies can reach the Gateway port; block direct clients at a host firewall, network firewall, or loopback bind.",
+            "Docs: https://docs.openclaw.ai/gateway/trusted-proxy-auth",
+          ].join("\n"),
+        });
+      }
+    } else if (!hasSharedSecret) {
       const authFixLines =
         resolvedAuth.mode === "password"
           ? [
@@ -405,8 +448,11 @@ function renderSecurityFindingLines(finding: SecurityAuditFinding): string[] {
 }
 
 /** Emits security warnings plus the deep audit follow-up command. */
-export async function noteSecurityWarnings(cfg: OpenClawConfig) {
-  const findings = await collectSecurityWarnings(cfg);
+export async function noteSecurityWarnings(
+  cfg: OpenClawConfig,
+  options: { allowExecSecretRefs?: boolean; env?: NodeJS.ProcessEnv } = {},
+) {
+  const findings = await collectSecurityWarnings(cfg, options.env, options);
   if (findings.length > 0) {
     const lines = findings.flatMap(renderSecurityFindingLines);
     lines.push(`- Run: ${formatCliCommand("openclaw security audit --deep")}`);

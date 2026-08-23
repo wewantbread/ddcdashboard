@@ -451,6 +451,8 @@ Before enabling trusted-proxy auth, verify:
 
 `openclaw security audit` flags trusted-proxy auth with a **critical** severity finding. This is intentional; it's a reminder that you're delegating security to your proxy setup.
 
+`openclaw doctor` uses a narrower readiness diagnostic. For a non-loopback Gateway, a complete, host-scoped configuration receives a network-access warning instead of being described as unauthenticated. Invalid startup policy, proxy sources, identity headers, allowlisted identities, or browser origins remain critical. The deep security audit keeps the intentional critical reminder because Doctor cannot verify the live proxy's forwarded-client attribution, header rewriting, exclusive ingress, or firewall boundary.
+
 The audit checks for:
 
 - Base `gateway.trusted_proxy_auth` warning/critical reminder.
