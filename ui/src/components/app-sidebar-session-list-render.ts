@@ -22,6 +22,7 @@ import {
 } from "./app-sidebar-session-types.ts";
 import { icons } from "./icons.ts";
 import { renderPanelRefreshStatus, type PanelRefreshStatus } from "./panel-refresh-status.ts";
+import type { SessionOrganizerController } from "./session-organizer-controller.ts";
 
 type RenderableSessionSection = SidebarSessionSection<SidebarRecentSession> & {
   totalRowCount: number;
@@ -303,6 +304,7 @@ function renderSessionCatalog(params: {
   renderer: SessionCatalogGroupsRenderer;
 }) {
   const { host, snapshot, catalog, renderer } = params;
+  const owner = host.sessionOrganizer as SessionOrganizerController;
   const newSessionAccess = host.readNewSessionAccess();
   const groupWriteAccess = host.readSessionMutationAccess({
     method: "sessions.groups.put",
@@ -328,6 +330,7 @@ function renderSessionCatalog(params: {
           display,
         }),
       onToggleSection: (sectionId) => host.toggleSection(sectionId),
+      onMigrateCollapsedSection: (prefix, id) => owner.migrateCollapsedSection(prefix, id),
       draggingSectionId: host.sessionOrganizer.draggingSidebarSection,
       sectionDropTarget: host.sessionOrganizer.sidebarSectionDropTarget,
       onSectionDragOver: (event, sectionId) => host.sectionDragOver(event, sectionId),

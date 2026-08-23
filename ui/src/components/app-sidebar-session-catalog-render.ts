@@ -48,6 +48,7 @@ type SessionCatalogGroupsParams = {
   ownerId?: string | null;
   renderLiveRow: (row: GatewaySessionRow, display: CatalogBackingSessionDisplay) => unknown;
   onToggleSection: (sectionId: string) => void;
+  onMigrateCollapsedSection: (sectionPrefix: string, sectionId: string) => boolean;
   draggingSectionId: string | null;
   sectionDropTarget: { sectionId: string; position: "before" | "after" } | null;
   onSectionDragOver: (event: DragEvent, sectionId: string) => void;
@@ -337,8 +338,11 @@ function renderCatalogHostGroup(
       <div class="sidebar-session-catalog-host__sessions" role="list" aria-label=${host.label}>
         ${projectGroups
           ? html`${projectGroups.groups.map((group) => {
-              const sectionId = `catalog-project:${catalog.id}:${host.hostId}:${group.key}`;
-              const collapsed = params.collapsedSections.has(sectionId);
+              const sectionPrefix = `catalog-project:${catalog.id}:${host.hostId}:`;
+              const sectionId = `${sectionPrefix}${group.id}`;
+              const collapsed =
+                params.collapsedSections.has(sectionId) ||
+                params.onMigrateCollapsedSection(sectionPrefix, sectionId);
               return html`
                 <div class="sidebar-session-catalog-project" role="listitem">
                   <button

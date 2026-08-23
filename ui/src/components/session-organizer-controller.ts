@@ -5,6 +5,7 @@ import {
   type PersistedSidebarRoute,
 } from "../app-navigation.ts";
 import { t } from "../i18n/index.ts";
+import { catalogProjectPathIdentity } from "../lib/sessions/catalog-project-grouping.ts";
 import {
   readSessionDragData,
   readSidebarSectionDragData,
@@ -562,6 +563,22 @@ export class SessionOrganizerController {
     } catch {
       // Group membership and ordering remain usable without local persistence.
     }
+  }
+
+  migrateCollapsedSection(prefix: string, id: string): boolean {
+    const collapsed = new Set(
+      [...this.collapsedSessionSections].filter(
+        (candidate) =>
+          candidate === id ||
+          !candidate.startsWith(prefix) ||
+          catalogProjectPathIdentity(candidate.slice(prefix.length)) !== id.slice(prefix.length),
+      ),
+    );
+    if (collapsed.size === this.collapsedSessionSections.size) {
+      return false;
+    }
+    this.saveCollapsedSessionSections(collapsed.add(id));
+    return true;
   }
 
   toggleSection(sectionId: string) {

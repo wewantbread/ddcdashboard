@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionCatalogSession } from "../../../../packages/gateway-protocol/src/index.ts";
+import { SessionOrganizerController as Organizer } from "../../components/session-organizer-controller.ts";
 import {
   groupCatalogSessionsByPerson,
   groupCatalogSessionsByProject,
   normalizeCatalogProjectGrouping,
 } from "./catalog-project-grouping.ts";
 
+afterEach(() => vi.unstubAllGlobals());
 describe("normalizeCatalogProjectGrouping", () => {
   it.each([
     ["project", "project"],
@@ -78,6 +80,23 @@ describe("groupCatalogSessionsByProject", () => {
     expect(result.ungrouped.map((item) => item.threadId)).toEqual(["missing", "blank"]);
   });
 
+  it("leaves Windows filesystem roots and root worktrees ungrouped", () => {
+    const result = groupCatalogSessionsByProject([
+      session("drive-root", "C:\\"),
+      session("drive-root-worktree", "c:\\.CLAUDE\\WORKTREES\\fix-1\\src"),
+      session("current-drive-root", "\\"),
+      session("current-drive-root-worktree", "\\.claude\\worktrees\\fix-2\\src"),
+    ]);
+
+    expect(result.groups).toHaveLength(0);
+    expect(result.ungrouped.map((item) => item.threadId)).toEqual([
+      "drive-root",
+      "drive-root-worktree",
+      "current-drive-root",
+      "current-drive-root-worktree",
+    ]);
+  });
+
   it.each([
     [" /Users/dev/openclaw/// ", "/Users/dev/openclaw", "openclaw"],
     ["C:\\Users\\dev\\openclaw\\", "C:\\Users\\dev\\openclaw", "openclaw"],
@@ -89,6 +108,108 @@ describe("groupCatalogSessionsByProject", () => {
       label: expectedLabel,
       title: expectedKey,
     });
+  });
+
+  it("groups equivalent Windows cwd spellings under the first display path", () => {
+    const result = groupCatalogSessionsByProject([
+      session("first", "C:\\Work\\Notes"),
+      session("second", "c:/work/notes/"),
+      session("third", "C:/WORK/NOTES"),
+    ]);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
+      key: "C:\\Work\\Notes",
+      label: "Notes",
+      title: "C:\\Work\\Notes",
+    });
+    expect(result.groups[0]?.sessions.map((item) => item.threadId)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+  });
+
+  it("keeps the normalized Windows group id stable when recency order reverses", () => {
+    const firstOrder = groupCatalogSessionsByProject([
+      session("newer", "C:\\Work\\Notes"),
+      session("older", "c:/work/notes/"),
+    ]);
+    const reversedOrder = groupCatalogSessionsByProject([
+      session("older", "c:/work/notes/"),
+      session("newer", "C:\\Work\\Notes"),
+    ]);
+
+    expect(firstOrder.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
+      key: "C:\\Work\\Notes",
+    });
+    expect(reversedOrder.groups[0]).toMatchObject({
+      id: "windows:drive:c:/work/notes",
+      key: "c:/work/notes",
+    });
+  });
+
+  it("preserves Windows root kinds while grouping equivalent UNC paths", () => {
+    const result = groupCatalogSessionsByProject([
+      session("unc-first", "\\\\Server\\Share\\Project"),
+      session("unc-second", "\\\\server\\share\\project"),
+      session("current-drive-rooted", "\\Server\\Share\\Project"),
+    ]);
+
+    expect(result.groups).toHaveLength(2);
+    expect(result.groups[0]?.sessions.map((item) => item.threadId)).toEqual([
+      "unc-first",
+      "unc-second",
+    ]);
+    expect(result.groups[1]?.sessions.map((item) => item.threadId)).toEqual([
+      "current-drive-rooted",
+    ]);
+  });
+
+  it("keeps an UNC share root groupable as a project root", () => {
+    const result = groupCatalogSessionsByProject([
+      session("first", "\\\\Server\\Share\\"),
+      session("second", "\\\\server\\share"),
+    ]);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]?.sessions.map((item) => item.threadId)).toEqual(["first", "second"]);
+    expect(result.ungrouped).toHaveLength(0);
+  });
+
+  it("folds case-varied Windows worktree paths into their origin project", () => {
+    const result = groupCatalogSessionsByProject([
+      session("direct", "C:\\Work\\OpenClaw"),
+      session("worktree", "c:/work/openclaw/.CLAUDE/WORKTREES/fix-1/ui/src"),
+    ]);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]?.sessions.map((item) => item.threadId)).toEqual(["direct", "worktree"]);
+    const s = new Map<string, string>();
+    vi.stubGlobal("localStorage", { getItem: s.get.bind(s), setItem: s.set.bind(s) });
+    const host = { addController() {}, requestUpdate() {} } as never;
+    const owner = new Organizer(host);
+    owner.saveCollapsedSessionSections(new Set([String.raw`p:C:\R\.CLAUDE\WORKTREES\x`]));
+    owner.migrateCollapsedSection("p:", "p:windows:drive:c:/r");
+    expect([...new Organizer(host).collapsedSessionSections]).toEqual(["p:windows:drive:c:/r"]);
+  });
+
+  it("keeps POSIX cwd matching case-sensitive", () => {
+    const result = groupCatalogSessionsByProject([
+      session("upper", "/Work/Notes"),
+      session("lower", "/work/notes"),
+      session("double-upper", "//mnt/Repo"),
+      session("double-lower", "//mnt/repo"),
+    ]);
+
+    expect(result.groups.map((group) => group.key)).toEqual([
+      "/Work/Notes",
+      "/work/notes",
+      "//mnt/Repo",
+      "//mnt/repo",
+    ]);
   });
 });
 
