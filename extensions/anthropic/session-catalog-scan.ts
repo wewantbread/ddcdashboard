@@ -5,8 +5,11 @@ import path from "node:path";
 import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
 
 const MAX_CATALOG_JSON_CACHE_ENTRIES = 4_000;
+/** @internal Exported for testing. */
 export const MAX_CATALOG_JSON_CACHE_BYTES = 64 * 1024 * 1024;
+/** @internal Exported for testing. */
 export const MAX_CATALOG_JSON_FILE_BYTES = 16 * 1024 * 1024;
+/** @internal Exported for testing. */
 export const MAX_CATALOG_JSON_SCAN_BYTES = 64 * 1024 * 1024;
 export const CLAUDE_CATALOG_IO_CONCURRENCY = 32;
 
@@ -294,6 +297,11 @@ export async function readJsonFile(
         break;
       }
       offset += bytesRead;
+    }
+    if (offset !== buffer.length) {
+      deleteCatalogJsonCache(filePath);
+      markCatalogJsonRace(options.budget, options.onIoFailure);
+      return undefined;
     }
     const content = buffer.subarray(0, offset).toString("utf8");
     const value = JSON.parse(content) as unknown;
