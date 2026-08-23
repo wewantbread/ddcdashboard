@@ -7,6 +7,7 @@ import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-e
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
+import { shouldDeferTerminalCleanupForUnconfirmedChild } from "./subagent-registry-cleanup.js";
 import type { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { reconcileOrphanedRun, safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
 import type {
@@ -36,8 +37,8 @@ import { isStaleUnendedSubagentRun } from "./subagent-run-liveness.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import {
   loadSubagentSessionEntry,
-  resolveCompletionFromSessionEntry,
   resolveSubagentRunOrphanReason,
+  settleSubagentRunFromSessionStore,
   type SubagentSessionStoreCache,
 } from "./subagent-session-reconciliation.js";
 export { retireSupersededSubagentRun } from "./subagent-registry-sweeper-retire.js";
@@ -386,27 +387,11 @@ export function createSubagentRegistrySweeper(params: {
               continue;
             }
 
-            const sessionEntry = loadSubagentSessionEntry({
-              childSessionKey: entry.childSessionKey,
-              storeCache,
-            });
-            const completion = resolveCompletionFromSessionEntry(sessionEntry, now, {
-              notBeforeMs: entry.execution.startedAt ?? entry.createdAt,
-            });
-            if (completion) {
-              await params.completeSubagentRunWithRecovery(
-                {
-                  runId,
-                  startedAt: completion.startedAt,
-                  endedAt: completion.endedAt,
-                  outcome: completion.outcome,
-                  reason: completion.reason,
-                  sendFarewell: true,
-                  accountId: entry.requesterOrigin?.accountId,
-                  triggerCleanup: true,
-                },
-                "sweeper-session-completion",
-              );
+            const settled = await settleSubagentRunFromSessionStore(
+              params.completeSubagentRunWithRecovery,
+              { runId, entry, now, storeCache, source: "sweeper-session-completion" },
+            );
+            if (settled === "settled") {
               continue;
             }
 
@@ -505,6 +490,28 @@ export function createSubagentRegistrySweeper(params: {
               entry.delivery.disposition === "session_queued"))
         ) {
           // Queued or leased completion delivery owns this row until it settles.
+          continue;
+        }
+        if (shouldDeferTerminalCleanupForUnconfirmedChild(entry)) {
+          // A retention clock is not stop evidence. Only the child's own
+          // terminal session record promotes this row out of the unconfirmed
+          // state; while that record still says running, nothing here may
+          // retire the row, its attachments, or its session.
+          await settleSubagentRunFromSessionStore(params.completeSubagentRunWithRecovery, {
+            runId,
+            entry,
+            now,
+            storeCache,
+            source: "sweeper-unconfirmed-child",
+          });
+          // Fail closed on every result. `settled` already promoted the row
+          // through the ordinary lifecycle path, so the next sweep retires it
+          // with the observed outcome. `live` is positive evidence the child is
+          // still running. `absent` is not evidence of a stop at all — the entry
+          // is best-effort and also reads absent when the store is unreadable or
+          // simply not written yet, so treating it as death would delete a live
+          // child's session and attachments. Retain and retry instead; only
+          // observed stop evidence may retire this row.
           continue;
         }
         if (!entry.archiveAtMs && entry.cleanup === "keep" && entry.spawnMode !== "session") {
