@@ -685,7 +685,9 @@ async function scanClaudeSessions(
         message:
           budget.skippedFiles > 0
             ? `Some Local Claude session metadata was skipped by the 16 MiB per-file or 64 MiB aggregate safety limit (${budget.skippedFiles} file${budget.skippedFiles === 1 ? "" : "s"}).`
-            : "Some Local Claude session metadata could not be read.",
+            : budget.racedFiles > 0
+              ? `Some Local Claude session metadata changed while being read (${budget.racedFiles} file${budget.racedFiles === 1 ? "" : "s"}).`
+              : "Some Local Claude session metadata could not be read.",
       };
   return {
     records: [...records.values()].toSorted((left, right) => {
