@@ -14,7 +14,6 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../../../config/sessions/session-entry-provenance.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
-import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { resolveEventSessionRoutingPolicy } from "../../../infra/event-session-routing.js";
 import {
@@ -36,6 +35,11 @@ import {
 import { deliveryContextFromSession } from "../../../utils/delivery-context.shared.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
 import {
+  resolveAgentExecutionPlacement,
+  type AgentExecutionPlacement,
+  type AgentExecutionPlacementRequest,
+} from "../../execution-backends.js";
+import {
   findAcpUnsupportedInheritedToolAllow,
   findAcpUnsupportedInheritedToolDeny,
   formatAcpInheritedToolAllowError,
@@ -43,7 +47,6 @@ import {
   inheritedToolAllowPatch,
   inheritedToolDenyPatch,
 } from "../../inherited-tool-deny.js";
-import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import {
   runSpawnPipeline,
   type SpawnBackendAdapter,
@@ -54,7 +57,6 @@ import {
   prepareSpawnThreadBinding,
   resolveSpawnAdmission,
   resolveSpawnMode,
-  resolveSpawnSandboxError,
   type PreparedSpawnThreadBinding,
 } from "../../spawn-plan.js";
 import { resolveSpawnedWorkspaceInheritance } from "../../spawned-context.js";
@@ -69,6 +71,7 @@ import {
   type AcpSpawnParentRelayHandle,
   startAcpSpawnParentStreamRelay,
 } from "./acp-spawn-parent-stream.js";
+import { resolveAcpSpawnRuntimePolicyError } from "./acp-spawn-policy.js";
 import {
   resolveAcpSpawnRequesterState,
   resolveAcpSpawnStreamPlan,
@@ -116,6 +119,7 @@ type SpawnAcpParams = {
   expectsCompletionMessage?: boolean;
   streamTo?: "parent";
   attachments?: AcpTurnAttachment[];
+  execution?: AgentExecutionPlacementRequest;
 };
 
 type SpawnAcpContext = {
@@ -165,6 +169,7 @@ type SpawnAcpResultFields = {
   runTimeoutSeconds?: number;
   inlineDelivery?: boolean;
   note?: string;
+  execution?: AgentExecutionPlacement;
 };
 
 type SpawnAcpAcceptedResult = SpawnAcpResultFields & {
@@ -187,24 +192,7 @@ const ACP_SPAWN_ACCEPTED_NOTE =
 const ACP_SPAWN_SESSION_ACCEPTED_NOTE =
   "thread-bound ACP session stays active after this task; continue in-thread for follow-ups.";
 
-export function resolveAcpSpawnRuntimePolicyError(params: {
-  cfg: OpenClawConfig;
-  requesterSessionKey?: string;
-  requesterSandboxed?: boolean;
-  sandbox?: SpawnAcpSandboxMode;
-}): string | undefined {
-  const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
-  const requesterRuntime = resolveSandboxRuntimeStatus({
-    cfg: params.cfg,
-    sessionKey: params.requesterSessionKey,
-  });
-  const requesterSandboxed = params.requesterSandboxed === true || requesterRuntime.sandboxed;
-  return resolveSpawnSandboxError({
-    backend: "acp",
-    requesterSandboxed,
-    sandbox: sandboxMode,
-  });
-}
+export { resolveAcpSpawnRuntimePolicyError } from "./acp-spawn-policy.js";
 
 function createAcpSpawnFailure(params: {
   status: "forbidden" | "error";
@@ -271,6 +259,15 @@ export async function spawnAcpDirect(
       error: runtimePolicyError,
     });
   }
+  const executionResult = resolveAgentExecutionPlacement({ cfg, request: params.execution });
+  if (!executionResult.ok) {
+    return createAcpSpawnFailure({
+      status: "error",
+      errorCode: "runtime_policy",
+      error: executionResult.error,
+    });
+  }
+  const executionPlacement = executionResult.value;
   const acpUnsupportedInheritedTool = findAcpUnsupportedInheritedToolDeny(
     ctx.inheritedToolDenylist,
   );
@@ -686,6 +683,7 @@ export async function spawnAcpDirect(
           ? false
           : params.expectsCompletionMessage !== false,
         spawnMode,
+        executionPlacement,
       };
     },
   });
@@ -725,5 +723,6 @@ export async function spawnAcpDirect(
     runTimeoutSeconds,
     ...(pipelineResult.state.deliveryPlan?.useInlineDelivery ? { inlineDelivery: true } : {}),
     note: spawnMode === "session" ? ACP_SPAWN_SESSION_ACCEPTED_NOTE : ACP_SPAWN_ACCEPTED_NOTE,
+    execution: executionPlacement,
   };
 }

@@ -591,6 +591,78 @@ describe("config schema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts agent execution backends and profiles", () => {
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          entries: { main: { default: true } },
+          executionBackends: {
+            local: {
+              type: "process",
+              profiles: {
+                small: {
+                  label: "Small local worker",
+                },
+              },
+            },
+            k8s: {
+              type: "kubernetes",
+              profiles: {
+                "large-build": {
+                  image: "ghcr.io/openclaw/agent-worker:test",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          entries: { main: { default: true } },
+          executionBackends: {
+            nope: {
+              type: "vmware",
+            },
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          entries: { main: { default: true } },
+          executionBackends: {
+            local: { type: "process", profiles: { " small ": {} } },
+          },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          entries: { main: { default: true } },
+          executionBackends: { " local ": { type: "process" } },
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      OpenClawSchema.parse({
+        agents: {
+          entries: { main: { default: true } },
+          executionBackends: {
+            local: { type: "process", profiles: { small: { resources: {} } } },
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it("merges plugin ui hints", () => {
     const res = buildConfigSchemaCore(pluginUiHintInput);
 
