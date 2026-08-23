@@ -141,6 +141,55 @@ suite.define(() => {
     }
   });
 
+  it("queues an exact-run Stop while offline and replays it after reconnecting", async () => {
+    const artifactDir = path.resolve(".artifacts/control-ui-e2e/chat-offline-stop");
+    const captureProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
+    if (captureProof) {
+      await mkdir(artifactDir, { recursive: true });
+    }
+    const context = await suite.browser.newContext({ viewport: { height: 800, width: 1200 } });
+    const currentPage = await context.newPage();
+    page = currentPage;
+    const gateway = await installMockGateway(currentPage);
+
+    await currentPage.goto(`${suite.server?.baseUrl ?? ""}chat`);
+    await currentPage.locator(".agent-chat__input textarea").fill("keep this run stoppable");
+    await currentPage.getByRole("button", { name: "Send message" }).click();
+    const send = await gateway.waitForRequest("chat.send");
+    const runId = (send.params as { idempotencyKey?: unknown }).idempotencyKey;
+    expect(typeof runId).toBe("string");
+    const stop = currentPage.getByRole("button", { name: "Stop generating" });
+    await stop.waitFor({ state: "visible" });
+
+    await gateway.setOnline(false);
+    await expect
+      .poll(() =>
+        currentPage.evaluate(() => {
+          const app = document.querySelector("openclaw-app") as HTMLElement & {
+            runtime?: { context: { gateway: { snapshot: { phase: string } } } };
+          };
+          return app.runtime?.context.gateway.snapshot.phase;
+        }),
+      )
+      .toBe("reconnecting");
+    await stop.waitFor({ state: "visible" });
+    expect(await stop.isEnabled()).toBe(true);
+    if (captureProof) {
+      await currentPage.screenshot({
+        path: path.join(artifactDir, "offline-stop-visible.png"),
+        fullPage: true,
+      });
+    }
+
+    await stop.click();
+    expect(await gateway.getRequests("chat.abort")).toHaveLength(0);
+
+    await gateway.setOnline(true);
+    const abort = await gateway.waitForRequest("chat.abort");
+    expect(abort.params).toEqual({ runId, sessionKey: "main" });
+    await stop.waitFor({ state: "detached" });
+  });
+
   it("shows compaction savings and live working time", async () => {
     const context = await suite.browser.newContext({ viewport: { height: 800, width: 1200 } });
     const currentPage = await context.newPage();

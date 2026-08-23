@@ -2,12 +2,110 @@
 
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
 import {
+  createChatPaneSessionActionCallbacks,
   renderChatPaneComposerControls,
   resolveChatModelCatalogState,
 } from "./chat-pane-session-controls.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { renderChatPermissionPicker } from "./components/chat-permission-picker.ts";
+
+function sessionActionSnapshot(params: {
+  hasClient?: boolean;
+  phase: ApplicationGatewaySnapshot["phase"];
+  scopes?: string[];
+}): ApplicationGatewaySnapshot {
+  return {
+    client: params.hasClient === false ? null : ({} as ApplicationGatewaySnapshot["client"]),
+    hello: params.scopes
+      ? ({
+          auth: { role: "operator", scopes: params.scopes },
+          features: { methods: ["chat.abort"] },
+        } as ApplicationGatewaySnapshot["hello"])
+      : null,
+    phase: params.phase,
+  } as ApplicationGatewaySnapshot;
+}
+
+function createSessionActionHarness(params: {
+  getSnapshot: () => ApplicationGatewaySnapshot;
+  hasLocalRun: () => boolean;
+}) {
+  const onAbort = vi.fn();
+  const onDenied = vi.fn();
+  const callbacks = createChatPaneSessionActionCallbacks({
+    ...params,
+    sessionParticipationBlocked: false,
+    onDenied,
+    onCompact: vi.fn(),
+    onAbort,
+    onRewind: vi.fn(),
+    onFork: vi.fn(),
+    onReset: vi.fn(),
+  });
+  return { callbacks, onAbort, onDenied };
+}
+
+describe("chat pane session actions", () => {
+  it("keeps an exact local run abort available while reconnecting", () => {
+    const { callbacks, onAbort, onDenied } = createSessionActionHarness({
+      getSnapshot: () => sessionActionSnapshot({ phase: "reconnecting" }),
+      hasLocalRun: () => true,
+    });
+
+    expect(callbacks.onAbort).toBeTypeOf("function");
+    callbacks.onAbort?.();
+    expect(onAbort).toHaveBeenCalledOnce();
+    expect(onDenied).not.toHaveBeenCalled();
+  });
+
+  it("does not expose an offline session-only abort without an exact local run", () => {
+    const { callbacks } = createSessionActionHarness({
+      getSnapshot: () => sessionActionSnapshot({ phase: "reconnecting" }),
+      hasLocalRun: () => false,
+    });
+
+    expect(callbacks.onAbort).toBeUndefined();
+  });
+
+  it("does not expose an offline exact-run abort without its source client", () => {
+    const { callbacks } = createSessionActionHarness({
+      getSnapshot: () => sessionActionSnapshot({ hasClient: false, phase: "reconnecting" }),
+      hasLocalRun: () => true,
+    });
+
+    expect(callbacks.onAbort).toBeUndefined();
+  });
+
+  it("captures an exact-run abort if the connection drops after rendering", () => {
+    let snapshot = sessionActionSnapshot({ phase: "connected", scopes: ["operator.write"] });
+    const { callbacks, onAbort, onDenied } = createSessionActionHarness({
+      getSnapshot: () => snapshot,
+      hasLocalRun: () => true,
+    });
+    snapshot = sessionActionSnapshot({ phase: "reconnecting" });
+
+    callbacks.onAbort?.();
+
+    expect(onAbort).toHaveBeenCalledOnce();
+    expect(onDenied).not.toHaveBeenCalled();
+  });
+
+  it("rechecks online write access before aborting", () => {
+    let snapshot = sessionActionSnapshot({ phase: "connected", scopes: ["operator.write"] });
+    const { callbacks, onAbort, onDenied } = createSessionActionHarness({
+      getSnapshot: () => snapshot,
+      hasLocalRun: () => true,
+    });
+    snapshot = sessionActionSnapshot({ phase: "connected", scopes: ["operator.read"] });
+
+    callbacks.onAbort?.();
+
+    expect(onAbort).not.toHaveBeenCalled();
+    expect(onDenied).toHaveBeenCalledOnce();
+  });
+});
 
 describe("chat model catalog state", () => {
   const cachedCatalog = [

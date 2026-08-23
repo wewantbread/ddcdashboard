@@ -183,10 +183,23 @@ export function createChatPaneSessionActionCallbacks(params: {
   onFork: (entryId: string) => Promise<void>;
   onReset: () => void;
 }): SessionActionCallbacks {
-  const access = readChatSessionActionAccess(params.getSnapshot(), params.hasLocalRun());
+  const initialSnapshot = params.getSnapshot();
+  const access = readChatSessionActionAccess(initialSnapshot, params.hasLocalRun());
+  const isOfflineExactAbort = (
+    snapshot: ApplicationGatewaySnapshot,
+    current: SessionMethodAccess,
+  ): boolean =>
+    Boolean(snapshot.client) &&
+    !current.allowed &&
+    current.cause === "disconnected" &&
+    params.hasLocalRun();
+  const abortAvailable = access.abort.allowed || isOfflineExactAbort(initialSnapshot, access.abort);
   const requireCurrent = (action: SessionAction): boolean => {
-    const current = readChatSessionActionAccess(params.getSnapshot(), params.hasLocalRun())[action];
-    if (current.allowed) {
+    const snapshot = params.getSnapshot();
+    const current = readChatSessionActionAccess(snapshot, params.hasLocalRun())[action];
+    // Offline exact-run stops only capture local intent; reconnect replay
+    // rechecks live Gateway access before sending the RPC.
+    if (current.allowed || (action === "abort" && isOfflineExactAbort(snapshot, current))) {
       return true;
     }
     params.onDenied(current.reason);
@@ -201,7 +214,7 @@ export function createChatPaneSessionActionCallbacks(params: {
         }
       : undefined,
     onAbort:
-      params.sessionParticipationBlocked || !access.abort.allowed
+      params.sessionParticipationBlocked || !abortAvailable
         ? undefined
         : () => {
             if (requireCurrent("abort")) {
