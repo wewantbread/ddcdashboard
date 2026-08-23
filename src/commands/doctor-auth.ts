@@ -38,6 +38,7 @@ import type { HealthFinding } from "../flows/health-checks.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { isRecord } from "../utils.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
+import { collectStaleGlobalPasteFindings } from "./doctor/shared/stale-global-paste-profiles.js";
 
 const OPENAI_PROVIDER_ID = "openai";
 const LEGACY_CODEX_PROVIDER_ID = "openai-codex";
@@ -450,6 +451,7 @@ export async function collectAuthProfileHealthFindings(params: {
   ) {
     findings.push(legacyCodexProviderOverrideToHealthFinding(providerOverride));
   }
+  findings.push(...collectStaleGlobalPasteFindings({ cfg: params.cfg }));
   return findings;
 }
 
