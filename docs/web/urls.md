@@ -234,7 +234,7 @@ no route-specific URL parameters.
 | Skill Workshop      | `/skills/workshop`          | -                         | -                                                              |
 | Skills              | `/skills`                   | -                         | -                                                              |
 | Plugins             | `/settings/plugins`         | -                         | `/settings/plugins/discover`                                   |
-| Automations         | `/cron`                     | -                         | -                                                              |
+| Automations         | `/automations`              | `/cron`                   | `/automations/<jobId>[/runs]`                                  |
 | Tasks               | `/tasks`                    | -                         | -                                                              |
 | Devices             | `/settings/devices`         | `/nodes`                  | Shared settings parameters below                               |
 | Plugin tab host     | `/plugin`                   | -                         | `?plugin=<pluginId>&id=<tabId>`                                |

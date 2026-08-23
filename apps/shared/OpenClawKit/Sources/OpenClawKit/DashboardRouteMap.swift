@@ -3,7 +3,7 @@ import Foundation
 public enum DashboardRouteMap {
     public static let channelsSettingsPath = "/settings/channels"
     public static let skillsPagePath = "/skills"
-    public static let cronJobsPagePath = "/cron"
+    public static let cronJobsPagePath = "/automations"
     public static let sessionsPagePath = "/sessions"
     public static let devicesSettingsPath = "/settings/devices"
     public static let custodianPagePath = "/custodian"

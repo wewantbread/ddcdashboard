@@ -24,6 +24,7 @@ describe("sendGatewayCronFailureAlert presentation", () => {
 
   it("adds the run start time without dropping presentation", async () => {
     const job = makeCronJob({
+      id: "nightly.digest",
       delivery: {
         mode: "announce",
         channel: "telegram",
@@ -36,7 +37,13 @@ describe("sendGatewayCronFailureAlert presentation", () => {
       logger: { warn: vi.fn() },
       resolveCronAgent: () => ({
         agentId: "main",
-        cfg: { agents: { defaults: { userTimezone: "America/New_York" } } },
+        cfg: {
+          agents: { defaults: { userTimezone: "America/New_York" } },
+          gateway: {
+            publicOrigin: "https://openclaw.example",
+            controlUi: { basePath: "/control" },
+          },
+        },
       }),
       job,
       payload: {
@@ -73,6 +80,18 @@ describe("sendGatewayCronFailureAlert presentation", () => {
                   {
                     label: "Log in to Codex",
                     action: { type: "command", command: "/login codex" },
+                  },
+                ],
+              },
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Open automation",
+                    action: {
+                      type: "url",
+                      url: "https://openclaw.example/control/automations/nightly%2Edigest",
+                    },
                   },
                 ],
               },

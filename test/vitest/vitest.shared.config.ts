@@ -87,8 +87,9 @@ function hasWorkerOverride(env: Record<string, string | undefined>): boolean {
 }
 
 function sourcePackageAlias(packageId: string, subpath?: string) {
+  const specifier = `@openclaw/${packageId}${subpath ? `/${subpath}` : ""}`;
   return {
-    find: `@openclaw/${packageId}${subpath ? `/${subpath}` : ""}`,
+    find: subpath ? specifier : new RegExp(`^@openclaw/${packageId}$`),
     replacement: path.join(
       repoRoot,
       "packages",
@@ -453,6 +454,7 @@ export const sharedVitestConfig = {
       sourcePackageAlias("media-core", "read-byte-stream-with-limit"),
       sourcePackageAlias("media-core"),
       sourcePackageAlias("retry"),
+      sourcePackageAlias("session-url-contract", "automation.runtime"),
       sourcePackageAlias("session-url-contract", "parse"),
       sourcePackageAlias("session-url-contract"),
       sourcePackageAlias("workboard-contract"),

@@ -6,6 +6,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { parseDurationMs } from "../../cli/parse-duration.js";
 import { getRuntimeConfig } from "../../config/config.js";
+import { resolveControlUiAutomationUrl } from "../../config/control-ui-link-base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCronCreationDelivery } from "../../cron/delivery-context.js";
 import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-target-validation.js";
@@ -78,6 +79,16 @@ function isMissingOrEmptyObject(value: unknown): boolean {
 
 function readCronJobIdParam(params: Record<string, unknown>) {
   return readToolStringParam(params, "jobId") ?? readToolStringParam(params, "id");
+}
+
+function withAutomationUrl(
+  result: unknown,
+  config: OpenClawConfig,
+  jobId: string,
+  tab: "settings" | "runs" = "settings",
+): unknown {
+  const automationUrl = resolveControlUiAutomationUrl(config, jobId, tab);
+  return automationUrl && isRecord(result) ? { ...result, automationUrl } : result;
 }
 
 const CRON_SELF_REMOVE_SCOPE_ERROR = "Automations tool is restricted to the current automation.";
@@ -323,11 +334,8 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             if (!id) {
               throw new Error("jobId required (id accepted for backward compatibility)");
             }
-            return jsonResult(
-              await callGateway("cron.get", gatewayOpts, {
-                id,
-              }),
-            );
+            const result = await callGateway("cron.get", gatewayOpts, { id });
+            return jsonResult(withAutomationUrl(result, opts?.config ?? runtimeConfig, id));
           }
           case "add": {
             // Flat-params recovery: non-frontier models (e.g. Grok) sometimes flatten
@@ -505,14 +513,19 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 "fresh configured MCP cron authority requires an authenticated local agent run",
               );
             }
+            const result = await withGatewayToolCallerIdentity(
+              writeCallerIdentity,
+              async () =>
+                await callGateway("cron.add", gatewayOpts, {
+                  ...job,
+                }),
+            );
+            const resultJobId =
+              isRecord(result) && typeof result.id === "string" ? result.id : undefined;
             return jsonResult(
-              await withGatewayToolCallerIdentity(
-                writeCallerIdentity,
-                async () =>
-                  await callGateway("cron.add", gatewayOpts, {
-                    ...job,
-                  }),
-              ),
+              resultJobId
+                ? withAutomationUrl(result, opts?.config ?? runtimeConfig, resultJobId)
+                : result,
             );
           }
           case "update": {
@@ -556,30 +569,29 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             if (callerScope) {
               assertCronToolSessionRefsMatchScope(patch, callerScope);
             }
-            return jsonResult(
-              await updateCronJobFromAgentTool({
-                id,
-                patch,
-                creatorToolAllowlist: opts?.creatorToolAllowlist,
-                creatorToolAllowlistCaptureRef: opts?.creatorToolAllowlistCaptureRef,
-                resolveCreatorToolAuthority: opts?.resolveCreatorToolAuthority,
-                withCreatorAuthorityProvenance: callerIdentity
-                  ? async (authority, run) =>
-                      await withGatewayToolCallerIdentity(
-                        {
-                          ...callerIdentity,
-                          cronToolsAllowCapture: "final-executable-surface",
-                          cronCreatorAuthorityGrant: authority.grant,
-                        },
-                        run,
-                      )
-                  : undefined,
-                gatewayOpts,
-                callGateway,
-                operationSignal,
-                creatorAuthorityUnavailableReason: opts?.creatorAuthorityUnavailableReason,
-              }),
-            );
+            const result = await updateCronJobFromAgentTool({
+              id,
+              patch,
+              creatorToolAllowlist: opts?.creatorToolAllowlist,
+              creatorToolAllowlistCaptureRef: opts?.creatorToolAllowlistCaptureRef,
+              resolveCreatorToolAuthority: opts?.resolveCreatorToolAuthority,
+              withCreatorAuthorityProvenance: callerIdentity
+                ? async (authority, run) =>
+                    await withGatewayToolCallerIdentity(
+                      {
+                        ...callerIdentity,
+                        cronToolsAllowCapture: "final-executable-surface",
+                        cronCreatorAuthorityGrant: authority.grant,
+                      },
+                      run,
+                    )
+                : undefined,
+              gatewayOpts,
+              callGateway,
+              operationSignal,
+              creatorAuthorityUnavailableReason: opts?.creatorAuthorityUnavailableReason,
+            });
+            return jsonResult(withAutomationUrl(result, opts?.config ?? runtimeConfig, id));
           }
           case "remove": {
             const id = readCronJobIdParam(params);
@@ -599,23 +611,16 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
             }
             const runMode =
               params.runMode === "due" || params.runMode === "force" ? params.runMode : "due";
-            return jsonResult(
-              await callGateway("cron.run", gatewayOpts, {
-                id,
-                mode: runMode,
-              }),
-            );
+            const result = await callGateway("cron.run", gatewayOpts, { id, mode: runMode });
+            return jsonResult(withAutomationUrl(result, opts?.config ?? runtimeConfig, id, "runs"));
           }
           case "runs": {
             const id = readCronJobIdParam(params);
             if (!id) {
               throw new Error("jobId required (id accepted for backward compatibility)");
             }
-            return jsonResult(
-              await callGateway("cron.runs", gatewayOpts, {
-                id,
-              }),
-            );
+            const result = await callGateway("cron.runs", gatewayOpts, { id });
+            return jsonResult(withAutomationUrl(result, opts?.config ?? runtimeConfig, id, "runs"));
           }
           case "next_check": {
             const jobId = readCronSelfRemoveOnlyJobId(opts);

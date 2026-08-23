@@ -88,7 +88,7 @@ describe("Agents route location", () => {
     expect(
       resolveAgentsRouteLocation(
         location(
-          "/settings/agents?__openclawAgentPath=%2Fsettings%2Fagents%2Fresearch%2Fmemory&probe=1",
+          "/settings/agents?__openclawPath=%2Fsettings%2Fagents%2Fresearch%2Fmemory&probe=1",
         ),
       ),
     ).toEqual({

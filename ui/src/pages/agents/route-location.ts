@@ -1,7 +1,7 @@
 import type { RouteLocation } from "@openclaw/uirouter";
 import {
   agentRouteFromPath,
-  INTERNAL_AGENT_PATH_PARAM,
+  INTERNAL_ROUTE_PATH_PARAM,
   pathForAgentPanel,
   pathForRoute,
 } from "../../app-route-paths.ts";
@@ -16,8 +16,8 @@ export type AgentsRouteLocation = {
 
 function routeLocation(location: RouteLocation): RouteLocation {
   const params = new URLSearchParams(location.search);
-  const pathname = params.get(INTERNAL_AGENT_PATH_PARAM) ?? location.pathname;
-  params.delete(INTERNAL_AGENT_PATH_PARAM);
+  const pathname = params.get(INTERNAL_ROUTE_PATH_PARAM) ?? location.pathname;
+  params.delete(INTERNAL_ROUTE_PATH_PARAM);
   const search = params.toString();
   return {
     pathname,

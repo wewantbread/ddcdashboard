@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { resolveControlUiSessionLinkBase } from "./control-ui-link-base.js";
+import {
+  resolveControlUiAutomationUrl,
+  resolveControlUiSessionLinkBase,
+} from "./control-ui-link-base.js";
+
+describe("resolveControlUiAutomationUrl", () => {
+  it("builds the same encoded automation path under the configured public location", () => {
+    expect(
+      resolveControlUiAutomationUrl(
+        {
+          gateway: {
+            publicOrigin: "https://openclaw.example",
+            controlUi: { basePath: "/control" },
+          },
+        },
+        "nightly.digest",
+        "runs",
+      ),
+    ).toBe("https://openclaw.example/control/automations/nightly%2Edigest/runs");
+  });
+
+  it("omits links when the Control UI has no public location", () => {
+    expect(resolveControlUiAutomationUrl({ gateway: {} }, "job-1")).toBeUndefined();
+  });
+});
 
 describe("resolveControlUiSessionLinkBase", () => {
   it("omits session links without a public Gateway origin", () => {

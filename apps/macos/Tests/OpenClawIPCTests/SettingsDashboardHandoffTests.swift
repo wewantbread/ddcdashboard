@@ -9,7 +9,7 @@ struct SettingsDashboardHandoffTests {
         let expected: [SettingsTab: String] = [
             .channels: "/settings/channels",
             .skills: "/skills",
-            .cron: "/cron",
+            .cron: "/automations",
             .sessions: "/sessions",
             .instances: "/settings/devices",
         ]

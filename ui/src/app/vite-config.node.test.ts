@@ -384,7 +384,7 @@ describe("Control UI Vite config", () => {
       (alias) => alias.find === "@openclaw/normalization-core/result",
     );
     const rootAliasIndex = aliases.findIndex(
-      (alias) => alias.find === "@openclaw/normalization-core",
+      (alias) => alias.find instanceof RegExp && alias.find.test("@openclaw/normalization-core"),
     );
     expect(aliases[resultAliasIndex]).toEqual({
       find: "@openclaw/normalization-core/result",

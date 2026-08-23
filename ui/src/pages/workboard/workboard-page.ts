@@ -1,6 +1,7 @@
 import { consume } from "@lit/context";
 import { html, nothing, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
+import { pathForAutomation } from "../../app-automation-paths.runtime.ts";
 import { titleForRoute } from "../../app-navigation.ts";
 import { pathForRoute, pathForWorkboardBoard } from "../../app-route-paths.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
@@ -371,7 +372,11 @@ class WorkboardPage extends OpenClawLightDomElement {
             ${selectedBoard?.automationJobId
               ? html`<a
                   class="chip workboard-automation-chip"
-                  href=${pathForRoute("cron", context.basePath)}
+                  href=${pathForAutomation(
+                    selectedBoard.automationJobId,
+                    "settings",
+                    context.basePath,
+                  )}
                   title=${t("workboard.automationAttachedTitle")}
                   aria-label=${t("workboard.automationAttachedTitle")}
                 >

@@ -371,7 +371,7 @@ describe("WorkboardPage lifecycle", () => {
     const chip = page.querySelector<HTMLAnchorElement>(".workboard-automation-chip");
     expect(Boolean(chip)).toBe(visible);
     if (visible) {
-      expect(chip?.getAttribute("href")).toBe("/automations");
+      expect(chip?.getAttribute("href")).toBe("/automations/job-categorize-planning");
       expect(chip?.getAttribute("title")).toBe("Open Automations");
       expect(chip?.getAttribute("aria-label")).toBe("Open Automations");
       expect(chip?.textContent?.trim()).toBe("Automation");

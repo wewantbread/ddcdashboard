@@ -1,6 +1,6 @@
 import type { RouteLocation } from "@openclaw/uirouter";
 import {
-  INTERNAL_PLUGINS_PATH_PARAM,
+  INTERNAL_ROUTE_PATH_PARAM,
   pathForPluginsHubTab,
   pluginsHubTabFromPath,
   type PluginsHubRouteTab,
@@ -8,8 +8,8 @@ import {
 
 export function pluginsRouteLocation(location: RouteLocation): RouteLocation {
   const searchParams = new URLSearchParams(location.search);
-  const pathname = searchParams.get(INTERNAL_PLUGINS_PATH_PARAM) ?? location.pathname;
-  searchParams.delete(INTERNAL_PLUGINS_PATH_PARAM);
+  const pathname = searchParams.get(INTERNAL_ROUTE_PATH_PARAM) ?? location.pathname;
+  searchParams.delete(INTERNAL_ROUTE_PATH_PARAM);
   const search = searchParams.toString();
   return {
     pathname,

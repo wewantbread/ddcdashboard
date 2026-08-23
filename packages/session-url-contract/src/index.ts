@@ -2,6 +2,7 @@ import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { normalizeNullableString } from "@openclaw/normalization-core/string-coerce";
 import {
   DEFAULT_MAIN_KEY,
+  encodeControlUiPathSegment,
   isReservedSessionRest,
   normalizeControlUiBasePath,
   parseShortSessionRef,
@@ -51,20 +52,6 @@ function agentSessionKeyParts(sessionKey: string): { agentId: string; rest: stri
   return { agentId: normalizeAgentId(agentId), rest: restSegments.join(":") };
 }
 
-function encodePathSegment(segment: string): string {
-  if (segment === ".") {
-    return "~dot";
-  }
-  if (segment === "..") {
-    return "~dotdot";
-  }
-  // encodeURIComponent leaves "." alone, so a key segment like "release.js" would
-  // reach the server looking like a static asset request and never hit the SPA.
-  // pathForWorkboardBoard escapes dots for the same reason.
-  const encoded = encodeURIComponent(segment).replaceAll(".", "%2E");
-  return encoded.startsWith("~") ? `~${encoded}` : encoded;
-}
-
 export function controlUiSessionSlug(displayName: string | undefined | null): string {
   const tokens = (displayName ?? "")
     .toLowerCase()
@@ -87,7 +74,7 @@ export function buildControlUiSessionPath(params: BuildControlUiSessionPathParam
     return null;
   }
   const namespace = `${normalizeControlUiBasePath(params.basePath)}/${params.namespace}`;
-  const encodedAgentId = encodePathSegment(agentId);
+  const encodedAgentId = encodeControlUiPathSegment(agentId);
   const rest = parsed?.rest ?? rawKey;
   const normalizedRest = rest.toLowerCase();
   const mainKey = normalizeNullableString(params.mainKey)?.toLowerCase() ?? DEFAULT_MAIN_KEY;
@@ -106,8 +93,8 @@ export function buildControlUiSessionPath(params: BuildControlUiSessionPathParam
     const segment = segments[0] ?? "";
     return segments.length === 1 &&
       (isReservedSessionRest(segment, params.mainKey) || parseShortSessionRef(segment))
-      ? `${namespace}/${encodedAgentId}/~key/${encodePathSegment(segment)}`
-      : `${namespace}/${encodedAgentId}/${segments.map(encodePathSegment).join("/")}`;
+      ? `${namespace}/${encodedAgentId}/~key/${encodeControlUiPathSegment(segment)}`
+      : `${namespace}/${encodedAgentId}/${segments.map(encodeControlUiPathSegment).join("/")}`;
   }
   const matchedUuid = parsed?.rest.match(SESSION_UUID_SUFFIX_RE)?.[1];
   const uuid = matchedUuid?.toLowerCase().replaceAll("-", "") ?? null;
@@ -127,10 +114,10 @@ export function buildControlUiSessionPath(params: BuildControlUiSessionPathParam
   if (segments.length === 1) {
     const segment = segments[0] ?? "";
     if (!isReservedSessionRest(segment, params.mainKey) && parseShortSessionRef(segment)) {
-      return `${namespace}/${encodedAgentId}/~key/${encodePathSegment(segment)}`;
+      return `${namespace}/${encodedAgentId}/~key/${encodeControlUiPathSegment(segment)}`;
     }
   }
-  return `${namespace}/${encodedAgentId}/${segments.map(encodePathSegment).join("/")}`;
+  return `${namespace}/${encodedAgentId}/${segments.map(encodeControlUiPathSegment).join("/")}`;
 }
 
 export function buildControlUiCatalogSessionUrl(

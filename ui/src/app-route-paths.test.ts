@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { notFound, type RouteLocation, type RouterHistory } from "@openclaw/uirouter";
 import { describe, expect, it, vi } from "vitest";
+import { automationRouteFromPath, pathForAutomation } from "./app-automation-paths.runtime.ts";
 import {
   agentRouteFromPath,
   inferBasePathFromPathname,
@@ -31,6 +32,15 @@ const AGENT_PANEL_CASES = [
 ] as const satisfies readonly AgentsPanel[];
 
 const DYNAMIC_STARTUP_CASES = [
+  {
+    label: "automation",
+    routeId: "cron",
+    location: {
+      pathname: pathForAutomation("nightly.digest", "runs"),
+      search: "?probe=1",
+      hash: "#history",
+    },
+  },
   {
     label: "agent panel",
     routeId: "agents",
@@ -425,6 +435,26 @@ describe("Agent panel route paths", () => {
     expect(push).not.toHaveBeenCalled();
     expect(location.pathname).toBe("/settings/agents/main");
     router.stop();
+  });
+});
+
+describe("Automation route paths", () => {
+  it("admits the legacy alias as an automation route", () => {
+    expect(routeIdFromPath("/cron/nightly%2Edigest/runs")).toBe("cron");
+  });
+
+  it("builds canonical paths under a configured base path", () => {
+    const pathname = pathForAutomation("nightly.digest", "runs", "/ui");
+    expect(pathname).toBe("/ui/automations/nightly%2Edigest/runs");
+    expect(automationRouteFromPath(pathname, "/ui")).toEqual({
+      jobId: "nightly.digest",
+      tab: "runs",
+    });
+    expect(inferBasePathFromPathname(pathname)).toBe("/ui");
+  });
+
+  it("rejects a blank job id", () => {
+    expect(() => pathForAutomation(" ")).toThrow("Invalid automation job id");
   });
 });
 

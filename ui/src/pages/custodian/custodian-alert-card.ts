@@ -16,7 +16,7 @@ function runAlertAction(
   canUpdate: boolean,
 ): void {
   if (target.kind === "navigate") {
-    context.navigate(target.routeId);
+    context.navigate(target.routeId, target.options);
   } else if (canUpdate) {
     void confirmAndStartUpdate({
       startGatewayUpdate: () => void context.overlays.runUpdate(),

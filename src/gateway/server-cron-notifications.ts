@@ -7,6 +7,7 @@ import {
 import { resolveUserTimezone } from "../agents/date-time.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { CliDeps } from "../cli/deps.types.js";
+import { resolveControlUiAutomationUrl } from "../config/control-ui-link-base.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { redactCronCommandSummaryForExternalDelivery } from "../cron/command-output-summary.js";
 import { resolveCronDeliveryPlan, sendCronAnnouncePayloadStrict } from "../cron/delivery.js";
@@ -50,6 +51,33 @@ type CronFailureAlertParams = {
   threadId?: string | number;
   inheritSessionThread?: false;
 };
+
+function appendAutomationLink(
+  payload: ReplyPayload,
+  automationUrl: string | undefined,
+): ReplyPayload {
+  if (!automationUrl) {
+    return payload;
+  }
+  return {
+    ...payload,
+    presentation: {
+      ...payload.presentation,
+      blocks: [
+        ...(payload.presentation?.blocks ?? []),
+        {
+          type: "buttons",
+          buttons: [
+            {
+              label: "Open automation",
+              action: { type: "url", url: automationUrl },
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
 
 function redactWebhookUrl(url: string): string {
   try {
@@ -382,10 +410,13 @@ async function sendGatewayCronFailureAlertUnderAdmission(
         sessionKey: resolveCronDeliverySessionKey(params.job),
         inheritSessionThread: params.inheritSessionThread,
       },
-      payload: {
-        ...params.payload,
-        text: appendCronRunStarted(params.payload.text ?? "", params.runAtMs, runtimeConfig),
-      },
+      payload: appendAutomationLink(
+        {
+          ...params.payload,
+          text: appendCronRunStarted(params.payload.text ?? "", params.runAtMs, runtimeConfig),
+        },
+        resolveControlUiAutomationUrl(runtimeConfig, params.job.id),
+      ),
       abortSignal: abortController.signal,
     }),
     CRON_WEBHOOK_TIMEOUT_MS,

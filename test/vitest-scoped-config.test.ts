@@ -100,7 +100,7 @@ function matchingExcludePatterns(patterns: string[], file: string): string[] {
   return patterns.filter((pattern) => path.matchesGlob(file, pattern));
 }
 
-function findAlias(alias: unknown, find: string): { find: string; replacement?: string } {
+function findAlias(alias: unknown, find: string): { find: string | RegExp; replacement?: string } {
   if (!Array.isArray(alias)) {
     throw new Error("expected Vitest alias array");
   }
@@ -109,13 +109,15 @@ function findAlias(alias: unknown, find: string): { find: string; replacement?: 
       typeof entry === "object" &&
       entry !== null &&
       "find" in entry &&
-      (entry as { find?: unknown }).find === find
+      ((entry as { find?: unknown }).find === find ||
+        ((entry as { find?: unknown }).find instanceof RegExp &&
+          (entry as { find: RegExp }).find.test(find)))
     );
   });
   if (!match || typeof match !== "object" || !("find" in match)) {
     throw new Error(`missing alias ${find}`);
   }
-  return match as { find: string; replacement?: string };
+  return match as { find: string | RegExp; replacement?: string };
 }
 
 function requireTestConfig<T extends { test?: unknown }>(config: T): NonNullable<T["test"]> {
@@ -186,7 +188,7 @@ describe("resolveVitestIsolation", () => {
       },
     );
     expect(findAlias(sharedVitestConfig.resolve.alias, "@openclaw/retry")).toEqual({
-      find: "@openclaw/retry",
+      find: /^@openclaw\/retry$/,
       replacement: path.join(process.cwd(), "packages", "retry", "src", "index.ts"),
     });
     expect(

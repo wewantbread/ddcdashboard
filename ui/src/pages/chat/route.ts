@@ -1,7 +1,7 @@
 import type { RouteLocation, RouteMatch } from "@openclaw/uirouter";
 import { definePage } from "@openclaw/uirouter";
 import { html, nothing } from "lit";
-import { INTERNAL_SESSION_PATH_PARAM, pathForRoute, routePageSpec } from "../../app-route-paths.ts";
+import { INTERNAL_ROUTE_PATH_PARAM, pathForRoute, routePageSpec } from "../../app-route-paths.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
 import type { BoardFace } from "../../lib/board/settings.ts";
@@ -42,10 +42,10 @@ function sessionLoaderDeps(
   const search = new URLSearchParams(location.search);
   const bridgedPath =
     location.pathname === pathForRoute(face, context.basePath)
-      ? search.get(INTERNAL_SESSION_PATH_PARAM)
+      ? search.get(INTERNAL_ROUTE_PATH_PARAM)
       : null;
   if (bridgedPath) {
-    search.delete(INTERNAL_SESSION_PATH_PARAM);
+    search.delete(INTERNAL_ROUTE_PATH_PARAM);
   }
   const serializedSearch = search.toString();
   return `${bridgedPath ?? location.pathname}\u0000${

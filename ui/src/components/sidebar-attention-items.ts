@@ -7,6 +7,7 @@ import type {
   UpdateAvailable,
   UpdateScheduleState,
 } from "../api/types.ts";
+import { pathForAutomation } from "../app-automation-paths.runtime.ts";
 import type { NavigationRouteId } from "../app-navigation.ts";
 import type { ExecApprovalRequest } from "../app/exec-approval.ts";
 import {
@@ -65,6 +66,16 @@ export function buildSidebarAttentionItems(params: {
   const signatureOf = (ids: readonly string[]) => ids.toSorted().join("\n");
   const cronJobName = (job: CronJob) => job.name?.trim() || job.id;
   const boundedQuestion = (question: string) => clampText(question, ALERT_QUESTION_MAX_LENGTH);
+  const cronAlertTarget = (jobs: readonly CronJob[]) => {
+    const job = jobs.length === 1 ? jobs[0] : undefined;
+    return job
+      ? {
+          kind: "navigate" as const,
+          routeId: "cron" as const,
+          options: { pathname: pathForAutomation(job.id) },
+        }
+      : { kind: "navigate" as const, routeId: "cron" as const };
+  };
   const explainedItem = (
     item: Omit<SidebarAttentionItem, "action">,
     alert: Omit<CustodianAlert, "id">,
@@ -161,7 +172,7 @@ export function buildSidebarAttentionItems(params: {
           question: boundedQuestion(
             t("attention.alerts.cronFailedQuestion", { facts: facts.join("\n") }),
           ),
-          action: { label: t("tabs.cron"), target: { kind: "navigate", routeId: "cron" } },
+          action: { label: t("tabs.cron"), target: cronAlertTarget(failedCron) },
         },
       ),
     );
@@ -192,7 +203,7 @@ export function buildSidebarAttentionItems(params: {
           question: boundedQuestion(
             t("attention.alerts.cronOverdueQuestion", { facts: facts.join("\n") }),
           ),
-          action: { label: t("tabs.cron"), target: { kind: "navigate", routeId: "cron" } },
+          action: { label: t("tabs.cron"), target: cronAlertTarget(overdueCron) },
         },
       ),
     );

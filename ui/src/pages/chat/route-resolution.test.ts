@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
-import { INTERNAL_SESSION_PATH_PARAM } from "../../app-route-paths.ts";
+import { INTERNAL_ROUTE_PATH_PARAM } from "../../app-route-paths.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { buildCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
@@ -228,7 +228,7 @@ describe("gateway-backed session route resolution", () => {
       preferenceDerivedFace: true,
     });
     const search = new URLSearchParams(targetLocation(target).search);
-    search.set(INTERNAL_SESSION_PATH_PARAM, target.options.pathname);
+    search.set(INTERNAL_ROUTE_PATH_PARAM, target.options.pathname);
 
     await expect(
       loadChatRoute(

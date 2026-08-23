@@ -206,7 +206,13 @@ describe("cron attention details", () => {
       expect(action.alert.facts.length).toBeGreaterThan(0);
       expect(action.alert.question).toContain(kind === "cronFailed" ? "failed" : "not run");
       expect(action.alert.question).toContain(action.alert.facts[0]);
-      expect(action.alert.action?.target).toEqual({ kind: "navigate", routeId: "cron" });
+      expect(action.alert.action?.target).toEqual({
+        kind: "navigate",
+        routeId: "cron",
+        options: {
+          pathname: `/automations/${kind === "cronFailed" ? "failed" : "overdue"}`,
+        },
+      });
     }
   });
 

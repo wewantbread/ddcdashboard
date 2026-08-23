@@ -6,7 +6,7 @@ struct DashboardRouteMapTests {
     @Test func `route constants match Control UI paths`() {
         #expect(DashboardRouteMap.channelsSettingsPath == "/settings/channels")
         #expect(DashboardRouteMap.skillsPagePath == "/skills")
-        #expect(DashboardRouteMap.cronJobsPagePath == "/cron")
+        #expect(DashboardRouteMap.cronJobsPagePath == "/automations")
         #expect(DashboardRouteMap.sessionsPagePath == "/sessions")
         #expect(DashboardRouteMap.devicesSettingsPath == "/settings/devices")
     }

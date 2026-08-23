@@ -1,5 +1,5 @@
 import type { RouteLocation } from "@openclaw/uirouter";
-import { INTERNAL_MEMORY_PATH_PARAM } from "../../app-route-paths.ts";
+import { INTERNAL_ROUTE_PATH_PARAM } from "../../app-route-paths.ts";
 
 export type ConfigRouteData = {
   pathname: string;
@@ -25,8 +25,8 @@ export function configTargetIdFromHash(hash: string): string | null {
 
 export function configRouteData(location: RouteLocation): ConfigRouteData {
   const searchParams = new URLSearchParams(location.search);
-  const pathname = searchParams.get(INTERNAL_MEMORY_PATH_PARAM) ?? location.pathname;
-  searchParams.delete(INTERNAL_MEMORY_PATH_PARAM);
+  const pathname = searchParams.get(INTERNAL_ROUTE_PATH_PARAM) ?? location.pathname;
+  searchParams.delete(INTERNAL_ROUTE_PATH_PARAM);
   const search = searchParams.toString();
   const section = searchParams.get("section")?.trim() || null;
   return {

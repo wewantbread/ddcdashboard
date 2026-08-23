@@ -53,6 +53,7 @@ function createCronViewProps(overrides: Partial<CronProps> = {}): CronProps {
     fieldErrors: {},
     canSubmit: true,
     editingJob: null,
+    missingJobId: null,
     createOpen: false,
     listTab: "tasks",
     detailTab: "settings",

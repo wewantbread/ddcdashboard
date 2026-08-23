@@ -73,7 +73,7 @@ describe("config route data", () => {
     expect(
       configRouteData({
         pathname: "/settings/memory",
-        search: "?__openclawMemoryPath=%2Fsettings%2Fmemory%2Fdreams&agent=main",
+        search: "?__openclawPath=%2Fsettings%2Fmemory%2Fdreams&agent=main",
         hash: "",
       }),
     ).toMatchObject({

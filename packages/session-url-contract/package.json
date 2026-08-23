@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./automation.runtime": "./src/automation.runtime.ts",
     "./parse": "./src/parse.ts"
   },
   "dependencies": {

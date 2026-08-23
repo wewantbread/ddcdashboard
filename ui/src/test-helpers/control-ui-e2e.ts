@@ -95,6 +95,21 @@ export async function waitForControlUiRoute(page: Page, target: ControlUiRouteTa
   try {
     const handle = await page.waitForFunction(
       (expected) => {
+        const pathnamesEqual = (left: string, right: string) => {
+          const leftSegments = left.split("/");
+          const rightSegments = right.split("/");
+          if (leftSegments.length !== rightSegments.length) {
+            return false;
+          }
+          try {
+            return leftSegments.every(
+              (segment, index) =>
+                decodeURIComponent(segment) === decodeURIComponent(rightSegments[index]!),
+            );
+          } catch {
+            return false;
+          }
+        };
         const app = document.querySelector("openclaw-app") as HTMLElement & {
           runtime?: {
             router: {
@@ -112,9 +127,10 @@ export async function waitForControlUiRoute(page: Page, target: ControlUiRouteTa
         return (
           state?.status === "success" &&
           state.matches[0]?.routeId === expected.routeId &&
-          state.resolvedLocation?.pathname === pathname &&
+          state.resolvedLocation !== null &&
+          pathnamesEqual(state.resolvedLocation.pathname, pathname) &&
           state.pendingMatches.length === 0 &&
-          (expected.pathname === undefined || pathname === expected.pathname) &&
+          (expected.pathname === undefined || pathnamesEqual(pathname, expected.pathname)) &&
           (expected.pathnamePrefix === undefined || pathname.startsWith(expected.pathnamePrefix)) &&
           (expected.search === undefined || window.location.search === expected.search) &&
           (expected.hash === undefined || window.location.hash === expected.hash)

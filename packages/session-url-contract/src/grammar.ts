@@ -10,6 +10,19 @@ export function normalizeControlUiBasePath(basePath?: string): string {
   return trimmed ? `/${trimmed}` : "";
 }
 
+export function encodeControlUiPathSegment(segment: string): string {
+  if (segment === ".") {
+    return "~dot";
+  }
+  if (segment === "..") {
+    return "~dotdot";
+  }
+  // encodeURIComponent leaves "." alone, so a key segment like "release.js" would
+  // reach the server looking like a static asset request and never hit the SPA.
+  const encoded = encodeURIComponent(segment).replaceAll(".", "%2E");
+  return encoded.startsWith("~") ? `~${encoded}` : encoded;
+}
+
 export function isReservedSessionRest(rest: string, mainKey?: string): boolean {
   const normalized = rest.toLowerCase();
   const configuredMainKey = normalizeNullableString(mainKey)?.toLowerCase() ?? DEFAULT_MAIN_KEY;

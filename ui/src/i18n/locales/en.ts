@@ -6376,6 +6376,8 @@ export const en: TranslationMap = {
       newTitle: "New automation",
       newSubtitle: "Describe what OpenClaw should do, then pick when it runs.",
       back: "All automations",
+      notFoundTitle: "Automation not found",
+      notFoundCopy: "This automation may have been removed or is outside the current agent scope.",
       settingsTab: "Settings",
       historyTitle: "Run history",
       generalSection: "General",

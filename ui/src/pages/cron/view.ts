@@ -23,6 +23,7 @@ import type {
   CronJobsSortBy,
   CronSortDir,
 } from "../../api/types.ts";
+import { pathForRoute } from "../../app-route-paths.ts";
 import { renderChannelPicker, type ChannelPickerOption } from "../../components/channel-picker.ts";
 import { renderCronJobsPagination } from "../../components/cron-jobs-pagination.ts";
 import { icon, icons } from "../../components/icons.ts";
@@ -55,13 +56,14 @@ import type {
 } from "../../lib/cron/index.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
 import { formatRelativeTimestamp, formatMs } from "../../lib/format.ts";
+import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
 import { formatCronSchedule } from "../../lib/presenter.ts";
 import { renderSegmented } from "./segmented-control.ts";
 import { renderCronStats } from "./stats.ts";
 import { CRON_SUGGESTIONS, suggestionFormPatch } from "./suggestions.ts";
 import { renderRunsSection, runStatusLabel } from "./view-runs.ts";
 
-type CronPanelMode = "overview" | "create" | "job";
+type CronPanelMode = "overview" | "create" | "job" | "notFound";
 
 export type CronListTab = "tasks" | "activity";
 export type CronDetailTab = "settings" | "history";
@@ -94,6 +96,7 @@ type CronProps = {
   fieldErrors: CronFieldErrors;
   canSubmit: boolean;
   editingJob: CronJob | null;
+  missingJobId: string | null;
   createOpen: boolean;
   listTab: CronListTab;
   detailTab: CronDetailTab;
@@ -422,14 +425,52 @@ function renderToggleRow(
 // ── Main render ──
 
 export function renderCron(props: CronProps) {
-  const mode: CronPanelMode = props.editingJob ? "job" : props.createOpen ? "create" : "overview";
+  const mode: CronPanelMode = props.missingJobId
+    ? "notFound"
+    : props.editingJob
+      ? "job"
+      : props.createOpen
+        ? "create"
+        : "overview";
   return html`
-    ${mode === "overview" ? renderListView(props) : renderDetailView(props, mode)}
+    ${mode === "overview"
+      ? renderListView(props)
+      : mode === "notFound"
+        ? renderNotFoundView(props)
+        : renderDetailView(props, mode)}
     ${renderSuggestionList("cron-agent-suggestions", props.agentSuggestions)}
     ${renderSuggestionList("cron-thinking-suggestions", props.thinkingSuggestions)}
     ${renderSuggestionList("cron-tz-suggestions", props.timezoneSuggestions)}
     ${renderSuggestionList("cron-delivery-to-suggestions", props.deliveryToSuggestions)}
     ${renderSuggestionList("cron-delivery-account-suggestions", props.accountSuggestions)}
+  `;
+}
+
+function renderNotFoundView(props: CronProps) {
+  const listPath = pathForRoute("cron", props.basePath);
+  return html`
+    <section class="cron-page cron-page--detail" data-panel-mode="notFound">
+      ${renderSettingsPage(
+        html`<div class="cron-empty-state" role="status">
+          <div class="cron-empty-state__title">${t("cron.detail.notFoundTitle")}</div>
+          <div class="cron-empty-state__copy">${t("cron.detail.notFoundCopy")}</div>
+          <a
+            class="btn btn--sm"
+            data-test-id="cron-not-found-back"
+            href=${listPath}
+            @click=${(event: MouseEvent) => {
+              if (shouldHandleNavigationClick(event)) {
+                event.preventDefault();
+                props.onClosePanel();
+              }
+            }}
+          >
+            ${t("cron.detail.back")}
+          </a>
+        </div>`,
+        { wide: true },
+      )}
+    </section>
   `;
 }
 

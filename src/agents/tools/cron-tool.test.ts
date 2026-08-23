@@ -358,6 +358,28 @@ describe("cron tool", () => {
     expect(result.details).toEqual({ id: "job-current", name: "current" });
   });
 
+  it("returns the canonical automation URL for a single-job result", async () => {
+    callGatewayMock.mockResolvedValueOnce({ id: "nightly.digest", name: "Nightly digest" });
+    const tool = createTestCronTool({
+      config: {
+        gateway: {
+          publicOrigin: "https://openclaw.example",
+          controlUi: { basePath: "/control" },
+        },
+      },
+    });
+
+    const result = await tool.execute("call-get-link", {
+      action: "get",
+      jobId: "nightly.digest",
+    });
+
+    expect(result.details).toMatchObject({
+      id: "nightly.digest",
+      automationUrl: "https://openclaw.example/control/automations/nightly%2Edigest",
+    });
+  });
+
   it.each([
     ["another job", { action: "get", jobId: "job-other" }],
     ["missing job id", { action: "get" }],

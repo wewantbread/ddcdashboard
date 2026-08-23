@@ -1,8 +1,13 @@
 import type { NavigationRouteId } from "../app-navigation.ts";
+import type { ApplicationNavigationOptions } from "../app/context.ts";
 
 export type CustodianAlertAction =
   | { kind: "update" }
-  | { kind: "navigate"; routeId: NavigationRouteId };
+  | {
+      kind: "navigate";
+      routeId: NavigationRouteId;
+      options?: ApplicationNavigationOptions;
+    };
 
 export type CustodianAlert = {
   /** Stable per incident; the store asks the agent at most once per id. */

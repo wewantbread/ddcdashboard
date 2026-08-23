@@ -290,8 +290,9 @@ function resolveTsconfigPathAlias(key: string, target: string): ControlUiViteAli
 }
 
 function sourcePackageAlias(packageId: string, subpath?: string): ControlUiViteAlias {
+  const specifier = `@openclaw/${packageId}${subpath ? `/${subpath}` : ""}`;
   return {
-    find: `@openclaw/${packageId}${subpath ? `/${subpath}` : ""}`,
+    find: subpath ? specifier : new RegExp(`^${escapeRegExp(specifier)}$`),
     replacement: path.join(
       repoRoot,
       "packages",
@@ -317,6 +318,7 @@ export function resolveSourcePackageAliasesForVite(): ControlUiViteAlias[] {
     sourcePackageAlias("normalization-core", "string-normalization"),
     sourcePackageAlias("normalization-core", "utf16-slice"),
     sourcePackageAlias("normalization-core"),
+    sourcePackageAlias("session-url-contract", "automation.runtime"),
     sourcePackageAlias("session-url-contract", "parse"),
     sourcePackageAlias("session-url-contract"),
     sourcePackageAlias("workboard-contract"),

@@ -9,11 +9,7 @@ import type {
 } from "@openclaw/uirouter";
 import {
   agentRouteFromPath,
-  INTERNAL_AGENT_PATH_PARAM,
-  INTERNAL_MEMORY_PATH_PARAM,
-  INTERNAL_PLUGINS_PATH_PARAM,
-  INTERNAL_SESSION_PATH_PARAM,
-  INTERNAL_WORKBOARD_PATH_PARAM,
+  INTERNAL_ROUTE_PATH_PARAM,
   memoryTabFromPath,
   pathForAgentPanel,
   pathForRoute,
@@ -131,22 +127,25 @@ type DynamicRoute = readonly [routeId: RouteId, searchKey: string, searchValue: 
 function dynamicRouteFromPath(pathname: string, basePath: string): DynamicRoute | null {
   const agentRoute = agentRouteFromPath(pathname, basePath);
   if (agentRoute) {
-    return ["agents", INTERNAL_AGENT_PATH_PARAM, pathname];
+    return ["agents", INTERNAL_ROUTE_PATH_PARAM, pathname];
+  }
+  if (routeIdFromPath(pathname, basePath) === "cron") {
+    return ["cron", INTERNAL_ROUTE_PATH_PARAM, pathname];
   }
   const boardId = workboardBoardIdFromPath(pathname, basePath);
   if (boardId) {
-    return ["workboard", INTERNAL_WORKBOARD_PATH_PARAM, pathname];
+    return ["workboard", INTERNAL_ROUTE_PATH_PARAM, pathname];
   }
   const memoryTab = memoryTabFromPath(pathname, basePath);
   if (memoryTab && memoryTab !== "overview") {
-    return ["memory", INTERNAL_MEMORY_PATH_PARAM, pathname];
+    return ["memory", INTERNAL_ROUTE_PATH_PARAM, pathname];
   }
   const pluginsTab = pluginsHubTabFromPath(pathname, basePath);
   if (pluginsTab === "discover") {
-    return ["plugins", INTERNAL_PLUGINS_PATH_PARAM, pathname];
+    return ["plugins", INTERNAL_ROUTE_PATH_PARAM, pathname];
   }
   const sessionNamespace = sessionRouteNamespaceFromPath(pathname, basePath);
-  return sessionNamespace ? [sessionNamespace, INTERNAL_SESSION_PATH_PARAM, pathname] : null;
+  return sessionNamespace ? [sessionNamespace, INTERNAL_ROUTE_PATH_PARAM, pathname] : null;
 }
 
 function routerHistoryLocation(location: ReturnType<RouterHistory["location"]>, basePath: string) {

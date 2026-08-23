@@ -3,7 +3,7 @@ import type { RouteLocation } from "@openclaw/uirouter";
 import { notFound } from "@openclaw/uirouter";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
-import { INTERNAL_SESSION_PATH_PARAM } from "../../app-route-paths.ts";
+import { INTERNAL_ROUTE_PATH_PARAM } from "../../app-route-paths.ts";
 import { pathForSession } from "../../app-session-path-builder.ts";
 import { sessionRefFromPath, type SessionPathTarget } from "../../app-session-route-paths.ts";
 import { waitForGatewayClient } from "../../app/gateway-readiness.ts";
@@ -366,7 +366,7 @@ function targetFromLocation(context: ApplicationContext, location: RouteLocation
   if (direct) {
     return { target: direct, location };
   }
-  const internalPath = new URLSearchParams(location.search).get(INTERNAL_SESSION_PATH_PARAM);
+  const internalPath = new URLSearchParams(location.search).get(INTERNAL_ROUTE_PATH_PARAM);
   if (!internalPath) {
     return null;
   }
@@ -375,7 +375,7 @@ function targetFromLocation(context: ApplicationContext, location: RouteLocation
     ? {
         target,
         location: {
-          ...locationWithoutSearchParam(location, INTERNAL_SESSION_PATH_PARAM),
+          ...locationWithoutSearchParam(location, INTERNAL_ROUTE_PATH_PARAM),
           pathname: internalPath,
         },
       }
