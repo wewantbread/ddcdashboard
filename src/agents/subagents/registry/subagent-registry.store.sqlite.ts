@@ -3,25 +3,40 @@
  * store preserves typed columns for hot delivery state while retaining the
  * normalized payload JSON for forward-compatible record hydration.
  */
+import { isDeepStrictEqual } from "node:util";
 import { safeParseJson } from "@openclaw/normalization-core";
 import { asFiniteNumber as normalizeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql, type Insertable, type Selectable, type Updateable } from "kysely";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../../../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
+import {
+  bindTaskDeliveryState,
+  bindTaskRecord,
+  insertOrMatchTaskRowsInDatabase,
+  transitionTaskRunsToTerminalInDatabase,
+} from "../../../tasks/task-registry.store.sqlite.js";
+import type { TaskDeliveryState, TaskRecord } from "../../../tasks/task-registry.types.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import type { SubagentRunReadRecord, SubagentRunRecord } from "./subagent-registry.types.js";
 
 type SubagentRunsTable = OpenClawStateKyselyDatabase["subagent_runs"];
-type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
+type SubagentRegistryDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "subagent_runs" | "task_delivery_state" | "task_runs"
+>;
 type SubagentRunSqliteRow = Selectable<SubagentRunsTable>;
-type BoundSubagentRunRecord = Insertable<SubagentRunsTable>;
+export type BoundSubagentRunRecord = Insertable<SubagentRunsTable>;
 type SubagentRunSqliteInsert = BoundSubagentRunRecord;
 type SubagentRunSqliteUpdate = Updateable<SubagentRunsTable>;
 type SubagentRunReadSqliteRow = Pick<
@@ -75,6 +90,272 @@ function isCanonicalSubagentRunRecord(value: unknown): value is CanonicalSubagen
   );
 }
 
+function readSubagentRunInDatabase(
+  database: OpenClawStateDatabase,
+  runId: string,
+): SubagentRunRecord | undefined {
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+  const row = executeSqliteQueryTakeFirstSync(
+    database.db,
+    stateDb.selectFrom("subagent_runs").selectAll().where("run_id", "=", runId),
+  );
+  return row ? (rowToSubagentRunRecord(row) ?? undefined) : undefined;
+}
+
+function sameLaunchRequest(left: SubagentRunRecord, right: SubagentRunRecord): boolean {
+  return Boolean(
+    left.launch &&
+    right.launch &&
+    left.runId === right.runId &&
+    left.requesterAgentId === right.requesterAgentId &&
+    left.requesterSessionKey === right.requesterSessionKey &&
+    left.launch.replayKey === right.launch.replayKey &&
+    left.launch.requestFingerprint === right.launch.requestFingerprint &&
+    left.launch.gatewayIdempotencyKey === right.launch.gatewayIdempotencyKey &&
+    left.childSessionKey === right.childSessionKey &&
+    left.launch.childSessionId === right.launch.childSessionId &&
+    left.launch.childLifecycleRevision === right.launch.childLifecycleRevision,
+  );
+}
+
+function compareAndSwapSubagentRun(
+  database: OpenClawStateDatabase,
+  expected: SubagentRunRecord,
+  next: SubagentRunRecord,
+  transition: string,
+): void {
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+  const expectedRow = bindSubagentRunRecord(expected);
+  const nextRow = bindSubagentRunRecord(next);
+  const { run_id: _runId, ...update } = nextRow;
+  const result = executeSqliteQuerySync(
+    database.db,
+    stateDb
+      .updateTable("subagent_runs")
+      .set(update)
+      .where("run_id", "=", expectedRow.run_id)
+      .where("payload_json", "=", expectedRow.payload_json),
+  );
+  if (result.numAffectedRows !== 1n) {
+    throw new Error(`subagent launch ${transition} lost CAS ${expected.runId}`);
+  }
+}
+
+export function reserveSubagentLaunchRecord(
+  entry: SubagentRunRecord,
+):
+  | { action: "reserved"; entry: SubagentRunRecord }
+  | { action: "replay"; entry: SubagentRunRecord }
+  | { action: "conflict"; entry: SubagentRunRecord } {
+  if (entry.launch?.phase !== "reserved" || entry.execution.status !== "queued") {
+    throw new Error("subagent launch reservation requires a canonical reserved row");
+  }
+  return runOpenClawStateWriteTransaction((database) => {
+    const current = readSubagentRunInDatabase(database, entry.runId);
+    if (current) {
+      return sameLaunchRequest(current, entry)
+        ? { action: "replay", entry: current }
+        : { action: "conflict", entry: current };
+    }
+    insertOrMatchSubagentRunRowInDatabase(database, bindSubagentRunRecord(entry));
+    const stored = readSubagentRunInDatabase(database, entry.runId);
+    if (!stored) {
+      throw new Error(`subagent launch reservation disappeared ${entry.runId}`);
+    }
+    return { action: "reserved", entry: stored };
+  });
+}
+
+export function prepareSubagentLaunchRecord(params: {
+  expected: SubagentRunRecord;
+  prepared: SubagentRunRecord;
+  task?: TaskRecord;
+  taskDelivery?: TaskDeliveryState;
+}): SubagentRunRecord {
+  if (
+    params.expected.launch?.phase !== "reserved" ||
+    params.prepared.launch?.phase !== "prepared" ||
+    params.prepared.launch.revision !== params.expected.launch.revision + 1 ||
+    !sameLaunchRequest(params.expected, params.prepared)
+  ) {
+    throw new Error("subagent launch preparation identity mismatch");
+  }
+  return runOpenClawStateWriteTransaction((database) => {
+    const current = readSubagentRunInDatabase(database, params.expected.runId);
+    if (current && isDeepStrictEqual(current, params.prepared)) {
+      return current;
+    }
+    if (!current || !isDeepStrictEqual(current, params.expected)) {
+      throw new Error(`subagent launch preparation lost reservation ${params.expected.runId}`);
+    }
+    if (params.task) {
+      insertOrMatchTaskRowsInDatabase(
+        database,
+        bindTaskRecord(params.task),
+        params.taskDelivery ? bindTaskDeliveryState(params.taskDelivery) : undefined,
+      );
+    }
+    compareAndSwapSubagentRun(database, current, params.prepared, "preparation");
+    return params.prepared;
+  });
+}
+
+export function transitionPreparedSubagentLaunchToDispatching(params: {
+  runId: string;
+  executionAttemptId: string;
+  dispatchingAt: number;
+}): SubagentRunRecord | undefined {
+  return runOpenClawStateWriteTransaction((database) => {
+    const current = readSubagentRunInDatabase(database, params.runId);
+    if (!current?.launch || current.launch.phase !== "prepared") {
+      return undefined;
+    }
+    const next: SubagentRunRecord = {
+      ...current,
+      launch: {
+        ...current.launch,
+        phase: "dispatching",
+        revision: current.launch.revision + 1,
+        executionAttemptId: params.executionAttemptId,
+        dispatchingAt: params.dispatchingAt,
+      },
+      queuedLaunch: undefined,
+      execution: {
+        ...current.execution,
+        status: "running",
+        acceptedAt: current.execution.acceptedAt ?? params.dispatchingAt,
+        startedAt: current.execution.startedAt ?? params.dispatchingAt,
+      },
+      sessionStartedAt: current.sessionStartedAt ?? params.dispatchingAt,
+    };
+    compareAndSwapSubagentRun(database, current, next, "dispatch");
+    const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+    executeSqliteQuerySync(
+      database.db,
+      stateDb
+        .updateTable("task_runs")
+        .set({
+          status: "running",
+          started_at: params.dispatchingAt,
+          last_event_at: params.dispatchingAt,
+        })
+        .where("run_id", "=", current.taskRunId ?? current.runId)
+        .where("runtime", "=", "subagent")
+        .where("status", "=", "queued"),
+    );
+    return next;
+  });
+}
+
+export function transitionDispatchingSubagentLaunchToRunning(params: {
+  runId: string;
+  runningAt: number;
+}): SubagentRunRecord | undefined {
+  return runOpenClawStateWriteTransaction((database) => {
+    const current = readSubagentRunInDatabase(database, params.runId);
+    if (!current?.launch) {
+      return undefined;
+    }
+    if (current.launch.phase === "running") {
+      return current;
+    }
+    if (current.launch.phase !== "dispatching") {
+      return undefined;
+    }
+    const next: SubagentRunRecord = {
+      ...current,
+      launch: {
+        ...current.launch,
+        phase: "running",
+        revision: current.launch.revision + 1,
+        runningAt: params.runningAt,
+      },
+    };
+    compareAndSwapSubagentRun(database, current, next, "running acknowledgement");
+    return next;
+  });
+}
+
+function taskStatusForLaunchTerminalReason(
+  reason: "completed" | "failed" | "interrupted" | "lost",
+): Extract<TaskRecord["status"], "succeeded" | "failed" | "lost"> {
+  return reason === "completed" ? "succeeded" : reason === "lost" ? "lost" : "failed";
+}
+
+export function transitionSubagentLaunchToTerminal(params: {
+  runId: string;
+  terminalAt: number;
+  terminalReason: "completed" | "failed" | "interrupted" | "lost";
+  error?: string;
+}): { entry: SubagentRunRecord; tasks: TaskRecord[] } | undefined {
+  return runOpenClawStateWriteTransaction((database) => {
+    const current = readSubagentRunInDatabase(database, params.runId);
+    if (!current?.launch) {
+      return undefined;
+    }
+    if (current.launch.phase === "terminal") {
+      return {
+        entry: current,
+        tasks: transitionTaskRunsToTerminalInDatabase(database, {
+          runId: current.taskRunId ?? current.runId,
+          runtime: "subagent",
+          status: taskStatusForLaunchTerminalReason(current.launch.terminalReason),
+          endedAt: current.launch.terminalAt,
+          error: current.launch.error,
+        }),
+      };
+    }
+    const resultText = params.error ?? params.terminalReason;
+    const next: SubagentRunRecord = {
+      ...current,
+      queuedLaunch: undefined,
+      execution: {
+        ...current.execution,
+        status: "terminal",
+        endedAt: params.terminalAt,
+        outcome:
+          params.terminalReason === "completed"
+            ? { status: "ok", endedAt: params.terminalAt }
+            : {
+                status: "error",
+                error: params.error ?? params.terminalReason,
+                endedAt: params.terminalAt,
+              },
+      },
+      completion: {
+        required: false,
+        resultText,
+        capturedAt: params.terminalAt,
+      },
+      ...(current.collect
+        ? {
+            collectorCompletion: {
+              status:
+                params.terminalReason === "completed" ? ("done" as const) : ("failed" as const),
+            },
+          }
+        : {}),
+      launch: {
+        ...current.launch,
+        phase: "terminal",
+        revision: current.launch.revision + 1,
+        terminalAt: params.terminalAt,
+        terminalReason: params.terminalReason,
+        ...(params.error ? { error: params.error } : {}),
+      },
+    };
+    compareAndSwapSubagentRun(database, current, next, "terminal");
+    const tasks = transitionTaskRunsToTerminalInDatabase(database, {
+      runId: current.taskRunId ?? current.runId,
+      runtime: "subagent",
+      status: taskStatusForLaunchTerminalReason(params.terminalReason),
+      endedAt: params.terminalAt,
+      error: params.error,
+    });
+    return { entry: next, tasks };
+  });
+}
+
 function jsonStringify(value: unknown): string | null {
   return value === undefined ? null : JSON.stringify(value);
 }
@@ -88,7 +369,7 @@ function boolToSqlite(value: boolean | undefined): number | null {
 }
 
 /** Rehydrates one sqlite row into the normalized subagent run record shape. */
-function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | null {
+export function rowToSubagentRunRecord(row: SubagentRunSqliteRow): SubagentRunRecord | null {
   const payload = parseJson(row.payload_json);
   if (!isCanonicalSubagentRunRecord(payload)) {
     return null;
@@ -203,6 +484,27 @@ export function upsertSubagentRunRowInDatabase(
         conflict.column("run_id").doUpdateSet(subagentRunRecordToSqliteUpdate(row)),
       ),
   );
+}
+
+export function insertOrMatchSubagentRunRowInDatabase(
+  database: OpenClawStateDatabase,
+  row: BoundSubagentRunRecord,
+): void {
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(database.db);
+  executeSqliteQuerySync(
+    database.db,
+    stateDb
+      .insertInto("subagent_runs")
+      .values(row)
+      .onConflict((conflict) => conflict.doNothing()),
+  );
+  const stored = executeSqliteQueryTakeFirstSync(
+    database.db,
+    stateDb.selectFrom("subagent_runs").selectAll().where("run_id", "=", row.run_id),
+  );
+  if (!stored || !isDeepStrictEqual({ ...stored }, row)) {
+    throw new Error(`subagent launch conflicts with ${row.run_id}`);
+  }
 }
 
 function subagentRunRecordToSqliteUpdate(values: SubagentRunSqliteInsert): SubagentRunSqliteUpdate {

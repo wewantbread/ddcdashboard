@@ -121,6 +121,7 @@ export async function createInitialSubagentSession(params: {
   swarmGroupId?: string;
   collect: boolean;
   outputSchema?: Record<string, unknown>;
+  plannedIdentity?: { sessionId: string; lifecycleRevision: string };
 }): Promise<{ status: "ok"; entry?: SessionEntry } | { status: "error"; error: string }> {
   const initialChildSessionPatch: Record<string, unknown> = {
     spawnedBy: params.requesterInternalKey,
@@ -142,7 +143,7 @@ export async function createInitialSubagentSession(params: {
   };
   // Spawn owns a fresh child lifecycle. Cleanup freezes both fields before
   // launch so it cannot delete a reset successor that reuses the session id.
-  const childSessionIdentity = {
+  const childSessionIdentity = params.plannedIdentity ?? {
     sessionId: randomUUID(),
     lifecycleRevision: randomUUID(),
   };

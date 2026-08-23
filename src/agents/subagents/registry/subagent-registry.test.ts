@@ -1122,7 +1122,7 @@ describe("subagent registry seam flow", () => {
     await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   });
 
-  it("keeps an in-flight queued collector pending until launch cleanup settles", async () => {
+  it("terminalizes a queued collector without adopting a Gateway attempt id", async () => {
     const runId = "run-collector-launch-kill";
     mod.addSubagentRunForTests({
       runId,
@@ -1132,20 +1132,23 @@ describe("subagent registry seam flow", () => {
       collect: true,
       swarmRunId: runId,
       schedulerSlotId: runId,
-      swarmLaunchPending: true,
+      launch: {
+        phase: "prepared",
+        replayKey: runId,
+        requestFingerprint: "sha256:launch-kill",
+        gatewayIdempotencyKey: runId,
+        childSessionId: "launch-kill",
+        childLifecycleRevision: "revision-launch-kill",
+        revision: 1,
+        preparedAt: Date.now(),
+      },
       execution: { status: "queued" },
       completion: { required: false },
     });
 
     expect(mod.markSubagentRunTerminated({ runId, reason: "manual kill" })).toBe(1);
     expect(mod.getSubagentRunByRunId(runId)?.collectorCompletion).toBeUndefined();
-    expect(mod.startQueuedSubagentRun(runId, "gateway-launch-kill")).toBe(false);
     expect(mod.getSubagentRunByRunId("gateway-launch-kill")).toBeUndefined();
-
-    expect(mod.settleFailedQueuedSubagentLaunch(runId, "launch response lost")).toBe(true);
-    expect(mod.getSubagentRunByRunId(runId)?.collectorCompletion).toMatchObject({
-      status: "killed",
-    });
     await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   });
 
@@ -1376,6 +1379,38 @@ describe("subagent registry seam flow", () => {
     );
   });
 
+  it("does not redispatch a canonical launch after Gateway acceptance response is lost", async () => {
+    const accepted = makeQueuedRun({
+      runId: "run-lost-acceptance",
+      childSessionKey: "agent:main:subagent:lost-acceptance",
+      task: "do not dispatch twice",
+      groupId: "lost-acceptance",
+      createdAt: Date.now(),
+    });
+    accepted.gatewayRunId = accepted.runId;
+    accepted.execution = {
+      status: "running",
+      acceptedAt: accepted.createdAt + 1,
+      startedAt: accepted.createdAt + 1,
+    };
+    delete accepted.launch;
+    delete accepted.queuedLaunch;
+    mocks.restoreSubagentRunsFromDisk.mockImplementation(((params: {
+      runs: Map<string, SubagentRunRecord>;
+    }) => {
+      params.runs.set(accepted.runId, accepted);
+      return 1;
+    }) as never);
+
+    hydrateAndActivateRegistry();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.callGateway.mock.calls.filter(([request]) => request.method === "agent")).toEqual(
+      [],
+    );
+  });
+
   it("rehydrates persisted collector FIFO queues after admission reopens", async () => {
     const now = Date.now();
     mockSingleCollectorConcurrency();
@@ -1437,21 +1472,15 @@ describe("subagent registry seam flow", () => {
         scopes: ["operator.admin"],
       });
     });
-    expect(mod.getSubagentRunByRunId("run-queued-one")?.execution?.status).toBe("running");
-    const acceptedRun = mod.getSubagentRunByRunId("gateway-run-one");
-    expect(acceptedRun).toMatchObject({
-      runId: "gateway-run-one",
-      swarmRunId: "run-queued-one",
-      schedulerSlotId: "run-queued-one",
-      execution: { status: "running" },
+    expect(mod.getSubagentRunByRunId("run-queued-one")).toMatchObject({
+      runId: "run-queued-one",
+      execution: { status: "queued" },
     });
-    expect(acceptedRun).not.toHaveProperty("startedAt");
-    expect(acceptedRun).not.toHaveProperty("sessionStartedAt");
-    expect(acceptedRun?.execution).not.toHaveProperty("startedAt");
+    expect(mod.getSubagentRunByRunId("gateway-run-one")).toBeUndefined();
     expect(mod.getSubagentRunByRunId("run-queued-two")?.execution?.status).toBe("queued");
   });
 
-  it("preserves a lifecycle start that arrives before collector acceptance returns", async () => {
+  it("requires a durable row before dispatching an in-memory launch", async () => {
     const startedAt = 12_345;
     mod.registerSubagentRun({
       runId: "run-start-race",
@@ -1464,6 +1493,16 @@ describe("subagent registry seam flow", () => {
       groupId: "start-race",
       queued: true,
       expectsCompletionMessage: false,
+      launch: {
+        phase: "prepared",
+        replayKey: "run-start-race",
+        requestFingerprint: "sha256:start-race",
+        gatewayIdempotencyKey: "run-start-race",
+        childSessionId: "start-race",
+        childLifecycleRevision: "revision-start-race",
+        revision: 1,
+        preparedAt: 1,
+      },
     });
     const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls.at(-1) as unknown as
       | [(event: AgentEventPayload) => void]
@@ -1482,14 +1521,17 @@ describe("subagent registry seam flow", () => {
       expect(mod.getSubagentRunByRunId("run-start-race")?.execution.startedAt).toBe(startedAt),
     );
 
-    expect(mod.startQueuedSubagentRun("run-start-race", "gateway-start-race")).toBe(true);
-    expect(mod.getSubagentRunByRunId("gateway-start-race")).toMatchObject({
+    expect(
+      mod.transitionPreparedSubagentLaunchToDispatching("run-start-race", "attempt-start-race"),
+    ).toBe(false);
+    expect(mod.getSubagentRunByRunId("run-start-race")).toMatchObject({
       sessionStartedAt: startedAt,
-      execution: { status: "running", acceptedAt: expect.any(Number), startedAt },
+      execution: { status: "running", startedAt },
+      launch: { phase: "prepared" },
     });
   });
 
-  it("rejects queued collector acceptance from a retired Gateway lifecycle", () => {
+  it("does not dispatch a launch missing its durable row", () => {
     mod.registerSubagentRun({
       runId: "run-retired-acceptance",
       childSessionKey: "agent:main:subagent:retired-acceptance",
@@ -1501,22 +1543,37 @@ describe("subagent registry seam flow", () => {
       groupId: "retired-acceptance",
       queued: true,
       expectsCompletionMessage: false,
+      launch: {
+        phase: "prepared",
+        replayKey: "run-retired-acceptance",
+        requestFingerprint: "sha256:retired",
+        gatewayIdempotencyKey: "run-retired-acceptance",
+        childSessionId: "retired",
+        childLifecycleRevision: "revision-retired",
+        revision: 1,
+        preparedAt: 1,
+      },
     });
 
     expect(
-      mod.startQueuedSubagentRun(
+      mod.transitionPreparedSubagentLaunchToDispatching(
         "run-retired-acceptance",
-        "gateway-retired-acceptance",
-        "retired-generation",
+        "attempt-retired-acceptance",
+      ),
+    ).toBe(false);
+    expect(
+      mod.transitionPreparedSubagentLaunchToDispatching(
+        "run-retired-acceptance",
+        "attempt-duplicate",
       ),
     ).toBe(false);
     expect(mod.getSubagentRunByRunId("run-retired-acceptance")).toMatchObject({
-      execution: { status: "queued" },
+      launch: { phase: "prepared" },
     });
     expect(mod.getSubagentRunByRunId("gateway-retired-acceptance")).toBeUndefined();
   });
 
-  it("remaps a collector that completed before its acceptance response", () => {
+  it("keeps a completed collector under its stable public run id", () => {
     mod.addSubagentRunForTests(
       makeCompletedCollectorRun({
         runId: "run-terminal-race",
@@ -1527,7 +1584,6 @@ describe("subagent registry seam flow", () => {
         cleanup: "keep",
         swarmRunId: "run-terminal-race",
         schedulerSlotId: "run-terminal-race",
-        swarmLaunchPending: false,
         queuedLaunch: {
           request: { sessionKey: "agent:main:subagent:terminal-race" },
           timeoutMs: 1_000,
@@ -1542,18 +1598,15 @@ describe("subagent registry seam flow", () => {
       }),
     );
 
-    expect(mod.startQueuedSubagentRun("run-terminal-race", "gateway-terminal-race")).toBe(true);
-    const remapped = mod.getSubagentRunByRunId("gateway-terminal-race");
-    expect(mod.getSubagentRunByRunId("run-terminal-race")).toBe(remapped);
-    expect(remapped).toMatchObject({
-      runId: "gateway-terminal-race",
+    expect(mod.getSubagentRunByRunId("run-terminal-race")).toMatchObject({
+      runId: "run-terminal-race",
       swarmRunId: "run-terminal-race",
       collectorCompletion: { status: "done" },
-      swarmLaunchPending: false,
     });
+    expect(mod.getSubagentRunByRunId("gateway-terminal-race")).toBeUndefined();
   });
 
-  it("refuses to remap an unrelated terminal collector without a pending launch", () => {
+  it("does not invent an attempt-id alias for a terminal collector", () => {
     mod.addSubagentRunForTests(
       makeCompletedCollectorRun({
         runId: "run-terminal-stale",
@@ -1572,7 +1625,6 @@ describe("subagent registry seam flow", () => {
       }),
     );
 
-    expect(mod.startQueuedSubagentRun("run-terminal-stale", "gateway-terminal-stale")).toBe(false);
     expect(mod.getSubagentRunByRunId("run-terminal-stale")).toMatchObject({
       runId: "run-terminal-stale",
       collectorCompletion: { status: "done" },
@@ -1580,7 +1632,7 @@ describe("subagent registry seam flow", () => {
     expect(mod.getSubagentRunByRunId("gateway-terminal-stale")).toBeUndefined();
   });
 
-  it("holds a restored FIFO slot until an accepted collector is confirmed stopped", async () => {
+  it("keeps a restored FIFO slot held after Gateway acknowledgement", async () => {
     vi.useRealTimers();
     const now = Date.now();
     mockSingleCollectorConcurrency();
@@ -1634,29 +1686,14 @@ describe("subagent registry seam flow", () => {
     });
 
     hydrateAndActivateRegistry();
-    await waitForFast(() => expect(releaseAbort).toBeTypeOf("function"));
+    await waitForFast(() => expect(agentCalls).toBe(1));
+    expect(releaseAbort).toBeUndefined();
+    expect(deleteReleases).toHaveLength(0);
     expect(agentCalls).toBe(1);
-
-    releaseAbort?.();
-    await waitForFast(() => expect(deleteReleases).toHaveLength(1));
-    expect(agentCalls).toBe(1);
-    await waitForFast(() =>
-      expect(mocks.callGateway).toHaveBeenCalledWith(
-        expect.objectContaining({
-          method: "sessions.delete",
-          params: expect.objectContaining({
-            key: "agent:main:subagent:run-restored-stop-one",
-            expectedSessionId: "one",
-            expectedLifecycleRevision: "revision-one",
-          }),
-        }),
-      ),
-    );
-    deleteReleases[0]?.();
-    await waitForFast(() => expect(deleteReleases).toHaveLength(2));
-    expect(agentCalls).toBe(1);
-    deleteReleases[1]?.();
-    await waitForFast(() => expect(agentCalls).toBe(2));
+    expect(mod.getSubagentRunByRunId("run-restored-stop-one")).toMatchObject({
+      execution: { status: "queued" },
+    });
+    expect(mod.getSubagentRunByRunId("run-restored-stop-two")?.execution.status).toBe("queued");
   });
 
   it("holds a restored FIFO slot while an indeterminate launch session is deleted", async () => {
@@ -1722,7 +1759,7 @@ describe("subagent registry seam flow", () => {
     await waitForFast(() => expect(agentCalls).toBe(2));
   });
 
-  it("releases restored FIFO ownership when lifecycle rotates during failure persistence", async () => {
+  it("does not enter failure persistence after restored Gateway acknowledgement", async () => {
     vi.useRealTimers();
     const now = Date.now();
     mockSingleCollectorConcurrency();
@@ -1783,21 +1820,13 @@ describe("subagent registry seam flow", () => {
 
     hydrateAndActivateRegistry();
 
-    await waitForFast(() => expect(persistenceCalls).toBeGreaterThanOrEqual(3));
-    await concurrentSweep;
-    await waitForFast(() => expect(agentCalls).toBe(2));
-    await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    await waitForFast(() => expect(agentCalls).toBe(1));
+    expect(persistenceCalls).toBe(0);
+    expect(concurrentSweep).toBeUndefined();
     expect(mod.getSubagentRunByRunId("run-restored-rotation-one")).toMatchObject({
-      execution: {
-        status: "terminal",
-        suppressSessionEffects: true,
-        outcome: { status: "error" },
-      },
-      collectorCompletion: { status: "failed" },
+      execution: { status: "queued" },
     });
-    expect(mod.getSubagentRunByRunId("gateway-restored-rotation-2")).toMatchObject({
-      execution: { status: "running", lifecycleGeneration: "rotated-generation" },
-    });
+    expect(mod.getSubagentRunByRunId("gateway-restored-rotation-2")).toBeUndefined();
   });
 
   it("cleans prepared resources after a restored collector launch fails", async () => {

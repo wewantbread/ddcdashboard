@@ -44,6 +44,12 @@ describe("AcpSessionManager turn results", () => {
   it("emits prompt_submitted only after the runtime confirms prompt submission", async () => {
     const { runtimeState, sessionKey } = setupPromptStartedRuntime();
     const transitions: string[] = [];
+    const onProviderDispatching = vi.fn(() => {
+      transitions.push("dispatching-cas");
+    });
+    const onProviderRunning = vi.fn(() => {
+      transitions.push("running-cas");
+    });
     runtimeState.runtime.startTurn = vi.fn((input) => {
       transitions.push("turn-created");
       const promptStarted = Promise.resolve().then(() => {
@@ -66,20 +72,21 @@ describe("AcpSessionManager turn results", () => {
       text: "submit once",
       mode: "prompt",
       requestId: "prompt-started-lifecycle",
-      onBeforePrompt: () => {
-        transitions.push("admission-accepted");
-      },
-      onLifecycle: () => {
-        transitions.push("prompt-submitted");
+      onBeforePrompt: onProviderDispatching,
+      onLifecycle: (event) => {
+        expect(event.type).toBe("prompt_submitted");
+        onProviderRunning();
       },
     });
 
     expect(transitions).toEqual([
-      "admission-accepted",
+      "dispatching-cas",
       "turn-created",
       "prompt-started",
-      "prompt-submitted",
+      "running-cas",
     ]);
+    expect(onProviderDispatching).toHaveBeenCalledOnce();
+    expect(onProviderRunning).toHaveBeenCalledOnce();
   });
 
   it.each(["startTurn", "runTurn"] as const)(

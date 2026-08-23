@@ -165,7 +165,7 @@ export function createSubagentRegistryPublicApi(config: {
     return [...readRuns().values()].find(
       (entry) =>
         entry.collect === true &&
-        entry.swarmLaunchReplayKey === key &&
+        entry.launch?.replayKey === key &&
         (!requesterKey ||
           (entry.swarmRequesterSessionKey ?? entry.requesterSessionKey) === requesterKey) &&
         (!requesterAgentId || entry.requesterAgentId === requesterAgentId),

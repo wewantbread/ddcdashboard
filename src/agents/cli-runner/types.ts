@@ -254,6 +254,8 @@ export type RunCliAgentParams = {
   disableTools?: boolean;
   abortSignal?: AbortSignal;
   onExecutionStarted?: () => void;
+  onProviderDispatching?: () => void;
+  onProviderRunning?: () => void;
   onExecutionPhase?: (info: {
     phase: EmbeddedAgentExecutionPhase;
     provider?: string;

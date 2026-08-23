@@ -35,14 +35,30 @@ export function updateSwarmCollectorCompletion(
   if (!entry.collect) {
     return false;
   }
-  const clearedPendingLaunch = entry.swarmLaunchPending === true;
-  entry.swarmLaunchPending = false;
   const completion = ensureCompletionState(entry);
   const capturedAtAdded = completion.capturedAt === undefined;
   completion.capturedAt ??= Date.now();
+  if (entry.launch && entry.launch.phase !== "terminal") {
+    const terminalAt = entry.execution.endedAt ?? completion.capturedAt;
+    entry.launch = {
+      ...entry.launch,
+      phase: "terminal",
+      revision: entry.launch.revision + 1,
+      terminalAt,
+      terminalReason:
+        entry.execution.outcome?.status === "ok"
+          ? "completed"
+          : entry.execution.outcome?.status === "timeout"
+            ? "interrupted"
+            : "failed",
+      ...(entry.execution.outcome?.status === "error" && entry.execution.outcome.error
+        ? { error: entry.execution.outcome.error }
+        : {}),
+    };
+  }
   const archiveDeadlineAdded = updateSubagentArchiveAtMs(entry, cfg);
   if (entry.collectorCompletion) {
-    return clearedPendingLaunch || capturedAtAdded || archiveDeadlineAdded;
+    return capturedAtAdded || archiveDeadlineAdded;
   }
   const executionCaptured = consumeSwarmStructuredOutput(entry.runId);
   const publicCaptured =

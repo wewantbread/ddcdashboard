@@ -25,7 +25,6 @@ const hoisted = vi.hoisted(() => ({
   resolveProviderRefOwnershipMock: vi.fn(),
   updateSessionStoreMock: vi.fn(),
   registerSubagentRunMock: vi.fn(),
-  startQueuedSubagentRunMock: vi.fn(),
   settleFailedQueuedSubagentLaunchMock: vi.fn(),
   completeCollectorLaunchCleanupMock: vi.fn(),
   emitSessionLifecycleEventMock: vi.fn(),
@@ -176,7 +175,6 @@ describe("spawnSubagentDirect seam flow", () => {
       resolveProviderRefOwnershipMock: hoisted.resolveProviderRefOwnershipMock,
       updateSessionStoreMock: hoisted.updateSessionStoreMock,
       registerSubagentRunMock: hoisted.registerSubagentRunMock,
-      startQueuedSubagentRunMock: hoisted.startQueuedSubagentRunMock,
       settleFailedQueuedSubagentLaunchMock: hoisted.settleFailedQueuedSubagentLaunchMock,
       completeCollectorLaunchCleanupMock: hoisted.completeCollectorLaunchCleanupMock,
       emitSessionLifecycleEventMock: hoisted.emitSessionLifecycleEventMock,
@@ -203,7 +201,6 @@ describe("spawnSubagentDirect seam flow", () => {
     });
     hoisted.updateSessionStoreMock.mockReset();
     hoisted.registerSubagentRunMock.mockReset();
-    hoisted.startQueuedSubagentRunMock.mockReset().mockReturnValue(true);
     hoisted.settleFailedQueuedSubagentLaunchMock.mockReset().mockReturnValue(true);
     hoisted.completeCollectorLaunchCleanupMock.mockReset();
     hoisted.emitSessionLifecycleEventMock.mockReset();
@@ -456,9 +453,6 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(agentParams).not.toHaveProperty("threadId");
     expect(agentParams.extraSystemPrompt).toContain("until one payload is accepted");
     expect(agentParams.extraSystemPrompt).toContain("at most one retry");
-    await vi.waitFor(() =>
-      expect(hoisted.startQueuedSubagentRunMock).toHaveBeenCalledWith(result.runId, "run-1"),
-    );
   });
 
   it("persists a host-reserved collector launch identity", async () => {
@@ -469,8 +463,8 @@ describe("spawnSubagentDirect seam flow", () => {
         task: "collect replay-safe evidence",
         collect: true,
         groupId: "swarm:replay",
-        swarmLaunchReplayKey: "cm-restart:bridge:1",
-        swarmLaunchRequestFingerprint: "sha256:request",
+        launchReplayKey: "cm-restart:bridge:1",
+        launchRequestFingerprint: "sha256:request",
       },
       { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
     );
@@ -479,8 +473,8 @@ describe("spawnSubagentDirect seam flow", () => {
         task: "collect replay-safe evidence",
         collect: true,
         groupId: "swarm:replay",
-        swarmLaunchReplayKey: "cm-restart:bridge:1",
-        swarmLaunchRequestFingerprint: "sha256:request",
+        launchReplayKey: "cm-restart:bridge:1",
+        launchRequestFingerprint: "sha256:request",
       },
       { agentSessionKey: "agent:main:other", requesterRunId: "parent-run" },
     );
@@ -492,9 +486,6 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(otherRequesterResult.runId).not.toBe(result.runId);
     expect(firstRegisteredSubagentRun()).toMatchObject({
       runId: result.runId,
-      swarmLaunchIdempotencyKey: result.runId,
-      swarmLaunchReplayKey: "cm-restart:bridge:1",
-      swarmLaunchRequestFingerprint: "sha256:request",
     });
     await vi.waitFor(() => expect(gatewayRequest("agent")).toBeDefined());
     expect(requireRecord(gatewayRequest("agent").params).idempotencyKey).toBe(result.runId);
@@ -740,79 +731,6 @@ describe("spawnSubagentDirect seam flow", () => {
       "sessions_spawn could not verify the requested model: catalog unavailable",
     );
     expectNoChildSpawnSideEffects();
-  });
-
-  it("aborts a collector cancelled while its gateway launch is in flight", async () => {
-    hoisted.configOverride = createConfigOverride({ tools: { swarm: true } });
-    hoisted.startQueuedSubagentRunMock.mockReturnValue(false);
-
-    const result = await spawnSubagentDirect(
-      { task: "cancel during launch", collect: true },
-      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
-    );
-
-    expect(result.status).toBe("accepted");
-    await vi.waitFor(() => expect(gatewayRequest("chat.abort")).toBeDefined());
-    expect(gatewayRequest("chat.abort")).toMatchObject({
-      params: { sessionKey: result.childSessionKey, runId: "run-1" },
-    });
-    await vi.waitFor(() =>
-      expect(hoisted.completeCollectorLaunchCleanupMock).toHaveBeenCalledWith(result.runId),
-    );
-  });
-
-  it("holds the collector slot until an accepted run is confirmed stopped", async () => {
-    vi.stubEnv("OPENCLAW_TEST_FAST", "1");
-    hoisted.configOverride = createConfigOverride({
-      tools: { swarm: { enabled: true, maxConcurrent: 1 } },
-    });
-    hoisted.startQueuedSubagentRunMock.mockReturnValueOnce(false).mockReturnValue(true);
-    let stopAllowed = false;
-    let agentCalls = 0;
-    let abortCalls = 0;
-    hoisted.callGatewayMock.mockImplementation(
-      async (request: { method?: string; params?: unknown }) => {
-        if (request.method === "agent") {
-          agentCalls += 1;
-          return { runId: `gateway-${agentCalls}` };
-        }
-        if (request.method === "chat.abort") {
-          abortCalls += 1;
-          if (!stopAllowed) {
-            throw new Error("abort unavailable");
-          }
-          return {
-            aborted: true,
-            runIds: [requireRecord(request.params).runId],
-          };
-        }
-        if (request.method === "sessions.delete") {
-          throw new Error("delete unavailable");
-        }
-        return {};
-      },
-    );
-
-    const first = await spawnSubagentDirect(
-      { task: "stop-confirmation-first", collect: true, groupId: "stop-confirmation" },
-      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
-    );
-    const second = await spawnSubagentDirect(
-      { task: "stop-confirmation-second", collect: true, groupId: "stop-confirmation" },
-      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
-    );
-
-    await vi.waitFor(() => expect(abortCalls).toBeGreaterThan(0));
-    expect(agentCalls).toBe(1);
-    stopAllowed = true;
-    await vi.waitFor(() => expect(agentCalls).toBe(2));
-    await vi.waitFor(() =>
-      expect(hoisted.startQueuedSubagentRunMock).toHaveBeenCalledWith(second.runId, "gateway-2"),
-    );
-    expect(hoisted.settleFailedQueuedSubagentLaunchMock).toHaveBeenCalledWith(
-      first.runId,
-      expect.any(String),
-    );
   });
 
   it("holds the collector slot while an indeterminate launch session is deleted", async () => {

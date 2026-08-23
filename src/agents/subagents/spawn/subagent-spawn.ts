@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * Subagent spawn executor.
  *
@@ -29,7 +30,6 @@ import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context
 import {
   completeCollectorLaunchCleanup,
   settleFailedQueuedSubagentLaunch,
-  startQueuedSubagentRun,
 } from "../registry/subagent-registry.js";
 import { activateSwarmRun, removeQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { readParentExecutionIdentity } from "./execution-identity-spawn-context.js";
@@ -45,6 +45,7 @@ import {
   retrySubagentCleanup,
   terminateAcceptedCollectorRun,
 } from "./subagent-spawn-cleanup.js";
+import { createCodeModeSpawnControl } from "./subagent-spawn-code-mode.js";
 import {
   prepareContextEngineSubagentSpawn,
   prepareSubagentSessionContext,
@@ -104,6 +105,7 @@ export async function spawnSubagentDirect(
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
   const requesterSessionKey = ctx.agentSessionKey;
   const gatewayContextResolver = getGatewayToolCallerIdentity()?.gatewayContextResolver;
+  const codeModeLaunch = createCodeModeSpawnControl(params);
   let requestedAgentId = params.agentId?.trim();
   const requestResolution = resolveSubagentSpawnRequest(params, ctx, {
     initial: requestedAgentId,
@@ -131,7 +133,7 @@ export async function spawnSubagentDirect(
       config: swarmConfig,
       groupId: swarmGroupId,
       schedulerGroupKey: swarmSchedulerGroupKey,
-      launchReplayKey: swarmLaunchReplayKey,
+      launchReplayKey,
       reservationPending,
     },
     admission: {
@@ -158,6 +160,7 @@ export async function spawnSubagentDirect(
       targetAgentId,
       sandboxMode,
       swarmEnabled: swarmConfig.enabled,
+      plannedChildSessionKey: codeModeLaunch.authority?.reserved.childSessionKey,
     });
     if (!childPlan.ok) {
       return childPlan.result;
@@ -195,6 +198,7 @@ export async function spawnSubagentDirect(
       swarmGroupId,
       collect: params.collect === true,
       outputSchema: params.outputSchema,
+      plannedIdentity: codeModeLaunch.plannedSessionIdentity,
     });
     if (initialSession.status === "error") {
       return {
@@ -519,6 +523,7 @@ export async function spawnSubagentDirect(
     const pipelineResult = await runSpawnPipeline({
       adapter,
       admissionReservation,
+      register: codeModeLaunch.register,
       progressOrigin,
       progressSessionKey: requesterInternalKey,
       buildRegistration: (_state, runId) => {
@@ -553,14 +558,24 @@ export async function spawnSubagentDirect(
           spawnMode,
           collect: params.collect === true,
           swarmRequesterSessionKey: params.collect ? requesterInternalKey : undefined,
-          swarmLaunchIdempotencyKey: params.collect ? childIdem : undefined,
-          swarmLaunchReplayKey: params.collect ? swarmLaunchReplayKey : undefined,
-          swarmLaunchRequestFingerprint: params.collect
-            ? params.swarmLaunchRequestFingerprint
-            : undefined,
           outputSchema: params.outputSchema,
           groupId: swarmGroupId,
           queuedLaunch,
+          launch:
+            params.collect && !codeModeLaunch.authority
+              ? {
+                  phase: "prepared",
+                  replayKey: childIdem,
+                  requestFingerprint: `sha256:${createHash("sha256")
+                    .update(JSON.stringify(queuedLaunch?.request ?? {}))
+                    .digest("hex")}`,
+                  gatewayIdempotencyKey: childIdem,
+                  childSessionId: provisionalSessionIdentity.sessionId,
+                  childLifecycleRevision: provisionalSessionIdentity.lifecycleRevision,
+                  revision: 1,
+                  preparedAt: Date.now(),
+                }
+              : undefined,
           queued: params.collect === true,
           taskRowOwnership,
           ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
@@ -608,30 +623,7 @@ export async function spawnSubagentDirect(
                 agentId: targetAgentId,
               }),
             });
-            try {
-              const started = gatewayContextResolver
-                ? startQueuedSubagentRun(
-                    childRunId,
-                    gatewayRunId,
-                    undefined,
-                    gatewayContextResolver,
-                  )
-                : startQueuedSubagentRun(childRunId, gatewayRunId);
-              if (!started) {
-                throw new Error(
-                  "collector registry row could not transition from queued to running",
-                );
-              }
-            } catch (error) {
-              await terminateAcceptedCollectorRun({
-                childSessionKey,
-                gatewayRunId,
-                ...provisionalSessionIdentity,
-              });
-              launchTerminationConfirmed = true;
-              throw error;
-            }
-            await emitSpawnLifecycleHooks(gatewayRunId);
+            await emitSpawnLifecycleHooks(childRunId);
           });
         },
         onStartFailure: async (error) => {

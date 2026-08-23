@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { getAdmittedRunDelegatedAuthority } from "../../agents/admitted-run-context.js";
 import { attachAgentCommandAdmissionFacts } from "../../agents/agent-command-admission-facts.js";
@@ -13,6 +14,11 @@ import {
 import { loadPublishedGatewayReplyDispatchRuntime } from "../../agents/prepared-model-runtime.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
+import { findAuthorizedSwarmCollectorRequest } from "../../agents/subagents/registry/subagent-registry-memory.js";
+import {
+  transitionDispatchingSubagentLaunchToRunning,
+  transitionPreparedSubagentLaunchToDispatching,
+} from "../../agents/subagents/registry/subagent-registry.js";
 import { isExecutionIdentityCollectionEnabled } from "../../audit/audit-config.js";
 import {
   setChannelSourceTurnId,
@@ -106,6 +112,15 @@ export function startAgentRunExecution(params: {
   ) => Promise<boolean>;
 }): void {
   const { prepared } = params;
+  const collectorLaunch =
+    params.request.swarmCollector === true
+      ? findAuthorizedSwarmCollectorRequest({
+          childSessionKey: params.request.sessionKey,
+          idempotencyKey: params.request.idempotencyKey,
+          outputSchema: params.request.swarmOutputSchema,
+        })
+      : undefined;
+  const executionAttemptId = collectorLaunch?.launch ? crypto.randomUUID() : undefined;
   let unpersistedOffloadedRefs = prepared.unpersistedOffloadedRefs;
   let releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? undefined;
   const cleanupAdmittedRun: typeof prepared.activeRunAbort.cleanup = (options) => {
@@ -389,6 +404,24 @@ export function startAgentRunExecution(params: {
                   });
                 }
               },
+              onProviderDispatching: executionAttemptId
+                ? () => {
+                    if (
+                      !transitionPreparedSubagentLaunchToDispatching(
+                        params.runId,
+                        executionAttemptId,
+                        params.context.resolveGatewayContext,
+                      )
+                    ) {
+                      throw new Error("collector launch is not prepared for provider dispatch");
+                    }
+                  }
+                : undefined,
+              onProviderRunning: executionAttemptId
+                ? () => {
+                    transitionDispatchingSubagentLaunchToRunning(params.runId);
+                  }
+                : undefined,
               onActiveModelSelected: createAgentRunModelSelectionHandler({
                 context: params.context,
                 runId: params.runId,

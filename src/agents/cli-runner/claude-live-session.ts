@@ -77,6 +77,7 @@ type RunClaudeTurnParams = {
   onUsage?: (usage: CliUsage, terminal: boolean) => void;
   onCliOutput?: (chunk: string, stream: "stderr" | "stdout") => void;
   onRequestPayload?: (payload: string) => void;
+  onProviderRunning?: () => void;
   onPhase?: (phase: "send" | "resolve") => void;
   cleanup: () => Promise<void>;
 };
@@ -616,7 +617,12 @@ async function runSerializedClaudeTurn(
       try {
         const requestPayload = createClaudeUserInputMessage(params.prompt, inputUuid);
         params.onRequestPayload?.(requestPayload);
-        await Promise.race([writeClaudeInput(session, requestPayload), outputPromise]);
+        const inputWrite = writeClaudeInput(session, requestPayload);
+        // A failed provider result may settle before the stream write callback.
+        // Successful results still wait for accepted input before crossing the running boundary.
+        await Promise.race([inputWrite, outputPromise.then(() => inputWrite)]);
+        params.onProviderRunning?.();
+        return { output: await outputPromise };
       } catch (error) {
         session.close("abort", error);
       }

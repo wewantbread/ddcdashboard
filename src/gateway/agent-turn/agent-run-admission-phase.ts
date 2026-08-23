@@ -19,6 +19,7 @@ import {
   resolveExactSubagentCompletionEvent,
   type TrustedSubagentCompletionHandoff,
 } from "../../agents/subagents/announce/subagent-announce-handoff.js";
+import { findAuthorizedSwarmCollectorRequest } from "../../agents/subagents/registry/subagent-registry-memory.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import type { SessionEntry } from "../../config/sessions.js";

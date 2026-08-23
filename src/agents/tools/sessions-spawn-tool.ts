@@ -570,11 +570,11 @@ export function createSessionsSpawnTool(
               ? params.fastMode
               : undefined,
           groupId: readToolStringParam(params, "groupId"),
-          swarmLaunchReplayKey:
+          launchReplayKey:
             typeof params[SWARM_CODE_MODE_IDEMPOTENCY_KEY] === "string"
               ? params[SWARM_CODE_MODE_IDEMPOTENCY_KEY]
               : undefined,
-          swarmLaunchRequestFingerprint:
+          launchRequestFingerprint:
             typeof params[SWARM_CODE_MODE_REQUEST_FINGERPRINT] === "string"
               ? params[SWARM_CODE_MODE_REQUEST_FINGERPRINT]
               : undefined,

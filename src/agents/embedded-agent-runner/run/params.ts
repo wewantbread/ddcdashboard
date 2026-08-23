@@ -336,6 +336,8 @@ export type RunEmbeddedAgentParams = {
   conversationRecall?: ConversationRecallContext;
   abortSignal?: AbortSignal;
   onExecutionStarted?: (info?: { lifecycleGeneration?: string }) => void;
+  onProviderDispatching?: () => void;
+  onProviderRunning?: () => void;
   onExecutionPhase?: (info: {
     phase: EmbeddedAgentExecutionPhase;
     provider?: string;

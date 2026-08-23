@@ -320,6 +320,7 @@ describe("subagent orphan recovery — faithful restart path", () => {
       expect(acceptedAdmission).toBeDefined();
       expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
         execution: {
+          status: "running",
           restartRecovery: {
             sessionId: "sess-lost-acceptance",
             sessionMarker: `sess-lost-acceptance:${now}`,
@@ -327,8 +328,6 @@ describe("subagent orphan recovery — faithful restart path", () => {
             phase: "attempted",
           },
         },
-        swarmLaunchIdempotencyKey: acceptedKey,
-        swarmLaunchPending: true,
       });
       throw new Error("response lost after gateway acceptance");
     });

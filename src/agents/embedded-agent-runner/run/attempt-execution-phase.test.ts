@@ -362,6 +362,37 @@ describe("runEmbeddedAttemptExecutionPhase", () => {
     expect(fixture.activeSession.prompt).not.toHaveBeenCalled();
   });
 
+  it("commits provider dispatch before native prompt submission", async () => {
+    const fixture = createFixture();
+    fixture.input.attempt.onProviderDispatching = vi.fn(() => {
+      fixture.order.push("dispatching-cas");
+    });
+    fixture.activeSession.prompt.mockImplementationOnce(async () => {
+      fixture.order.push("provider-prompt");
+    });
+    await runEmbeddedAttemptExecutionPhase(fixture.input);
+    const settledInput = mocks.runSettledPhase.mock.calls[0]?.[0];
+
+    await settledInput.preparedStreamRuntime.promptActiveSession("submit once");
+
+    expect(fixture.order.slice(-2)).toEqual(["dispatching-cas", "provider-prompt"]);
+  });
+
+  it("suppresses native prompt submission when the dispatch CAS fails", async () => {
+    const fixture = createFixture();
+    fixture.input.attempt.onProviderDispatching = vi.fn(() => {
+      throw new Error("collector launch is not prepared for provider dispatch");
+    });
+    await runEmbeddedAttemptExecutionPhase(fixture.input);
+    const settledInput = mocks.runSettledPhase.mock.calls[0]?.[0];
+
+    await expect(
+      settledInput.preparedStreamRuntime.promptActiveSession("must not submit"),
+    ).rejects.toThrow("collector launch is not prepared");
+
+    expect(fixture.activeSession.prompt).not.toHaveBeenCalled();
+  });
+
   it("attributes an idle timeout during authoritative compaction to compaction", async () => {
     const fixture = createFixture({ exerciseTerminalMerges: false });
     fixture.activeSession.isCompacting = true;

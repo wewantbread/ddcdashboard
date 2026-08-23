@@ -8,6 +8,7 @@ import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
 import { resolveSpawnAdmission, resolveSpawnMode } from "../../spawn-plan.js";
 import { listSwarmRunsForGroup } from "../registry/subagent-registry.js";
+import { readSwarmCodeModeLaunchAuthority } from "../swarm/swarm-code-mode.js";
 import { resolveSwarmConfig } from "../swarm/swarm-config.js";
 import { validateStructuredOutputSchema } from "../swarm/swarm-output-schema.js";
 import { reserveSwarmRun } from "../swarm/swarm-scheduler.js";
@@ -204,6 +205,21 @@ export function resolveSubagentSpawnRequest(
   const targetAgentId = effectiveRequestedAgentId
     ? normalizeAgentId(effectiveRequestedAgentId)
     : requesterAgentId;
+  const codeModeLaunchAuthority = readSwarmCodeModeLaunchAuthority(params);
+  if (
+    codeModeLaunchAuthority &&
+    (params.collect !== true ||
+      codeModeLaunchAuthority.reserved.requesterAgentId !== requesterAgentId ||
+      codeModeLaunchAuthority.reserved.requesterSessionKey !== requesterInternalKey ||
+      codeModeLaunchAuthority.reserved.launch?.replayKey !== params.launchReplayKey ||
+      codeModeLaunchAuthority.reserved.launch.requestFingerprint !==
+        params.launchRequestFingerprint)
+  ) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "Code Mode launch authority does not match request.",
+    );
+  }
   const configuredAgentIds = listAgentIds(cfg);
   const explicitSwarmGroupId = normalizeOptionalString(params.groupId);
   const requesterRunId = normalizeOptionalString(ctx.requesterRunId);
@@ -261,15 +277,17 @@ export function resolveSubagentSpawnRequest(
   }
   const childDepth = admission.childSessionPatch?.spawnDepth ?? 1;
   const maxSpawnDepth = admission.maxSpawnDepth ?? childDepth;
-  const swarmLaunchReplayKey = normalizeOptionalString(params.swarmLaunchReplayKey);
+  const launchReplayKey = normalizeOptionalString(params.launchReplayKey);
   // Registry and Gateway identities are global, while host replay keys are requester-scoped.
-  const childIdem = swarmLaunchReplayKey
-    ? `swarm_${crypto
-        .createHash("sha256")
-        .update(JSON.stringify([requesterInternalKey, swarmLaunchReplayKey]))
-        .digest("hex")
-        .slice(0, 32)}`
-    : crypto.randomUUID();
+  const childIdem = codeModeLaunchAuthority
+    ? codeModeLaunchAuthority.reserved.runId
+    : launchReplayKey
+      ? `swarm_${crypto
+          .createHash("sha256")
+          .update(JSON.stringify([requesterInternalKey, launchReplayKey]))
+          .digest("hex")
+          .slice(0, 32)}`
+      : crypto.randomUUID();
   let reservationPending = false;
   if (params.collect && swarmGroupId && swarmSchedulerGroupKey) {
     const groupRuns = listSwarmRunsForGroup(swarmGroupId, requesterInternalKey, requesterAgentId);
@@ -313,7 +331,7 @@ export function resolveSubagentSpawnRequest(
         config: swarmConfig,
         groupId: swarmGroupId,
         schedulerGroupKey: swarmSchedulerGroupKey,
-        launchReplayKey: swarmLaunchReplayKey,
+        launchReplayKey,
         reservationPending,
       },
       admission: {

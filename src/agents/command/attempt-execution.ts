@@ -944,6 +944,8 @@ export function runAgentAttempt(params: {
             runId: params.runId,
             lifecycleGeneration: params.lifecycleGeneration,
             onExecutionStarted: params.opts.onExecutionStarted,
+            onProviderDispatching: params.opts.onProviderDispatching,
+            onProviderRunning: params.opts.onProviderRunning,
             lane: params.opts.lane,
             extraSystemPrompt: params.opts.extraSystemPrompt,
             inputProvenance: params.opts.inputProvenance,
@@ -1251,6 +1253,8 @@ export function runAgentAttempt(params: {
         params.onLifecycleGenerationChanged?.(info.lifecycleGeneration);
       }
     },
+    onProviderDispatching: params.opts.onProviderDispatching,
+    onProviderRunning: params.opts.onProviderRunning,
     onSessionIdChanged: params.opts.onSessionIdChanged,
     bootstrapPromptWarningSignaturesSeen,
     bootstrapPromptWarningSignature,

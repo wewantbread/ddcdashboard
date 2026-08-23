@@ -125,6 +125,42 @@ export type SwarmQueuedLaunch = {
   maxConcurrent: number;
 };
 
+type SubagentLaunchIdentity = {
+  replayKey: string;
+  requestFingerprint: string;
+  gatewayIdempotencyKey: string;
+  childSessionId: string;
+  childLifecycleRevision: string;
+  revision: number;
+};
+
+export type SubagentLaunchState =
+  | (SubagentLaunchIdentity & { phase: "reserved" })
+  | (SubagentLaunchIdentity & { phase: "prepared"; preparedAt: number })
+  | (SubagentLaunchIdentity & {
+      phase: "dispatching";
+      preparedAt: number;
+      executionAttemptId: string;
+      dispatchingAt: number;
+    })
+  | (SubagentLaunchIdentity & {
+      phase: "running";
+      preparedAt: number;
+      executionAttemptId: string;
+      dispatchingAt: number;
+      runningAt: number;
+    })
+  | (SubagentLaunchIdentity & {
+      phase: "terminal";
+      preparedAt?: number;
+      executionAttemptId?: string;
+      dispatchingAt?: number;
+      runningAt?: number;
+      terminalAt: number;
+      terminalReason: "completed" | "failed" | "interrupted" | "lost";
+      error?: string;
+    });
+
 export type SubagentCompletionDeliveryState = {
   status:
     | "not_required"
@@ -290,14 +326,7 @@ export type SubagentRunRecord = {
   swarmRunId?: string;
   /** Stable scheduler slot identity across gateway-assigned run id replacements. */
   schedulerSlotId?: string;
-  /** Exact host-reserved Gateway request identity for the current collector turn. */
-  swarmLaunchIdempotencyKey?: string;
-  /** Replay-safe host bridge identity used to recover a collector after restart. */
-  swarmLaunchReplayKey?: string;
-  /** Canonical collector request hash paired with a host-reserved launch identity. */
-  swarmLaunchRequestFingerprint?: string;
-  /** True only between host reservation and accepted Gateway dispatch. */
-  swarmLaunchPending?: boolean;
+  launch?: SubagentLaunchState;
   groupId?: string;
   outputSchema?: Record<string, unknown>;
   structuredOutput?: SwarmStructuredOutputState;

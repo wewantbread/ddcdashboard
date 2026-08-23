@@ -306,6 +306,7 @@ async function executeWorkerTurn(params: {
   if (!tunnel.launchTurn) {
     throw new Error("Worker tunnel does not support worker turns");
   }
+  turn.onProviderDispatching?.();
   const processPromise = tunnel.launchTurn({
     plan,
     turnClaim: params.turnClaim,

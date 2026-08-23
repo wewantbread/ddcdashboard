@@ -5,6 +5,10 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import "./subagent-registry.mocks.shared.js";
 import { closeOpenClawStateDatabaseForTest as closeSeedStateDatabase } from "../../../state/openclaw-state-db.js";
+import { findTaskByRunId, reloadTaskRegistryFromStore } from "../../../tasks/task-registry.js";
+import { saveTaskRegistryStateToSqlite } from "../../../tasks/task-registry.store.sqlite.js";
+import type { TaskRecord } from "../../../tasks/task-registry.types.js";
+import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
@@ -27,6 +31,7 @@ let mod: typeof import("./subagent-registry.test-helpers.js");
 let callGatewayModule: typeof import("../../../gateway/call.js");
 let agentEventsModule: typeof import("../../../infra/agent-events.js");
 let registryStateDbModule: typeof import("../../../state/openclaw-state-db.js");
+let waitForCollectorCompletion: typeof import("../../tools/agents-wait-tool.js").waitForCollectorCompletion;
 
 function activateRegistry() {
   const recoveryRuntime = {
@@ -48,6 +53,7 @@ describe("subagent registry persistence resume", () => {
     callGatewayModule = await import("../../../gateway/call.js");
     agentEventsModule = await import("../../../infra/agent-events.js");
     registryStateDbModule = await import("../../../state/openclaw-state-db.js");
+    ({ waitForCollectorCompletion } = await import("../../tools/agents-wait-tool.js"));
   });
 
   beforeEach(() => {
@@ -72,6 +78,7 @@ describe("subagent registry persistence resume", () => {
   afterEach(async () => {
     closeSeedStateDatabase();
     registryStateDbModule.closeOpenClawStateDatabaseForTest();
+    resetTaskRegistryForTests({ persist: false });
     mod.testing.setDepsForTest();
     mod.resetSubagentRegistryForTests({ persist: false });
     await cleanupSessionStateForTest();
@@ -80,6 +87,140 @@ describe("subagent registry persistence resume", () => {
       tempStateDir = null;
     }
   });
+
+  it.each([
+    {
+      phase: "dispatching" as const,
+      taskStatus: "lost" as const,
+      error:
+        "Gateway restarted after provider dispatch; execution may have reached the provider and will not be retried",
+    },
+    {
+      phase: "running" as const,
+      taskStatus: "failed" as const,
+      error: "Gateway restarted while the provider execution was running",
+    },
+  ])(
+    "makes a restored $phase collector waitable and task-visible without redispatch",
+    async ({ phase, taskStatus, error }) => {
+      tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-terminal-"));
+      const stateDir = tempStateDir;
+      await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const runId = `run-restored-${phase}`;
+        const childSessionKey = `agent:worker:subagent:restored-${phase}`;
+        const run: SubagentRunRecord = {
+          runId,
+          taskRunId: runId,
+          childSessionKey,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          requesterAgentId: "main",
+          task: `restore ${phase}`,
+          cleanup: "keep",
+          collect: true,
+          swarmRequesterSessionKey: "agent:main:main",
+          swarmWaitOwnerSessionKeys: ["agent:main:main"],
+          swarmRunId: runId,
+          schedulerSlotId: runId,
+          createdAt: 100,
+          execution: { status: "running", acceptedAt: 200, startedAt: 200 },
+          completion: { required: false },
+          delivery: { status: "not_required" },
+          launch: {
+            phase,
+            replayKey: `replay-${phase}`,
+            requestFingerprint: `fingerprint-${phase}`,
+            gatewayIdempotencyKey: runId,
+            childSessionId: `session-${phase}`,
+            childLifecycleRevision: `lifecycle-${phase}`,
+            revision: phase === "dispatching" ? 2 : 3,
+            preparedAt: 150,
+            executionAttemptId: `attempt-${phase}`,
+            dispatchingAt: 200,
+            ...(phase === "running" ? { runningAt: 250 } : {}),
+          },
+        };
+        const task: TaskRecord = {
+          taskId: `task_${runId}`,
+          runtime: "subagent",
+          sourceId: runId,
+          requesterSessionKey: run.requesterSessionKey,
+          ownerKey: run.requesterSessionKey,
+          scopeKind: "session",
+          childSessionKey,
+          runId,
+          task: run.task,
+          status: "running",
+          deliveryStatus: "not_applicable",
+          notifyPolicy: "silent",
+          createdAt: 100,
+          startedAt: 200,
+          lastEventAt: 200,
+        };
+        saveSubagentRegistryToSqlite(new Map([[runId, run]]));
+        saveTaskRegistryStateToSqlite({
+          tasks: new Map([[task.taskId, task]]),
+          deliveryStates: new Map(),
+        });
+        await writeSubagentSessionEntry({
+          stateDir,
+          agentId: "worker",
+          sessionKey: childSessionKey,
+          sessionId: run.launch.childSessionId,
+          defaultSessionId: run.launch.childSessionId,
+          lifecycleRevision: run.launch.childLifecycleRevision,
+        });
+        resetTaskRegistryForTests({ persist: false });
+        reloadTaskRegistryFromStore();
+        expect(loadSubagentRegistryFromSqlite().get(runId)).toMatchObject({
+          runId,
+          launch: { phase },
+        });
+
+        mod.initSubagentRegistry();
+        activateRegistry();
+
+        expect(mod.getSubagentRunsByRunIds([runId]).entries.get(runId)).toMatchObject({
+          runId,
+          collectorCompletion: { status: "failed" },
+        });
+        await expect(
+          waitForCollectorCompletion({
+            runId,
+            currentSessionKeys: new Set(["agent:main:main"]),
+            currentAgentId: "main",
+          }),
+        ).resolves.toMatchObject({
+          runId,
+          status: "failed",
+          error,
+          result: error,
+        });
+        expect(findTaskByRunId(runId)).toMatchObject({
+          taskId: task.taskId,
+          runId,
+          status: taskStatus,
+          error,
+        });
+        expect(mod.getSubagentRunByRunId(runId)).toMatchObject({
+          runId,
+          taskRunId: runId,
+          schedulerSlotId: runId,
+          collectorCompletion: { status: "failed" },
+          launch: {
+            phase: "terminal",
+            terminalReason: phase === "dispatching" ? "lost" : "interrupted",
+          },
+        });
+        expect(callGatewayModule.callGateway).not.toHaveBeenCalledWith(
+          expect.objectContaining({ method: "agent" }),
+        );
+        expect(callGatewayModule.callGateway).not.toHaveBeenCalledWith(
+          expect.objectContaining({ method: "sessions.delete" }),
+        );
+      });
+    },
+  );
 
   it("resumes a persisted run from canonical SQLite state", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));

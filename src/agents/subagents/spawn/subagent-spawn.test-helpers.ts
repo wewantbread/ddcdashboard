@@ -142,7 +142,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
   resolveContextEngineMock?: MockFn;
   resolveParentForkDecisionMock?: MockFn;
   registerSubagentRunMock?: MockFn;
-  startQueuedSubagentRunMock?: MockFn;
   settleFailedQueuedSubagentLaunchMock?: MockFn;
   completeCollectorLaunchCleanupMock?: MockFn;
   emitSessionLifecycleEventMock?: MockFn;
@@ -402,7 +401,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
     resetSubagentRegistryForTests,
     settleFailedQueuedSubagentLaunch:
       params.settleFailedQueuedSubagentLaunchMock ?? vi.fn(() => true),
-    startQueuedSubagentRun: params.startQueuedSubagentRunMock ?? vi.fn(() => true),
   }));
 
   const subagentSpawnModule = await import("./subagent-spawn.js");

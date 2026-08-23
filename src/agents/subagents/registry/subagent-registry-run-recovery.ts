@@ -256,7 +256,6 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         transcriptTarget: replaceParams.transcriptTarget,
         restartRecovery: replaceParams.restartRecovery,
       },
-      swarmLaunchPending: false,
       completion: {
         required: source.expectsCompletionMessage === true,
         fallbackResultText: preserveFrozenResultFallback ? sourceCompletion.resultText : undefined,
@@ -375,10 +374,6 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       return existing.idempotencyKey;
     }
     const previousLease = existing;
-    const previousCollectorLaunch = {
-      idempotencyKey: entry.swarmLaunchIdempotencyKey,
-      pending: entry.swarmLaunchPending,
-    };
     entry.execution.restartRecovery = {
       sessionId,
       sessionMarker,
@@ -386,18 +381,12 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       idempotencyKey,
       phase: "reserved",
     };
-    if (entry.collect === true) {
-      entry.swarmLaunchIdempotencyKey = idempotencyKey;
-      entry.swarmLaunchPending = true;
-    }
     try {
       // The exact source row owns this dispatch identity before Gateway can
       // accept it. A lost response can then replay the same logical run.
       this.options.persistOrThrow(runId);
     } catch (error) {
       entry.execution.restartRecovery = previousLease;
-      entry.swarmLaunchIdempotencyKey = previousCollectorLaunch.idempotencyKey;
-      entry.swarmLaunchPending = previousCollectorLaunch.pending;
       throw error;
     }
     return idempotencyKey;

@@ -223,7 +223,10 @@ export function updateTask(taskId: string, patch: Partial<TaskRecord>): TaskReco
 }
 
 /** Publishes a record already committed by a cross-owner shared-state transaction. */
-export function publishTaskRecordAfterAtomicStore(record: TaskRecord): TaskRecord {
+export function publishTaskRecordAfterAtomicStore(
+  record: TaskRecord,
+  deliveryState?: TaskDeliveryState,
+): TaskRecord {
   const next = normalizeTaskTimestamps(cloneTaskRecord(record));
   const current = tasks.get(next.taskId);
   const becomesTerminal =
@@ -239,6 +242,9 @@ export function publishTaskRecordAfterAtomicStore(record: TaskRecord): TaskRecor
     deleteRelatedSessionKeyIndex(next.taskId, current);
   }
   tasks.set(next.taskId, next);
+  if (deliveryState) {
+    taskDeliveryStates.set(next.taskId, cloneTaskDeliveryState(deliveryState));
+  }
   if (becomesTerminal) {
     clearTaskActivity(next.taskId);
   }

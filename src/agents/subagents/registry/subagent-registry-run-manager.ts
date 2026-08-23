@@ -205,7 +205,7 @@ class SubagentRunManager extends SubagentLaunchManager {
       const wasQueuedCollector = entry.collect && entry.execution.status === "queued";
       const collectorLaunchInFlight =
         wasQueuedCollector &&
-        entry.swarmLaunchPending === true &&
+        entry.launch?.phase === "prepared" &&
         !isSwarmRunQueued(entry.schedulerSlotId ?? entry.runId);
       if (wasQueuedCollector) {
         queuedCollectorRunIds.push(entry.runId);

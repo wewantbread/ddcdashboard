@@ -1,7 +1,12 @@
 // Persists task registry records and events through the OpenClaw SQLite state database.
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import type { Insertable, Selectable } from "kysely";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import { assertSqliteTableIntegrity } from "../infra/sqlite-integrity.js";
 import { normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
@@ -159,7 +164,8 @@ function rowToTaskDeliveryState(row: TaskDeliveryStateRow): TaskDeliveryState {
   };
 }
 
-type BoundTaskRecord = Insertable<TaskRunsTable>;
+export type BoundTaskRecord = Insertable<TaskRunsTable>;
+export type BoundTaskDeliveryState = Insertable<TaskDeliveryStateTable>;
 
 /** Canonically serializes a task before an outer transaction acquires the write lock. */
 export function bindTaskRecord(record: TaskRecord): BoundTaskRecord {
@@ -197,7 +203,7 @@ export function bindTaskRecord(record: TaskRecord): BoundTaskRecord {
   };
 }
 
-function bindTaskDeliveryState(state: TaskDeliveryState): Insertable<TaskDeliveryStateTable> {
+export function bindTaskDeliveryState(state: TaskDeliveryState): BoundTaskDeliveryState {
   return {
     task_id: state.taskId,
     requester_origin_json: serializeJson(state.requesterOrigin),
@@ -302,6 +308,82 @@ export function upsertTaskRunRowInDatabase(
       .values(row)
       .onConflict((conflict) => conflict.column("task_id").doUpdateSet(updates)),
   );
+}
+
+export function insertOrMatchTaskRowsInDatabase(
+  database: OpenClawStateDatabase,
+  task: BoundTaskRecord,
+  delivery?: BoundTaskDeliveryState,
+): void {
+  const kysely = getTaskRegistryKysely(database.db);
+  executeSqliteQuerySync(
+    database.db,
+    kysely
+      .insertInto("task_runs")
+      .values(task)
+      .onConflict((conflict) => conflict.doNothing()),
+  );
+  const storedTask = executeSqliteQueryTakeFirstSync(
+    database.db,
+    kysely.selectFrom("task_runs").selectAll().where("task_id", "=", task.task_id),
+  );
+  if (!storedTask || !isDeepStrictEqual({ ...storedTask }, task)) {
+    throw new Error(`atomic task row conflicts with ${task.task_id}`);
+  }
+  if (!delivery) {
+    return;
+  }
+  executeSqliteQuerySync(
+    database.db,
+    kysely
+      .insertInto("task_delivery_state")
+      .values(delivery)
+      .onConflict((conflict) => conflict.doNothing()),
+  );
+  const storedDelivery = executeSqliteQueryTakeFirstSync(
+    database.db,
+    kysely.selectFrom("task_delivery_state").selectAll().where("task_id", "=", delivery.task_id),
+  );
+  if (!storedDelivery || !isDeepStrictEqual({ ...storedDelivery }, delivery)) {
+    throw new Error(`atomic task delivery row conflicts with ${delivery.task_id}`);
+  }
+}
+
+/** Terminalizes matching task projections inside an enclosing shared-state transaction. */
+export function transitionTaskRunsToTerminalInDatabase(
+  database: OpenClawStateDatabase,
+  params: {
+    runId: string;
+    runtime: TaskRuntime;
+    status: Extract<TaskRecord["status"], "succeeded" | "failed" | "lost">;
+    endedAt: number;
+    error?: string;
+  },
+): TaskRecord[] {
+  const kysely = getTaskRegistryKysely(database.db);
+  executeSqliteQuerySync(
+    database.db,
+    kysely
+      .updateTable("task_runs")
+      .set({
+        status: params.status,
+        ended_at: params.endedAt,
+        last_event_at: params.endedAt,
+        error: params.error ?? null,
+      })
+      .where("run_id", "=", params.runId)
+      .where("runtime", "=", params.runtime)
+      .where("status", "in", ["queued", "running"]),
+  );
+  return executeSqliteQuerySync(
+    database.db,
+    kysely
+      .selectFrom("task_runs")
+      .select(TASK_RUN_SELECT_COLUMNS)
+      .where("run_id", "=", params.runId)
+      .where("runtime", "=", params.runtime)
+      .where("status", "=", params.status),
+  ).rows.map(rowToTaskRecord);
 }
 
 function replaceTaskDeliveryStateRow(

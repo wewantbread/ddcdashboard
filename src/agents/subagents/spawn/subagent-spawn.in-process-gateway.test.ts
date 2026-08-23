@@ -227,7 +227,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
     }
   });
 
-  it("launches queued collectors after the parent admission lease is released", async () => {
+  it("does not release the collector slot on Gateway acknowledgement", async () => {
     const gatewayContext = makeGatewayContext();
     let releaseFirstLaunch!: () => void;
     const firstLaunchGate = new Promise<void>((resolve) => {
@@ -270,7 +270,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
                 context: "isolated",
                 lightContext: true,
                 groupId: "swarm-queued-launch",
-                swarmLaunchReplayKey: "code-mode:agentSpawn:1",
+                launchReplayKey: "code-mode:agentSpawn:1",
               },
               {
                 agentSessionKey: "agent:main:main",
@@ -284,7 +284,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
                 context: "isolated",
                 lightContext: true,
                 groupId: "swarm-queued-launch",
-                swarmLaunchReplayKey: "code-mode:agentSpawn:2",
+                launchReplayKey: "code-mode:agentSpawn:2",
               },
               {
                 agentSessionKey: "agent:main:main",
@@ -302,15 +302,13 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
     });
     releaseFirstLaunch();
     await waitForAssertion(() => {
-      expect(launchCount).toBe(2);
-      for (const result of results) {
-        expect(subagentRuns.get(result.runId!)).toMatchObject({
-          collect: true,
-          swarmLaunchPending: false,
-        });
-      }
+      expect(launchCount).toBe(1);
+      expect(subagentRuns.get(results[0]!.runId!)).toMatchObject({
+        collect: true,
+        launch: { phase: "prepared" },
+      });
     });
-    expect(subordinateAdmissionStates).toEqual([false, false]);
+    expect(subordinateAdmissionStates).toEqual([false]);
   });
 
   it("consumes the exact private parent token in the child Gateway identity", async () => {
@@ -454,92 +452,6 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
     }
   });
 
-  it("aborts a collector cancelled while Gateway acceptance is in flight", async () => {
-    const gatewayContext = makeGatewayContext();
-    let releaseFirstLaunch!: () => void;
-    const firstLaunchGate = new Promise<void>((resolve) => {
-      releaseFirstLaunch = resolve;
-    });
-    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let launchCount = 0;
-    subagentSpawnTesting.setDepsForTest({
-      dispatchGatewayMethodInProcess: async <T>(
-        method: string,
-        params: Record<string, unknown>,
-      ) => {
-        requests.push({ method, params });
-        if (method === "agent") {
-          launchCount += 1;
-          if (launchCount === 1) {
-            await firstLaunchGate;
-          }
-          return { runId: `gateway-run-${launchCount}`, status: "accepted" } as T;
-        }
-        return {} as T;
-      },
-    });
-
-    const parentAdmission = tryBeginGatewayRootWorkAdmission();
-    expect(parentAdmission).not.toBeNull();
-    const results = await parentAdmission!.run(() =>
-      withPluginRuntimeGatewayRequestScope(
-        {
-          context: gatewayContext,
-          client: externalCliClient(),
-          isWebchatConnect: () => false,
-        },
-        () =>
-          Promise.all([
-            spawnSubagentDirect(
-              {
-                task: "cancelled collector",
-                collect: true,
-                context: "isolated",
-                lightContext: true,
-                groupId: "swarm-cancel-launch",
-                swarmLaunchReplayKey: "code-mode:agentSpawn:cancelled",
-              },
-              { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
-            ),
-            spawnSubagentDirect(
-              {
-                task: "next collector",
-                collect: true,
-                context: "isolated",
-                lightContext: true,
-                groupId: "swarm-cancel-launch",
-                swarmLaunchReplayKey: "code-mode:agentSpawn:next",
-              },
-              { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
-            ),
-          ]),
-      ),
-    );
-    parentAdmission!.release();
-    const firstRunId = results[0]?.runId;
-    expect(firstRunId).toBeTruthy();
-    await waitForAssertion(() => expect(launchCount).toBe(1));
-
-    expect(markSubagentRunTerminated({ runId: firstRunId, reason: "manual kill" })).toBe(1);
-    releaseFirstLaunch();
-
-    await waitForAssertion(() => {
-      expect(
-        requests.some(
-          (request) => request.method === "chat.abort" && request.params.runId === "gateway-run-1",
-        ),
-      ).toBe(true);
-      expect(launchCount).toBe(2);
-      expect(subagentRuns.get(firstRunId!)).toMatchObject({
-        collectorCompletion: { status: "killed" },
-      });
-      expect(subagentRuns.get("gateway-run-2")).toMatchObject({
-        swarmRunId: results[1]!.runId,
-        swarmLaunchPending: false,
-      });
-    });
-  });
-
   it("hands a registered collector launch to Gateway as the host", async () => {
     const gatewayContext = makeGatewayContext();
     const dispatchOptions: Array<{ method: string; forceSyntheticClient?: boolean }> = [];
@@ -602,7 +514,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
             context: "isolated",
             lightContext: true,
             groupId: "swarm-live-launch",
-            swarmLaunchReplayKey: "code-mode:agentSpawn:1",
+            launchReplayKey: "code-mode:agentSpawn:1",
           },
           {
             agentSessionKey: "agent:main:main",
@@ -626,8 +538,10 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
       expect(subagentRuns.get(result.runId!)).toMatchObject({
         childSessionKey: result.childSessionKey,
         collect: true,
-        swarmLaunchIdempotencyKey: result.runId,
-        swarmLaunchPending: false,
+        launch: {
+          phase: "prepared",
+          gatewayIdempotencyKey: result.runId,
+        },
       });
     });
   });
@@ -838,7 +752,7 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
             context: "isolated",
             lightContext: true,
             groupId: "swarm-out-of-process",
-            swarmLaunchReplayKey: "code-mode:agentSpawn:out-of-process",
+            launchReplayKey: "code-mode:agentSpawn:out-of-process",
           },
           { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
         ),
@@ -849,7 +763,6 @@ describe("spawnSubagentDirect in-process Gateway collector launch", () => {
       expect(trackingModes).toEqual(["none"]);
       expect(subagentRuns.get(result.runId!)).toMatchObject({
         collect: true,
-        swarmLaunchPending: false,
       });
     });
   });

@@ -13,7 +13,6 @@ import {
 } from "../../process/gateway-work-admission.js";
 import {
   createIngressDrainOwnerId,
-  deregisterLiveIngressDrainInstance,
   INGRESS_CLAIM_LEASE_MS,
   isIngressClaimOwnedByOtherLiveProcess,
   isIngressCorruptClaimOwnedByOtherLiveProcess,
@@ -120,7 +119,7 @@ export function createChannelIngressDrain<
   const queue = options.queue;
   // Unique per drain instance so same-process peers do not share claim ownership.
   const ownerId = options.ownerId ?? createIngressDrainOwnerId();
-  registerLiveIngressDrainInstance(ownerId);
+  const liveOwnerRegistration = registerLiveIngressDrainInstance(ownerId);
   const adoptionStallTimeoutMs =
     options.adoptionStallTimeoutMs ?? DEFAULT_INGRESS_ADOPTION_STALL_MS;
   const claimLeaseMs = options.claimLeaseMs ?? INGRESS_CLAIM_LEASE_MS;
@@ -153,15 +152,15 @@ export function createChannelIngressDrain<
   };
 
   const abortActiveClaims = () => {
-    // Retire before abort so replacements recover; Set.delete makes disposal repeat safe.
-    // Claim-token fencing prevents this owner from settling a recovered claim.
-    deregisterLiveIngressDrainInstance(ownerId);
     const reason = toErrorObject(options.abortSignal?.reason, "ingress-drain-aborted");
     for (const state of activeByClaim.values()) {
       if (state.phase === "dispatching" || state.phase === "deferred") {
         state.abortController.abort(reason);
       }
     }
+    // Keep local ownership through the synchronous abort sweep so every active
+    // handler observes cancellation before a peer can recover either claim.
+    liveOwnerRegistration.release();
   };
   if (options.abortSignal?.aborted) {
     abortActiveClaims();
@@ -793,7 +792,6 @@ export function createChannelIngressDrain<
     dispose: () => {
       disposed = true;
       options.abortSignal?.removeEventListener("abort", abortActiveClaims);
-      deregisterLiveIngressDrainInstance(ownerId);
       // Snapshot: removeActive mutates activeByClaim during this sweep.
       const activeStates = Array.from(activeByClaim.values());
       for (const state of activeStates) {
@@ -807,6 +805,7 @@ export function createChannelIngressDrain<
         }
         removeActive(state);
       }
+      liveOwnerRegistration.release();
     },
   };
 }

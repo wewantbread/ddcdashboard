@@ -9,6 +9,8 @@ import {
 } from "./ingress-claim-owner.js";
 
 describe("ingress claim owner", () => {
+  const ownerToken = "11111111-1111-4111-8111-111111111111";
+
   it("parses process pid from owner id", () => {
     expect(processPidFromOwnerId("4242:1000:dead-owner")).toBe(4242);
     expect(processPidFromOwnerId("not-a-pid:x:uuid")).toBe(-1);
@@ -49,13 +51,13 @@ describe("ingress claim owner", () => {
       isIngressClaimOwnedByOtherLiveProcess(
         {
           claim: {
-            processId: "9:1000:dead-owner",
+            processId: `9:1000:${ownerToken}`,
             processPid: 9,
             claimedAt: now,
           },
         },
         {
-          processExists: (pid) => pid === 9,
+          isPidDefinitelyDead: () => false,
           readProcessStartTime: (pid) => (pid === 9 ? 2000 : null),
         },
       ),
@@ -68,13 +70,13 @@ describe("ingress claim owner", () => {
       isIngressClaimOwnedByOtherLiveProcess(
         {
           claim: {
-            processId: "4242:1000:dead-owner",
+            processId: `4242:1000:${ownerToken}`,
             processPid: 4242,
             claimedAt: now,
           },
         },
         {
-          processExists: (pid) => pid === 4242,
+          isPidDefinitelyDead: () => false,
           readProcessStartTime: (pid) => (pid === 4242 ? 9999 : null),
         },
       ),
@@ -88,13 +90,13 @@ describe("ingress claim owner", () => {
       isIngressClaimOwnedByOtherLiveProcess(
         {
           claim: {
-            processId: `${liveOwnerPid}:5555:other-process`,
+            processId: `${liveOwnerPid}:5555:${ownerToken}`,
             processPid: liveOwnerPid,
             claimedAt: now,
           },
         },
         {
-          processExists: (pid) => pid === liveOwnerPid,
+          isPidDefinitelyDead: () => false,
           readProcessStartTime: (pid) => (pid === liveOwnerPid ? 5555 : null),
         },
       ),
@@ -116,7 +118,7 @@ describe("ingress claim owner", () => {
           },
         },
         {
-          processExists: () => true,
+          isPidDefinitelyDead: () => false,
           readProcessStartTime: () => 1,
         },
       ),
@@ -130,12 +132,12 @@ describe("ingress claim owner", () => {
         {
           claim: {
             token: "test-auth-token",
-            ownerId: "99:5555:other",
+            ownerId: `99:5555:${ownerToken}`,
             claimedAt: now,
           },
         },
         {
-          processExists: (pid) => pid === 99,
+          isPidDefinitelyDead: () => false,
           readProcessStartTime: (pid) => (pid === 99 ? 5555 : null),
         },
       ),

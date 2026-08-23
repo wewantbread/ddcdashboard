@@ -28,6 +28,120 @@ describe("worker turn launcher terminal results", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(cleanupWorkerTurnLauncherTest);
 
+  function createDispatchBoundaryEnvironment(order: string[]) {
+    const launchTurn = vi.fn(
+      async (
+        request: Parameters<NonNullable<WorkerTunnelHandle["launchTurn"]>>[0],
+      ): Promise<SpawnResult> => {
+        order.push("provider-launch");
+        request.onDispatchReady?.();
+        const completed = openSessionManager();
+        const leafId = completed.appendMessage(
+          makeAgentAssistantMessage({
+            content: [{ type: "text", text: "Remote work completed" }],
+            timestamp: 21,
+          }),
+        );
+        createWorkerSessionPlacementGate(placements).updateAckCursors({
+          claim: request.turnClaim,
+          transcriptSeq: 2,
+          liveSeq: 1,
+        });
+        return {
+          stdout: JSON.stringify({
+            status: "completed",
+            transcriptLeafId: leafId,
+            transcriptNextSeq: (placements.get(SESSION_ID)?.lastTranscriptAckCursor ?? 0) + 1,
+          }),
+          stderr: "",
+          code: 0,
+          signal: null,
+          killed: false,
+          termination: "exit",
+        };
+      },
+    );
+    const tunnel: WorkerTunnelHandle = {
+      environmentId: ENVIRONMENT_ID,
+      ownerEpoch: OWNER_EPOCH,
+      quiesceWorkspace: vi.fn(async () => ({
+        assertActive: vi.fn(async () => {}),
+        resume: vi.fn(async () => {}),
+      })),
+      runWorkspaceCommand: vi.fn(),
+      launchTurn,
+      syncWorkspace: vi.fn(async () => {
+        throw new Error("unexpected workspace sync");
+      }),
+      reconcileWorkspace: vi.fn(async (request) => {
+        request.journal.commit(MANIFEST_REF);
+        return {
+          manifestRef: MANIFEST_REF,
+          changed: false,
+          verifyStable: async () => {},
+          verifyLocalStable: async () => {},
+        };
+      }),
+      stop: vi.fn(async () => {}),
+    };
+    return {
+      launchTurn,
+      environments: {
+        ...unusedEnvironments(),
+        get: vi.fn(() => attachedEnvironment()),
+        acquireTurnCredential: vi.fn(async () => credential()),
+        acknowledgeCredentialDelivery: vi.fn(() => true),
+        startTunnel: vi.fn(async () => tunnel),
+      },
+    };
+  }
+
+  it("commits provider dispatch before worker tunnel launch", async () => {
+    seedActivePlacement();
+    const order: string[] = [];
+    const { environments, launchTurn } = createDispatchBoundaryEnvironment(order);
+    const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
+    const runId = "run-worker-dispatch-boundary";
+
+    await provider.executeTurn(
+      { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId },
+      {
+        ...turn(runId),
+        onProviderDispatching: () => {
+          order.push("dispatching-cas");
+        },
+      },
+      async () => ({ meta: { durationMs: 1 } }),
+    );
+
+    expect(order).toEqual(["dispatching-cas", "provider-launch"]);
+    expect(launchTurn).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses worker tunnel launch when the dispatch CAS fails", async () => {
+    seedActivePlacement();
+    const order: string[] = [];
+    const { environments, launchTurn } = createDispatchBoundaryEnvironment(order);
+    const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
+    const runId = "run-worker-dispatch-rejected";
+
+    await expect(
+      provider.executeTurn(
+        { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId },
+        {
+          ...turn(runId),
+          onProviderDispatching: () => {
+            throw new Error("collector launch is not prepared for provider dispatch");
+          },
+        },
+        async () => ({ meta: { durationMs: 1 } }),
+      ),
+    ).rejects.toThrow("collector launch is not prepared");
+
+    expect(order).toEqual([]);
+    expect(launchTurn).not.toHaveBeenCalled();
+  });
+
   it("requests immediate recovery when reconciliation fails after worker finishing", async () => {
     seedActivePlacement();
     const destroy = vi.fn(async () => attachedEnvironment());

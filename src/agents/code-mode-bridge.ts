@@ -4,6 +4,7 @@ import { stableStringify } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
 import { NODE_FS_LIST_DIR_COMMAND } from "../infra/node-commands.js";
+import { isIncognitoSessionKey, normalizeAgentId } from "../routing/session-key.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { parseNodeList } from "../shared/node-list-parse.js";
 import type { NodeListNode } from "../shared/node-list-types.js";
@@ -16,13 +17,17 @@ import type { PendingBridgeRequest, SettledBridgeRequest } from "./code-mode-run
 import { readCodeModeSkill } from "./code-mode-skills.js";
 import { consumeMcpCodeModeGuestResult } from "./mcp-content.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
+import { subagentRuns } from "./subagents/registry/subagent-registry-memory.js";
 import {
   getSwarmRunByLaunchReplayKey,
   initSubagentRegistry,
+  settleFailedQueuedSubagentLaunch,
 } from "./subagents/registry/subagent-registry.js";
+import { reserveSubagentLaunchRecord } from "./subagents/registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagents/registry/subagent-registry.types.js";
 import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
+  SWARM_CODE_MODE_LAUNCH_AUTHORITY,
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
 } from "./subagents/swarm/swarm-code-mode.js";
 import { resolveSwarmConfig } from "./subagents/swarm/swarm-config.js";
@@ -283,10 +288,10 @@ async function runAgentSpawnBridge(params: {
     params.ctx.agentId,
   );
   if (existing) {
-    if (existing.swarmLaunchRequestFingerprint !== requestFingerprint) {
+    if (existing.launch?.requestFingerprint !== requestFingerprint) {
       throw new ToolInputError("agents.run replay request does not match the persisted collector.");
     }
-    if (existing.swarmLaunchPending === true) {
+    if (existing.launch?.phase === "prepared") {
       if (!existing.queuedLaunch) {
         throw new ToolInputError("agents.run persisted launch reservation cannot be recovered.");
       }
@@ -295,23 +300,97 @@ async function runAgentSpawnBridge(params: {
       existing =
         getSwarmRunByLaunchReplayKey(idempotencyKey, requesterSessionKey, params.ctx.agentId) ??
         existing;
-      if (existing.swarmLaunchPending === true && !existing.queuedLaunch) {
+      if (existing.launch?.phase === "prepared" && !existing.queuedLaunch) {
         throw new ToolInputError("agents.run persisted launch reservation cannot be recovered.");
       }
     }
+    if (existing.launch?.phase === "reserved") {
+      throw new ToolInputError("agents.run launch preparation is already in progress.");
+    }
     return replayedSpawnResult(existing);
   }
+  const requesterAgentId = normalizeAgentId(params.ctx.agentId);
+  const targetAgentId = normalizeAgentId(
+    agentId ??
+      resolveSwarmConfig(params.ctx.runtimeConfig ?? params.ctx.config, params.ctx.agentId)
+        .defaultAgentId ??
+      params.ctx.agentId,
+  );
+  const runDigest = createHash("sha256")
+    .update(JSON.stringify([requesterAgentId, requesterSessionKey, idempotencyKey]))
+    .digest("hex");
+  const childDigest = createHash("sha256")
+    .update(JSON.stringify([`swarm_${runDigest.slice(0, 32)}`, targetAgentId]))
+    .digest("hex");
+  const runId = `swarm_${runDigest.slice(0, 32)}`;
+  const childSessionKey = `agent:${targetAgentId}:subagent:${
+    isIncognitoSessionKey(requesterSessionKey) ? "incognito-" : ""
+  }${childDigest.slice(0, 32)}`;
+  const reserved: SubagentRunRecord = {
+    runId,
+    taskRunId: runId,
+    childSessionKey,
+    requesterSessionKey,
+    requesterDisplayKey: requesterSessionKey,
+    requesterAgentId,
+    task: prompt.trim(),
+    cleanup: "delete",
+    collect: true,
+    swarmRequesterSessionKey: requesterSessionKey,
+    swarmRunId: runId,
+    schedulerSlotId: runId,
+    groupId: resolveCodeModeSwarmGroupId(params.ctx),
+    outputSchema: schema,
+    createdAt: Date.now(),
+    execution: { status: "queued" },
+    completion: { required: false },
+    delivery: { status: "not_required" },
+    launch: {
+      phase: "reserved",
+      replayKey: idempotencyKey,
+      requestFingerprint,
+      gatewayIdempotencyKey: runId,
+      childSessionId: `session_${childDigest.slice(0, 32)}`,
+      childLifecycleRevision: `lifecycle_${childDigest.slice(32)}`,
+      revision: 0,
+    },
+  };
+  const reservation = reserveSubagentLaunchRecord(reserved);
+  if (reservation.action === "conflict") {
+    throw new ToolInputError("agents.run replay request conflicts with a persisted launch.");
+  }
+  if (reservation.action === "replay") {
+    subagentRuns.set(runId, reservation.entry);
+    if (reservation.entry.launch?.phase === "reserved") {
+      throw new ToolInputError("agents.run launch preparation is already in progress.");
+    }
+    return replayedSpawnResult(reservation.entry);
+  }
+  const reservedEntry = reservation.entry;
+  subagentRuns.set(runId, reservedEntry);
   Object.defineProperty(spawnInput, SWARM_CODE_MODE_IDEMPOTENCY_KEY, {
     value: idempotencyKey,
   });
   Object.defineProperty(spawnInput, SWARM_CODE_MODE_REQUEST_FINGERPRINT, {
     value: requestFingerprint,
   });
-  const called = await params.runtime.callExactId(spawnEntry.id, spawnInput, {
-    parentToolCallId: params.parentToolCallId,
-    signal: params.signal,
-    onUpdate: params.onUpdate,
+  Object.defineProperty(spawnInput, SWARM_CODE_MODE_LAUNCH_AUTHORITY, {
+    value: { reserved: reservedEntry },
   });
+  let called: Awaited<ReturnType<typeof params.runtime.callExactId>>;
+  try {
+    called = await params.runtime.callExactId(spawnEntry.id, spawnInput, {
+      parentToolCallId: params.parentToolCallId,
+      signal: params.signal,
+      onUpdate: params.onUpdate,
+    });
+  } catch (error) {
+    settleFailedQueuedSubagentLaunch(
+      runId,
+      `agents.run spawn failed: ${formatErrorMessage(error)}`,
+    );
+    throw error;
+  }
   const value =
     isRecord(called.result) && "details" in called.result ? called.result.details : called.result;
   if (!isRecord(value) || value.status !== "accepted" || typeof value.runId !== "string") {
@@ -319,6 +398,7 @@ async function runAgentSpawnBridge(params: {
       isRecord(value) && typeof value.error === "string"
         ? value.error
         : "collector spawn was not accepted";
+    settleFailedQueuedSubagentLaunch(runId, `agents.run spawn failed: ${detail}`);
     throw new ToolInputError(`agents.run spawn failed: ${detail}`);
   }
   return value;

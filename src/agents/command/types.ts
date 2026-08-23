@@ -144,6 +144,8 @@ export type AgentCommandOpts = {
   lifecycleGeneration?: string;
   /** Called once when the selected runtime actually admits the prompt for execution. */
   onExecutionStarted?: () => void;
+  onProviderDispatching?: () => void;
+  onProviderRunning?: () => void;
   extraSystemPrompt?: string;
   /** Frozen profile-backed human Git attribution prepared by trusted ingress. */
   gitCoauthorAttribution?: string;

@@ -284,6 +284,65 @@ describe("executePreparedCliRun supervisor output capture", () => {
     expect(events).toEqual(["stage:first", "spawn:first", "stage:second", "spawn:second"]);
   });
 
+  it.each([
+    {
+      provider: "claude-cli",
+      expectedOrder: ["dispatching-cas", "provider-spawn", "running-cas"],
+    },
+    {
+      provider: "codex-cli",
+      expectedOrder: ["dispatching-cas", "provider-spawn"],
+    },
+  ])(
+    "fences $provider before process spawn and preserves its authoritative running boundary",
+    async ({ provider, expectedOrder }) => {
+      const order: string[] = [];
+      const context = buildPreparedCliRunContext({ output: "text", provider });
+      context.params.onProviderDispatching = vi.fn(() => {
+        order.push("dispatching-cas");
+      });
+      context.params.onProviderRunning = vi.fn(() => {
+        order.push("running-cas");
+      });
+      supervisorSpawnMock.mockImplementationOnce(async () => {
+        order.push("provider-spawn");
+        return createManagedRun({
+          reason: "exit",
+          exitCode: 0,
+          exitSignal: null,
+          durationMs: 50,
+          stdout: "done",
+          stderr: "",
+          timedOut: false,
+          noOutputTimedOut: false,
+        });
+      });
+
+      await executePreparedCliRun(context);
+
+      expect(order).toEqual(expectedOrder);
+      expect(context.params.onProviderDispatching).toHaveBeenCalledOnce();
+      if (provider === "codex-cli") {
+        expect(context.params.onProviderRunning).not.toHaveBeenCalled();
+      } else {
+        expect(context.params.onProviderRunning).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it("suppresses CLI process spawn when the dispatch CAS fails", async () => {
+    const context = buildPreparedCliRunContext({ output: "text", provider: "claude-cli" });
+    context.params.onProviderDispatching = vi.fn(() => {
+      throw new Error("collector launch is not prepared for provider dispatch");
+    });
+
+    await expect(executePreparedCliRun(context)).rejects.toThrow(
+      "collector launch is not prepared",
+    );
+
+    expect(supervisorSpawnMock).not.toHaveBeenCalled();
+  });
+
   it("disables supervisor capture without parsing from the diagnostic stdout tail", async () => {
     const fullText = `start-${"x".repeat(80 * 1024)}-end`;
 

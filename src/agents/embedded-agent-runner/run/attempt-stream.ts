@@ -390,6 +390,7 @@ export function installEmbeddedAttemptStreamGuards(input: {
     contentCapture: resolveDiagnosticModelContentCapturePolicy(attempt.config),
     nextCallId: () => `${attempt.runId}:model:${(diagnosticModelCallSeq += 1)}`,
     ownerGeneration: input.diagnosticOwner.generation,
+    onProviderAccepted: attempt.onProviderRunning,
     onStarted: () => {
       attempt.onExecutionPhase?.({
         phase: "model_call_started",

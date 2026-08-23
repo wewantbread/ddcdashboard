@@ -155,6 +155,7 @@ export async function resolveSubagentChildPlan(params: {
   targetAgentId: string;
   sandboxMode: "require" | "inherit";
   swarmEnabled: boolean;
+  plannedChildSessionKey?: string;
 }): Promise<ResolveSubagentChildPlanResult> {
   const requestedCwd = normalizeOptionalString(params.request.cwd);
   const spawnedCwd = requestedCwd ? resolveUserPath(requestedCwd) : undefined;
@@ -191,10 +192,12 @@ export async function resolveSubagentChildPlan(params: {
     requesterMemberRoleIds: params.ctx.agentMemberRoleIds,
   });
   const incognito = isIncognitoSessionKey(params.requesterInternalKey);
-  const mintedChildSessionKey = mintSpawnSessionKey({
-    targetAgentId: params.targetAgentId,
-    backend: "subagent",
-  });
+  const mintedChildSessionKey =
+    params.plannedChildSessionKey ??
+    mintSpawnSessionKey({
+      targetAgentId: params.targetAgentId,
+      backend: "subagent",
+    });
   const childSessionKey = incognito
     ? mintedChildSessionKey.replace(":subagent:", ":subagent:incognito-")
     : mintedChildSessionKey;

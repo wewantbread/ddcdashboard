@@ -396,8 +396,22 @@ describe("Code Mode swarm host bridge", () => {
       persisted = collectorRecord({
         swarmRunId: "collector-1",
         collect: true,
-        swarmLaunchReplayKey: String(replayKey),
-        swarmLaunchRequestFingerprint: String(requestFingerprint),
+        launch: {
+          phase: "prepared",
+          replayKey: String(replayKey),
+          requestFingerprint: String(requestFingerprint),
+          gatewayIdempotencyKey: "collector-1",
+          childSessionId: "session-1",
+          childLifecycleRevision: "lifecycle-1",
+          revision: 1,
+          preparedAt: 1,
+        },
+        queuedLaunch: {
+          request: {},
+          timeoutMs: 1,
+          schedulerGroupKey: "group",
+          maxConcurrent: 1,
+        },
       });
       return jsonResult({ status: "accepted", runId: "collector-1" });
     });
@@ -410,13 +424,24 @@ describe("Code Mode swarm host bridge", () => {
     expect(first).toMatchObject({ status: "completed", value: "restored" });
     expect(replayed).toMatchObject({ status: "completed", value: "restored" });
     expect(harness.spawnTool.execute).toHaveBeenCalledTimes(1);
-    expect(swarmMocks.getSwarmRunByLaunchReplayKey).toHaveBeenCalledTimes(2);
+    expect(swarmMocks.getSwarmRunByLaunchReplayKey).toHaveBeenCalledTimes(3);
     expect(swarmMocks.waitForCollectorCompletion).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a persisted collector whose request fingerprint does not match", async () => {
     swarmMocks.getSwarmRunByLaunchReplayKey.mockReturnValue(
-      collectorRecord({ swarmLaunchRequestFingerprint: collectorFingerprint("Different task") }),
+      collectorRecord({
+        launch: {
+          phase: "prepared",
+          replayKey: "replay",
+          requestFingerprint: collectorFingerprint("Different task"),
+          gatewayIdempotencyKey: "collector-1",
+          childSessionId: "session-1",
+          childLifecycleRevision: "lifecycle-1",
+          revision: 1,
+          preparedAt: 1,
+        },
+      }),
     );
     const harness = createSwarmHarness();
 
@@ -430,8 +455,16 @@ describe("Code Mode swarm host bridge", () => {
   it("rejects a pending reservation without durable launch state", async () => {
     swarmMocks.getSwarmRunByLaunchReplayKey.mockReturnValue(
       collectorRecord({
-        swarmLaunchPending: true,
-        swarmLaunchRequestFingerprint: collectorFingerprint(),
+        launch: {
+          phase: "prepared",
+          replayKey: "replay",
+          requestFingerprint: collectorFingerprint(),
+          gatewayIdempotencyKey: "collector-1",
+          childSessionId: "session-1",
+          childLifecycleRevision: "lifecycle-1",
+          revision: 1,
+          preparedAt: 1,
+        },
       }),
     );
     const harness = createSwarmHarness();
@@ -447,8 +480,16 @@ describe("Code Mode swarm host bridge", () => {
   it("re-enqueues a durable pending reservation before returning its handle", async () => {
     swarmMocks.getSwarmRunByLaunchReplayKey.mockReturnValue(
       collectorRecord({
-        swarmLaunchPending: true,
-        swarmLaunchRequestFingerprint: collectorFingerprint(),
+        launch: {
+          phase: "prepared",
+          replayKey: "replay",
+          requestFingerprint: collectorFingerprint(),
+          gatewayIdempotencyKey: "collector-1",
+          childSessionId: "session-1",
+          childLifecycleRevision: "lifecycle-1",
+          revision: 1,
+          preparedAt: 1,
+        },
         queuedLaunch: { request: {}, timeoutMs: 1, schedulerGroupKey: "group", maxConcurrent: 1 },
       }),
     );

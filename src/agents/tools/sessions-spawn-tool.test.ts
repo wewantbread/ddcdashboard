@@ -435,8 +435,8 @@ describe("sessions_spawn tool", () => {
     await tool.execute("collector", input);
 
     const spawnArgs = hoisted.spawnSubagentDirectMock.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(spawnArgs.swarmLaunchReplayKey).toBe("cm-restart:bridge:1");
-    expect(spawnArgs.swarmLaunchRequestFingerprint).toBe("sha256:request");
+    expect(spawnArgs.launchReplayKey).toBe("cm-restart:bridge:1");
+    expect(spawnArgs.launchRequestFingerprint).toBe("sha256:request");
   });
 
   it("requires collect=true for outputSchema", async () => {

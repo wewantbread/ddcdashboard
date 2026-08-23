@@ -10,7 +10,6 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
 import { prependAgentSteeringPrompt } from "../../agent-steering-queue.js";
-import { terminateAcceptedCollectorRun } from "../spawn/subagent-spawn-cleanup.js";
 import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { emitSubagentProgressEndedHook } from "./subagent-registry-completion.js";
@@ -332,23 +331,6 @@ const subagentRestorer = createSubagentRegistryRestorer({
   resumeRun: (runId) => resumeSubagentRun(runId),
   listSwarmRunsForGroup: (groupId, requesterSessionKey, requesterAgentId) =>
     listSwarmRunsForGroup(groupId, requesterSessionKey, requesterAgentId),
-  startQueuedSubagentRun: (runId, gatewayRunId, lifecycleGeneration) =>
-    subagentRunManager.startQueuedSubagentRun(runId, gatewayRunId, lifecycleGeneration),
-  terminateAcceptedRestoredCollectorRun: ({
-    entry,
-    gatewayRunId,
-    timeoutMs,
-    expectedSessionId,
-    expectedLifecycleRevision,
-  }) =>
-    terminateAcceptedCollectorRun({
-      childSessionKey: entry.childSessionKey,
-      gatewayRunId,
-      expectedSessionId,
-      expectedLifecycleRevision,
-      timeoutMs,
-      callGateway: subagentRegistryDeps.callGateway,
-    }),
   cleanupCollectorLaunchResources: contextCleanup.cleanupCollectorLaunchResources,
   settleFailedQueuedSubagentLaunch: (runId, error) =>
     subagentRunManager.settleFailedQueuedSubagentLaunch(runId, error),
@@ -472,7 +454,13 @@ export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
 export const registerSubagentRun: (params: RegisterSubagentRunParams) => void =
   subagentRunManager.registerSubagentRun;
-export const startQueuedSubagentRun = subagentRunManager.startQueuedSubagentRun;
+export const prepareSubagentRunForAtomicStore = subagentRunManager.prepareSubagentRunForAtomicStore;
+export const publishSubagentRunAfterAtomicStore =
+  subagentRunManager.publishSubagentRunAfterAtomicStore;
+export const transitionPreparedSubagentLaunchToDispatching =
+  subagentRunManager.transitionPreparedSubagentLaunchToDispatching;
+export const transitionDispatchingSubagentLaunchToRunning =
+  subagentRunManager.transitionDispatchingSubagentLaunchToRunning;
 export const settleFailedQueuedSubagentLaunch = subagentRunManager.settleFailedQueuedSubagentLaunch;
 
 /**

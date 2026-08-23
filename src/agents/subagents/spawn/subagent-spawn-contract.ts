@@ -17,9 +17,9 @@ export type SpawnSubagentParams = {
   outputSchema?: Record<string, unknown>;
   groupId?: string;
   /** Host bridge identity used to recover a replay-safe collector launch. */
-  swarmLaunchReplayKey?: string;
+  launchReplayKey?: string;
   /** Canonical request hash checked before reusing a host-reserved collector. */
-  swarmLaunchRequestFingerprint?: string;
+  launchRequestFingerprint?: string;
   cwd?: string;
   runTimeoutSeconds?: number;
   thread?: boolean;
