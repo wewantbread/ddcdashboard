@@ -6,7 +6,6 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { codexSandboxPolicyForTurn, type CodexAppServerRuntimeOptions } from "./config.js";
-import { neutralizeCodexExplicitMentionSigils } from "./context-engine-projection.js";
 import type {
   CodexSandboxPolicy,
   CodexTurnEnvironmentParams,
@@ -14,7 +13,6 @@ import type {
   CodexUserInput,
 } from "./protocol.js";
 import { readCodexSupportedReasoningEfforts } from "./reasoning-effort.js";
-import { isCodexRuntimeOnlyTurn } from "./run-attempt-state.js";
 import {
   CODEX_NATIVE_PERSONALITY_NONE,
   resolveCodexAppServerRequestModelSelection,
@@ -85,27 +83,10 @@ export function buildTurnStartParams(
   const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
   const currentSenderContext =
     params.trigger === "user" ? buildCodexCurrentSenderContextValue(params) : undefined;
-  const currentInboundContext = isCodexRuntimeOnlyTurn(params)
-    ? params.currentInboundContext?.text.trim()
+  // Untrusted context exposes authenticated attribution without promoting human-controlled labels.
+  const additionalContext: CodexTurnStartParams["additionalContext"] = currentSenderContext
+    ? { openclaw_current_sender: { kind: "untrusted", value: currentSenderContext } }
     : undefined;
-  // Codex additionalContext is model-visible but not emitted as a user-message item.
-  // Keep channel-authored labels untrusted so they cannot gain developer authority.
-  const additionalContext: CodexTurnStartParams["additionalContext"] =
-    currentSenderContext || currentInboundContext
-      ? {
-          ...(currentSenderContext
-            ? { openclaw_current_sender: { kind: "untrusted", value: currentSenderContext } }
-            : {}),
-          ...(currentInboundContext
-            ? {
-                openclaw_current_inbound_context: {
-                  kind: "untrusted",
-                  value: neutralizeCodexExplicitMentionSigils(currentInboundContext),
-                },
-              }
-            : {}),
-        }
-      : undefined;
   return {
     threadId: options.threadId,
     // codex-rs/app-server-protocol/src/protocol/v2/turn.rs:292-324 at 91d6f48992ad defines
