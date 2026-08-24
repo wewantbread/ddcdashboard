@@ -247,7 +247,9 @@ async function runPerplexitySearchApi(params: {
     },
     async (res) => {
       if (!res.ok) {
-        return await throwWebSearchApiError(res, "Perplexity Search");
+        return await throwWebSearchApiError(res, "Perplexity Search", {
+          ...buildPerplexityRequestHeaders(params.apiKey, true),
+        });
       }
       const data = await readProviderJsonResponse<PerplexitySearchApiResponse>(
         res,
@@ -295,7 +297,9 @@ async function runPerplexitySearch(params: {
     },
     async (res) => {
       if (!res.ok) {
-        return await throwWebSearchApiError(res, "Perplexity");
+        return await throwWebSearchApiError(res, "Perplexity", {
+          ...buildPerplexityRequestHeaders(params.apiKey),
+        });
       }
       const data = await readProviderJsonResponse<PerplexitySearchResponse>(res, "Perplexity");
       const content = data.choices?.[0]?.message?.content;
