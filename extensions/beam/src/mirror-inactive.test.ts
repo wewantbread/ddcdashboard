@@ -145,7 +145,7 @@ describe("Beam mirror inactive completion", () => {
           },
         }),
       },
-    } as PluginRuntime;
+    } as unknown as PluginRuntime;
     const runner = createBeamMirrorRunner({
       runtime,
       logger: { warn: () => {}, info: () => {} },
