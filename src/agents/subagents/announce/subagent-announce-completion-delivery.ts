@@ -25,6 +25,9 @@ import {
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 import { inferDeliveryTargetChatType } from "./subagent-announce-origin.js";
 
+const FAILED_COMPLETION_NOTICE =
+  "A delegated task failed before it could report a result. Please retry the task.";
+
 export function isGatewayAgentRunPending(response: unknown): boolean {
   if (!response || typeof response !== "object") {
     return false;
@@ -47,7 +50,13 @@ export function isDirectMessageDeliveryTarget(
   return deriveSessionChatTypeFromKey(requesterSessionKey) === "direct";
 }
 
-function resolveTextCompletionDirectFallback(events: readonly AgentInternalEvent[] | undefined) {
+function resolveTextCompletionDirectFallback(
+  events: readonly AgentInternalEvent[] | undefined,
+  contentKind: "completed_result" | "failed_notice",
+) {
+  if (contentKind === "failed_notice") {
+    return FAILED_COMPLETION_NOTICE;
+  }
   for (let index = (events?.length ?? 0) - 1; index >= 0; index -= 1) {
     const event = events?.[index];
     if (event?.type !== "task_completion" || event.source !== "subagent") {
@@ -94,10 +103,14 @@ export async function deliverCompletionDirect(params: {
     threadId?: string;
   };
   internalEvents?: readonly AgentInternalEvent[];
+  contentKind?: "completed_result" | "failed_notice";
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void;
   isSourceSessionEffectsAllowed?: () => boolean;
 }): Promise<SubagentAnnounceDeliveryResult | undefined> {
-  const content = resolveTextCompletionDirectFallback(params.internalEvents);
+  const content = resolveTextCompletionDirectFallback(
+    params.internalEvents,
+    params.contentKind ?? "completed_result",
+  );
   if (
     !content ||
     !params.deliveryTarget.deliver ||

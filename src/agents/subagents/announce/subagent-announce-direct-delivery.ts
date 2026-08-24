@@ -165,6 +165,8 @@ export async function sendSubagentAnnounceDirectly(params: {
       subagentCompletionEvents[0]?.childSessionKey === params.sourceSessionKey
         ? subagentCompletionEvents[0]
         : undefined;
+    const hasFailedTrustedSubagentCompletion =
+      trustedCompletionEvent !== undefined && trustedCompletionEvent.status !== "ok";
     const hasRequiredSubagentNoOutputCompletion =
       params.expectsCompletionMessage &&
       isSubagentCompletion &&
@@ -219,7 +221,9 @@ export async function sendSubagentAnnounceDirectly(params: {
         disposition: "intentional_non_delivery",
       };
     }
-    const tryTextCompletionDirectDelivery = () =>
+    const tryTextCompletionDirectDelivery = (
+      contentKind: "completed_result" | "failed_notice" = "completed_result",
+    ) =>
       deliverCompletionDirect({
         cfg,
         requesterSessionKey: canonicalRequesterSessionKey,
@@ -227,6 +231,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         directIdempotencyKey: params.directIdempotencyKey,
         deliveryTarget,
         internalEvents: params.internalEvents,
+        contentKind,
         onDeliveryResult: params.onDeliveryResult,
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
@@ -386,13 +391,19 @@ export async function sendSubagentAnnounceDirectly(params: {
       if (hasAnnounceSendEvidence(err)) {
         throw err;
       }
+      const directCompletionFallbackKind = hasFailedTrustedSubagentCompletion
+        ? "failed_notice"
+        : isIncompleteAnnounceAgentResultError(err)
+          ? "completed_result"
+          : undefined;
       if (
         params.expectsCompletionMessage &&
         (shouldDeliverAgentFinal || subagentDirectMessageCompletionRequiresMessageTool) &&
         isSubagentCompletion &&
-        isIncompleteAnnounceAgentResultError(err)
+        directCompletionFallbackKind &&
+        isDirectMessageDeliveryTarget(deliveryTarget, canonicalRequesterSessionKey)
       ) {
-        const textDelivery = await tryTextCompletionDirectDelivery();
+        const textDelivery = await tryTextCompletionDirectDelivery(directCompletionFallbackKind);
         if (textDelivery) {
           return textDelivery;
         }
