@@ -5,6 +5,7 @@ import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import { WorkerRunnerUnavailableError } from "../gateway/worker-environments/tunnel-contract.js";
 import { createDiagnosticLogRecordCapture } from "../logging/test-helpers/diagnostic-log-capture.js";
 import type { AuthProfileStore } from "./auth-profiles.js";
 import type { SessionSuspensionParams } from "./session-suspension.js";
@@ -387,6 +388,43 @@ describe("runWithModelFallback – probe logic", () => {
     const result = await runPrimaryCandidate(cfg, run);
 
     expectPrimaryProbeSuccess(result, run, "ok");
+  });
+
+  it("releases the probe slot when a probe aborts on a local coordination failure (#127649)", async () => {
+    const cfg = makeCfg();
+    const expiresIn30Min = NOW + 30 * 60 * 1000;
+    mockedGetSoonestCooldownExpiry.mockReturnValue(expiresIn30Min);
+
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new WorkerRunnerUnavailableError())
+      .mockResolvedValue("ok");
+
+    // First turn: probe is marked, then the local coordination abort rethrows.
+    await expect(runPrimaryCandidate(cfg, run)).rejects.toBeInstanceOf(
+      WorkerRunnerUnavailableError,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    // The just-taken slot was released instead of staying armed for 30s.
+    expect(probeThrottleInternals.lastProbeAttempt.get("openai")).toBeUndefined();
+
+    // Immediate next turn must still probe: the slot was released because the
+    // candidate never reached the provider.
+    const retry = vi.fn().mockResolvedValue("ok");
+    const result = await runPrimaryCandidate(cfg, retry);
+    expectPrimaryProbeSuccess(result, retry, "ok");
+  });
+
+  it("releaseProbeAttempt only clears its own reservation timestamp", () => {
+    const key = probeThrottleInternals.resolveProbeThrottleKey("openai");
+    const markedAt = probeThrottleInternals.markProbeAttempt(NOW, key);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 1_000, key)).toBe(false);
+
+    probeThrottleInternals.releaseProbeAttempt(key, markedAt - 1);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 2_000, key)).toBe(false);
+
+    probeThrottleInternals.releaseProbeAttempt(key, markedAt);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 3_000, key)).toBe(true);
   });
 
   it("uses inferred unavailable reason when skipping a cooldowned primary model", async () => {

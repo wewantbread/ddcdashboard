@@ -50,10 +50,24 @@ function isProbeThrottleOpen(now: number, throttleKey: string): boolean {
   return now - lastProbe >= MIN_PROBE_INTERVAL_MS;
 }
 
-export function markProbeAttempt(now: number, throttleKey: string): void {
+/** Marks the probe throttle and returns the reservation timestamp. */
+export function markProbeAttempt(now: number, throttleKey: string): number {
   pruneProbeState(now);
   lastProbeAttempt.set(throttleKey, now);
   enforceProbeStateCap();
+  return now;
+}
+
+/**
+ * Releases a probe reservation after a local coordination abort so a failure
+ * that never reached the provider does not burn the 30s recovery-probe window.
+ * Timestamp identity keeps an older release from clearing a newer reservation
+ * for the same key.
+ */
+export function releaseProbeAttempt(throttleKey: string, markedAt: number): void {
+  if (lastProbeAttempt.get(throttleKey) === markedAt) {
+    lastProbeAttempt.delete(throttleKey);
+  }
 }
 
 function hasActiveProviderRateLimitResetWindow(params: {
@@ -134,6 +148,7 @@ export const probeThrottleInternals = {
   isProbeThrottleOpen,
   pruneProbeState,
   markProbeAttempt,
+  releaseProbeAttempt,
 } as const;
 
 type CooldownDecision =
