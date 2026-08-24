@@ -110,8 +110,6 @@ export type CommandRunner = (
 export type UpdateStepInfo = {
   name: string;
   command: string;
-  index: number;
-  total: number;
 };
 
 type UpdateStepCompletion = UpdateStepInfo & {
@@ -164,7 +162,5 @@ export type RunStepOptions = {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   progress?: UpdateStepProgress;
-  stepIndex: number;
-  totalSteps: number;
   results?: UpdateStepResult[];
 };

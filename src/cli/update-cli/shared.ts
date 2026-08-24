@@ -209,8 +209,6 @@ export async function runUpdateStep(params: {
   params.progress?.onStepStart?.({
     name: params.name,
     command,
-    index: 0,
-    total: 0,
   });
 
   const started = Date.now();
@@ -225,8 +223,6 @@ export async function runUpdateStep(params: {
   params.progress?.onStepComplete?.({
     name: params.name,
     command,
-    index: 0,
-    total: 0,
     durationMs,
     exitCode: res.code,
     stderrTail,

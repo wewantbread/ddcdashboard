@@ -84,9 +84,7 @@ export async function updateGitCheckout(params: {
   const devTarget = channel === "dev" ? opts.devTarget : undefined;
   const hasDevTarget = devTarget !== undefined;
   const needsCheckoutMain = channel === "dev" && !hasDevTarget && branch !== DEV_BRANCH;
-  const totalSteps = channel === "dev" ? (needsCheckoutMain ? 12 : 11) : 11;
   const steps: UpdateStepResult[] = [];
-  let stepIndex = 0;
   const step = (
     name: string,
     argv: string[],
@@ -100,8 +98,6 @@ export async function updateGitCheckout(params: {
     timeoutMs,
     env,
     progress: opts.progress,
-    stepIndex: stepIndex++,
-    totalSteps,
     results: steps,
   });
 
@@ -145,8 +141,6 @@ export async function updateGitCheckout(params: {
       argv,
       cwd: gitRoot,
       timeoutMs,
-      stepIndex: 0,
-      totalSteps: 1,
       results: steps,
     });
     return result.exitCode === 0;
@@ -161,8 +155,6 @@ export async function updateGitCheckout(params: {
       argv: ["git", "-C", gitRoot, "rev-parse", "HEAD"],
       cwd: gitRoot,
       timeoutMs,
-      stepIndex: 0,
-      totalSteps: 1,
       results: steps,
     });
     const verified = result.exitCode === 0 && result.stdoutTail?.trim() === beforeSha;
@@ -282,12 +274,20 @@ export async function updateGitCheckout(params: {
     return buildError("dirty", "skipped");
   }
 
+  // Configured pruneTags must not turn this branch refresh into deletion of operator-local tags.
+  // Explicit tag refspecs in remote config retain their operator-declared pruning semantics.
+  const fetchAllBranchesArgv = [
+    "git",
+    "-C",
+    gitRoot,
+    "fetch",
+    "--all",
+    "--prune",
+    "--no-prune-tags",
+    "--no-tags",
+  ];
   if (channel === "dev") {
-    const fetchFailure = await runRequiredStep(
-      "git fetch",
-      ["git", "-C", gitRoot, "fetch", "--all", "--prune", "--no-tags"],
-      "fetch-failed",
-    );
+    const fetchFailure = await runRequiredStep("git fetch", fetchAllBranchesArgv, "fetch-failed");
     if (fetchFailure) {
       return fetchFailure;
     }
@@ -372,8 +372,6 @@ export async function updateGitCheckout(params: {
             argv: ["git", "-C", gitRoot, "rebase", "--abort"],
             cwd: gitRoot,
             timeoutMs,
-            stepIndex: 0,
-            totalSteps: 1,
             results: steps,
           });
           return buildError("rebase-failed");
@@ -381,11 +379,7 @@ export async function updateGitCheckout(params: {
       }
     }
   } else {
-    const fetchFailure = await runRequiredStep(
-      "git fetch",
-      ["git", "-C", gitRoot, "fetch", "--all", "--prune", "--no-tags"],
-      "fetch-failed",
-    );
+    const fetchFailure = await runRequiredStep("git fetch", fetchAllBranchesArgv, "fetch-failed");
     if (fetchFailure) {
       return fetchFailure;
     }
@@ -412,9 +406,20 @@ export async function updateGitCheckout(params: {
       if (skipConfig.stdout.trimEnd().split("\n").at(-1)?.endsWith(" true")) {
         continue;
       }
+      // Configured pruning must not delete unrelated tags during this forced tag refresh.
       const tagFetchFailure = await runRequiredStep(
         `git fetch ${remote} tags`,
-        ["git", "-C", gitRoot, "fetch", "--no-tags", "--", remote, "+refs/tags/*:refs/tags/*"],
+        [
+          "git",
+          "-C",
+          gitRoot,
+          "fetch",
+          "--no-prune",
+          "--no-tags",
+          "--",
+          remote,
+          "+refs/tags/*:refs/tags/*",
+        ],
         "fetch-failed",
       );
       if (tagFetchFailure) {
@@ -572,8 +577,6 @@ export async function updateGitCheckout(params: {
         cwd: gitRoot,
         timeoutMs,
         env: manager.env,
-        stepIndex: 0,
-        totalSteps: 1,
         results: steps,
       });
       if (repairStep.exitCode !== 0) {
