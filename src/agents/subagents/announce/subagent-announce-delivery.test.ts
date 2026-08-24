@@ -2577,6 +2577,91 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("stops a failure notice when cancellation wins at platform dispatch", async () => {
+    const childSessionKey = "agent:worker:subagent:cancelled-during-fallback";
+    const controller = new AbortController();
+    const platformSend = vi.fn();
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = vi.fn(async (params: Parameters<typeof runtimeSendMessage>[0]) => {
+      expect(params.skipQueue).toBe(true);
+      expect(params.abortSignal).toBe(controller.signal);
+      controller.abort();
+      await params.onPlatformSendDispatch?.();
+      platformSend();
+      return {
+        channel: "discord",
+        to: "dm:U123",
+        via: "direct" as const,
+        mediaUrl: null,
+        result: { messageId: "msg-after-cancel" },
+      };
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      signal: controller.signal,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before fallback cancellation",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "none" });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(platformSend).not.toHaveBeenCalled();
+  });
+
+  it("stops a failure notice when source ownership changes at platform dispatch", async () => {
+    const childSessionKey = "agent:worker:subagent:owner-changed-during-fallback";
+    const platformSend = vi.fn();
+    let sourceEffectsAllowed = true;
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = vi.fn(async (params: Parameters<typeof runtimeSendMessage>[0]) => {
+      sourceEffectsAllowed = false;
+      await params.onPlatformSendDispatch?.();
+      platformSend();
+      return {
+        channel: "discord",
+        to: "dm:U123",
+        via: "direct" as const,
+        mediaUrl: null,
+        result: { messageId: "msg-after-owner-change" },
+      };
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      isSourceSessionEffectsAllowed: () => sourceEffectsAllowed,
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before source owner changed",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, {
+      delivered: false,
+      path: "none",
+      reason: "source_owner_changed",
+      terminal: true,
+    });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(platformSend).not.toHaveBeenCalled();
+  });
+
   it("does not send a failure notice from an untrusted child event", async () => {
     const callGateway = vi.fn(async () => {
       throw new Error("provider rejected requester synthesis");

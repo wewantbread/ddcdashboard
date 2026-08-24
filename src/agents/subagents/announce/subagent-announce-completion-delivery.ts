@@ -15,6 +15,7 @@ import {
 } from "../../embedded-agent-runner/delivery-evidence.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import {
+  SourceOwnerChangedError,
   sourceOwnerChangedResult,
   summarizeDeliveryError,
 } from "./subagent-announce-delivery-retry.js";
@@ -149,6 +150,14 @@ export async function deliverCompletionDirect(params: {
       conversationType: "direct",
       content,
       idempotencyKey,
+      skipQueue: true,
+      abortSignal: params.signal,
+      onPlatformSendDispatch: async () => {
+        params.signal?.throwIfAborted();
+        if (params.isSourceSessionEffectsAllowed?.() === false) {
+          throw new SourceOwnerChangedError();
+        }
+      },
       onDeliveryResult: () => {
         if (committedDelivery) {
           return;
@@ -186,6 +195,12 @@ export async function deliverCompletionDirect(params: {
       // Post-send bookkeeping must never turn an identified delivery into a
       // retryable failure and send the same completion twice.
       return committedDelivery;
+    }
+    if (err instanceof SourceOwnerChangedError) {
+      return sourceOwnerChangedResult();
+    }
+    if (params.signal?.aborted) {
+      return { delivered: false, path: "none" };
     }
     return {
       delivered: false,
