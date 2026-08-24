@@ -2549,6 +2549,34 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(outboundContent).not.toContain(childResult);
   });
 
+  it("does not send a failure notice after requester synthesis is cancelled", async () => {
+    const childSessionKey = "agent:worker:subagent:cancelled-failed-child";
+    const controller = new AbortController();
+    const callGateway = vi.fn(async () => {
+      controller.abort();
+      throw new Error("provider request cancelled during requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      signal: controller.signal,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before cancellation",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "none" });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not send a failure notice from an untrusted child event", async () => {
     const callGateway = vi.fn(async () => {
       throw new Error("provider rejected requester synthesis");

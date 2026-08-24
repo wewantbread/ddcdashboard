@@ -104,6 +104,7 @@ export async function deliverCompletionDirect(params: {
   };
   internalEvents?: readonly AgentInternalEvent[];
   contentKind?: "completed_result" | "failed_notice";
+  signal?: AbortSignal;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void;
   isSourceSessionEffectsAllowed?: () => boolean;
 }): Promise<SubagentAnnounceDeliveryResult | undefined> {
@@ -133,6 +134,9 @@ export async function deliverCompletionDirect(params: {
   try {
     if (params.isSourceSessionEffectsAllowed?.() === false) {
       return sourceOwnerChangedResult();
+    }
+    if (params.signal?.aborted) {
+      return { delivered: false, path: "none" };
     }
     const sendResult = await sendSubagentAnnounceMessage({
       cfg: params.cfg,

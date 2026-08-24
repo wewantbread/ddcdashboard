@@ -232,6 +232,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         deliveryTarget,
         internalEvents: params.internalEvents,
         contentKind,
+        signal: params.signal,
         onDeliveryResult: params.onDeliveryResult,
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
@@ -390,6 +391,9 @@ export async function sendSubagentAnnounceDirectly(params: {
       }
       if (hasAnnounceSendEvidence(err)) {
         throw err;
+      }
+      if (params.signal?.aborted) {
+        return { delivered: false, path: "none" };
       }
       const directCompletionFallbackKind = hasFailedTrustedSubagentCompletion
         ? "failed_notice"
