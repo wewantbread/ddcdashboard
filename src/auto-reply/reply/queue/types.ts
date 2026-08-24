@@ -320,14 +320,18 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   }
 }
 
-export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
-  run.steerPending?.settle(false);
-  const lifecycle = run.turnAdoptionLifecycle;
+export function cleanHostWorkspaceStaging(run: Pick<FollowupRun, "hostWorkspaceStagingDir">): void {
   const hostWorkspaceStagingDir = run.hostWorkspaceStagingDir;
   if (hostWorkspaceStagingDir) {
     delete run.hostWorkspaceStagingDir;
     void fs.rm(hostWorkspaceStagingDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
+  run.steerPending?.settle(false);
+  cleanHostWorkspaceStaging(run);
+  const lifecycle = run.turnAdoptionLifecycle;
 
   const finish = () => {
     if (!lifecycle || completedTurnAdoptionLifecycleCallbacks.has(lifecycle)) {

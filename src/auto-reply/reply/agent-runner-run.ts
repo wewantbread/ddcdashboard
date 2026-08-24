@@ -41,6 +41,7 @@ import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import {
+  cleanHostWorkspaceStaging,
   completeFollowupRunLifecycle,
   enqueueFollowupRun,
   scheduleFollowupDrain,
@@ -642,6 +643,7 @@ export async function runReplyAgent(
       sessionCtx,
     });
   } finally {
+    cleanHostWorkspaceStaging(followupRun);
     await cleanupReplyAgentRun({
       blockReplyPipeline,
       clearRestartRecoveryDeliveryClaim,
