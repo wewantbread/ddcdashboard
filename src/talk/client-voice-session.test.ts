@@ -27,14 +27,16 @@ import {
   closeClientVoiceSession,
   closeRelayVoiceSessionRecord,
   closeStaleClientVoiceSessions,
-  createOrResumeClientVoiceSession,
   ensureClientVoiceAgentSessionEntry,
   isClientVoiceSessionConfirmable,
-  registerClientVoiceConsultRun,
   resolveClientVoiceAgentSessionId,
   resolveClientVoiceRunBinding,
   resolveOpenClientVoiceSessionId,
 } from "./client-voice-session.js";
+import {
+  createOrResumeClientVoiceSession,
+  registerClientVoiceConsultRun,
+} from "./client-voice-session.test-helpers.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
@@ -274,6 +276,7 @@ describe("client voice session", () => {
     const binding = (voiceSessionId: string) => ({
       agentId: "main",
       sessionKey: "agent:main:main",
+      agentSessionKey: "agent:main:main",
       voiceSessionId,
     });
     expect(isClientVoiceSessionConfirmable(binding(capable))).toBe(true);
@@ -942,26 +945,26 @@ describe("client voice session", () => {
   });
 
   it("resolves the open client record for legacy tool calls", () => {
+    const resolveOpen = (sessionKey: string) =>
+      resolveOpenClientVoiceSessionId({
+        agentId: "main",
+        sessionKey,
+        agentSessionKey: sessionKey,
+      });
     const voiceSessionId = createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
 
-    expect(
-      resolveOpenClientVoiceSessionId({ agentId: "main", sessionKey: "agent:main:main" }),
-    ).toBe(voiceSessionId);
-    expect(
-      resolveOpenClientVoiceSessionId({ agentId: "main", sessionKey: "agent:main:other" }),
-    ).toBeUndefined();
+    expect(resolveOpen("agent:main:main")).toBe(voiceSessionId);
+    expect(resolveOpen("agent:main:other")).toBeUndefined();
     createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
-    expect(
-      resolveOpenClientVoiceSessionId({ agentId: "main", sessionKey: "agent:main:main" }),
-    ).toBeUndefined();
+    expect(resolveOpen("agent:main:main")).toBeUndefined();
   });
 
   it("keeps repeated tool-call ids separate across consult runs", () => {

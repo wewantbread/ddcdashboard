@@ -1,125 +1,68 @@
 #if Talk && canImport(ElevenLabsKit) && (os(iOS) || os(macOS))
-import AVFAudio
 import Foundation
 import OpenClawProtocol
 import OSLog
 
-public struct RealtimeTalkAudioFrame: Sendable {
-    public let data: Data
-    public let timestampMs: Double
-    public let rms: Float
+struct RealtimeTalkToolCallStartResponse: Decodable {
+    let runId: String?
+    let idempotencyKey: String?
+    let agentId: String?
+    let agentSessionKey: String?
 
-    public init(data: Data, timestampMs: Double, rms: Float) {
-        self.data = data
-        self.timestampMs = timestampMs
-        self.rms = rms
-    }
-}
-
-public enum RealtimeTalkPCM16Encoder {
-    public nonisolated static func encode(
-        buffer: AVAudioPCMBuffer,
-        inputSampleRate: Double,
-        targetSampleRate: Double) -> Data
-    {
-        guard let channelData = buffer.floatChannelData,
-              buffer.frameLength > 0,
-              inputSampleRate > 0,
-              targetSampleRate > 0
-        else { return Data() }
-        let frameCount = Int(buffer.frameLength)
-        let channelCount = max(1, Int(buffer.format.channelCount))
-        let outputCount = max(1, Int((Double(frameCount) * targetSampleRate / inputSampleRate).rounded(.down)))
-        var data = Data(capacity: outputCount * MemoryLayout<Int16>.size)
-        for index in 0..<outputCount {
-            let sourcePosition = Double(index) * inputSampleRate / targetSampleRate
-            let lower = min(frameCount - 1, Int(sourcePosition.rounded(.down)))
-            let upper = min(frameCount - 1, lower + 1)
-            let fraction = Float(sourcePosition - Double(lower))
-            var mixed: Float = 0
-            for channel in 0..<channelCount {
-                let samples = channelData[channel]
-                mixed += samples[lower] + ((samples[upper] - samples[lower]) * fraction)
-            }
-            let sample = max(-1, min(1, mixed / Float(channelCount)))
-            var intSample = Int16((sample * Float(Int16.max)).rounded()).littleEndian
-            withUnsafeBytes(of: &intSample) { data.append(contentsOf: $0) }
+    func resolvedRunIdentity(fallbackSessionKey: String) -> RealtimeTalkRunIdentity? {
+        guard let runId = Self.nonEmpty(self.runId) ?? Self.nonEmpty(self.idempotencyKey) else {
+            return nil
         }
-        return data
+        let returnedAgentId = Self.nonEmpty(self.agentId)
+        let returnedSessionKey = Self.nonEmpty(self.agentSessionKey)
+        guard (returnedAgentId == nil) == (returnedSessionKey == nil) else { return nil }
+        let usesLegacyTarget = returnedAgentId == nil
+        guard let agentSessionKey = returnedSessionKey ?? Self.nonEmpty(fallbackSessionKey) else {
+            return nil
+        }
+        return RealtimeTalkRunIdentity(
+            runId: runId,
+            agentSessionKey: agentSessionKey,
+            agentId: returnedAgentId,
+            acceptsLegacyMainAlias: usesLegacyTarget)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
-@MainActor
-public protocol RealtimeTalkAudioCapturing: AnyObject {
-    var suppressesInputDuringOutput: Bool { get }
+struct RealtimeTalkRunIdentity: Hashable, Sendable {
+    let runId: String
+    let agentSessionKey: String
+    let agentId: String?
+    private let acceptsLegacyMainAlias: Bool
 
-    func start(
-        targetSampleRate: Double,
-        onAudio: @escaping @Sendable (RealtimeTalkAudioFrame) -> Void,
-        onFailure: @escaping @MainActor (String) -> Void) throws
-
-    func stop()
-}
-
-public struct RealtimeTalkRelayTransport: Sendable {
-    public let subscribeServerEvents: @Sendable (Int) async -> AsyncStream<EventFrame>
-    public let request: @Sendable (String, [String: AnyCodable]?, Double) async throws -> Data
-    public let isCurrent: @Sendable () async -> Bool
-
-    public init(
-        subscribeServerEvents: @escaping @Sendable (Int) async -> AsyncStream<EventFrame>,
-        request: @escaping @Sendable (String, [String: AnyCodable]?, Double) async throws -> Data,
-        isCurrent: @escaping @Sendable () async -> Bool = { true })
+    init(
+        runId: String,
+        agentSessionKey: String,
+        agentId: String?,
+        acceptsLegacyMainAlias: Bool)
     {
-        self.subscribeServerEvents = subscribeServerEvents
-        self.request = request
-        self.isCurrent = isCurrent
+        self.runId = runId
+        self.agentSessionKey = agentSessionKey
+        self.agentId = agentId
+        self.acceptsLegacyMainAlias = acceptsLegacyMainAlias
     }
-}
 
-public struct RealtimeTalkRelayIssue: Equatable, Sendable {
-    public let code: String
-    public let message: String
-    public let provider: String?
-    public let model: String?
-    public let transport: String?
-    public let phase: String?
-
-    public init(
-        code: String = "realtime_unavailable",
-        message: String,
-        provider: String? = nil,
-        model: String? = nil,
-        transport: String? = nil,
-        phase: String? = nil)
-    {
-        self.code = code
-        self.message = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.provider = provider
-        self.model = model
-        self.transport = transport
-        self.phase = phase
+    func matches(sessionKey: String?) -> Bool {
+        guard let incoming = sessionKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !incoming.isEmpty
+        else { return true }
+        let expected = self.agentSessionKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if incoming == expected { return true }
+        guard self.acceptsLegacyMainAlias else { return false }
+        return (incoming == "agent:main:main" && expected == "main") ||
+            (incoming == "main" && expected == "agent:main:main")
     }
-}
-
-public struct RealtimeTalkTranscript: Equatable, Sendable {
-    public let role: String
-    public let text: String
-    public let isFinal: Bool
-
-    public init(role: String, text: String, isFinal: Bool) {
-        self.role = role
-        self.text = text
-        self.isFinal = isFinal
-    }
-}
-
-public enum RealtimeTalkRelayTermination: Equatable, Sendable {
-    case remoteClose(reason: String?)
-    case eventStreamEnded
-    case audioInputFailed(message: String)
-    case outputCancellationFailed
-    case outputPlaybackOverflow
 }
 
 private enum RealtimeAudioSendOutcome {
@@ -187,11 +130,6 @@ public final class RealtimeTalkRelaySession {
         }
     }
 
-    private struct ToolCallStartResponse: Decodable {
-        let runId: String?
-        let idempotencyKey: String?
-    }
-
     private struct ChatCompletionResult {
         let text: String?
         let failed: Bool
@@ -199,6 +137,7 @@ public final class RealtimeTalkRelaySession {
 
     private struct RelayChatEvent: Decodable {
         let runId: String?
+        let sessionKey: String?
         let state: String?
         let message: AnyCodable?
     }
@@ -810,17 +749,19 @@ extension RealtimeTalkRelaySession {
             let startResponse = try await self.requestJSON(
                 method: "talk.client.toolCall",
                 payload: startPayload,
-                decodeAs: ToolCallStartResponse.self,
+                decodeAs: RealtimeTalkToolCallStartResponse.self,
                 timeoutSeconds: 30,
                 lifecycleGeneration: lifecycleGeneration)
-            guard let runId = startResponse.runId ?? startResponse.idempotencyKey else {
+            guard let run = startResponse.resolvedRunIdentity(
+                fallbackSessionKey: self.options.sessionKey)
+            else {
                 throw NSError(domain: "RealtimeTalkRelay", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: String(
-                        localized: "Realtime tool call did not return a run id"),
+                        localized: "Realtime tool call did not return a complete run identity"),
                 ])
             }
             let completion = await self.waitForChatCompletion(
-                runId: runId,
+                run: run,
                 stream: completionStream,
                 timeoutSeconds: 120)
             try await self.ensureCurrentLifecycle(lifecycleGeneration)
@@ -913,7 +854,7 @@ extension RealtimeTalkRelaySession {
     }
 
     private func waitForChatCompletion(
-        runId: String,
+        run: RealtimeTalkRunIdentity,
         stream: AsyncStream<EventFrame>,
         timeoutSeconds: Int) async -> ChatCompletionResult
     {
@@ -926,7 +867,8 @@ extension RealtimeTalkRelaySession {
                     guard event.event == "chat",
                           let payload = event.payload,
                           let chatEvent = try? GatewayPayloadDecoding.decode(payload, as: RelayChatEvent.self),
-                          chatEvent.runId == runId
+                          chatEvent.runId == run.runId,
+                          run.matches(sessionKey: chatEvent.sessionKey)
                     else { continue }
                     if chatEvent.state == "final" {
                         return ChatCompletionResult(

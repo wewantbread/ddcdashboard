@@ -40,6 +40,7 @@ import {
   rememberUnifiedTalkSession,
   requireUnifiedTalkSessionConn,
 } from "../talk-session-registry.js";
+import { resolveTalkSessionTarget } from "../talk-session-target.js";
 import {
   createTalkTranscriptionRelaySession,
   sendTalkTranscriptionRelayAudio,
@@ -289,12 +290,14 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           requireSessionKeyForProfile: true,
           warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
         });
-        const sessionKey =
+        const target = resolveTalkSessionTarget(
+          runtimeConfig,
           realtimeContext.requestedSessionKey ??
-          buildAgentMainSessionKey({ agentId: realtimeContext.agentId });
+            buildAgentMainSessionKey({ agentId: realtimeContext.agentId }),
+        );
         await ensureClientVoiceAgentSessionEntry({
-          agentId: realtimeContext.agentId,
-          sessionKey,
+          agentId: target.agentId,
+          sessionKey: target.agentSessionKey,
         });
         const session = createTalkRealtimeRelaySession({
           context,
@@ -306,7 +309,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           instructions: buildRealtimeInstructions(realtimeContext.instructions),
           tools: [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
           model: launchOptions.model,
-          sessionKey,
+          sessionKey: target.voiceSessionKey,
           voice: launchOptions.voice,
           language: normalizeOptionalLowercaseString(params.language),
           forceAgentConsultOnFinalTranscript: relayLaunch.forceAgentConsultOnFinalTranscript,
