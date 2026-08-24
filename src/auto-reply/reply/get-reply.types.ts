@@ -40,6 +40,8 @@ type InternalReplySessionOptions = {
   skillOverrides?: SessionToolOverrides["skills"];
   /** Gateway-private optimistic-concurrency constraint for an operator-requested proposal revision. */
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
+  /** Host-stamped staging directory to clean up after session settlement. */
+  hostWorkspaceStagingDir?: string;
 };
 
 export type InternalGetReplyOptions = GetReplyOptions &

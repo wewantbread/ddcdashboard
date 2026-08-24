@@ -1211,6 +1211,12 @@ export async function getReplyFromConfig(
       }),
     );
     stagedAttachmentPaths = stageResult.staged;
+    if (stageResult.hostWorkspaceStagingDir) {
+      resolvedOpts = {
+        ...resolvedOpts,
+        hostWorkspaceStagingDir: stageResult.hostWorkspaceStagingDir,
+      };
+    }
   }
 
   if (

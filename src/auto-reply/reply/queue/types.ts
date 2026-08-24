@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 // Shared queue type contracts for admission, drain, and fallback handling.
 import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
@@ -102,6 +103,8 @@ export type FollowupRun = {
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   /** Canonical ownership lifecycle for durable ingress / reply-lane transfer. */
   turnAdoptionLifecycle?: TurnAdoptionLifecycle;
+  /** Host workspace staging directory to clean up after session settlement. */
+  hostWorkspaceStagingDir?: string;
   /** Records terminal queue-cap outcomes at the queue owner before lifecycle cleanup. */
   onQueueDisposition?: (disposition: FollowupQueueDisposition) => void;
   /** Provider message ID, when available (for deduplication). */
@@ -263,7 +266,10 @@ const retiredTurnAdoptionCancellationLifecycles = new WeakSet<TurnAdoptionLifecy
 const completedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
 const completedTurnAdoptionLifecycleCallbacks = new WeakSet<TurnAdoptionLifecycle>();
 
-type FollowupLifecycleRun = Pick<FollowupRun, "steerPending" | "turnAdoptionLifecycle">;
+type FollowupLifecycleRun = Pick<
+  FollowupRun,
+  "steerPending" | "turnAdoptionLifecycle" | "hostWorkspaceStagingDir"
+>;
 
 export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
   const lifecycle = run.turnAdoptionLifecycle;
@@ -317,6 +323,11 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
 export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
   run.steerPending?.settle(false);
   const lifecycle = run.turnAdoptionLifecycle;
+  const hostWorkspaceStagingDir = run.hostWorkspaceStagingDir;
+  if (hostWorkspaceStagingDir) {
+    delete run.hostWorkspaceStagingDir;
+    void fs.rm(hostWorkspaceStagingDir, { recursive: true, force: true }).catch(() => {});
+  }
 
   const finish = () => {
     if (!lifecycle || completedTurnAdoptionLifecycleCallbacks.has(lifecycle)) {
