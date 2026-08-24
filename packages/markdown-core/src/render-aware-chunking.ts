@@ -381,6 +381,7 @@ function coalesceWhitespaceOnlyMarkdownIRChunks<TRendered>(
       }
     }
 
+    let redistributed = false;
     if (prev && next) {
       // Split pure whitespace between neighbors before dropping it so list,
       // paragraph, and quote spacing survives when both sides still fit.
@@ -392,11 +393,21 @@ function coalesceWhitespaceOnlyMarkdownIRChunks<TRendered>(
         if (canMerge(mergedPrev) && canMerge(mergedNext)) {
           coalesced[coalesced.length - 1] = mergedPrev;
           chunks[index + 1] = mergedNext;
+          redistributed = true;
           break;
         }
       }
     }
+    if (redistributed) {
+      index += 1;
+      continue;
+    }
 
+    // Lossless fallback: this whitespace-only slice could not merge into either
+    // neighbor or be redistributed between them. Emitting it standalone (hard-
+    // split to the render limit when oversized) keeps chunking lossless instead
+    // of silently dropping accepted content such as fixed-column data runs.
+    coalesced.push(...splitMarkdownIRByRenderedLimit(chunk, renderedLimit, options));
     index += 1;
   }
 
