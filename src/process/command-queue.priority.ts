@@ -1,5 +1,11 @@
-import type { QueueEntry } from "./command-queue.state.js";
 import { STARVATION_PROMOTION_MS } from "./lanes.js";
+
+/** Leaf ranking shape. Do not import command-queue.state (madge cycle). */
+type QueueHead = {
+  priority: number;
+  enqueuedAt: number;
+  sequence: number;
+};
 
 /** Numeric priority for user/foreground work. Must stay above aged lower tiers. */
 const FOREGROUND_QUEUE_PRIORITY = 1;
@@ -8,7 +14,7 @@ const FOREGROUND_QUEUE_PRIORITY = 1;
  * Promote entries that have waited longer than STARVATION_PROMOTION_MS by one
  * tier, capped strictly below foreground so fresh user work still wins.
  */
-export function effectivePriority(entry: QueueEntry): number {
+export function effectivePriority(entry: QueueHead): number {
   if (entry.priority >= FOREGROUND_QUEUE_PRIORITY) {
     return entry.priority;
   }
@@ -22,7 +28,7 @@ export function effectivePriority(entry: QueueEntry): number {
  * Highest effective priority wins. Ties break by enqueue time, then sequence.
  * Used to choose among ring heads without scanning or moving ring membership.
  */
-export function pickNextAmongHeads(heads: readonly QueueEntry[]): QueueEntry | undefined {
+export function pickNextAmongHeads<T extends QueueHead>(heads: readonly T[]): T | undefined {
   const first = heads[0];
   if (!first) {
     return undefined;
