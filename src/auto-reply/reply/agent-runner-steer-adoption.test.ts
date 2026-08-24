@@ -1,10 +1,19 @@
 // Tests agent-runner-steer-adoption queue lifecycle ownership transfer.
 import { describe, expect, it, vi } from "vitest";
+import type { runActiveReplySteer as RunActiveReplySteer } from "./agent-runner-steer-adoption.js";
+import type { FollowupRun } from "./queue.js";
 import { parkSteerCandidate } from "./queue.js";
+import type { ReplyOperation } from "./reply-run-registry.js";
+
+type ActiveReplySteerParams = Parameters<typeof RunActiveReplySteer>[0];
 
 const mocks = vi.hoisted(() => ({
   parkedConsume: vi.fn(),
   parkedAdmit: vi.fn(async () => "steer" as const),
+  finalizeReplyMessageInjectionAttempt: vi.fn(async () => ({
+    status: "accepted" as const,
+    outcome: {},
+  })),
   queueEmbeddedAgentMessageWithOutcomeAsync: vi.fn(async () => ({
     queued: true,
     steerSessionId: "session-1",
@@ -47,59 +56,86 @@ vi.mock("./reply-run-registry.js", () => ({
     resolveCurrentMessageInjectionTarget: vi.fn(() => ({})),
   },
   beginReplyMessageInjectionTarget: vi.fn(() => ({})),
-  finalizeReplyMessageInjectionAttempt: vi.fn(() => ({ status: "accepted", outcome: {} })),
+  finalizeReplyMessageInjectionAttempt: mocks.finalizeReplyMessageInjectionAttempt,
   runAfterReplyOperationClear: vi.fn(),
 }));
 
 const { runActiveReplySteer } = await import("./agent-runner-steer-adoption.js");
 
+/** Builds a minimal params object for runActiveReplySteer in tests. */
+function makeParams(
+  overrides: Partial<ActiveReplySteerParams> & {
+    providedReplyOperation?: Partial<ReplyOperation>;
+    followupRun?: Partial<FollowupRun>;
+  } = {},
+): ActiveReplySteerParams {
+  const { providedReplyOperation, followupRun, ...rest } = overrides;
+  return {
+    queueKey: "queue-1",
+    sessionKey: "session-1",
+    sessionCtx: {
+      Provider: "telegram",
+      AccountId: "default",
+      MessageSid: "msg-1",
+    } as unknown as ActiveReplySteerParams["sessionCtx"],
+    replyOperationRunState: {} as unknown as ActiveReplySteerParams["replyOperationRunState"],
+    touchActiveSessionEntry: mocks.touchActiveSessionEntry,
+    typingSignals: {
+      shouldStartImmediately: false,
+    } as unknown as ActiveReplySteerParams["typingSignals"],
+    typing: { cleanup: mocks.typingCleanup } as unknown as ActiveReplySteerParams["typing"],
+    releaseAdmissionTicket: vi.fn(),
+    resolvedQueue: { debounceMs: 100 } as unknown as ActiveReplySteerParams["resolvedQueue"],
+    opts: undefined,
+    restartRecoverySourceTurnId: undefined,
+    runFollowup: vi.fn(async () => {}),
+    toolAuthorityFingerprint: "test-fingerprint",
+    providedReplyOperation: (providedReplyOperation ?? {}) as unknown as ReplyOperation,
+    followupRun: (followupRun ?? {
+      run: { sessionId: "steer-session" },
+    }) as unknown as FollowupRun,
+    ...rest,
+  };
+}
+
 describe("runActiveReplySteer", () => {
   it("transfers cleanup ownership of accepted steer from queued followup to active operation terminal callback", async () => {
-    let capturedTerminalCallback: (() => void) | undefined;
+    let capturedSettlementResolve: (() => void) | undefined;
+    const ownerSettlement = new Promise<void>((resolve) => {
+      capturedSettlementResolve = resolve;
+    });
 
-    const activeReplyOperation = {
-      completeThen: (fn: () => void) => {
-        capturedTerminalCallback = fn;
-      },
+    const followupRun: Partial<FollowupRun> = {
+      hostWorkspaceStagingDir: "/tmp/steer-staging",
+      turnAdoptionLifecycle: {
+        onAdopted: vi.fn(),
+      } as unknown as FollowupRun["turnAdoptionLifecycle"],
+      run: { sessionId: "steer-session" } as unknown as FollowupRun["run"],
+    };
+
+    const activeReplyOperation: Partial<ReplyOperation> = {
+      ownerSettlement,
       recordActivity: vi.fn(),
       markAcceptedSteeredInboundAudio: vi.fn(),
     };
 
-    const followupRun = {
-      hostWorkspaceStagingDir: "/tmp/steer-staging",
-      turnAdoptionLifecycle: { onAdopted: vi.fn() },
-      run: {
-        sessionId: "steer-session",
-        messageProvenance: { Provider: "test-provider", Surface: "test-surface" },
-      },
-    };
-
-    await runActiveReplySteer({
-      providedReplyOperation: activeReplyOperation as any,
-      followupRun: followupRun as any,
-      typing: { cleanup: mocks.typingCleanup } as any,
-      queueKey: "queue-1",
-      sessionKey: "session-1",
-      sessionCtx: { Provider: "telegram", AccountId: "default", MessageSid: "msg-1" } as any,
-      replyOperationRunState: {} as any,
-      touchActiveSessionEntry: mocks.touchActiveSessionEntry,
-      typingSignals: { shouldStartImmediately: false } as any,
-      releaseAdmissionTicket: vi.fn(),
-      resolvedQueue: { debounceMs: 100 } as any,
-    });
+    await runActiveReplySteer(
+      makeParams({ providedReplyOperation: activeReplyOperation, followupRun }),
+    );
 
     expect(mocks.parkedConsume).toHaveBeenCalled();
 
-    // Check that properties were removed so parked.consume() doesn't clean them up
+    // Staging properties are removed so the lifecycle doesn't double-clean them
     expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     expect(followupRun.turnAdoptionLifecycle).toBeUndefined();
 
-    // Check that completeThen callback was registered and completeFollowupRunLifecycle wasn't called yet
-    expect(capturedTerminalCallback).toBeDefined();
+    // completeFollowupRunLifecycle should NOT have been called yet — it waits for settlement
     expect(mocks.completeFollowupRunLifecycle).not.toHaveBeenCalled();
 
-    // Call terminal callback
-    capturedTerminalCallback!();
+    // Settling the owner promise triggers the deferred cleanup
+    capturedSettlementResolve!();
+    await ownerSettlement;
+    await Promise.resolve(); // flush microtask queue so .then() callbacks fire
 
     expect(mocks.completeFollowupRunLifecycle).toHaveBeenCalledWith({
       hostWorkspaceStagingDir: "/tmp/steer-staging",
@@ -108,52 +144,42 @@ describe("runActiveReplySteer", () => {
   });
 
   it("retains staging and delegates fallback when steer is rejected", async () => {
-    // Mock the injection attempt to reject
+    // Override the injection attempt to reject this steer
     mocks.finalizeReplyMessageInjectionAttempt.mockResolvedValueOnce({
       status: "rejected",
       outcome: { reason: "steer rejected by model" },
     });
 
-    const activeReplyOperation = {
-      completeThen: vi.fn(),
-      recordActivity: vi.fn(),
-      markAcceptedSteeredInboundAudio: vi.fn(),
+    const followupRun: Partial<FollowupRun> = {
+      hostWorkspaceStagingDir: "/tmp/steer-staging",
+      turnAdoptionLifecycle: {
+        onAdopted: vi.fn(),
+      } as unknown as FollowupRun["turnAdoptionLifecycle"],
+      run: { sessionId: "steer-session" } as unknown as FollowupRun["run"],
     };
 
-    const followupRun = {
-      hostWorkspaceStagingDir: "/tmp/steer-staging",
-      turnAdoptionLifecycle: { onAdopted: vi.fn() },
-      run: {
-        sessionId: "steer-session",
-        messageProvenance: { Provider: "test-provider", Surface: "test-surface" },
-      },
+    const activeReplyOperation: Partial<ReplyOperation> = {
+      ownerSettlement: undefined,
+      recordActivity: vi.fn(),
+      markAcceptedSteeredInboundAudio: vi.fn(),
     };
 
     const fallbackMock = vi.fn();
     vi.mocked(parkSteerCandidate).mockReturnValueOnce({
       consume: mocks.parkedConsume,
       admit: mocks.parkedAdmit,
+      accepted: vi.fn(),
       fallback: fallbackMock,
-    } as any);
+    } as unknown as ReturnType<typeof parkSteerCandidate>);
 
-    await runActiveReplySteer({
-      providedReplyOperation: activeReplyOperation as any,
-      followupRun: followupRun as any,
-      typing: { cleanup: mocks.typingCleanup } as any,
-      queueKey: "queue-1",
-      sessionKey: "session-1",
-      sessionCtx: { Provider: "telegram", AccountId: "default", MessageSid: "msg-1" } as any,
-      replyOperationRunState: {} as any,
-      touchActiveSessionEntry: mocks.touchActiveSessionEntry,
-      typingSignals: { shouldStartImmediately: false } as any,
-      releaseAdmissionTicket: vi.fn(),
-      resolvedQueue: { debounceMs: 100 } as any,
-    });
+    await runActiveReplySteer(
+      makeParams({ providedReplyOperation: activeReplyOperation, followupRun }),
+    );
 
-    // Check that fallback was called
+    // The steer was rejected, so fallback path runs
     expect(fallbackMock).toHaveBeenCalled();
 
-    // Properties should NOT be removed if rejected, so fallback can consume them
+    // Staging properties must NOT be cleared on rejection — the fallback path owns cleanup
     expect(followupRun.hostWorkspaceStagingDir).toBe("/tmp/steer-staging");
     expect(followupRun.turnAdoptionLifecycle).toBeDefined();
   });
