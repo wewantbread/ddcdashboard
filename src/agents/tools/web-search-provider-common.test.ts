@@ -74,7 +74,7 @@ describe("throwWebSearchApiError credential redaction", () => {
   it("drops truncated error bodies instead of risking a half-redacted credential", async () => {
     const oversized = `${"padding".repeat(12_000)}sk-live-abcdef123456`;
     const err = await throwWebSearchApiError(new Response(oversized, { status: 429 }), "Xai").catch(
-      (error: Error) => error,
+      (error: unknown) => error,
     );
 
     expect(String(err)).not.toContain("sk-live-abcdef123456");
