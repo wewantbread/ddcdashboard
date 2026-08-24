@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  completeFollowupRunLifecycle,
-  type FollowupRun,
-} from "../src/auto-reply/reply/queue/types.ts";
-import { stageSandboxMedia } from "../src/auto-reply/reply/stage-sandbox-media.ts";
+import { completeFollowupRunLifecycle, type FollowupRun } from "../src/auto-reply/reply/queue.js";
+import { stageSandboxMedia } from "../src/auto-reply/reply/stage-sandbox-media.js";
 import {
   createSandboxMediaContexts,
   createSandboxMediaStageConfig,
   withSandboxMediaTempHome,
-} from "../src/auto-reply/stage-sandbox-media.test-harness.ts";
+} from "../src/auto-reply/stage-sandbox-media.test-harness.js";
 
-async function runHostModeStagingCleanupProof() {
+async function runHostModeStagingCleanupProof(): Promise<void> {
   console.log("=== Host-Mode Staging Media Lifecycle Proof ===");
 
   await withSandboxMediaTempHome("host-staging-proof", async (tempHome) => {
@@ -23,7 +20,7 @@ async function runHostModeStagingCleanupProof() {
     const mediaContent = Buffer.from("JPEG_SAMPLE_HOST_MODE_ATTACHMENT_DATA_STREAM");
     await fs.writeFile(sampleFile, mediaContent);
 
-    const mediaUri = `media://inbound/sample.jpg`;
+    const mediaUri = "media://inbound/sample.jpg";
     const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
     const cfg = {
       ...createSandboxMediaStageConfig(tempHome),
@@ -44,7 +41,7 @@ async function runHostModeStagingCleanupProof() {
       workspaceDir,
     });
 
-    const stagingDir = result.hostWorkspaceStagingDir!;
+    const stagingDir = result.hostWorkspaceStagingDir;
     assert.ok(stagingDir, "Staging directory must be defined");
     console.log(
       `[1/4] Media staged to host-mode directory: ${stagingDir.replace(tempHome, "<TMP_HOME>")}`,
@@ -54,22 +51,24 @@ async function runHostModeStagingCleanupProof() {
     const stagedFilePaths = Array.from(result.staged.values());
     assert.equal(stagedFilePaths.length, 1, "Exactly one file should be staged");
     const stagedFilePath = stagedFilePaths[0];
+    assert.ok(stagedFilePath, "Staged file path must exist");
 
     const preStat = await fs.stat(stagedFilePath);
     assert.ok(preStat.isFile(), "Staged media must be a file");
     console.log(
-      `[2/4] Staged media file readable before settlement: exists=true, size=${preStat.size} bytes`,
+      `[2/4] Staged media file readable before settlement: exists=true, size=${String(preStat.size)} bytes`,
     );
 
     // Step 3: Attach staging directory to FollowupRun & simulate settlement / lifecycle completion
     const followupRun: FollowupRun = {
       run: {
         agentId: "main",
-        sessionKey: "proof-session-128454",
+        agentDir: path.join(tempHome, "agent"),
         sessionId: "session-128454",
+        sessionKey: "proof-session-128454",
         workspaceDir,
-        config: cfg as any,
-      },
+        config: cfg as unknown as FollowupRun["run"]["config"],
+      } as unknown as FollowupRun["run"],
       hostWorkspaceStagingDir: stagingDir,
     };
 
@@ -84,13 +83,17 @@ async function runHostModeStagingCleanupProof() {
         .stat(stagingDir)
         .then(() => true)
         .catch(() => false);
-      if (!postExists) break;
-      await new Promise((r) => setTimeout(r, 20));
+      if (!postExists) {
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 20);
+      });
     }
 
     // Step 4: Verify post-settlement directory deletion
     console.log(
-      `[4/4] Host-mode staging directory post-settlement verification: exists=${postExists} (directory successfully cleaned)`,
+      `[4/4] Host-mode staging directory post-settlement verification: exists=${String(postExists)} (directory successfully cleaned)`,
     );
     assert.equal(postExists, false, "Host staging directory must be deleted post-settlement");
   });
@@ -98,7 +101,7 @@ async function runHostModeStagingCleanupProof() {
   console.log("=== Proof Execution Complete: SUCCESS ===");
 }
 
-runHostModeStagingCleanupProof().catch((err) => {
+runHostModeStagingCleanupProof().catch((err: unknown) => {
   console.error("Proof Execution Failed:", err);
   process.exit(1);
 });
