@@ -51,7 +51,11 @@ import { createReplyMediaContext } from "./reply-media-paths.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-agent-turn-state.js";
 import * as replyRunState from "./reply-operation-run-state.js";
-import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
+import {
+  type ReplyOperation,
+  replyRunRegistry,
+  runAfterReplyOperationClear,
+} from "./reply-run-registry.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import {
@@ -208,6 +212,7 @@ export async function runReplyAgent(
         }
       }
     }
+    completeFollowupRunLifecycle(followupRun);
     releaseAdmissionTicket();
     typing.cleanup();
     return undefined;
@@ -260,6 +265,22 @@ export async function runReplyAgent(
   if (messageInjectionDisposition === "accepted") {
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "accepted", mode: "steer" };
+    }
+    if (activeReplyOperation && (followupRun.hostWorkspaceStagingDir || turnAdoptionLifecycle)) {
+      const hostStagingDir = followupRun.hostWorkspaceStagingDir;
+      delete followupRun.hostWorkspaceStagingDir;
+      delete followupRun.turnAdoptionLifecycle;
+      const cleanupAfterSettlement = () => {
+        completeFollowupRunLifecycle({
+          hostWorkspaceStagingDir: hostStagingDir,
+          turnAdoptionLifecycle,
+        });
+      };
+      if (activeReplyOperation.ownerSettlement) {
+        void activeReplyOperation.ownerSettlement.then(cleanupAfterSettlement);
+      } else {
+        runAfterReplyOperationClear(activeReplyOperation, cleanupAfterSettlement);
+      }
     }
     releaseAdmissionTicket();
     typing.cleanup();

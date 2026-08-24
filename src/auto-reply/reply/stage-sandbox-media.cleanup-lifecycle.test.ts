@@ -174,4 +174,70 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       expect(onAbandoned).not.toHaveBeenCalled();
     });
   });
+
+  it("defers staging directory cleanup on pre-accepted message injection until active operation settlement", async () => {
+    await withSandboxMediaTempHome("preaccepted-turn-cleanup-test", async (home) => {
+      const mediaDir = path.join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      const sampleFile = path.join(mediaDir, "sample4.jpg");
+      await fs.writeFile(sampleFile, "preaccepted-turn-media-content");
+
+      const mediaUri = `media://inbound/sample4.jpg`;
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      const cfg = {
+        ...createSandboxMediaStageConfig(home),
+        agents: {
+          defaults: {
+            sandbox: { mode: "off" },
+          },
+        },
+      } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
+      const workspaceDir = path.join(home, "openclaw");
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "session-4",
+        workspaceDir,
+      });
+
+      const stagingDir = result.hostWorkspaceStagingDir!;
+      expect(stagingDir).toBeDefined();
+
+      let resolveSettlement: (() => void) | undefined;
+      const ownerSettlement = new Promise<void>((resolve) => {
+        resolveSettlement = resolve;
+      });
+
+      const followupRun: Partial<FollowupRun> = {
+        hostWorkspaceStagingDir: stagingDir,
+      };
+
+      // Simulate pre-accepted injection transferring staging ownership to ownerSettlement
+      const hostStagingDir = followupRun.hostWorkspaceStagingDir;
+      delete followupRun.hostWorkspaceStagingDir;
+      void ownerSettlement.then(() => {
+        completeFollowupRunLifecycle({ hostWorkspaceStagingDir: hostStagingDir });
+      });
+
+      // Verify directory exists before settlement
+      let exists = await fs
+        .stat(stagingDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(exists).toBe(true);
+
+      // Settle active operation
+      resolveSettlement!();
+      await ownerSettlement;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      exists = await fs
+        .stat(stagingDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(exists).toBe(false);
+    });
+  });
 });
