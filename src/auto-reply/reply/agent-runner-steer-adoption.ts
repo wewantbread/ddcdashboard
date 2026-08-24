@@ -9,6 +9,7 @@ import {
 } from "./agent-runner-core.js";
 import {
   admitFollowupRunLifecycle,
+  completeFollowupRunLifecycle,
   parkSteerCandidate,
   resolveFollowupAbortSignal,
   scheduleFollowupDrain,
@@ -18,6 +19,7 @@ import type { ReplyOperationRunState } from "./reply-operation-run-state.js";
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
+  runAfterReplyOperationClear,
   type ReplyOperation,
   replyRunRegistry,
 } from "./reply-run-registry.js";
@@ -117,6 +119,7 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
   releaseAdmissionTicket();
   const fallback = async (reason?: string): Promise<"handled"> => {
     parked.fallback();
+    params.opts?.onHostStagingDelegated?.();
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "accepted", mode: "followup" };
     }
@@ -163,6 +166,9 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
         ? { userTurnTranscriptRecorder: followupRun.userTurnTranscriptRecorder }
         : {}),
     });
+    const hostStagingDir = followupRun.hostWorkspaceStagingDir;
+    const turnAdoptionLifecycle = followupRun.turnAdoptionLifecycle;
+
     const finalization = await finalizeReplyMessageInjectionAttempt({
       attempt: injectionAttempt,
       target: injectionTarget,
@@ -175,10 +181,30 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
       onAdopted: () => admitFollowupRunLifecycle(followupRun),
       shouldAbortOnAdoptionError: isIngressAdoptionLostError,
     });
+
     if (finalization.status === "rejected") {
       return await fallback(finalization.outcome.reason);
     }
+
+    if (activeReplyOperation && (hostStagingDir || turnAdoptionLifecycle)) {
+      delete followupRun.hostWorkspaceStagingDir;
+      delete followupRun.turnAdoptionLifecycle;
+      const cleanupAfterSettlement = () => {
+        completeFollowupRunLifecycle({
+          hostWorkspaceStagingDir: hostStagingDir,
+          turnAdoptionLifecycle,
+        });
+      };
+      if (activeReplyOperation.ownerSettlement) {
+        void activeReplyOperation.ownerSettlement.then(cleanupAfterSettlement);
+      } else {
+        runAfterReplyOperationClear(activeReplyOperation, cleanupAfterSettlement);
+      }
+    }
+
     parked.consume();
+    params.opts?.onHostStagingDelegated?.();
+
     const transcriptCommitUnconfirmed =
       finalization.outcome.result?.transcriptCommit === "unconfirmed";
     if (finalization.aborted) {
@@ -212,6 +238,7 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
       parked.consume();
     } else {
       parked.fallback();
+      params.opts?.onHostStagingDelegated?.();
     }
     throw error;
   } finally {
@@ -220,6 +247,7 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
         parked.consume();
       } else {
         parked.fallback();
+        params.opts?.onHostStagingDelegated?.();
       }
     }
   }
