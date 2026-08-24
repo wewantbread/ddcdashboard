@@ -1188,10 +1188,9 @@ sessionId})`; create, branch, continue, list, and fork flows live in their
   stay temp materializations because channel delivery still needs a file path;
   their expiry metadata is SQLite-owned without JSON sidecars.
 - Canvas managed documents now use shared SQLite `plugin_blob_entries` instead
-  of a default `state/canvas/documents` directory. The Canvas host serves those
-  blobs directly; local files are created only for explicit `host.root`
-  operator content or temporary materialization when a downstream media reader
-  requires a path.
+  of a default `state/canvas/documents` directory. The hosted document route
+  serves those blobs directly; local files are created only for temporary
+  materialization when a downstream media reader requires a path.
 - File Transfer audit decisions now use shared SQLite `plugin_state_entries`
   instead of the unbounded `audit/file-transfer.jsonl` runtime log. Doctor
   imports the legacy JSONL audit file into plugin state and removes the source
@@ -1440,9 +1439,8 @@ create` validates the written archive by default; `--no-verify` is the
 - The bundled session-memory hook now resolves previous-session context from
   SQLite by `{agentId, sessionId}`. It no longer scans, stores, or synthesizes
   transcript paths or `workspace/sessions` directories.
-- The bundled command-logger hook now writes command audit rows to the shared
-  SQLite `command_log_entries` table instead of appending
-  `logs/commands.log`.
+- The bundled command-logger hook remains a named log artifact. It writes only
+  `logs/commands.log`; it does not write command audit rows to SQLite.
 - Channel pairing allowlists now expose only SQLite-backed read/write helpers at
   runtime. The deprecated plugin SDK path resolver remains for migration
   compatibility; file readers live only in doctor state migration code.
@@ -1479,8 +1477,8 @@ create` validates the written archive by default; `--no-verify` is the
   runtime `cache/*.json` stores, generic
   `thread-bindings.json` sidecars, cron state/run-log JSON, config health JSON,
   restart and lock sidecars, Voice Wake settings, plugin binding approvals,
-  installed plugin index JSON, File Transfer audit JSONL, Memory Wiki activity
-  logs and the old bundled `command-logger` text log. It also bans old
+  installed plugin index JSON, File Transfer audit JSONL, and Memory Wiki
+  activity logs. It also bans old
   root-level doctor legacy module names so
   compatibility code stays under `src/commands/doctor/`. Android debug handlers
   also use logcat/in-memory output instead of staging `camera_debug.log` or
@@ -2291,7 +2289,6 @@ Add a repo check that fails new runtime writes to legacy state paths:
 - `gateway.<hash>.lock`
 - `qmd/embed.lock.lock`
 - `agents/<agentId>/qmd-write.lock.lock`
-- `commands.log`
 - `config-health.json`
 - `port-guard.json`
 - `settings/voicewake.json`

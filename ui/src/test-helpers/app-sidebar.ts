@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import type {
+  PreservedSessionWorktree,
   SessionCatalogPullRequestSummary,
   SessionsCatalogListResult,
   SessionsPatchManyParams,
@@ -252,7 +253,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     Promise.resolve({
       deleted: [] as string[],
       errors: [] as string[],
-      preservedWorktrees: [] as Array<{ id: string; branch: string; path: string }>,
+      preservedWorktrees: [] as PreservedSessionWorktree[],
     }),
   );
   const refresh = vi.fn((_options?: Parameters<SessionCapability["refresh"]>[0]) =>
@@ -568,7 +569,7 @@ export const manyAgents = (count: number) =>
   }) as AgentsListResult;
 
 export const catalogPage = (
-  sessions: Array<{ threadId: string; name: string }>,
+  sessions: Array<{ threadId: string; name: string; sessionKey?: string }>,
   nextCursor?: string,
   catalogId = "codex",
 ): SessionsCatalogListResult => ({

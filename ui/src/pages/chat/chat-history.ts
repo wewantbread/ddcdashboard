@@ -121,6 +121,10 @@ function getChatHistoryPaneRequests(owner: object): ChatHistoryPaneRequests {
   return requests;
 }
 
+export function retireChatBranchRequests(state: ChatState): void {
+  getChatHistoryPaneRequests(state).branchVersion += 1;
+}
+
 type ChatHistoryRequestOwnership = {
   version: number;
   client: GatewayBrowserClient;
@@ -273,6 +277,7 @@ type ChatSessionMessageSubscriptionState = ChatState & {
 };
 
 export type ChatHistoryResult = {
+  sourceCanonicalListRevision?: number;
   deltaCursor?: string;
   messages?: Array<unknown>;
   offset?: number;
@@ -285,7 +290,6 @@ export type ChatHistoryResult = {
   verboseLevel?: string;
   defaults?: GatewaySessionsDefaults;
   sessionInfo?: GatewaySessionRow;
-  agentsList?: AgentsListResult;
   metadata?: ChatMetadataResult;
   inFlightRun?: {
     runId: string;
@@ -308,7 +312,6 @@ type ChatHistoryDeltaResult = {
   messages: unknown[];
   deltaCursor: string;
   sessionInfo: GatewaySessionRow;
-  agentsList?: AgentsListResult;
   metadata?: ChatMetadataResult;
 };
 
@@ -790,9 +793,13 @@ type LoadChatHistoryOptions = {
   startup?: boolean;
 };
 
+type SharedChatHistoryResponse = ChatHistoryResponse & {
+  sourceCanonicalListRevision?: number;
+};
+
 type SharedChatHistoryRequest = {
   consumers: Set<SharedChatHistoryConsumer>;
-  promise: Promise<ChatHistoryResponse>;
+  promise: Promise<SharedChatHistoryResponse>;
 };
 
 type SharedChatHistoryRegistry = {
@@ -871,7 +878,8 @@ function requestSharedChatHistory(
   consumerOwner: object,
   isCurrentConsumer: () => boolean,
   cursor?: string,
-): Promise<ChatHistoryResponse> {
+  sourceCanonicalListRevision?: number,
+): Promise<SharedChatHistoryResponse> {
   let registry = sharedChatHistoryRequests.get(client);
   if (!registry) {
     registry = {
@@ -902,11 +910,13 @@ function requestSharedChatHistory(
       shouldContinue,
       shouldRetry,
       cursor,
-    ).finally(() => {
-      if (requests?.get(requestKey)?.promise === promise) {
-        requests.delete(requestKey);
-      }
-    });
+    )
+      .then((response) => ({ ...response, sourceCanonicalListRevision }))
+      .finally(() => {
+        if (requests?.get(requestKey)?.promise === promise) {
+          requests.delete(requestKey);
+        }
+      });
     shared = { consumers, promise };
     requests.set(requestKey, shared);
   } else {
@@ -1443,9 +1453,6 @@ export function applyChatAgentsList(
   if (!agentsList || state.client !== client || !state.connected) {
     return;
   }
-  if (state.onAgentsList && !state.onAgentsList(agentsList, client)) {
-    return;
-  }
   state.agentsList = agentsList;
   state.agentsError = null;
   const selectedId =
@@ -1513,6 +1520,7 @@ async function loadChatHistoryUncached(
       state,
       () => shouldApplyChatHistoryResult(state, ownership),
       deltaCursor,
+      state.sessions?.canonicalListRevision,
     );
     if (!shouldApplyChatHistoryResult(state, ownership)) {
       recordChatHistoryTiming(state, "stale", startedAtMs, {
@@ -1534,6 +1542,8 @@ async function loadChatHistoryUncached(
         requestAgentId,
         state,
         () => shouldApplyChatHistoryResult(state, ownership),
+        undefined,
+        state.sessions?.canonicalListRevision,
       );
       if (!shouldApplyChatHistoryResult(state, ownership)) {
         recordChatHistoryTiming(state, "stale", startedAtMs, {
@@ -1550,7 +1560,6 @@ async function loadChatHistoryUncached(
       for (const payload of response.messages) {
         applySessionMessagePayload(state, payload, runActive, { kind: "history-delta" });
       }
-      applyChatAgentsList(state, response.agentsList, client);
       if (Object.hasOwn(response.sessionInfo, "activeLeafEntryId")) {
         state.chatDisplayedLeafEntryId = response.sessionInfo.activeLeafEntryId?.trim() || null;
       }
@@ -1571,8 +1580,8 @@ async function loadChatHistoryUncached(
         messages: state.chatMessages,
         deltaCursor: response.deltaCursor,
         sessionInfo: response.sessionInfo,
-        ...(response.agentsList ? { agentsList: response.agentsList } : {}),
         ...(response.metadata ? { metadata: response.metadata } : {}),
+        sourceCanonicalListRevision: response.sourceCanonicalListRevision,
       };
     }
     if (isChatHistoryCursorResult(response)) {
@@ -1592,7 +1601,6 @@ async function loadChatHistoryUncached(
     const messages = Array.isArray(res.messages) ? res.messages : [];
     const nextPagination = resolveChatHistoryPagination(res);
     const nextSessionId = resolveChatHistorySessionId(res);
-    applyChatAgentsList(state, res.agentsList, client);
     const visibleMessages = visibleChatHistoryMessages(messages);
     const previousTerminalMessages = reconcileAuthoritativeTerminalHistory({
       host: state,

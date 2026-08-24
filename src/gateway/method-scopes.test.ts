@@ -146,6 +146,9 @@ describe("method scope resolution", () => {
     ["secrets.store.delete", ["operator.admin"]],
     ["tools.github.status", ["operator.read"]],
     ["tools.github.configure", ["operator.admin"]],
+    ["tools.github.authorize.start", ["operator.admin"]],
+    ["tools.github.authorize.poll", ["operator.admin"]],
+    ["tools.github.authorize.cancel", ["operator.admin"]],
     ["config.schema", ["operator.read"]],
     ["config.patch", ["operator.admin"]],
     ["nativeHook.invoke", ["operator.admin"]],
@@ -452,6 +455,17 @@ describe("method scope resolution", () => {
         key: "agent:main:thread",
         expected: { generation: 1, environmentId: "environment-1", ownerEpoch: 1 },
         target: { kind: "gateway" },
+      },
+      "operator.write",
+    ],
+    [
+      "Gateway abandonment",
+      "sessions.move",
+      {
+        key: "agent:main:thread",
+        expected: { generation: 1, environmentId: "environment-1", ownerEpoch: 1 },
+        target: { kind: "gateway" },
+        abandonSource: true,
       },
       "operator.write",
     ],
@@ -914,11 +928,12 @@ describe("operator scope authorization", () => {
   });
 
   it.each([
+    "users.setRole",
     "exec.approvals.get",
     "exec.approvals.set",
     "exec.approvals.node.get",
     "exec.approvals.node.set",
-  ])("requires admin scope for exec approval policy method %s", (method) => {
+  ])("requires admin scope for sensitive policy method %s", (method) => {
     expect(authorizeOperatorScopesForMethod(method, ["operator.approvals"])).toEqual({
       allowed: false,
       missingScope: "operator.admin",

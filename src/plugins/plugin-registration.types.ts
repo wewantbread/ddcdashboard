@@ -226,6 +226,7 @@ type OpenClawPluginNodeInvokePolicyApprovalRuntime = {
     toolCallId?: string;
     agentId?: string;
     sessionKey?: string;
+    allowedDecisions?: readonly OpenClawPluginNodeInvokeApprovalDecision[];
     timeoutMs?: number;
   }) => Promise<{
     id?: string;
@@ -326,7 +327,6 @@ export type OpenClawGatewayDiscoveryAdvertiseContext = {
   gatewayTlsEnabled: boolean;
   gatewayTlsFingerprintSha256?: string;
   gatewayDirectReachable: boolean;
-  canvasPort?: number;
   tailnetDns?: string;
   sshPort?: number;
   cliPath?: string;

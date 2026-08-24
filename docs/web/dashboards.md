@@ -73,10 +73,15 @@ never needs the agent.
   bottom — pick the side from the small arrow on the header switch — and
   resizes like the sidebar. Choose Dashboard to hide the chat entirely; the
   agent still hears you when you bring it back.
-- **Agent parity.** Everything you can do, the agent can do with its
-  `dashboard` tool: add, update, move, resize, and remove widgets, manage
-  tabs, switch the visible tab, and move or hide the chat dock. Ask "put the
-  chat on the left and show the finance tab" and watch it happen.
+- **Agent parity.** The agent's `dashboard` tool creates or updates trusted
+  plugin widgets, moves, resizes, and removes widgets, manages tabs, switches
+  the visible tab, and moves or hides the chat dock. The `show_widget` tool
+  creates or refreshes custom HTML and registered-source widgets; updating an
+  existing widget uses `pin: true`, the same `name`, and new `widget_code`.
+  Board snapshots identify each widget's `contentOwner` and, when applicable,
+  `registeredContentKind`; remove a widget before replacing its content owner
+  or registered source kind.
+  Ask "put the chat on the left and show the finance tab" and watch it happen.
 
   Switching the visible tab or chat dock requires a connected Control UI. If
   none is connected, the command returns `UNAVAILABLE`; open the Control UI and retry.
@@ -121,8 +126,9 @@ one-tap, revision-bound approval as everything else.
 When the Canvas plugin is enabled, agents can render A2UI JSONL as a dashboard
 widget. A2UI widgets use the same stable name, tab, size, pinning, sandbox, and
 update-in-place behavior as HTML widgets. The renderer is loaded from the
-Gateway's capability-scoped A2UI asset route; the renderer bundle is not copied
-into each widget, and the Canvas file host does not need to be enabled.
+Gateway's `/__openclaw__/a2ui/` asset route, so the renderer bundle is not
+copied into each widget. The Canvas plugin and its hosted routes must be
+enabled; both are enabled by default.
 
 A2UI actions use the normal widget bridge. By default, clicks become quiet
 session notices that the agent sees on its next turn. If the widget declares
