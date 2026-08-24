@@ -18,6 +18,7 @@ type RuntimeWebProviderMetadata = {
   providerConfigured?: string;
   providerSource?: "configured" | "auto-detect" | "none";
   selectedProvider?: string;
+  selectedProviderKeySource?: string;
 };
 
 type ProviderWithCredential = {
@@ -247,12 +248,12 @@ export function resolveWebProviderDefinition<
   // non-configured runtime selection transfers metadata ownership to the auto-detected fallback.
   const runtimeMetadata =
     didFallbackFromUnavailableRuntimeProvider && params.runtimeMetadata
-      ? ({
-          ...params.runtimeMetadata,
-          selectedProvider: provider.id,
-          selectedProviderKeySource: undefined,
-        } as TRuntimeMetadata)
+      ? { ...params.runtimeMetadata }
       : params.runtimeMetadata;
+  if (didFallbackFromUnavailableRuntimeProvider && runtimeMetadata) {
+    runtimeMetadata.selectedProvider = provider.id;
+    runtimeMetadata.selectedProviderKeySource = undefined;
+  }
   const definition = params.createTool({
     provider,
     config: params.config,
