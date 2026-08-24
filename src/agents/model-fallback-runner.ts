@@ -62,7 +62,7 @@ import {
 } from "./model-fallback-attempt.js";
 import { resolveModelCandidateChain } from "./model-fallback-candidates.js";
 import {
-  markProbeAttempt,
+  markProbeReservation,
   releaseProbeAttempt,
   resolveCooldownDecision,
   resolveProbeThrottleKey,
@@ -269,7 +269,7 @@ async function runWithModelFallbackInternal<T>(
     const candidateRef = { provider: candidate.provider, model: candidate.model };
     // Probe reservation taken for this candidate, if any. Kept at iteration
     // scope so a post-attempt coordination abort can release the slot.
-    let probeReservation: { throttleKey: string; markedAt: number } | undefined;
+    let probeReservation: { throttleKey: string; token: number } | undefined;
     const nextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
       currentIndex: i,
@@ -468,8 +468,7 @@ async function runWithModelFallbackInternal<T>(
         }
 
         if (decision.markProbe) {
-          const markedAt = markProbeAttempt(now, probeThrottleKey);
-          probeReservation = { throttleKey: probeThrottleKey, markedAt };
+          probeReservation = markProbeReservation(now, probeThrottleKey);
         }
         if (shouldAllowCooldownProbeForReason(decision.reason)) {
           // Probe at most once per provider per fallback run when all profiles
@@ -529,7 +528,7 @@ async function runWithModelFallbackInternal<T>(
       // recovery-probe slot (timestamp identity guards against clearing a
       // newer reservation) before rethrowing.
       if (probeReservation && isNonProviderRuntimeCoordinationError(error)) {
-        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.markedAt);
+        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.token);
       }
       throw error;
     }
@@ -633,7 +632,7 @@ async function runWithModelFallbackInternal<T>(
       // (timestamp identity guards against clearing a newer reservation) so
       // the next turn can still probe instead of waiting out the throttle.
       if (probeReservation) {
-        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.markedAt);
+        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.token);
       }
       throw err;
     }

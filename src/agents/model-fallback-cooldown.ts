@@ -7,7 +7,7 @@ import type { FailoverReason } from "./failover/signal.js";
 import type { ModelFallbackAuthRuntime } from "./model-fallback-attempt.js";
 import type { ModelCandidate } from "./model-fallback.types.js";
 
-const lastProbeAttempt = new Map<string, number>();
+const lastProbeAttempt = new Map<string, { ts: number; token: number }>();
 const MIN_PROBE_INTERVAL_MS = 30_000; // 30 seconds between probes per key
 const PROBE_MARGIN_MS = 2 * 60 * 1000;
 const PROBE_SCOPE_DELIMITER = "::";
@@ -20,8 +20,8 @@ export function resolveProbeThrottleKey(provider: string, agentDir?: string): st
 }
 
 function pruneProbeState(now: number): void {
-  for (const [key, ts] of lastProbeAttempt) {
-    if (!Number.isFinite(ts) || ts <= 0 || now - ts > PROBE_STATE_TTL_MS) {
+  for (const [key, entry] of lastProbeAttempt) {
+    if (!Number.isFinite(entry.ts) || entry.ts <= 0 || now - entry.ts > PROBE_STATE_TTL_MS) {
       lastProbeAttempt.delete(key);
     }
   }
@@ -31,10 +31,10 @@ function enforceProbeStateCap(): void {
   while (lastProbeAttempt.size > MAX_PROBE_KEYS) {
     let oldestKey: string | null = null;
     let oldestTs = Number.POSITIVE_INFINITY;
-    for (const [key, ts] of lastProbeAttempt) {
-      if (ts < oldestTs) {
+    for (const [key, entry] of lastProbeAttempt) {
+      if (entry.ts < oldestTs) {
         oldestKey = key;
-        oldestTs = ts;
+        oldestTs = entry.ts;
       }
     }
     if (!oldestKey) {
@@ -46,26 +46,40 @@ function enforceProbeStateCap(): void {
 
 function isProbeThrottleOpen(now: number, throttleKey: string): boolean {
   pruneProbeState(now);
-  const lastProbe = lastProbeAttempt.get(throttleKey) ?? 0;
+  const lastProbe = lastProbeAttempt.get(throttleKey)?.ts ?? 0;
   return now - lastProbe >= MIN_PROBE_INTERVAL_MS;
 }
 
-/** Marks the probe throttle and returns the reservation timestamp. */
+let probeReservationSeq = 0;
+
+/** Marks the probe throttle and returns a collision-safe reservation token. */
 export function markProbeAttempt(now: number, throttleKey: string): number {
   pruneProbeState(now);
-  lastProbeAttempt.set(throttleKey, now);
+  // A monotonic token (not the timestamp) is the release identity: two probes
+  // for the same key can share one millisecond, and an older abort must never
+  // erase the newer reservation.
+  const token = ++probeReservationSeq;
+  lastProbeAttempt.set(throttleKey, { ts: now, token });
   enforceProbeStateCap();
-  return now;
+  return token;
+}
+
+/** Marks the throttle and returns the full release handle for one candidate attempt. */
+export function markProbeReservation(
+  now: number,
+  throttleKey: string,
+): { throttleKey: string; token: number } {
+  return { throttleKey, token: markProbeAttempt(now, throttleKey) };
 }
 
 /**
  * Releases a probe reservation after a local coordination abort so a failure
  * that never reached the provider does not burn the 30s recovery-probe window.
- * Timestamp identity keeps an older release from clearing a newer reservation
- * for the same key.
+ * Token identity keeps an older release from clearing a newer reservation for
+ * the same key, even when both share a timestamp.
  */
-export function releaseProbeAttempt(throttleKey: string, markedAt: number): void {
-  if (lastProbeAttempt.get(throttleKey) === markedAt) {
+export function releaseProbeAttempt(throttleKey: string, token: number): void {
+  if (lastProbeAttempt.get(throttleKey)?.token === token) {
     lastProbeAttempt.delete(throttleKey);
   }
 }
