@@ -69,6 +69,8 @@ async function runHostModeStagingCleanupProof(): Promise<void> {
         workspaceDir,
         config: cfg as unknown as FollowupRun["run"]["config"],
       } as unknown as FollowupRun["run"],
+      prompt: "proof-prompt",
+      enqueuedAt: Date.now(),
       hostWorkspaceStagingDir: stagingDir,
     };
 

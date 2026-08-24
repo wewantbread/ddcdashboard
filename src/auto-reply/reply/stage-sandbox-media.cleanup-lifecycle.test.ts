@@ -223,7 +223,7 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       });
 
       // Verify directory exists before settlement
-      let exists = await fs
+      const exists = await fs
         .stat(stagingDir)
         .then(() => true)
         .catch(() => false);
