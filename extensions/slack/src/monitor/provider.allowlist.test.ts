@@ -1,6 +1,7 @@
 // Slack tests cover provider.allowlist plugin behavior.
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract";
+import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   flush,
@@ -27,6 +28,9 @@ function createRuntimeContextCapture(): {
   const register = vi.fn(() => ({ dispose: vi.fn() }));
   return {
     channelRuntime: {
+      inbound: {
+        buildContext: buildChannelInboundEventContext,
+      },
       runtimeContexts: {
         register,
         get: vi.fn(),
@@ -109,7 +113,6 @@ describe("slack startup user allowlist resolution", () => {
           enabled: true,
           botToken: "xoxb-test",
           appToken: "xapp-1-A123-test",
-          enterpriseOrgInstall: true,
           dmPolicy: "disabled",
           groupPolicy: "open",
           execApprovals: {
@@ -121,6 +124,8 @@ describe("slack startup user allowlist resolution", () => {
       },
     });
     getSlackClient().auth.test.mockResolvedValueOnce({
+      user_id: "UENTERPRISE",
+      bot_id: "BENTERPRISE",
       enterprise_id: "E123",
       app_id: "A123",
       is_enterprise_install: true,

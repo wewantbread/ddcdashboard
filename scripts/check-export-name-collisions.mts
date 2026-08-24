@@ -3,13 +3,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
-import { z } from "zod";
 import { resolveRepoRoot } from "./lib/repo-root.mjs";
 import {
   collectTypeScriptFilesFromRoots,
   isTestLikeTypeScriptFile,
   resolveSourceRoots,
   runAsScript,
+  toLine,
   unwrapExpression,
 } from "./lib/ts-guard-utils.mts";
 
@@ -19,29 +19,43 @@ export type ExportNameCollision = {
   sdk?: true;
 };
 
-type SourceModule = {
+export type SourceModule = {
   content: string;
   includeDefinitions?: boolean;
   path: string;
 };
 
-type ModuleExports = {
-  definitions: Set<string>;
-  exportedNames: Set<string>;
-  starExportSpecifiers: string[];
+export type ImportedSymbolReference = {
+  importedName: string;
+  localName: string;
+  moduleSpecifier: string;
 };
 
-const exportNameCollisionSchema = z
-  .object({
-    name: z.string(),
-    files: z.array(z.string()),
-    sdk: z.literal(true).optional(),
-  })
-  .strict();
-const exportNameCollisionBaselineSchema = z.array(exportNameCollisionSchema);
+export type NamedReExport = {
+  exportedName: string;
+  importedName: string;
+  moduleSpecifier: string;
+};
 
-const baselineRelativePath = "scripts/lib/export-name-collision-baseline.json";
-const baselineRegenCommand = "pnpm lint:tmp:export-name-collisions:gen";
+export type AliasingReExport = NamedReExport & {
+  line: number;
+  path: string;
+};
+
+export type ExportedValueDefinition = {
+  importedReferences: ImportedSymbolReference[];
+  name: string;
+};
+
+export type ModuleExports = {
+  aliasingReExports: Array<Omit<AliasingReExport, "path">>;
+  definitions: Set<string>;
+  exportedNames: Set<string>;
+  namedReExports: NamedReExport[];
+  starExportSpecifiers: string[];
+  valueDefinitions: Map<string, ExportedValueDefinition>;
+};
+
 const failurePrefix = "check-export-name-collisions";
 const extraExcludedFileSuffixes = [".test-support.ts", ".test-helpers.ts", ".d.ts"];
 
@@ -73,6 +87,72 @@ function collectBindingNames(name: ts.BindingName, names: Set<string>) {
       collectBindingNames(element.name, names);
     }
   }
+}
+
+function resolveImportedReference(
+  expression: ts.Expression,
+  importedSymbolsByLocalName: ReadonlyMap<string, ImportedSymbolReference>,
+  namespaceImportsByLocalName: ReadonlyMap<string, string>,
+) {
+  const target = unwrapExpression(expression);
+  if (ts.isIdentifier(target)) {
+    return importedSymbolsByLocalName.get(target.text);
+  }
+  if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) {
+    return undefined;
+  }
+  const namespaceName = ts.isPropertyAccessExpression(target)
+    ? target.name.text
+    : ts.isElementAccessExpression(target) &&
+        target.argumentExpression &&
+        ts.isStringLiteral(target.argumentExpression)
+      ? target.argumentExpression.text
+      : null;
+  if (!namespaceName || !ts.isIdentifier(target.expression)) {
+    return undefined;
+  }
+  const moduleSpecifier = namespaceImportsByLocalName.get(target.expression.text);
+  return moduleSpecifier
+    ? {
+        importedName: namespaceName,
+        localName: `${target.expression.text}.${namespaceName}`,
+        moduleSpecifier,
+      }
+    : undefined;
+}
+
+function collectImportedReferences(
+  node: ts.Node,
+  importedSymbolsByLocalName: ReadonlyMap<string, ImportedSymbolReference>,
+  namespaceImportsByLocalName: ReadonlyMap<string, string>,
+) {
+  const references = new Map<string, ImportedSymbolReference>();
+  const addReference = (reference: ImportedSymbolReference | undefined) => {
+    if (reference) {
+      references.set(
+        `${reference.moduleSpecifier}\0${reference.importedName}\0${reference.localName}`,
+        reference,
+      );
+    }
+  };
+  const visit = (current: ts.Node): void => {
+    if (ts.isCallExpression(current)) {
+      addReference(
+        resolveImportedReference(
+          current.expression,
+          importedSymbolsByLocalName,
+          namespaceImportsByLocalName,
+        ),
+      );
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return [...references.values()].toSorted((left, right) =>
+    `${left.moduleSpecifier}\0${left.importedName}\0${left.localName}`.localeCompare(
+      `${right.moduleSpecifier}\0${right.importedName}\0${right.localName}`,
+    ),
+  );
 }
 
 function parametersAreForwarded(
@@ -238,11 +318,16 @@ function isForwardingOnlyConst(
 export function collectModuleExportNames(content: string, fileName = "source.ts"): ModuleExports {
   const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true);
   const importedNamesByLocalName = new Map<string, string>();
+  const importedSymbolsByLocalName = new Map<string, ImportedSymbolReference>();
+  const namespaceImportsByLocalName = new Map<string, string>();
   const localConstDeclarations = new Map<string, ts.VariableDeclaration[]>();
   const localFunctions = new Map<string, ts.FunctionDeclaration[]>();
   const directlyExportedNames = new Set<string>();
   const locallyExportedNames = new Set<string>();
   const exportedNames = new Set<string>();
+  const aliasingReExports: Array<Omit<AliasingReExport, "path">> = [];
+  const namedReExports: NamedReExport[] = [];
+  const pendingLocalReExports: Array<{ exportedName: string; localName: string }> = [];
   const starExportSpecifiers: string[] = [];
 
   for (const statement of sourceFile.statements) {
@@ -251,13 +336,40 @@ export function collectModuleExportNames(content: string, fileName = "source.ts"
       if (bindings && ts.isNamedImports(bindings)) {
         for (const specifier of bindings.elements) {
           if (!statement.importClause?.isTypeOnly && !specifier.isTypeOnly) {
-            importedNamesByLocalName.set(
-              specifier.name.text,
-              specifier.propertyName?.text ?? specifier.name.text,
-            );
+            const importedName = specifier.propertyName?.text ?? specifier.name.text;
+            const moduleSpecifier = ts.isStringLiteral(statement.moduleSpecifier)
+              ? statement.moduleSpecifier.text
+              : "";
+            importedNamesByLocalName.set(specifier.name.text, importedName);
+            importedSymbolsByLocalName.set(specifier.name.text, {
+              importedName,
+              localName: specifier.name.text,
+              moduleSpecifier,
+            });
           }
         }
+      } else if (
+        bindings &&
+        ts.isNamespaceImport(bindings) &&
+        !statement.importClause?.isTypeOnly &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        namespaceImportsByLocalName.set(bindings.name.text, statement.moduleSpecifier.text);
       }
+      continue;
+    }
+
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteral(statement.moduleReference.expression)
+    ) {
+      namespaceImportsByLocalName.set(
+        statement.name.text,
+        statement.moduleReference.expression.text,
+      );
       continue;
     }
 
@@ -325,7 +437,19 @@ export function collectModuleExportNames(content: string, fileName = "source.ts"
           continue;
         }
         const localName = specifier.propertyName?.text ?? specifier.name.text;
-        // Renamed re-exports are deliberately outside this guard's first slice.
+        if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+          const reExport = {
+            exportedName: specifier.name.text,
+            importedName: localName,
+            moduleSpecifier: statement.moduleSpecifier.text,
+          };
+          namedReExports.push(reExport);
+          if (reExport.exportedName !== reExport.importedName) {
+            aliasingReExports.push({ ...reExport, line: toLine(sourceFile, specifier) });
+          }
+        } else if (!statement.moduleSpecifier) {
+          pendingLocalReExports.push({ exportedName: specifier.name.text, localName });
+        }
         if (specifier.name.text !== localName) {
           continue;
         }
@@ -337,11 +461,51 @@ export function collectModuleExportNames(content: string, fileName = "source.ts"
     }
   }
 
+  for (const reExport of pendingLocalReExports) {
+    const imported = importedSymbolsByLocalName.get(reExport.localName);
+    if (imported) {
+      namedReExports.push({
+        exportedName: reExport.exportedName,
+        importedName: imported.importedName,
+        moduleSpecifier: imported.moduleSpecifier,
+      });
+    }
+  }
+
   const definitions = new Set<string>();
+  const valueDefinitions = new Map<string, ExportedValueDefinition>();
   for (const name of new Set([...directlyExportedNames, ...locallyExportedNames])) {
     const constDeclarations = localConstDeclarations.get(name);
     if (constDeclarations) {
       const [constDeclaration] = constDeclarations;
+      if (constDeclarations.length === 1 && constDeclaration) {
+        const importedReferences = collectImportedReferences(
+          constDeclaration,
+          importedSymbolsByLocalName,
+          namespaceImportsByLocalName,
+        );
+        const initializer = constDeclaration.initializer
+          ? unwrapExpression(constDeclaration.initializer)
+          : undefined;
+        if (initializer) {
+          const aliasSource = resolveImportedReference(
+            initializer,
+            importedSymbolsByLocalName,
+            namespaceImportsByLocalName,
+          );
+          if (aliasSource) {
+            importedReferences.push(aliasSource);
+          }
+        }
+        valueDefinitions.set(name, {
+          importedReferences: importedReferences.toSorted((left, right) =>
+            `${left.moduleSpecifier}\0${left.importedName}\0${left.localName}`.localeCompare(
+              `${right.moduleSpecifier}\0${right.importedName}\0${right.localName}`,
+            ),
+          ),
+          name,
+        });
+      }
       if (
         constDeclarations.length === 1 &&
         constDeclaration &&
@@ -357,6 +521,16 @@ export function collectModuleExportNames(content: string, fileName = "source.ts"
       continue;
     }
     const implementation = functionDeclarations.find((declaration) => declaration.body);
+    if (implementation?.body) {
+      valueDefinitions.set(name, {
+        importedReferences: collectImportedReferences(
+          implementation.body,
+          importedSymbolsByLocalName,
+          namespaceImportsByLocalName,
+        ),
+        name,
+      });
+    }
     // Lazy runtime facades are mandated by AGENTS.md. Exempt only exact same-name
     // argument forwarding so those boundaries do not become duplicate behavior.
     if (
@@ -368,10 +542,21 @@ export function collectModuleExportNames(content: string, fileName = "source.ts"
     definitions.add(name);
   }
 
-  return { definitions, exportedNames, starExportSpecifiers };
+  return {
+    aliasingReExports,
+    definitions,
+    exportedNames,
+    namedReExports: namedReExports.toSorted((left, right) =>
+      `${left.exportedName}\0${left.importedName}\0${left.moduleSpecifier}`.localeCompare(
+        `${right.exportedName}\0${right.importedName}\0${right.moduleSpecifier}`,
+      ),
+    ),
+    starExportSpecifiers,
+    valueDefinitions,
+  };
 }
 
-function resolveStarExportPath(
+export function resolveExportModulePath(
   sourcePath: string,
   specifier: string,
   modulesByPath: ReadonlyMap<string, ModuleExports>,
@@ -411,7 +596,7 @@ function collectTransitiveExportNames(
   const nextVisiting = new Set(visiting).add(modulePath);
   const names = new Set(moduleExports.exportedNames);
   for (const specifier of moduleExports.starExportSpecifiers) {
-    const targetPath = resolveStarExportPath(modulePath, specifier, modulesByPath);
+    const targetPath = resolveExportModulePath(modulePath, specifier, modulesByPath);
     if (!targetPath) {
       continue;
     }
@@ -427,8 +612,8 @@ function collectTransitiveExportNames(
 // exact module. Flagging them would push burn-down work to "fix" a deliberate idiom.
 const intentionalSameNameFamilies = new Set(["testing", "testApi"]);
 
-/** Finds duplicate exported function/const definitions across source modules. */
-export function findExportNameCollisions(modules: SourceModule[]): ExportNameCollision[] {
+function analyzeExportNames(modules: SourceModule[]) {
+  const aliasingReExports: AliasingReExport[] = [];
   const filesByName = new Map<string, Set<string>>();
   const sdkExportNames = new Set<string>();
   const modulesByPath = new Map<string, ModuleExports>();
@@ -438,6 +623,14 @@ export function findExportNameCollisions(modules: SourceModule[]): ExportNameCol
     const relativePath = normalizeRelativePath(sourceModule.path);
     const moduleExports = collectModuleExportNames(sourceModule.content, relativePath);
     modulesByPath.set(relativePath, moduleExports);
+    if (sourceModule.includeDefinitions !== false && !relativePath.startsWith("src/plugin-sdk/")) {
+      aliasingReExports.push(
+        ...moduleExports.aliasingReExports.map((reExport) => ({
+          ...reExport,
+          path: relativePath,
+        })),
+      );
+    }
     if (sourceModule.includeDefinitions !== false) {
       for (const name of moduleExports.definitions) {
         const files = filesByName.get(name) ?? new Set<string>();
@@ -469,55 +662,28 @@ export function findExportNameCollisions(modules: SourceModule[]): ExportNameCol
     }
     collisions.push(collision);
   }
-  return collisions.toSorted((left, right) => left.name.localeCompare(right.name));
+  return {
+    aliasingReExports: aliasingReExports.toSorted(
+      (left, right) =>
+        left.path.localeCompare(right.path) ||
+        left.line - right.line ||
+        left.exportedName.localeCompare(right.exportedName),
+    ),
+    collisions: collisions.toSorted((left, right) => left.name.localeCompare(right.name)),
+  };
 }
 
-type CollisionChange = {
-  baseline?: ExportNameCollision;
-  current?: ExportNameCollision;
-};
-
-/** Compares every collision cluster so additions fail and removals ratchet debt down. */
-export function compareExportNameCollisionDebt(
-  current: ExportNameCollision[],
-  baseline: ExportNameCollision[],
-) {
-  const currentByName = new Map(current.map((collision) => [collision.name, collision]));
-  const baselineByName = new Map(baseline.map((collision) => [collision.name, collision]));
-  const regressions: CollisionChange[] = [];
-  const improvements: CollisionChange[] = [];
-  const names = [...new Set([...currentByName.keys(), ...baselineByName.keys()])].toSorted();
-
-  for (const name of names) {
-    const currentCollision = currentByName.get(name);
-    const baselineCollision = baselineByName.get(name);
-    if (!baselineCollision) {
-      regressions.push({ current: currentCollision });
-      continue;
-    }
-    if (!currentCollision) {
-      improvements.push({ baseline: baselineCollision });
-      continue;
-    }
-    const baselineFiles = new Set(baselineCollision.files);
-    const currentFiles = new Set(currentCollision.files);
-    const hasAddedFile = currentCollision.files.some((file) => !baselineFiles.has(file));
-    const hasRemovedFile = baselineCollision.files.some((file) => !currentFiles.has(file));
-    if (hasAddedFile || (currentCollision.sdk === true && baselineCollision.sdk !== true)) {
-      regressions.push({ baseline: baselineCollision, current: currentCollision });
-    }
-    if (hasRemovedFile || (baselineCollision.sdk === true && currentCollision.sdk !== true)) {
-      improvements.push({ baseline: baselineCollision, current: currentCollision });
-    }
-  }
-  return { regressions, improvements };
+/** Finds direct renamed re-exports outside the Plugin SDK boundary. */
+export function findAliasingReExports(modules: SourceModule[]) {
+  return analyzeExportNames(modules).aliasingReExports;
 }
 
-function resolveBaselinePath(repoRoot: string) {
-  return path.join(repoRoot, ...baselineRelativePath.split("/"));
+/** Finds duplicate exported function/const definitions across source modules. */
+export function findExportNameCollisions(modules: SourceModule[]): ExportNameCollision[] {
+  return analyzeExportNames(modules).collisions;
 }
 
-export async function collectRepositoryCollisions(repoRoot: string) {
+async function collectRepositoryModules(repoRoot: string) {
   const sourceCollectOptions = {
     fileExtensions: [".ts", ".mts", ".js", ".mjs"],
     includeTests: true,
@@ -550,74 +716,50 @@ export async function collectRepositoryCollisions(repoRoot: string) {
       path: normalizeRelativePath(path.relative(repoRoot, filePath)),
     })),
   );
-  return findExportNameCollisions(modules);
+  return modules;
 }
 
-async function readBaseline(repoRoot: string) {
-  try {
-    return exportNameCollisionBaselineSchema.parse(
-      JSON.parse(await fs.readFile(resolveBaselinePath(repoRoot), "utf8")),
+async function collectRepositoryExportAnalysis(repoRoot: string) {
+  return analyzeExportNames(await collectRepositoryModules(repoRoot));
+}
+
+export async function collectRepositoryCollisions(repoRoot: string) {
+  return (await collectRepositoryExportAnalysis(repoRoot)).collisions;
+}
+
+function printAliasingReExports(reExports: AliasingReExport[]) {
+  if (reExports.length === 0) {
+    return;
+  }
+  console.log("Aliasing re-exports outside src/plugin-sdk/ (informational):");
+  for (const reExport of reExports) {
+    console.log(
+      `- ${reExport.path}:${reExport.line}: ${reExport.importedName} as ${reExport.exportedName} from ${JSON.stringify(reExport.moduleSpecifier)}`,
     );
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
   }
 }
 
-async function writeBaseline(repoRoot: string) {
-  const collisions = await collectRepositoryCollisions(repoRoot);
-  await fs.writeFile(resolveBaselinePath(repoRoot), `${JSON.stringify(collisions, null, 2)}\n`);
-  return collisions.length;
-}
-
-function formatCollision(collision: ExportNameCollision | undefined) {
-  return JSON.stringify(collision);
-}
-
-export async function main() {
-  const repoRoot = resolveRepoRoot(import.meta.url);
-  if (process.argv.includes("--update-debt-baseline")) {
-    const count = await writeBaseline(repoRoot);
-    console.log(`Wrote ${baselineRelativePath} (${count} entries)`);
-    return 0;
+export async function main(
+  repoRoot = resolveRepoRoot(import.meta.url),
+  argv = process.argv.slice(2),
+) {
+  if (argv.length > 0) {
+    console.error(`Unknown argument(s): ${argv.join(", ")}`);
+    return 2;
   }
 
-  const baseline = await readBaseline(repoRoot);
-  if (!baseline) {
-    console.error(
-      `Missing ${baselineRelativePath}; run \`${baselineRegenCommand}\` and commit it.`,
-    );
-    return 1;
-  }
-  const current = await collectRepositoryCollisions(repoRoot);
-  const debt = compareExportNameCollisionDebt(current, baseline);
-  if (debt.regressions.length === 0 && debt.improvements.length === 0) {
+  const analysis = await collectRepositoryExportAnalysis(repoRoot);
+  printAliasingReExports(analysis.aliasingReExports);
+  if (analysis.collisions.length === 0) {
     console.log("export name collision guard passed.");
     return 0;
   }
 
-  if (debt.regressions.length > 0) {
-    console.error(
-      `Found new exported function/const name collisions beyond ${baselineRelativePath}:`,
-    );
-    for (const regression of debt.regressions) {
-      console.error(`- ${formatCollision(regression.current)}`);
-    }
-    console.error(
-      `Give each behavior one exported spelling. If the debt increase is intentional, run \`${baselineRegenCommand}\` and commit the generated baseline.`,
-    );
+  console.error("Found exported function/const name collisions:");
+  for (const collision of analysis.collisions) {
+    console.error(`- ${JSON.stringify(collision)}`);
   }
-  if (debt.improvements.length > 0) {
-    console.error(`Export name collision debt dropped below ${baselineRelativePath}:`);
-    for (const improvement of debt.improvements) {
-      console.error(
-        `- ${improvement.baseline?.name}: ${formatCollision(improvement.baseline)} -> ${formatCollision(improvement.current)}`,
-      );
-    }
-    console.error(`Run \`${baselineRegenCommand}\` to ratchet the baseline down and commit it.`);
-  }
+  console.error("Give each behavior one exported spelling.");
   return 1;
 }
 

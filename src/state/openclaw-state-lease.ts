@@ -1,20 +1,16 @@
 // Host-owned SQLite leases serialize trusted work across processes.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import { runWithSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { isSqliteLockError } from "../infra/sqlite-transaction.js";
 import { loggingState } from "../logging/state.js";
-import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
-import type { DB as OpenClawAgentKyselyDatabase } from "./openclaw-agent-db.generated.js";
-import {
-  openOpenClawAgentDatabase,
-  runOpenClawAgentWriteTransaction,
-} from "./openclaw-agent-db.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -23,12 +19,12 @@ import {
 } from "./openclaw-state-db.js";
 
 type LeaseDatabase = Pick<OpenClawStateKyselyDatabase, "state_leases">;
-type AgentLeaseDatabase = Pick<OpenClawAgentKyselyDatabase, "state_leases">;
 type LeaseKysely = ReturnType<typeof getNodeSqliteKysely<LeaseDatabase>>;
 
-type OpenClawStateLeaseDatabase =
-  | { scope: "shared"; options?: OpenClawStateDatabaseOptions }
-  | { scope: "agent"; agentId: string; path?: string };
+type OpenClawStateLeaseDatabase = {
+  scope: "shared";
+  options?: OpenClawStateDatabaseOptions;
+};
 
 type OpenClawStateLeaseOptions = {
   scope: string;
@@ -157,11 +153,8 @@ function validateOptions(options: OpenClawStateLeaseOptions) {
   if (typeof database !== "object" || database === null || Array.isArray(database)) {
     throw invalidInput("state lease database must be an object");
   }
-  if (database.scope !== "shared" && database.scope !== "agent") {
-    throw invalidInput("state lease database scope must be shared or agent");
-  }
-  if (database.scope === "agent") {
-    validateNonEmptyString(database.agentId, "state lease agent database agentId");
+  if (database.scope !== "shared") {
+    throw invalidInput("state lease database scope must be shared");
   }
   const leaseLabel =
     options.leaseLabel === undefined
@@ -188,70 +181,27 @@ function validateOptions(options: OpenClawStateLeaseOptions) {
   };
 }
 
-function readBusyTimeout(database: DatabaseSync): number {
-  const row = database // sqlite-allow-raw -- Narrow connection primitive for bounded lease admission.
-    .prepare("PRAGMA busy_timeout")
-    .get() as { busy_timeout?: unknown; timeout?: unknown } | undefined;
-  const value = row?.busy_timeout ?? row?.timeout;
-  return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
-}
-
-function withBusyTimeout<T>(database: DatabaseSync, busyTimeoutMs: number, run: () => T): T {
-  const previousBusyTimeoutMs = readBusyTimeout(database);
-  if (previousBusyTimeoutMs === busyTimeoutMs) {
-    return run();
-  }
-  database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`); // sqlite-allow-raw -- Bound synchronous lease admission to waitMs.
-  try {
-    return run();
-  } finally {
-    if (database.isOpen) {
-      database.exec(`PRAGMA busy_timeout = ${previousBusyTimeoutMs}`); // sqlite-allow-raw -- Restore canonical connection policy.
-    }
-  }
-}
-
 function withLeaseWriteTransaction<T>(
   database: OpenClawStateLeaseDatabase,
   operationLabel: string,
   operation: (db: DatabaseSync, kysely: LeaseKysely) => T,
   busyTimeoutMs = LEASE_DB_BUSY_TIMEOUT_MS,
 ): T {
-  if (database.scope === "shared") {
-    const stateDatabase = openOpenClawStateDatabase(database.options);
-    const run = () =>
-      runOpenClawStateWriteTransaction(
-        ({ db }) => operation(db, getNodeSqliteKysely<LeaseDatabase>(db)),
-        database.options,
-        { operationLabel, busyTimeoutMs },
-      );
-    return withBusyTimeout(stateDatabase.db, busyTimeoutMs, run);
-  }
-  const agentOptions = {
-    agentId: database.agentId,
-    ...(database.path ? { path: database.path } : {}),
-  };
-  const agentDatabase = openOpenClawAgentDatabase(agentOptions);
+  const stateDatabase = openOpenClawStateDatabase(database.options);
   const run = () =>
-    runOpenClawAgentWriteTransaction(
-      ({ db }) => operation(db, getNodeSqliteKysely<AgentLeaseDatabase>(db)),
-      agentOptions,
+    runOpenClawStateWriteTransaction(
+      ({ db }) => operation(db, getNodeSqliteKysely<LeaseDatabase>(db)),
+      database.options,
       { operationLabel, busyTimeoutMs },
     );
-  return withBusyTimeout(agentDatabase.db, busyTimeoutMs, run);
+  return runWithSqliteBusyTimeout(stateDatabase.db, busyTimeoutMs, run);
 }
 
 function withLeaseRead<T>(
   database: OpenClawStateLeaseDatabase,
   operation: (db: DatabaseSync, kysely: LeaseKysely) => T,
 ): T {
-  const sqlite =
-    database.scope === "shared"
-      ? openOpenClawStateDatabase(database.options).db
-      : openOpenClawAgentDatabase({
-          agentId: database.agentId,
-          ...(database.path ? { path: database.path } : {}),
-        }).db;
+  const sqlite = openOpenClawStateDatabase(database.options).db;
   return operation(sqlite, getNodeSqliteKysely<LeaseDatabase>(sqlite));
 }
 

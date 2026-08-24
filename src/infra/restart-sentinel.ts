@@ -3,6 +3,7 @@ import { isRecord as isPlainRecord } from "@openclaw/normalization-core/record-c
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatCliCommand } from "../cli/command-format.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -29,7 +30,7 @@ export type {
   RestartSentinelPayload,
 } from "./restart-sentinel-store.js";
 
-export type SuccessfulGitUpdateReceipt = {
+export type VerifiedGitUpdateReceipt = {
   root: string;
   sha: string;
   upstreamRef?: string;
@@ -175,7 +176,10 @@ export async function finalizeUpdateRestartSentinelRunningVersion(
       if (!finalized) {
         return null;
       }
-      if (payload.status === "ok" && verifiesInstallRoot && verifiesGitRevision && changedInstall) {
+      // This receipt records the install fact proven by the running process. Post-install
+      // failures such as managed-service-handoff-failed keep the sentinel in error without
+      // erasing the upstream fallback for campaign-managed detached installs (#121634).
+      if (stats.mode === "git" && verifiesInstallRoot && verifiesGitRevision && changedInstall) {
         writeUpdateInstallReceiptRowSync(db, payload);
       }
       return changed ? finalized : null;
@@ -252,6 +256,29 @@ export async function readRestartSentinel(
   }
 }
 
+/** Read the restart sentinel without creating or mutating shared state. */
+export async function readRestartSentinelReadOnly(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RestartSentinel | null> {
+  try {
+    const current = withExistingOpenClawStateDatabaseReadOnly(
+      ({ db }) => readRestartSentinelRowSync(db),
+      { env },
+    );
+    if (!current || current.kind === "missing") {
+      return null;
+    }
+    if (current.kind === "invalid") {
+      sentinelLog.warn("Ignoring invalid typed restart sentinel row");
+      return null;
+    }
+    return current.sentinel;
+  } catch (err) {
+    sentinelLog.warn(`Failed to read restart sentinel: ${formatErrorMessage(err)}`);
+    return null;
+  }
+}
+
 async function readUpdateInstallReceiptPayload(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<RestartSentinelPayload | null> {
@@ -264,12 +291,13 @@ async function readUpdateInstallReceiptPayload(
   }
 }
 
-function normalizeSuccessfulGitUpdateReceipt(
+function normalizeVerifiedGitUpdateReceipt(
   payload: RestartSentinelPayload | null,
-): SuccessfulGitUpdateReceipt | null {
+): VerifiedGitUpdateReceipt | null {
+  // Receipt rows are only written after the running install verifies root and revision.
+  // An error status records a post-install failure, not an untrusted install.
   if (
     payload?.kind !== "update" ||
-    payload.status !== "ok" ||
     payload.stats?.mode !== "git" ||
     !isPlainRecord(payload.stats.after)
   ) {
@@ -292,10 +320,10 @@ function normalizeSuccessfulGitUpdateReceipt(
   };
 }
 
-export async function readSuccessfulGitUpdateReceipt(
+export async function readVerifiedGitUpdateReceipt(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<SuccessfulGitUpdateReceipt | null> {
-  return normalizeSuccessfulGitUpdateReceipt(await readUpdateInstallReceiptPayload(env));
+): Promise<VerifiedGitUpdateReceipt | null> {
+  return normalizeVerifiedGitUpdateReceipt(await readUpdateInstallReceiptPayload(env));
 }
 
 export async function hasRestartSentinel(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {

@@ -8,8 +8,9 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
+import { SESSION_LIFECYCLE_CHANGED_ERROR_REASON } from "../../config/sessions/lifecycle.js";
 import {
-  applySqliteSessionEntryCanonicalReplacements,
+  applySessionEntryCanonicalReplacements,
   type SessionEntryCanonicalReplacement,
 } from "../../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import { SessionLabelOwnerIndex } from "../../config/sessions/session-entry-selection.js";
@@ -32,7 +33,6 @@ import {
 } from "../session-utils.js";
 import { projectSessionsPatchEntry } from "../sessions-patch.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
-import { appendSessionAudit } from "./session-audit.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import {
   prepareSessionPatchArchive,
@@ -57,8 +57,8 @@ type MutationTarget = PatchTargetIdentity & {
 };
 
 type PreparedPatchTarget = {
-  archivePreparation?: SessionPatchArchivePreparation;
   archiveActor: ReturnType<typeof gatewayClientSessionCreator>;
+  archivePreparation?: SessionPatchArchivePreparation;
   canonicalKey: string;
   fullPatch: SessionsPatchParams;
   index: number;
@@ -71,9 +71,7 @@ type PreparedPatchTarget = {
   targetAgentId: string;
 };
 
-type MutationOutcome =
-  | { ok: true; archiveStateChanged: boolean; entry: SessionEntry }
-  | { ok: false; error: ErrorShape };
+type MutationOutcome = { ok: true; entry: SessionEntry } | { ok: false; error: ErrorShape };
 
 type ModelCatalog = Awaited<ReturnType<GatewayRequestContext["loadGatewayModelCatalog"]>>;
 
@@ -96,6 +94,12 @@ function unexpectedPatchError(key: string, error: unknown): ErrorShape {
       retryable: true,
     },
   );
+}
+
+function sessionChangedError(key: string): ErrorShape {
+  return errorShape(ErrorCodes.INVALID_REQUEST, `Session ${key} changed before patch. Retry.`, {
+    details: { reason: SESSION_LIFECYCLE_CHANGED_ERROR_REASON },
+  });
 }
 
 function pluginOwnershipError(params: {
@@ -140,20 +144,27 @@ async function executeSessionPatchMutations(params: {
   const targetDiscoveryCache = new Map();
   const preflightTargets = params.targets.map((input) => {
     const key = input.key.trim();
+    const requestedAgent = resolveRequestedGlobalAgentId(cfg, key, input.agentId);
     return {
       input,
       key,
-      resolved: resolveGatewaySessionStoreTargetWithStore({
-        cfg,
-        key,
-        ...(input.agentId ? { agentId: input.agentId } : {}),
-        exactRead: true,
-        targetDiscoveryCache,
-      }),
+      requestedAgent,
+      resolved: requestedAgent.ok
+        ? resolveGatewaySessionStoreTargetWithStore({
+            cfg,
+            key,
+            agentId: requestedAgent.agentId,
+            exactRead: true,
+            targetDiscoveryCache,
+          })
+        : undefined,
     };
   });
   const logicalTargets = new Set<string>();
   for (const { key, resolved } of preflightTargets) {
+    if (!resolved) {
+      continue;
+    }
     const logicalId = `${resolved.storePath}\0${resolved.canonicalKey ?? key}`;
     if (logicalTargets.has(logicalId)) {
       return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, "Duplicate target.") };
@@ -168,10 +179,16 @@ async function executeSessionPatchMutations(params: {
   const preparedByIndex: Array<PreparedPatchTarget | undefined> = Array.from({
     length: params.targets.length,
   });
-  for (const [index, { input, key, resolved }] of preflightTargets.entries()) {
-    const requestedAgent = resolveRequestedGlobalAgentId(cfg, key, input.agentId);
+  for (const [index, { input, key, requestedAgent, resolved }] of preflightTargets.entries()) {
     if (!requestedAgent.ok) {
       outcomes[index] = requestedAgent;
+      continue;
+    }
+    if (!resolved) {
+      outcomes[index] = {
+        ok: false,
+        error: errorShape(ErrorCodes.INVALID_REQUEST, "Session target could not be resolved."),
+      };
       continue;
     }
     const requestedAgentId = requestedAgent.agentId;
@@ -322,7 +339,7 @@ async function executeSessionPatchMutations(params: {
                         new Set([first.key, first.canonicalKey, ...first.initialStoreKeys]),
                       )
                     : undefined;
-                const groupOutcomes = await applySqliteSessionEntryCanonicalReplacements({
+                const groupOutcomes = await applySessionEntryCanonicalReplacements({
                   agentId: first.targetAgentId,
                   ...(selectedSessionKeys ? { sessionKeys: selectedSessionKeys } : {}),
                   storePath: first.storePath,
@@ -385,10 +402,7 @@ async function executeSessionPatchMutations(params: {
                         ) {
                           projectedOutcomes.push({
                             ok: false,
-                            error: errorShape(
-                              ErrorCodes.INVALID_REQUEST,
-                              `Session ${target.key} changed before patch. Retry.`,
-                            ),
+                            error: sessionChangedError(target.key),
                           });
                           continue;
                         }
@@ -410,7 +424,6 @@ async function executeSessionPatchMutations(params: {
                             continue;
                           }
                         }
-                        const wasArchivedBeforePatch = existingEntry?.archivedAt !== undefined;
                         const projected = await projectSessionsPatchEntry({
                           cfg,
                           existingEntry,
@@ -462,9 +475,6 @@ async function executeSessionPatchMutations(params: {
                         );
                         projectedOutcomes.push({
                           ok: true,
-                          archiveStateChanged:
-                            typeof target.fullPatch.archived === "boolean" &&
-                            wasArchivedBeforePatch !== (cloned.archivedAt !== undefined),
                           entry: cloned,
                         });
                       } catch (error) {
@@ -490,34 +500,6 @@ async function executeSessionPatchMutations(params: {
               }
             }),
           );
-
-          for (const target of prepared) {
-            const outcome = outcomes[target.index];
-            if (!outcome?.ok || !archiveActor) {
-              continue;
-            }
-            if (!outcome.archiveStateChanged) {
-              continue;
-            }
-            const action = outcome.entry.archivedAt === undefined ? "unarchived" : "archived";
-            try {
-              await appendSessionAudit({
-                cfg,
-                target: {
-                  agentId: target.targetAgentId,
-                  entry: outcome.entry,
-                  sessionKey: target.canonicalKey,
-                  storePath: target.storePath,
-                },
-                text: `${action} by ${archiveActor.label ?? archiveActor.id}`,
-                now: Date.now(),
-              });
-            } catch (error) {
-              sessionLog.warn(
-                `sessions.patch: ${action} audit note failed for ${target.canonicalKey}; archive kept: ${formatErrorMessage(error)}`,
-              );
-            }
-          }
         },
       });
     } finally {
@@ -556,9 +538,7 @@ async function executeSessionPatchMutations(params: {
     });
     emitSessionsChanged(params.context, {
       sessionKey: target.canonicalKey,
-      ...(target.canonicalKey === "global" && target.requestedAgentId
-        ? { agentId: target.requestedAgentId }
-        : {}),
+      ...(target.requestedAgentId ? { agentId: target.requestedAgentId } : {}),
       reason: "patch",
     });
     patched = true;
@@ -569,7 +549,11 @@ async function executeSessionPatchMutations(params: {
 
   const category = params.patch.category;
   if (patched && typeof category === "string" && category.trim()) {
-    ensureSessionGroupRegistered(category);
+    // A first-use category is a group-catalog mutation: clients reload the
+    // catalog only on reason "groups" (the sessions.groups.* siblings emit it).
+    if (ensureSessionGroupRegistered(category)) {
+      emitSessionsChanged(params.context, { reason: "groups" });
+    }
   }
   if (callerCanManageCron && archivedSessionKeys.size > 0) {
     try {

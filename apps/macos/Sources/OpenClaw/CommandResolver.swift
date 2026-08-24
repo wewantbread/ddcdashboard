@@ -47,19 +47,25 @@ enum CommandResolver {
         return ["/bin/sh", "-c", script]
     }
 
-    static func projectRoot() -> URL {
-        if let stored = AppDefaults.standard.string(forKey: projectRootDefaultsKey),
+    static func projectRoot(
+        defaults: UserDefaults = AppDefaults.standard,
+        profile: AppProfile = .current,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL
+    {
+        if let stored = defaults.string(forKey: projectRootDefaultsKey),
            let url = expandPath(stored),
            FileManager().fileExists(atPath: url.path)
         {
             return url
         }
-        let fallback = FileManager().homeDirectoryForCurrentUser
-            .appendingPathComponent("Projects/openclaw")
+        if profile.isActive {
+            return profile.stateDirectoryURL(homeDirectory: homeDirectory)
+        }
+        let fallback = homeDirectory.appendingPathComponent("Projects/openclaw")
         if FileManager().fileExists(atPath: fallback.path) {
             return fallback
         }
-        return FileManager().homeDirectoryForCurrentUser
+        return homeDirectory
     }
 
     static func setProjectRoot(_ path: String) {
@@ -97,15 +103,26 @@ enum CommandResolver {
         home: URL,
         current: [String],
         projectRoot: URL,
-        validatedExecutable: String? = nil) -> [String]
+        validatedExecutable: String? = nil,
+        profile: AppProfile = .current) -> [String]
     {
         var preferredPaths: [String] = []
-        let managedPaths = self.openclawManagedPaths(home: home)
+        let managedPaths = self.openclawManagedPaths(home: home, profile: profile)
+        // Other profiles' managed trees must not leak in via stale validation or the
+        // inherited shell PATH (the CLI installer adds ~/.openclaw/bin to shell profiles).
+        let activeManagedBase = profile.stateDirectoryURL(homeDirectory: home).path
+        func isForeignManaged(_ path: String) -> Bool {
+            guard path.hasPrefix(home.path + "/") else { return false }
+            let name = path.dropFirst(home.path.count + 1)
+                .split(separator: "/").first.map(String.init) ?? ""
+            return self.isManagedDirectoryName(name)
+                && home.appendingPathComponent(name).path != activeManagedBase
+        }
         if let validatedExecutable {
             let validatedBin = URL(fileURLWithPath: validatedExecutable).deletingLastPathComponent().path
             if managedPaths.contains(validatedBin) {
                 preferredPaths.append(contentsOf: managedPaths)
-            } else {
+            } else if !isForeignManaged(validatedBin) {
                 preferredPaths.append(validatedBin)
             }
         }
@@ -124,7 +141,8 @@ enum CommandResolver {
         var seen = Set<String>()
         let fallbackPaths = self.nodeManagerBinPaths(home: home) + externalPaths + managedPaths
         // Preserve order while stripping duplicates so PATH lookups remain deterministic.
-        return (preferredPaths + fallbackPaths + current).filter { seen.insert($0).inserted }
+        return (preferredPaths + fallbackPaths + current)
+            .filter { !isForeignManaged($0) && seen.insert($0).inserted }
     }
 
     static func validatedOpenClawExecutable(
@@ -144,10 +162,13 @@ enum CommandResolver {
             expected: requiredVersion) ? executable : nil
     }
 
-    private static func openclawManagedPaths(home: URL) -> [String] {
-        let bases = [
-            home.appendingPathComponent(".openclaw"),
-        ]
+    /// Exactly the AppProfile.stateDirectoryURL namespace; ~/.openclaw2 is not managed.
+    private static func isManagedDirectoryName(_ name: String) -> Bool {
+        name == ".openclaw" || name.hasPrefix(".openclaw-")
+    }
+
+    private static func openclawManagedPaths(home: URL, profile: AppProfile) -> [String] {
+        let bases = [profile.stateDirectoryURL(homeDirectory: home)]
         var paths: [String] = []
         for base in bases {
             let bin = base.appendingPathComponent("bin")

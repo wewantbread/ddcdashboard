@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 324626,
-  "reason": "task-suggestion card feature (PR #121259) on top of accumulated main drift; CI-measured QA-profile bytes",
-  "updatedAt": "2026-08-09"
+  "startupJsGzipBytes": 345049,
+  "reason": "streamed-markdown highlighting changes (#127749, #127754) consumed the ratchet",
+  "updatedAt": "2026-08-22"
 }

@@ -1,18 +1,19 @@
 /** Prepares the session-owned runtime used by one embedded attempt. */
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import { createCacheTrace } from "../../cache-trace.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import type { AgentSession } from "../../sessions/index.js";
 import { getProviderPromptState } from "../provider-prompt-state.js";
 import { getEmbeddedSessionPromptState } from "../session-prompt-state.js";
-import type { createEmbeddedAttemptExternalAbortController } from "./attempt-abort.js";
-import { installEmbeddedAttemptContextGuards } from "./attempt-context-guards.js";
+import type { createEmbeddedAttemptExternalAbortController } from "./attempt-finalize.js";
 import {
   prepareEmbeddedAttemptAgentSession,
   prepareEmbeddedAttemptSessionBoundary,
   prepareEmbeddedAttemptSessionManager,
 } from "./attempt-session-prepare.js";
 import { createEmbeddedAttemptSessionSettleTracker } from "./attempt-session-settle.js";
+import { installEmbeddedAttemptContextGuards } from "./attempt-setup.js";
 import { prepareEmbeddedAttemptTransport } from "./attempt-stream-settle.js";
 import { prepareEmbeddedAttemptTrajectory } from "./attempt-trajectory.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -25,12 +26,14 @@ type TrajectoryInput = Parameters<typeof prepareEmbeddedAttemptTrajectory>[0];
 type AttemptSessionManager = ReturnType<typeof guardSessionManager>;
 type SessionSettleTracker = ReturnType<typeof createEmbeddedAttemptSessionSettleTracker>;
 type TrajectoryRecorder = Awaited<ReturnType<typeof prepareEmbeddedAttemptTrajectory>>;
+
 type ExternalAbortController = Pick<
   ReturnType<typeof createEmbeddedAttemptExternalAbortController>,
   "setActiveSessionAbort"
 >;
 
 type EmbeddedAttemptSessionRuntimeState = {
+  currentTurnImageFailureCount: number;
   prePromptMessageCount: number;
   promptCache: EmbeddedRunAttemptResult["promptCache"];
   systemPromptText: string;
@@ -108,6 +111,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     preparedSessionManager;
 
   const state: EmbeddedAttemptSessionRuntimeState = {
+    currentTurnImageFailureCount: 0,
     prePromptMessageCount: 0,
     promptCache: undefined,
     systemPromptText: input.initialSystemPrompt,
@@ -135,6 +139,9 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     sessionManager,
   });
   const { activeSession, setActiveSessionSystemPrompt, settingsManager } = preparedAgentSession;
+  const recordCurrentTurnImageFailure = (count: number) => {
+    state.currentTurnImageFailureCount = Math.max(state.currentTurnImageFailureCount, count);
+  };
   await attempt.userTurnTranscriptRecorder?.waitForRuntimePersistence();
   const boundary = prepareEmbeddedAttemptSessionBoundary({
     activeSession,
@@ -176,6 +183,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     effectiveWorkspace: input.effectiveWorkspace,
     getPrePromptMessageCount: () => state.prePromptMessageCount,
     getPromptCache: () => state.promptCache,
+    onCurrentTurnImageFailure: recordCurrentTurnImageFailure,
     getPromptCacheRetention: () => promptCacheRetentionRef.current,
     getSystemPrompt: () => state.systemPromptText,
     isOpenAIResponsesApi,
@@ -229,9 +237,11 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     providerThinkingLevel: input.transport.providerThinkingLevel,
     sessionAgentId: input.sessionManager.sessionAgentId,
     workspaceDir: input.effectiveWorkspace,
+    workspaceOnly: input.effectiveFsWorkspaceOnly,
     agentDir: input.agentDir,
     abortSignal: input.transport.abortSignal,
     getProviderRuntimeHandle: input.transport.getProviderRuntimeHandle,
+    onCurrentTurnImageFailure: recordCurrentTurnImageFailure,
     sandboxSessionKey: input.transport.sandboxSessionKey,
     ...(input.transport.sandbox !== undefined ? { sandbox: input.transport.sandbox } : {}),
     codeModeControlsEnabled: input.transport.codeModeControlsEnabled,
@@ -239,7 +249,9 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
       state: getProviderPromptState(attempt.runId),
       effectiveContextTokenBudget: Math.max(
         1,
-        Math.floor(attempt.contextTokenBudget ?? attempt.model.contextWindow),
+        Math.floor(
+          attempt.contextTokenBudget ?? attempt.model.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+        ),
       ),
       ...(trajectoryRecorder ? { recordEvent: trajectoryRecorder.recordEvent } : {}),
     },

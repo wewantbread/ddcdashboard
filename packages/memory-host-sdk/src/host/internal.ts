@@ -8,6 +8,7 @@ import { runWithConcurrency as runWithConcurrencyImpl } from "./concurrency.js";
 import { MEMORY_HOST_ROOT_FILENAME, normalizeConfiguredMemoryExtraPaths } from "./config-utils.js";
 import { estimateStructuredEmbeddingInputBytes } from "./embedding-input-limits.js";
 import { buildTextEmbeddingInput, type EmbeddingInput } from "./embedding-inputs.js";
+import { isExplicitExtraMarkdownFilePath } from "./explicit-extra-markdown.js";
 import {
   isFileMissingError,
   readRegularFile,
@@ -15,6 +16,7 @@ import {
   walkDirectory,
   type WalkDirectoryEntry,
 } from "./fs-utils.js";
+import { hashText } from "./hash.js";
 import {
   buildMemoryMultimodalLabel,
   classifyMemoryMultimodalPath,
@@ -35,7 +37,6 @@ import { retryTransientMemoryRead } from "./read-retry.js";
 import type { MemoryEntryProvenance, MemoryExtraPath } from "./types.js";
 
 export { hashText } from "./hash.js";
-import { hashText } from "./hash.js";
 
 export type MemoryFileEntry = {
   path: string;
@@ -62,7 +63,7 @@ export type MemoryChunk = {
 };
 
 // Persisted with index metadata so boundary changes rebuild unchanged files.
-export const MEMORY_CHUNKING_VERSION = 2;
+export const MEMORY_CHUNKING_VERSION = 3;
 
 type MultimodalMemoryChunk = {
   chunk: MemoryChunk;
@@ -195,6 +196,10 @@ async function collectMemoryFilesFromDir(
       isAllowedMemoryFilePath(entry.path, multimodal) &&
       (!extraPathEntry || matchesExtraMemoryPathEntry(extraPathEntry, entry.path)),
   });
+  const operationalFailure = scan.failedDirs.find((failure) => !isFileMissingError(failure.error));
+  if (operationalFailure) {
+    throw operationalFailure.error;
+  }
   files.push(...scan.entries.map((entry) => entry.path));
 }
 
@@ -219,7 +224,11 @@ export async function listMemoryFiles(
         return;
       }
       result.push(absPath);
-    } catch {}
+    } catch (error) {
+      if (!isFileMissingError(error)) {
+        throw error;
+      }
+    }
   };
 
   const memoryFile = await resolveCanonicalRootMemoryFile(workspaceDir);
@@ -230,9 +239,14 @@ export async function listMemoryFiles(
   try {
     const dirStat = await fs.lstat(memoryDir);
     if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
-      await collectMemoryFilesFromDir(memoryDir, result, multimodal, shouldSkipWorkspaceMemoryPath);
+      // Default memory roots stay Markdown-only; multimodal discovery is an extraPaths opt-in.
+      await collectMemoryFilesFromDir(memoryDir, result, undefined, shouldSkipWorkspaceMemoryPath);
     }
-  } catch {}
+  } catch (error) {
+    if (!isFileMissingError(error)) {
+      throw error;
+    }
+  }
 
   const normalizedExtraPaths = normalizeExtraMemoryPathEntries(workspaceDir, extraPaths);
   if (normalizedExtraPaths.length > 0) {
@@ -256,10 +270,18 @@ export async function listMemoryFiles(
           );
           continue;
         }
-        if (stat.isFile() && isAllowedMemoryFilePath(inputPath, multimodal)) {
+        if (
+          stat.isFile() &&
+          (isExplicitExtraMarkdownFilePath(inputPath) ||
+            isAllowedMemoryFilePath(inputPath, multimodal))
+        ) {
           result.push(inputPath);
         }
-      } catch {}
+      } catch (error) {
+        if (!isFileMissingError(error)) {
+          throw error;
+        }
+      }
     }
   }
   if (result.length <= 1) {

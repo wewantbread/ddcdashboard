@@ -11,7 +11,7 @@ import {
   asOptionalRecord as asRecord,
   normalizeOptionalString as asString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
+import { enqueueRoutedSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { noteSlackDraftConversationMessage } from "../../draft-message-boundaries.js";
 import type { SlackAppMentionEvent, SlackMessageEvent } from "../../types.js";
 import { normalizeSlackChannelType } from "../channel-type.js";
@@ -250,14 +250,6 @@ export function registerSlackMessageEvents(params: {
       // Subtype handlers do not enter the regular message pipeline. Observe any explicit
       // type here so edits and deletes share the same authoritative conversation cache.
       ctx.rememberSlackChannelType(message.channel, message.channel_type, eventScope);
-      if (eventScope && isBotAuthoredEnterpriseEvent(message)) {
-        logVerbose("slack: drop enterprise bot-authored message");
-        return;
-      }
-      if (eventScope && message.subtype && message.subtype !== "file_share") {
-        logVerbose(`slack: drop enterprise message subtype=${message.subtype}`);
-        return;
-      }
       const assistantChangedInbound = resolveAssistantMessageChangedInbound({
         event: message,
         ctx,
@@ -266,7 +258,7 @@ export function registerSlackMessageEvents(params: {
         noteConversationMessage(assistantChangedInbound, eventScope);
         await handleSlackMessage(assistantChangedInbound, {
           source: "message",
-          ...(eventScope ? { eventScope } : {}),
+          eventScope,
           ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
           ...(eventScope || turnAdoptionLifecycle ? { awaitDispatch: true } : {}),
         });
@@ -295,22 +287,25 @@ export function registerSlackMessageEvents(params: {
           channelId,
           channelType: subtypeHandler.resolveChannelType(message),
           eventKind: subtypeHandler.eventKind,
-          ...(eventScope ? { eventScope } : {}),
+          eventScope,
         });
         if (!ingressContext) {
           return;
         }
-        enqueueSystemEvent(subtypeHandler.describe(ingressContext.channelLabel), {
-          sessionKey: ingressContext.sessionKey,
-          contextKey: `${subtypeHandler.contextKey(message)}:${body.event_id}`,
-        });
+        enqueueRoutedSystemEvent(
+          subtypeHandler.describe(ingressContext.channelLabel),
+          ingressContext.route,
+          {
+            contextKey: `${subtypeHandler.contextKey(message)}:${body.event_id}`,
+          },
+        );
         return;
       }
 
       noteConversationMessage(message, eventScope);
       await handleSlackMessage(message, {
         source: "message",
-        ...(eventScope ? { eventScope } : {}),
+        eventScope,
         ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
         ...(eventScope || turnAdoptionLifecycle ? { awaitDispatch: true } : {}),
       });
@@ -360,7 +355,7 @@ export function registerSlackMessageEvents(params: {
         const channelType = await resolveSlackAppMentionChannelType({
           ctx,
           mention,
-          ...(eventScope ? { eventScope } : {}),
+          eventScope,
         });
         if (!channelType) {
           // OpenClaw manifests pair app_mention with message.channels/groups/im/mpim.
@@ -393,7 +388,7 @@ export function registerSlackMessageEvents(params: {
         await handleSlackMessage(mention as unknown as SlackMessageEvent, {
           source: "app_mention",
           wasMentioned: true,
-          ...(eventScope ? { eventScope } : {}),
+          eventScope,
           ...(turnAdoptionLifecycle ? { turnAdoptionLifecycle } : {}),
           ...(eventScope || turnAdoptionLifecycle ? { awaitDispatch: true } : {}),
         });

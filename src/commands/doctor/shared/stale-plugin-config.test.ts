@@ -41,7 +41,7 @@ describe("doctor stale plugin config helpers", () => {
   beforeEach(() => {
     installedPluginIndexMocks.loadInstalledPluginIndexInstallRecordsSync.mockReset();
     installedPluginIndexMocks.loadInstalledPluginIndexInstallRecordsSync.mockReturnValue({});
-    vi.spyOn(manifestRegistry, "loadPluginManifestRegistry").mockReturnValue({
+    vi.spyOn(manifestRegistry, "loadPluginManifestRegistryCore").mockReturnValue({
       plugins: [manifest("discord"), manifest("voice-call"), manifest("openai")],
       diagnostics: [],
     });
@@ -161,10 +161,20 @@ describe("doctor stale plugin config helpers", () => {
     expect(result.changes).toEqual([
       "- plugins.slots: reset 2 stale plugin slots (memory: acpx -> memory-core, contextEngine: missing-engine -> legacy)",
     ]);
-    expect(result.config.plugins?.slots).toEqual({
-      memory: "memory-core",
-      contextEngine: "legacy",
-    });
+    expect(result.config.plugins?.slots).toBeUndefined();
+  });
+
+  it("preserves unrelated slot state when removing a stale slot override", () => {
+    const result = maybeRepairStalePluginConfig({
+      plugins: {
+        slots: {
+          memory: "missing-memory",
+          contextEngine: "none",
+        },
+      },
+    } as OpenClawConfig);
+
+    expect(result.config.plugins?.slots).toEqual({ contextEngine: "none" });
   });
 
   it("preserves official external plugin config before installation", () => {
@@ -241,7 +251,7 @@ describe("doctor stale plugin config helpers", () => {
 
     expect(result.config.plugins?.allow).toEqual(["codex"]);
     expect(result.config.plugins?.entries?.codex?.enabled).toBe(false);
-    expect(result.config.plugins?.slots?.memory).toBe("memory-core");
+    expect(result.config.plugins?.slots).toBeUndefined();
     expect(result.changes).toEqual([
       "- plugins.slots: reset 1 stale plugin slot (memory: codex -> memory-core)",
     ]);
@@ -473,7 +483,7 @@ describe("doctor stale plugin config helpers", () => {
 
     expect(scanStalePluginConfig(cfg)).toStrictEqual([]);
     expect(maybeRepairStalePluginConfig(cfg)).toEqual({ config: cfg, changes: [] });
-    expect(manifestRegistry.loadPluginManifestRegistry).not.toHaveBeenCalled();
+    expect(manifestRegistry.loadPluginManifestRegistryCore).not.toHaveBeenCalled();
   });
 
   it("uses missing persisted install records as stale channel evidence", () => {
@@ -500,7 +510,7 @@ describe("doctor stale plugin config helpers", () => {
   });
 
   it("does not auto-repair stale refs while plugin discovery has errors", () => {
-    vi.spyOn(manifestRegistry, "loadPluginManifestRegistry").mockReturnValue({
+    vi.spyOn(manifestRegistry, "loadPluginManifestRegistryCore").mockReturnValue({
       plugins: [],
       diagnostics: [
         { level: "error", message: "plugin path not found: /missing", source: "/missing" },

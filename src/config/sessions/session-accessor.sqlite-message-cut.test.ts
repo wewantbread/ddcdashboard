@@ -22,9 +22,8 @@ import {
   rewindSessionToMessage,
   switchSessionBranch,
   updateSessionEntry,
-  upsertSessionEntry,
+  upsertSessionEntryCore,
 } from "./session-accessor.js";
-import { listSqliteSessionBranches } from "./session-accessor.sqlite.js";
 import type { InternalSessionEntry } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -59,7 +58,7 @@ async function createSiblingSession(params: {
   sessionKey: string;
 }) {
   const scope = { agentId, ...params };
-  await upsertSessionEntry(scope, { sessionId: params.sessionId, updatedAt: Date.now() });
+  await upsertSessionEntryCore(scope, { sessionId: params.sessionId, updatedAt: Date.now() });
   await appendTranscriptEvent(scope, {
     type: "session",
     id: params.sessionId,
@@ -87,6 +86,7 @@ async function createSession(options: { activeLeafTarget?: string } = {}) {
     cliSessionIds: { "claude-cli": "claude-conversation" },
     compactionCount: 2,
     contextTokens: 100_000,
+    contextTokensSource: "runtime",
     createdVia: "operator",
     createdActor: { type: "human", id: "profile-1" },
     createdAt: 1_000,
@@ -96,13 +96,14 @@ async function createSession(options: { activeLeafTarget?: string } = {}) {
     forkSource: { sessionKey: "agent:main:root", sessionId: "root-session" },
     lifecycleRevision: "source-lifecycle-revision",
     lifecycleRunId: "source-run",
+    lastRunId: "settled-source-run",
     modelOverride: "gpt-5",
     modelOverrideSource: "user",
     providerOverride: "openai",
     sessionId,
     updatedAt: Date.now(),
   };
-  await upsertSessionEntry(scope, entry);
+  await upsertSessionEntryCore(scope, entry);
   for (const event of [
     { type: "session", id: sessionId, version: 3, timestamp: "2026-07-18T00:00:00.000Z" },
     {
@@ -179,10 +180,10 @@ describe("SQLite session message cuts", () => {
     const { env } = await createSession();
     const fullTranscriptLoads = trackFullTranscriptLoads(env);
 
-    const first = await listSqliteSessionBranches({ agentId, env, sessionKey });
+    const first = await listSessionBranches({ agentId, env, sessionKey });
     expect(fullTranscriptLoads()).toBe(1);
 
-    const second = await listSqliteSessionBranches({ agentId, env, sessionKey });
+    const second = await listSessionBranches({ agentId, env, sessionKey });
     expect(second).toEqual(first);
     expect(fullTranscriptLoads()).toBe(1);
     if (second.status !== "ok" || !second.branches[0]) {
@@ -190,7 +191,7 @@ describe("SQLite session message cuts", () => {
     }
     second.branches[0].headline = "caller mutation";
 
-    await expect(listSqliteSessionBranches({ agentId, env, sessionKey })).resolves.toEqual(first);
+    await expect(listSessionBranches({ agentId, env, sessionKey })).resolves.toEqual(first);
     expect(fullTranscriptLoads()).toBe(1);
   });
 
@@ -198,7 +199,7 @@ describe("SQLite session message cuts", () => {
     const { env, scope } = await createSession();
     const fullTranscriptLoads = trackFullTranscriptLoads(env);
 
-    const before = await listSqliteSessionBranches({ agentId, env, sessionKey });
+    const before = await listSessionBranches({ agentId, env, sessionKey });
     expect(fullTranscriptLoads()).toBe(1);
     await appendTranscriptMessage(scope, {
       eventId: "assistant-3",
@@ -207,7 +208,7 @@ describe("SQLite session message cuts", () => {
       parentId: "assistant-2",
     });
 
-    const after = await listSqliteSessionBranches({ agentId, env, sessionKey });
+    const after = await listSessionBranches({ agentId, env, sessionKey });
     expect(fullTranscriptLoads()).toBe(2);
     expect(after).not.toEqual(before);
     expect(after.status).toBe("ok");
@@ -230,9 +231,9 @@ describe("SQLite session message cuts", () => {
       if (!sourceEntry) {
         throw new Error("expected source session entry");
       }
-      await upsertSessionEntry({ agentId, env, sessionKey: aliasKey }, sourceEntry);
+      await upsertSessionEntryCore({ agentId, env, sessionKey: aliasKey }, sourceEntry);
       const fullTranscriptLoads = trackFullTranscriptLoads(env);
-      await listSqliteSessionBranches({ agentId, env, sessionKey });
+      await listSessionBranches({ agentId, env, sessionKey });
 
       const result =
         mode === "rewind"
@@ -259,10 +260,10 @@ describe("SQLite session message cuts", () => {
       expect(result.status).toBe("created");
 
       const loadsBeforeAliasRead = fullTranscriptLoads();
-      await listSqliteSessionBranches({ agentId, env, sessionKey: aliasKey });
+      await listSessionBranches({ agentId, env, sessionKey: aliasKey });
       expect(fullTranscriptLoads()).toBe(loadsBeforeAliasRead + 1);
 
-      const listed = await listSqliteSessionBranches({
+      const listed = await listSessionBranches({
         agentId,
         env,
         sessionKey: mode === "fork" ? targetKey : sessionKey,
@@ -325,7 +326,7 @@ describe("SQLite session message cuts", () => {
       releaseOwnerChange();
 
       await ownerChange;
-      await expect(mutation).resolves.toEqual({ status: "failed" });
+      await expect(mutation).resolves.toEqual({ status: "conflict" });
       expect(loadSessionEntry(scope)).toMatchObject({
         lifecycleRevision: "replacement-lifecycle-revision",
         sessionId: sourceExpectedState.sessionId,
@@ -350,8 +351,8 @@ describe("SQLite session message cuts", () => {
     });
     const fullTranscriptLoads = trackFullTranscriptLoads(env);
 
-    const source = await listSqliteSessionBranches({ agentId, env, sessionKey });
-    const other = await listSqliteSessionBranches(sibling);
+    const source = await listSessionBranches({ agentId, env, sessionKey });
+    const other = await listSessionBranches(sibling);
     expect(fullTranscriptLoads()).toBe(2);
     expect(source.status).toBe("ok");
     if (source.status !== "ok") {
@@ -373,7 +374,7 @@ describe("SQLite session message cuts", () => {
         },
       ],
     });
-    await expect(listSqliteSessionBranches({ agentId, env, sessionKey })).resolves.toEqual(source);
+    await expect(listSessionBranches({ agentId, env, sessionKey })).resolves.toEqual(source);
     expect(fullTranscriptLoads()).toBe(2);
   });
 
@@ -489,6 +490,7 @@ describe("SQLite session message cuts", () => {
       cliSessionIds: undefined,
       compactionCount: undefined,
       contextTokens: undefined,
+      contextTokensSource: undefined,
       createdVia: "operator",
       createdActor: { type: "human", id: "profile-1" },
       createdAt: 1_000,
@@ -577,6 +579,7 @@ describe("SQLite session message cuts", () => {
     expect(loadSessionEntry(scope)?.sessionId).toBe(scope.sessionId);
     expect(result.entry.lifecycleRevision).not.toBe("source-lifecycle-revision");
     expect((result.entry as InternalSessionEntry).lifecycleRunId).toBeUndefined();
+    expect((result.entry as InternalSessionEntry).lastRunId).toBeUndefined();
     expect(result.entry.cliSessionBindings).toBeUndefined();
     expect(deliveryContextFromSession(result.entry)).toBeUndefined();
     expect(result.entry.parentSessionKey).toBe(canonicalSourceKey);

@@ -4,7 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import {
   claimMainSessionRecoveryOwner,
   releaseMainSessionRecoveryOwner,
-} from "../../agents/main-session-recovery-store.js";
+} from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
@@ -56,7 +56,6 @@ describe("createReplyRestartRecoveryClaimController", () => {
       let entry: InternalSessionEntry = {
         abortedLastRun: false,
         lifecycleRunId: "recovery-run",
-        restartRecoveryBeforeAgentReplyState: "admitted",
         restartRecoveryDeliveryRunId: "recovery-run",
         sessionId,
         startedAt: 1,
@@ -93,6 +92,46 @@ describe("createReplyRestartRecoveryClaimController", () => {
       expect(persisted.lifecycleRunId).toBeUndefined();
     },
   );
+
+  it("preserves lifecycle ownership when cleanup observes a restart abort", async () => {
+    const root = tempDirs.make("openclaw-reply-claim-restart-abort-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:main";
+    const sessionId = "session";
+    let restartAborted = false;
+    let entry: InternalSessionEntry = {
+      abortedLastRun: false,
+      lifecycleRunId: "recovery-run",
+      restartRecoveryDeliveryRunId: "recovery-run",
+      sessionId,
+      startedAt: 1,
+      status: "running",
+      updatedAt: 1,
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, entry);
+    const controller = createReplyRestartRecoveryClaimController({
+      admissionRunId: "recovery-run",
+      getEntry: () => entry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => restartAborted,
+      resolveDeliveryContext: () => undefined,
+      sessionKey,
+      setEntry: (next) => {
+        entry = next;
+      },
+      storePath,
+    });
+
+    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+    restartAborted = true;
+    await controller.clear();
+
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      lifecycleRunId: "recovery-run",
+      restartRecoveryDeliveryRunId: "recovery-run",
+      status: "running",
+    });
+  });
 
   it("retargets durable user-turn admission to the prepared reply session", async () => {
     const root = tempDirs.make("openclaw-reply-admission-");

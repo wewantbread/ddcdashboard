@@ -36,10 +36,7 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
-import {
-  readSuccessfulGitUpdateReceipt,
-  type SuccessfulGitUpdateReceipt,
-} from "./restart-sentinel.js";
+import { readVerifiedGitUpdateReceipt, type VerifiedGitUpdateReceipt } from "./restart-sentinel.js";
 import {
   resolveGatewayRestartDeferralTimeoutMs,
   scheduleGatewaySigusr1Restart,
@@ -68,6 +65,7 @@ import {
 } from "./update-dev-target.js";
 import { updateInstallRootsMatch } from "./update-install-root.js";
 import { startManagedServiceUpdateHandoff } from "./update-managed-service-handoff.js";
+import { runGatewayUpdatePreflight } from "./update-runner.js";
 
 type UpdateCheckState = {
   lastCheckedAt?: string;
@@ -120,6 +118,7 @@ export type {
 
 let updateAvailableCache: UpdateAvailable | null = null;
 let updateScheduleCache: UpdateScheduleState | null = null;
+let installStatusInitialization: ReturnType<typeof resolveStartupInstallStatus> | null = null;
 
 export function getUpdateAvailable(): UpdateAvailable | null {
   return updateAvailableCache;
@@ -129,9 +128,19 @@ export function getUpdateSchedule(): UpdateScheduleState | null {
   return updateScheduleCache;
 }
 
+export async function getUpdateEffectiveChannel(): Promise<UpdateChannel> {
+  const { status } = await initializeGatewayUpdateStatus();
+  return resolveEffectiveUpdateChannel({
+    currentVersion: VERSION,
+    installKind: status.installKind,
+    git: status.git,
+  }).channel;
+}
+
 export function resetUpdateAvailableStateForTest(): void {
   updateAvailableCache = null;
   updateScheduleCache = null;
+  installStatusInitialization = null;
   gatewayUpdateCampaign.resetForTest();
 }
 
@@ -491,6 +500,16 @@ async function runAutoUpdateCommand(params: AutoUpdateRunParams): Promise<AutoUp
   const supervisor = detectRespawnSupervisor(process.env, process.platform, {
     includeLinuxOpenClawGatewayServiceMarker: true,
   });
+  if (supervisor && params.devTarget) {
+    const failure = await runGatewayUpdatePreflight(
+      params.root,
+      params.timeoutMs,
+      params.devTarget,
+    );
+    if (failure) {
+      return { ok: false, code: 1, reason: failure.reason ?? "preflight-failed" };
+    }
+  }
   if (supervisor) {
     return await startManagedServiceAutoUpdateHandoff({
       channel: params.channel,
@@ -570,14 +589,14 @@ function clearAutoState(nextState: UpdateCheckState): void {
   delete nextState.autoFirstSeenAt;
 }
 
-async function resolveStartupInstallStatus(fetchGit: boolean) {
+async function resolveStartupInstallStatus(fetchRemoteGit: boolean) {
   const [root, installReceipt] = await Promise.all([
     resolveOpenClawPackageRoot({
       moduleUrl: import.meta.url,
       argv1: process.argv[1],
       cwd: process.cwd(),
     }),
-    readSuccessfulGitUpdateReceipt(),
+    readVerifiedGitUpdateReceipt(),
   ]);
   const gitUpstreamFallback =
     installReceipt?.upstreamRef && root && updateInstallRootsMatch(root, installReceipt.root)
@@ -585,12 +604,28 @@ async function resolveStartupInstallStatus(fetchGit: boolean) {
       : undefined;
   const status = await checkUpdateStatus({
     root,
-    timeoutMs: 2500,
-    fetchGit,
+    ...(fetchRemoteGit ? {} : { timeoutMs: 2500 }),
+    fetchGit: fetchRemoteGit,
     includeRegistry: false,
+    ...(fetchRemoteGit ? { useDetachedDevUpstream: true } : {}),
     ...(gitUpstreamFallback ? { gitUpstreamFallback } : {}),
   });
   return { root, status, installReceipt };
+}
+
+/** Caches only the fast local install probe; remote Git refresh remains post-ready. */
+export function initializeGatewayUpdateStatus(): ReturnType<typeof resolveStartupInstallStatus> {
+  if (installStatusInitialization) {
+    return installStatusInitialization;
+  }
+  const initialization = resolveStartupInstallStatus(false);
+  installStatusInitialization = initialization;
+  void initialization.catch(() => {
+    if (installStatusInitialization === initialization) {
+      installStatusInitialization = null;
+    }
+  });
+  return initialization;
 }
 
 type GitScheduleStatus = NonNullable<NonNullable<UpdateScheduleState["install"]>["git"]>;
@@ -607,7 +642,7 @@ function gitCommitsMatch(left: string, right: string): boolean {
 
 function resolveGitInstalledAtMs(
   git: NonNullable<UpdateCheckResult["git"]>,
-  installReceipt: SuccessfulGitUpdateReceipt | null,
+  installReceipt: VerifiedGitUpdateReceipt | null,
   root: string | null,
 ): number | undefined {
   return installReceipt &&
@@ -621,7 +656,7 @@ function resolveGitInstalledAtMs(
 
 function resolveGitScheduleStatus(
   update: UpdateCheckResult,
-  installReceipt: SuccessfulGitUpdateReceipt | null,
+  installReceipt: VerifiedGitUpdateReceipt | null,
   root: string | null,
 ): GitScheduleStatus | undefined {
   if (update.installKind !== "git") {
@@ -672,7 +707,7 @@ function withInstallStatus(
   schedule: UpdateScheduleState,
   update: UpdateCheckResult,
   includeGitStatus: boolean,
-  installReceipt: SuccessfulGitUpdateReceipt | null,
+  installReceipt: VerifiedGitUpdateReceipt | null,
   root: string | null,
 ): UpdateScheduleState {
   const git = includeGitStatus ? resolveGitScheduleStatus(update, installReceipt, root) : undefined;
@@ -824,10 +859,12 @@ export async function runGatewayUpdateCheck(params: {
   const autoDisabledByEnv = isTruthyEnvValue(process.env.OPENCLAW_NO_AUTO_UPDATE);
   const autoDisabledByExternalSupervisor = isGatewayExternallySupervised();
   const shouldRunUpdateHints = params.cfg.update?.checkOnStart !== false;
+  const initializedInstallStatus = await initializeGatewayUpdateStatus();
   const potentialChannel = resolveEffectiveUpdateChannel({
     configChannel,
     currentVersion: VERSION,
-    installKind: "package",
+    installKind: initializedInstallStatus.status.installKind,
+    git: initializedInstallStatus.status.git,
   }).channel;
   const potentialAutoDesired =
     (potentialChannel === "stable" || potentialChannel === "beta" || potentialChannel === "dev") &&
@@ -851,21 +888,15 @@ export async function runGatewayUpdateCheck(params: {
     });
     return;
   }
-  const mightUseInstalledExtendedStableChannel =
-    configChannel === null && potentialChannel === "extended-stable";
-  let installStatus: Awaited<ReturnType<typeof resolveStartupInstallStatus>> | undefined;
-  if (
-    configChannel === "extended-stable" ||
-    configChannel === "dev" ||
-    mightUseInstalledExtendedStableChannel
-  ) {
-    installStatus = await resolveStartupInstallStatus(configChannel === "dev");
+  let installStatus = initializedInstallStatus;
+  if (potentialChannel === "dev" && installStatus.status.installKind === "git") {
+    installStatus = await resolveStartupInstallStatus(true);
   }
   const configuredChannel = resolveEffectiveUpdateChannel({
     configChannel,
     currentVersion: VERSION,
-    installKind: installStatus?.status.installKind ?? "unknown",
-    git: installStatus?.status.git,
+    installKind: installStatus.status.installKind,
+    git: installStatus.status.git,
   }).channel;
   const autoDesired =
     (configuredChannel === "stable" ||
@@ -940,10 +971,7 @@ export async function runGatewayUpdateCheck(params: {
     return;
   }
 
-  if ((configuredChannel === "extended-stable" || configuredChannel === "dev") && !installStatus) {
-    installStatus = await resolveStartupInstallStatus(configuredChannel === "dev");
-  }
-  if (installStatus && (configuredChannel === "extended-stable" || configuredChannel === "dev")) {
+  if (configuredChannel === "extended-stable" || configuredChannel === "dev") {
     setUpdateScheduleCache({
       next: withInstallStatus(
         updateScheduleCache ?? initialSchedule,
@@ -955,7 +983,7 @@ export async function runGatewayUpdateCheck(params: {
       onUpdateScheduleChange: params.onUpdateScheduleChange,
     });
   }
-  if (configuredChannel === "extended-stable" && installStatus) {
+  if (configuredChannel === "extended-stable") {
     if (installStatus.status.installKind !== "package") {
       updateCampaign.clear();
       setUpdateAvailableCache({
@@ -1034,7 +1062,6 @@ export async function runGatewayUpdateCheck(params: {
     }
   }
 
-  installStatus ??= await resolveStartupInstallStatus(false);
   const { root, status, installReceipt } = installStatus;
   setUpdateScheduleCache({
     next: withInstallStatus(
@@ -1124,14 +1151,14 @@ export async function runGatewayUpdateCheck(params: {
         reason: EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
       });
     }
-    const hasTrackedMain = git.branch === DEV_BRANCH && git.upstreamSource === "tracking";
+    const hasTrackedDevUpstream =
+      (git.branch === DEV_BRANCH || git.branch === "HEAD") && git.upstreamSource === "tracking";
     const hasReceiptBackedDetachedHead = git.branch === "HEAD" && git.upstreamSource === "receipt";
     const canRunTrackedDevCampaign =
-      (hasTrackedMain || hasReceiptBackedDetachedHead) && git.ahead === 0;
+      (hasTrackedDevUpstream || hasReceiptBackedDetachedHead) && git.ahead === 0;
     if (shouldRunAutoUpdate && canRunTrackedDevCampaign) {
       const lastAttemptAt = state.autoLastAttemptAt ? Date.parse(state.autoLastAttemptAt) : null;
       const recentAttempt =
-        state.autoLastAttemptVersion === upstreamSha &&
         lastAttemptAt != null &&
         Number.isFinite(lastAttemptAt) &&
         now - lastAttemptAt < ONE_HOUR_MS;

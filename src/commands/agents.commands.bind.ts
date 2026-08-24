@@ -6,12 +6,11 @@ import { isRouteBinding, listRouteBindings } from "../config/bindings.js";
 import { replaceConfigFile } from "../config/config.js";
 import { logConfigUpdated } from "../config/logging.js";
 import type { AgentRouteBinding } from "../config/types.js";
-import { normalizeAgentId } from "../routing/session-key.js";
-import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
-import { defaultRuntime } from "../runtime.js";
+import { normalizeAgentId, normalizeAgentIdStrict } from "../routing/session-key.js";
+import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { describeBinding } from "./agents.binding-format.js";
-import { requireValidConfigFileSnapshot, requireValidConfigSnapshot } from "./config-validation.js";
+import { requireValidConfig, requireValidConfigFileSnapshot } from "./config-validation.js";
 
 type AgentBindingsModule = typeof import("./agents.bindings.js");
 
@@ -41,27 +40,7 @@ function loadAgentBindingsModule(): Promise<AgentBindingsModule> {
   return agentBindingsModuleLoader.load();
 }
 
-function resolveAgentId(
-  cfg: Awaited<ReturnType<typeof requireValidConfigSnapshot>>,
-  agentInput: string | undefined,
-  params?: { fallbackToDefault?: boolean },
-): string | null {
-  if (!cfg) {
-    return null;
-  }
-  if (agentInput?.trim()) {
-    return normalizeAgentId(agentInput);
-  }
-  if (params?.fallbackToDefault) {
-    return resolveDefaultAgentId(cfg);
-  }
-  return null;
-}
-
-function hasAgent(
-  cfg: Awaited<ReturnType<typeof requireValidConfigSnapshot>>,
-  agentId: string,
-): boolean {
+function hasAgent(cfg: Awaited<ReturnType<typeof requireValidConfig>>, agentId: string): boolean {
   if (!cfg) {
     return false;
   }
@@ -78,20 +57,20 @@ function formatBindingOwnerLine(binding: AgentRouteBinding): string {
 }
 
 function resolveTargetAgentIdOrExit(params: {
-  cfg: Awaited<ReturnType<typeof requireValidConfigSnapshot>>;
+  cfg: NonNullable<Awaited<ReturnType<typeof requireValidConfig>>>;
   runtime: RuntimeEnv;
   agentInput: string | undefined;
 }): string | null {
-  const agentId = resolveAgentId(params.cfg, params.agentInput?.trim(), {
-    fallbackToDefault: true,
-  });
-  if (!agentId) {
+  const normalized =
+    params.agentInput === undefined ? null : normalizeAgentIdStrict(params.agentInput);
+  if (normalized && !normalized.ok) {
     params.runtime.error(
-      `Unable to resolve agent id. Run ${formatCliCommand("openclaw agents list")} to choose one.`,
+      `Agent "${params.agentInput}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
     params.runtime.exit(1);
     return null;
   }
+  const agentId = normalized?.value ?? resolveDefaultAgentId(params.cfg);
   if (!hasAgent(params.cfg, agentId)) {
     params.runtime.error(
       `Agent "${agentId}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
@@ -112,7 +91,7 @@ function formatBindingConflicts(
 
 async function resolveParsedBindingsOrExit(params: {
   runtime: RuntimeEnv;
-  cfg: NonNullable<Awaited<ReturnType<typeof requireValidConfigSnapshot>>>;
+  cfg: NonNullable<Awaited<ReturnType<typeof requireValidConfig>>>;
   agentId: string;
   bindValues: string[] | undefined;
   emptyMessage: string;
@@ -157,7 +136,7 @@ async function resolveConfigAndTargetAgentIdOrExit(params: {
   runtime: RuntimeEnv;
   agentInput: string | undefined;
 }): Promise<{
-  cfg: NonNullable<Awaited<ReturnType<typeof requireValidConfigSnapshot>>>;
+  cfg: NonNullable<Awaited<ReturnType<typeof requireValidConfig>>>;
   agentId: string;
   baseHash?: string;
 } | null> {
@@ -182,19 +161,20 @@ export async function agentsBindingsCommand(
   opts: AgentsBindingsListOptions,
   runtime: RuntimeEnv = defaultRuntime,
 ) {
-  const cfg = await requireValidConfigSnapshot(runtime, { skipPluginValidation: true });
+  const cfg = await requireValidConfig(runtime, { skipPluginValidation: true });
   if (!cfg) {
     return;
   }
 
-  const filterAgentId = resolveAgentId(cfg, opts.agent?.trim());
-  if (opts.agent && !filterAgentId) {
+  const normalizedFilter = opts.agent === undefined ? null : normalizeAgentIdStrict(opts.agent);
+  if (normalizedFilter && !normalizedFilter.ok) {
     runtime.error(
-      `Agent id is required. Run ${formatCliCommand("openclaw agents list")} to choose one.`,
+      `Agent "${opts.agent}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,
     );
     runtime.exit(1);
     return;
   }
+  const filterAgentId = normalizedFilter?.value;
   if (filterAgentId && !hasAgent(cfg, filterAgentId)) {
     runtime.error(
       `Agent "${filterAgentId}" not found. Run ${formatCliCommand("openclaw agents list")} to see configured agents.`,

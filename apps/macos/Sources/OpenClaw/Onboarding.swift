@@ -32,6 +32,14 @@ final class OnboardingFinishState {
     var didFinish = false
 }
 
+/// Dashboard surface opened when onboarding finishes with working inference.
+enum OnboardingDashboardHandoff: Equatable {
+    /// Fresh activation: the custodian flow owns the remaining first-run steps.
+    case custodianOnboarding
+    /// Live-verified pre-existing setup: reopen the normal dashboard.
+    case dashboard
+}
+
 enum OnboardingSystemAgentResumeStore {
     struct ActivationOwner: Equatable {
         let id: String
@@ -531,6 +539,10 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     static let shared = OnboardingController()
     static let windowStyleMask: NSWindow.StyleMask = [.titled, .closable, .resizable, .fullSizeContentView]
     private var window: NSWindow?
+    var sheetPresentationWindow: NSWindow? {
+        self.window
+    }
+
     /// Human description of work in flight ("Installing the Gateway…").
     /// While set, closing the window asks for confirmation instead of quitting
     /// setup mid-operation.
@@ -593,8 +605,15 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     func close() {
         self.busyReason = nil
+        // AppKit ignores close while its modal sheet is still attached.
+        self.dismissAttachedSheet()
         self.window?.close()
         self.window = nil
+    }
+
+    func dismissAttachedSheet() {
+        guard let window, let sheet = window.attachedSheet else { return }
+        window.endSheet(sheet)
     }
 
     func setWindowCloseEnabled(_ enabled: Bool) {
@@ -630,16 +649,15 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 struct OnboardingView: View {
     enum CLIInstallPhase {
         case idle
+        case choosingTarget
         case installing
         case startingService
     }
 
     @State var currentPage = 0
-    @State var isRequesting = false
     @State var installingCLI = false
     @State var cliInstallPhase: CLIInstallPhase = .idle
     @State var cliStatus: String?
-    @State var monitoringPermissions = false
     @State var monitoringDiscovery = false
     @State var cliExecutableReady = false
     @State var cliInstalled = false
@@ -655,19 +673,16 @@ struct OnboardingView: View {
     @State var remoteAuthIssue: RemoteGatewayAuthIssue?
     @State var suppressRemoteProbeReset = false
     @State var gatewayDiscovery: GatewayDiscoveryModel
-    @State var onboardingSkillsModel = SkillsSettingsModel()
     @State var finishState = OnboardingFinishState()
     @State var aiSetup = OnboardingAISetupModel()
     @State var configuredGatewayProbe = OnboardingConfiguredGatewayProbe()
-    @State var didLoadOnboardingSkills = false
     @State var localGatewayProbe: LocalGatewayProbe?
     @State var defaultsToLocalGateway: Bool
     @Bindable var state: AppState
-    var permissionMonitor: PermissionMonitor
     let systemAgentDefaults: UserDefaults
     let aiSetupRouteIdentityProvider: @MainActor () -> String?
     let gatewaySelectionPersister: @MainActor () -> Bool
-    let dashboardOnboardingOpener: @MainActor () -> Void
+    let dashboardHandoffOpener: @MainActor (OnboardingDashboardHandoff) -> Void
 
     static let windowWidth: CGFloat = 630
     static let windowHeight: CGFloat = 752 // ~+10% to fit full onboarding content
@@ -677,10 +692,7 @@ struct OnboardingView: View {
     let connectionPageIndex = 1
     let cliPageIndex = 2
     let aiPageIndex = 3
-    let onboardingChatPageIndex = 8
     let readyPageIndex = 9
-
-    let permissionsPageIndex = 5
 
     var heroFrameHeight: CGFloat {
         145
@@ -708,9 +720,7 @@ struct OnboardingView: View {
         switch mode {
         case .remote, .local:
             // Native onboarding ends once inference works: install (when
-            // needed) plus AI setup. Everything after — memory import,
-            // permissions, channels, hatch — belongs to the dashboard's
-            // custodian onboarding, which Finish opens.
+            // needed) plus AI setup. Successful first run lands in the normal dashboard.
             requiresCLIInstall ? [0, 1, 2, 3] : [0, 1, 3]
         case .unconfigured:
             // "Set up later" has no gateway to hand off to; keep the native
@@ -814,15 +824,34 @@ struct OnboardingView: View {
     }
 
     struct LocalGatewayProbe: Equatable {
-        let port: Int
-        let pid: Int32
-        let command: String
-        let expected: Bool
+        let subtitle: String
+
+        init(
+            port: Int,
+            pid: Int32,
+            command: String,
+            profile: AppProfile,
+            managedServicePID: Int32?)
+        {
+            let expectedTokens = ["node", "openclaw", "tsx", "pnpm", "bun"]
+            let looksLikeGateway = expectedTokens.contains { command.lowercased().contains($0) }
+            let process = command.isEmpty ? "" : " (\(command) pid \(pid))"
+            guard GatewayProcessManager.profileAllowsExistingGatewayAttachment(
+                profile: profile,
+                listenerPID: pid,
+                managedServicePID: managedServicePID)
+            else {
+                let profile = profile.name.map { " for profile \($0)" } ?? ""
+                self.subtitle = "Port \(port) already in use\(process). Choose a different Gateway port\(profile)."
+                return
+            }
+            let base = looksLikeGateway ? "Existing gateway detected" : "Port \(port) already in use"
+            self.subtitle = "\(base)\(process). Will attach."
+        }
     }
 
     init(
         state: AppState = AppStateStore.shared,
-        permissionMonitor: PermissionMonitor = .shared,
         discoveryModel: GatewayDiscoveryModel = GatewayDiscoveryModel(
             localDisplayName: InstanceIdentity.displayName,
             filterLocalGateways: false),
@@ -831,12 +860,14 @@ struct OnboardingView: View {
         aiSetupRouteIdentityProvider: (@MainActor () -> String?)? = nil,
         configuredGatewayProbeTimeoutMs: Double = 15000,
         gatewaySelectionPersister: (@MainActor () -> Bool)? = nil,
-        dashboardOnboardingOpener: @escaping @MainActor () -> Void = {
-            AppNavigationActions.openDashboardOnboarding()
+        dashboardHandoffOpener: @escaping @MainActor (OnboardingDashboardHandoff) -> Void = {
+            switch $0 {
+            case .custodianOnboarding: AppNavigationActions.openDashboardOnboarding()
+            case .dashboard: AppNavigationActions.openDashboard()
+            }
         })
     {
         self.state = state
-        self.permissionMonitor = permissionMonitor
         self.systemAgentDefaults = systemAgentDefaults
         let routeIdentityProvider = aiSetupRouteIdentityProvider ?? {
             OnboardingSystemAgentResumeStore.selectedRouteIdentity(state: state)
@@ -845,7 +876,7 @@ struct OnboardingView: View {
         self.gatewaySelectionPersister = gatewaySelectionPersister ?? {
             state.syncGatewayConfigNow()
         }
-        self.dashboardOnboardingOpener = dashboardOnboardingOpener
+        self.dashboardHandoffOpener = dashboardHandoffOpener
         _defaultsToLocalGateway = State(
             initialValue: !state.onboardingSeen && state.connectionMode == .unconfigured)
         _gatewayDiscovery = State(initialValue: discoveryModel)
