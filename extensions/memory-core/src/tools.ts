@@ -386,6 +386,7 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
                   sessionKey: options.agentSessionKey,
                   activeProjectKeys: options.activeProjectKeys,
                   conversationRecall: options.conversationRecall,
+                  nonblockingRefresh: !options.oneShotCliRun,
                 },
                 visibility: { cfg, agentId, sandboxed: options.sandboxed === true },
                 signal,
@@ -457,7 +458,8 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
               model: status.model,
               fallback: status.fallback,
               mode: executed.searchMode,
-              staleness: resolveMemorySearchStaleness(status, agentId) ?? undefined,
+              staleness:
+                resolveMemorySearchStaleness(executed.searchedAtFreshness, agentId) ?? undefined,
               debug: executed.debug,
             },
           };

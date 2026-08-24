@@ -574,6 +574,58 @@ describe("memory_search unavailable payloads", () => {
     expect(result.details).not.toHaveProperty("action");
   });
 
+  it("preserves stale warning when background sync clears dirty during search", async () => {
+    setMemoryStatusDirty(true);
+    setMemoryPendingSyncSources(["memory"]);
+    setMemorySearchImpl(async (opts) => {
+      // The manager captures freshness (dirty=true) after the background sync
+      // starts but before it completes. The nonblocking sync clears dirty
+      // asynchronously — the snapshot must still reflect the in-flight state.
+      opts?.onFreshness?.({ dirty: true, pendingSyncSources: ["memory"] });
+      setMemoryStatusDirty(false);
+      setMemoryPendingSyncSources(undefined);
+      return [];
+    });
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+
+    const result = await tool.execute("race-sync", { query: "hidden codeword" });
+
+    expect(result.details).toMatchObject({
+      results: [],
+      stale: true,
+      warning: "Memory index is dirty. Search results may be incomplete.",
+    });
+  });
+
+  it("does not warn when synchronous bootstrap refreshes a dirty index before search", async () => {
+    setMemoryStatusDirty(true);
+    setMemorySearchImpl(async (opts) => {
+      // A fresh process boots with dirty=true (empty index). The synchronous
+      // sync in search() populates the index and clears dirty. Freshness
+      // is captured after the sync completes, so the snapshot must show dirty=false.
+      setMemoryStatusDirty(false);
+      opts?.onFreshness?.({ dirty: false });
+      return [];
+    });
+    const tool = createMemorySearchToolOrThrow({
+      config: {
+        agents: { list: [{ id: "main", default: true }] },
+        memory: { citations: "off" },
+      },
+    });
+
+    const result = await tool.execute("fresh-bootstrap", { query: "hidden codeword" });
+
+    expect(result.details).toMatchObject({ results: [] });
+    expect(result.details).not.toHaveProperty("stale");
+    expect(result.details).not.toHaveProperty("warning");
+  });
+
   it("surfaces embedding bootstrap degradation when keyword search has no hits", async () => {
     let searchCalls = 0;
     setMemorySearchImpl(async (opts) => {

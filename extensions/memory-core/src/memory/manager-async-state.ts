@@ -3,15 +3,17 @@ export async function startAsyncSearchSync(params: {
   enabled: boolean;
   dirty: boolean;
   sessionsDirty: boolean;
+  nonblocking?: boolean;
   sync: (params: { reason: string }) => Promise<void>;
   onError: (err: unknown) => void;
 }): Promise<void> {
   if (!params.enabled || (!params.dirty && !params.sessionsDirty)) {
     return;
   }
-  if (params.sessionsDirty && !params.dirty) {
-    // Session reconciliation can enumerate and parse a large transcript corpus. Keep
-    // the existing sync admission/close ownership while letting indexed searches proceed.
+  if (params.nonblocking || (params.sessionsDirty && !params.dirty)) {
+    // A deadline-bounded caller (nonblocking) or session reconciliation can
+    // enumerate and parse a large transcript corpus. Keep the existing sync
+    // admission/close ownership while letting indexed searches proceed.
     void params.sync({ reason: "search" }).catch(params.onError);
     return;
   }
