@@ -126,6 +126,7 @@ function buildAgentToolResultMiddlewareFactory(
       return {
         content: result.content,
         details: result.details,
+        ...(result.terminate === true ? { terminate: true } : {}),
         ...(isError ? { isError: true } : {}),
         ...(clearsAcceptedSessionSpawnError ? { isError: false } : {}),
       };

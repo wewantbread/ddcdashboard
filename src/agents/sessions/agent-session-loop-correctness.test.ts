@@ -577,6 +577,51 @@ describe("AgentSession loop correctness", () => {
     expect(compactionEvents).toEqual([]);
   });
 
+  it("does not request another model turn after extension middleware terminates a tool result", async () => {
+    const passthroughTool: ToolDefinition = {
+      name: "finish_via_middleware",
+      label: "Finish via middleware",
+      description: "returns a normal tool result that middleware can terminate",
+      parameters: Type.Object({}),
+      execute: async () => ({
+        content: [{ type: "text", text: "raw tool result" }],
+        details: {},
+      }),
+    };
+    const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>([
+      [
+        "tool_result",
+        [
+          async (event: unknown) => ({
+            ...(event as object),
+            content: [{ type: "text", text: "middleware stopped the turn" }],
+            terminate: true,
+          }),
+        ],
+      ],
+    ]);
+    streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
+      createAssistantResultStream(
+        createAssistant(activeModel, [
+          {
+            type: "toolCall",
+            id: "call-finish-via-middleware",
+            name: "finish_via_middleware",
+            arguments: {},
+          },
+        ]),
+      ),
+    );
+    const { session } = await createTestSession({
+      resourceLoader: createResourceLoader(handlers),
+      customTools: [passthroughTool],
+    });
+
+    await session.prompt("finish through middleware");
+
+    expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+  });
+
   it("does not retry a high-usage turn terminated by a tool result", async () => {
     const terminalTool: ToolDefinition = {
       name: "finish",

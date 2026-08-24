@@ -278,6 +278,7 @@ export abstract class AgentSessionBase {
         content: hookResult.content,
         details: hookResult.details,
         isError: hookResult.isError ?? isError,
+        ...(hookResult.terminate === true ? { terminate: true } : {}),
       };
     };
   }

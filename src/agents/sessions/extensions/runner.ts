@@ -802,6 +802,10 @@ export class ExtensionRunner {
         currentEvent.isError = handlerResult.isError;
         modified = true;
       }
+      if (handlerResult?.terminate !== undefined) {
+        currentEvent.terminate = handlerResult.terminate;
+        modified = true;
+      }
     });
 
     if (!modified) {
@@ -812,6 +816,7 @@ export class ExtensionRunner {
       content: currentEvent.content,
       details: currentEvent.details,
       isError: currentEvent.isError,
+      terminate: currentEvent.terminate,
     };
   }
 
