@@ -672,7 +672,7 @@ export async function getReplyFromConfig(
   const optsWithSessionSkillOverrides = sessionEntry.toolOverrides?.skills
     ? { ...optsWithSkillFilter, skillOverrides: sessionEntry.toolOverrides.skills }
     : optsWithSkillFilter;
-  const resolvedOpts = attachProgressNarratorToReplyOptions({
+  let resolvedOpts = attachProgressNarratorToReplyOptions({
     cfg,
     agentId,
     userMessage: finalized.agentText,
