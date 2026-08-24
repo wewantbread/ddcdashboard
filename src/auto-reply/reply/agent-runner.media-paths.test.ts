@@ -265,7 +265,8 @@ vi.mock("./agent-runner-memory.js", () => ({
     sessionEntry,
 }));
 
-vi.mock("./queue.js", () => ({
+vi.mock("./queue.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./queue.js")>()),
   admitFollowupRunLifecycle: vi.fn(async () => {}),
   enqueueFollowupRun: enqueueFollowupRunMock,
   parkSteerCandidate: parkSteerCandidateMock,

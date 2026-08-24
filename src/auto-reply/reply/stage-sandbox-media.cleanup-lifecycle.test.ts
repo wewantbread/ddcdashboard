@@ -61,7 +61,9 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
 
       // Allow microtask / async fs.rm to execute
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
 
       // Verify directory has been completely cleaned up
       const exists = await fs
@@ -110,7 +112,9 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Simulate active-run drop disposition triggering completeFollowupRunLifecycle directly
       completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
 
       const exists = await fs
         .stat(stagingDir)
@@ -163,7 +167,9 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Direct terminal cleanup removes staging directory without triggering queue abandonment
       cleanHostWorkspaceStaging(followupRun as unknown as FollowupRun);
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
 
       const exists = await fs
         .stat(stagingDir)
@@ -231,7 +237,9 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Settle active operation
       resolveSettlement!();
       await ownerSettlement;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
 
       exists = await fs
         .stat(stagingDir)

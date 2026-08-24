@@ -172,8 +172,10 @@ vi.mock("../../runtime.js", () => {
   };
 });
 
-vi.mock("./queue.js", () => {
+vi.mock("./queue.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./queue.js")>();
   return {
+    ...actual,
     admitFollowupRunLifecycle: vi.fn(async () => {}),
     enqueueFollowupRun: vi.fn(),
     parkSteerCandidate: vi.fn(() => ({
