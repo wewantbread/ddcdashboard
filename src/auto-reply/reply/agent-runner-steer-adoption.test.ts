@@ -10,8 +10,12 @@ type ActiveReplySteerParams = Parameters<typeof RunActiveReplySteer>[0];
 const mocks = vi.hoisted(() => ({
   parkedConsume: vi.fn(),
   parkedAdmit: vi.fn(async () => "steer" as const),
-  finalizeReplyMessageInjectionAttempt: vi.fn(async () => ({
-    status: "accepted" as const,
+  finalizeReplyMessageInjectionAttempt: vi.fn<
+    (
+      attempt: unknown,
+    ) => Promise<{ status: "accepted" | "rejected"; outcome: Record<string, unknown> }>
+  >(async () => ({
+    status: "accepted",
     outcome: {},
   })),
   queueEmbeddedAgentMessageWithOutcomeAsync: vi.fn(async () => ({
@@ -62,13 +66,16 @@ vi.mock("./reply-run-registry.js", () => ({
 
 const { runActiveReplySteer } = await import("./agent-runner-steer-adoption.js");
 
+type MakeParamsOverrides = Omit<
+  Partial<ActiveReplySteerParams>,
+  "providedReplyOperation" | "followupRun"
+> & {
+  providedReplyOperation?: Partial<ReplyOperation>;
+  followupRun?: Partial<FollowupRun>;
+};
+
 /** Builds a minimal params object for runActiveReplySteer in tests. */
-function makeParams(
-  overrides: Partial<ActiveReplySteerParams> & {
-    providedReplyOperation?: Partial<ReplyOperation>;
-    followupRun?: Partial<FollowupRun>;
-  } = {},
-): ActiveReplySteerParams {
+function makeParams(overrides: MakeParamsOverrides = {}): ActiveReplySteerParams {
   const { providedReplyOperation, followupRun, ...rest } = overrides;
   return {
     queueKey: "queue-1",

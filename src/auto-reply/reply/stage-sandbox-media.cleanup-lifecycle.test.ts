@@ -68,4 +68,52 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
+
+  it("cleans up staging directory when a turn is dropped directly on the active-run path", async () => {
+    await withSandboxMediaTempHome("dropped-turn-cleanup-test", async (home) => {
+      const mediaDir = path.join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      const sampleFile = path.join(mediaDir, "sample2.jpg");
+      await fs.writeFile(sampleFile, "dropped-turn-media-content");
+
+      const mediaUri = `media://inbound/sample2.jpg`;
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      const cfg = {
+        ...createSandboxMediaStageConfig(home),
+        agents: {
+          defaults: {
+            sandbox: { mode: "off" },
+          },
+        },
+      } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
+      const workspaceDir = path.join(home, "openclaw");
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "session-2",
+        workspaceDir,
+      });
+
+      const stagingDir = result.hostWorkspaceStagingDir!;
+      expect(stagingDir).toBeDefined();
+
+      const followupRun: Partial<FollowupRun> = {
+        hostWorkspaceStagingDir: stagingDir,
+      };
+
+      // Simulate active-run drop disposition triggering completeFollowupRunLifecycle directly
+      completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const exists = await fs
+        .stat(stagingDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(exists).toBe(false);
+      expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
+    });
+  });
 });

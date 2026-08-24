@@ -40,7 +40,11 @@ import { createFollowupRunner } from "./followup-runner.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
-import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
+import {
+  completeFollowupRunLifecycle,
+  enqueueFollowupRun,
+  scheduleFollowupDrain,
+} from "./queue.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
@@ -303,6 +307,7 @@ export async function runReplyAgent(
     if (replyOperationRunState) {
       replyOperationRunState.admission = { status: "skipped", reason: "active-run" };
     }
+    completeFollowupRunLifecycle(followupRun);
     releaseAdmissionTicket();
     typing.cleanup();
     return undefined;
@@ -319,6 +324,7 @@ export async function runReplyAgent(
       false,
     );
     if (!enqueued) {
+      completeFollowupRunLifecycle(followupRun);
       releaseAdmissionTicket();
       typing.cleanup();
       return undefined;
