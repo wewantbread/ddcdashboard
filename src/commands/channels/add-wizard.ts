@@ -2,7 +2,12 @@
 // prompter) and the gateway `wizard.start {flow:"channels"}` RPC (session
 // prompter driving the Control UI / native clients).
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
-import { listAgentIds, resolveAgentOperationAgentId } from "../../agents/agent-scope-config.js";
+import {
+  AgentSelectionRequiredError,
+  listAgentIds,
+  resolveConfiguredAgentId,
+  resolveAgentOperationAgentId,
+} from "../../agents/agent-scope-config.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { getLoadedChannelPlugin } from "../../channels/plugins/index.js";
 import type { ChannelSetupPlugin } from "../../channels/plugins/setup-wizard-types.js";
@@ -37,14 +42,19 @@ export async function selectChannelSetupAgentId(
   cfg: OpenClawConfig,
   prompter: WizardPrompter,
 ): Promise<string> {
-  const agentIds = listAgentIds(cfg);
-  if (agentIds.length <= 1) {
+  try {
     return resolveAgentOperationAgentId(cfg);
+  } catch (error) {
+    if (!(error instanceof AgentSelectionRequiredError)) {
+      throw error;
+    }
   }
-  return await prompter.select({
+  const agentIds = listAgentIds(cfg);
+  const selectedAgentId = await prompter.select({
     message: "Set up channels for agent",
     options: agentIds.map((agentId) => ({ value: agentId, label: agentId })),
   });
+  return resolveConfiguredAgentId(cfg, selectedAgentId);
 }
 
 /** Resolve omitted, matched, and unmatched channel targets without collapsing caller intent. */
@@ -104,7 +114,10 @@ type ChannelsAddWizardFlowParams = {
 /** Run the interactive channel-setup flow and persist the resulting config. */
 export async function runChannelsAddWizardFlow(params: ChannelsAddWizardFlowParams): Promise<void> {
   const { cfg, baseHash, runtime, prompter } = params;
-  const onboardChannels = await loadOnboardChannels();
+  const [{ buildAgentSummaries }, onboardChannels] = await Promise.all([
+    import("../agents.config.js"),
+    loadOnboardChannels(),
+  ]);
   const channelSetup = onboardChannels.createChannelSetupTransaction({
     runtime,
     ...(params.beforePersistentEffect
@@ -221,9 +234,9 @@ export async function runChannelsAddWizardFlow(params: ChannelsAddWizardFlowPara
       } => Boolean(value.accountId),
     );
   if (bindTargets.length > 0) {
-    const hasMultipleAgents = listAgentIds(nextConfig).length > 1;
+    const agentSummaries = buildAgentSummaries(nextConfig);
     const bindNow =
-      usesTargetedDefaults && !hasMultipleAgents
+      usesTargetedDefaults && agentSummaries.length <= 1
         ? false
         : usesTargetedDefaults
           ? true
@@ -232,10 +245,20 @@ export async function runChannelsAddWizardFlow(params: ChannelsAddWizardFlowPara
               initialValue: true,
             });
     if (bindNow) {
+      // Setup workspace ownership and message routing are distinct choices. Seed
+      // the existing binding prompt with the prepared setup owner.
       for (const target of bindTargets) {
+        const targetAgentId = await prompter.select({
+          message: `Send ${target.channel}/${target.accountId} messages to agent`,
+          options: agentSummaries.map((agent) => ({
+            value: agent.id,
+            label: agent.isDefault ? `${agent.id} (default)` : agent.id,
+          })),
+          initialValue: params.agentId,
+        });
         const bindingResult = applyAgentBindings(nextConfig, [
           {
-            agentId: params.agentId,
+            agentId: targetAgentId,
             match: { channel: target.channel, accountId: target.accountId },
           },
         ]);

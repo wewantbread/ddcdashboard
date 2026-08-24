@@ -12,6 +12,7 @@ import type { PluginPackageChannelCliOption } from "../plugins/manifest.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { WizardSession } from "../wizard/session.js";
 import {
   ensureChannelSetupPluginInstalled,
   loadChannelSetupPluginRegistrySnapshotForChannel,
@@ -661,7 +662,119 @@ describe("channelsAddCommand", () => {
         sourceConfig: config,
         config,
       });
-      channelWizardMocks.prompter.select.mockResolvedValueOnce("helper");
+      channelWizardMocks.prompter.select
+        .mockResolvedValueOnce("helper")
+        .mockResolvedValueOnce("helper");
+      channelWizardMocks.setupChannels.mockImplementationOnce(async (...args: unknown[]) => {
+        const options = requireRecord(args[3], "setup options");
+        const onSelection = options.onSelection as ((selection: string[]) => void) | undefined;
+        const onAccountId = options.onAccountId as
+          | ((channel: string, accountId: string) => void)
+          | undefined;
+        onSelection?.(["lifecycle-chat"]);
+        onAccountId?.("lifecycle-chat", "ops");
+        return args[0] as OpenClawConfig;
+      });
+
+      if (surface === "CLI") {
+        await channelsAddCommand({ channel: "lifecycle-chat" }, runtime, { hasFlags: false });
+      } else {
+        await runChannelsSetupWizard(
+          { channel: "lifecycle-chat" },
+          runtime,
+          channelWizardMocks.prompter,
+        );
+      }
+
+      expect(channelWizardMocks.prompter.select).toHaveBeenCalledTimes(2);
+      expect(channelWizardMocks.prompter.select).toHaveBeenNthCalledWith(1, {
+        message: "Set up channels for agent",
+        options: [
+          { value: "main", label: "main" },
+          { value: "helper", label: "helper" },
+        ],
+      });
+      expect(channelWizardMocks.prompter.select).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          message: "Send lifecycle-chat/ops messages to agent",
+          initialValue: "helper",
+        }),
+      );
+      expect(setupChannelArg(4)).toEqual({ agentId: "helper" });
+      expect(writtenConfig()).toMatchObject({
+        bindings: [
+          {
+            agentId: "helper",
+            match: { channel: "lifecycle-chat", accountId: "ops" },
+          },
+        ],
+      });
+    },
+  );
+
+  it("rejects an unconfigured agent returned by the hosted wizard", async () => {
+    const config: OpenClawConfig = {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          main: { workspace: "/tmp/openclaw-main-workspace" },
+          helper: { workspace: "/tmp/openclaw-helper-workspace" },
+        },
+      },
+      channels: {},
+    };
+    configMocks.readConfigFileSnapshot.mockResolvedValue({
+      ...baseConfigSnapshot,
+      sourceConfig: config,
+      config,
+    });
+    const session = new WizardSession(async (prompter) => {
+      await runChannelsSetupWizard({ channel: "lifecycle-chat" }, runtime, prompter);
+    });
+
+    const selection = await session.next();
+    expect(selection).toMatchObject({
+      step: { type: "select", message: "Set up channels for agent" },
+    });
+    if (selection.done) {
+      throw new Error("Expected agent selection step");
+    }
+    try {
+      await session.answer(selection.step.id, "missing");
+      expect(await session.next()).toMatchObject({
+        done: true,
+        status: "error",
+        error: expect.stringContaining('Unknown agent id "missing"'),
+      });
+      expect(channelWizardMocks.setupChannels).not.toHaveBeenCalled();
+      expect(configMocks.writeConfigFile).not.toHaveBeenCalled();
+    } finally {
+      session.cancel();
+      await session.whenSettled();
+    }
+  });
+
+  it.each(["CLI", "hosted"] as const)(
+    "uses the configured setup owner and preserves binding choice in the %s wizard",
+    async (surface) => {
+      const config: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          defaults: { systemAgent: { agentId: "helper" } },
+          entries: {
+            main: { workspace: "/tmp/openclaw-main-workspace" },
+            helper: { workspace: "/tmp/openclaw-helper-workspace" },
+          },
+        },
+        channels: {},
+      };
+      configMocks.readConfigFileSnapshot.mockResolvedValue({
+        ...baseConfigSnapshot,
+        sourceConfig: config,
+        config,
+      });
+      channelWizardMocks.prompter.select.mockResolvedValueOnce("main");
       channelWizardMocks.setupChannels.mockImplementationOnce(async (...args: unknown[]) => {
         const options = requireRecord(args[3], "setup options");
         const onSelection = options.onSelection as ((selection: string[]) => void) | undefined;
@@ -684,18 +797,17 @@ describe("channelsAddCommand", () => {
       }
 
       expect(channelWizardMocks.prompter.select).toHaveBeenCalledOnce();
-      expect(channelWizardMocks.prompter.select).toHaveBeenCalledWith({
-        message: "Set up channels for agent",
-        options: [
-          { value: "main", label: "main" },
-          { value: "helper", label: "helper" },
-        ],
-      });
+      expect(channelWizardMocks.prompter.select).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "Send lifecycle-chat/ops messages to agent",
+          initialValue: "helper",
+        }),
+      );
       expect(setupChannelArg(4)).toEqual({ agentId: "helper" });
       expect(writtenConfig()).toMatchObject({
         bindings: [
           {
-            agentId: "helper",
+            agentId: "main",
             match: { channel: "lifecycle-chat", accountId: "ops" },
           },
         ],
