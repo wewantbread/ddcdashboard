@@ -643,6 +643,66 @@ describe("channelsAddCommand", () => {
     },
   );
 
+  it.each(["CLI", "hosted"] as const)(
+    "selects and carries an explicit multi-agent channel owner in the %s wizard",
+    async (surface) => {
+      const config: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          entries: {
+            main: { workspace: "/tmp/openclaw-main-workspace" },
+            helper: { workspace: "/tmp/openclaw-helper-workspace" },
+          },
+        },
+        channels: {},
+      };
+      configMocks.readConfigFileSnapshot.mockResolvedValue({
+        ...baseConfigSnapshot,
+        sourceConfig: config,
+        config,
+      });
+      channelWizardMocks.prompter.select.mockResolvedValueOnce("helper");
+      channelWizardMocks.setupChannels.mockImplementationOnce(async (...args: unknown[]) => {
+        const options = requireRecord(args[3], "setup options");
+        const onSelection = options.onSelection as ((selection: string[]) => void) | undefined;
+        const onAccountId = options.onAccountId as
+          | ((channel: string, accountId: string) => void)
+          | undefined;
+        onSelection?.(["lifecycle-chat"]);
+        onAccountId?.("lifecycle-chat", "ops");
+        return args[0] as OpenClawConfig;
+      });
+
+      if (surface === "CLI") {
+        await channelsAddCommand({ channel: "lifecycle-chat" }, runtime, { hasFlags: false });
+      } else {
+        await runChannelsSetupWizard(
+          { channel: "lifecycle-chat" },
+          runtime,
+          channelWizardMocks.prompter,
+        );
+      }
+
+      expect(channelWizardMocks.prompter.select).toHaveBeenCalledOnce();
+      expect(channelWizardMocks.prompter.select).toHaveBeenCalledWith({
+        message: "Set up channels for agent",
+        options: [
+          { value: "main", label: "main" },
+          { value: "helper", label: "helper" },
+        ],
+      });
+      expect(setupChannelArg(4)).toEqual({ agentId: "helper" });
+      expect(writtenConfig()).toMatchObject({
+        bindings: [
+          {
+            agentId: "helper",
+            match: { channel: "lifecycle-chat", accountId: "ops" },
+          },
+        ],
+      });
+    },
+  );
+
   it.each([
     {
       channel: "single-env-chat",

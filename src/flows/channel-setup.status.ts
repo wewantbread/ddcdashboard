@@ -351,9 +351,10 @@ export async function collectChannelStatus(params: {
   accountOverrides: Partial<Record<ChannelChoice, string>>;
   installedPlugins?: ChannelSetupPlugin[];
   resolveAdapter?: (channel: ChannelChoice) => ChannelSetupWizardAdapter | undefined;
+  workspaceDir?: string;
 }): Promise<ChannelStatusSummary> {
   const installedPlugins = params.installedPlugins ?? listChannelSetupPlugins();
-  const workspaceDir = resolveChannelSetupWorkspaceDir(params.cfg);
+  const workspaceDir = params.workspaceDir ?? resolveChannelSetupWorkspaceDir(params.cfg);
   const { installedCatalogEntries, installableCatalogEntries } = resolveChannelSetupEntries({
     cfg: params.cfg,
     installedPlugins,
@@ -540,11 +541,12 @@ export function resolveChannelSelectionNoteLines(params: {
   cfg: OpenClawConfig;
   installedPlugins: ChannelSetupPlugin[];
   selection: ChannelChoice[];
+  workspaceDir?: string;
 }): string[] {
   const { entries } = resolveChannelSetupEntries({
     cfg: params.cfg,
     installedPlugins: params.installedPlugins,
-    workspaceDir: resolveChannelSetupWorkspaceDir(params.cfg),
+    workspaceDir: params.workspaceDir ?? resolveChannelSetupWorkspaceDir(params.cfg),
   });
   const selectionNotes = new Map<string, string>();
   for (const entry of entries) {

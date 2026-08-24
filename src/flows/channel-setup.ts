@@ -1,5 +1,6 @@
 // Channel setup flow configures channels, auth, and workspace bindings.
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { getBundledChannelSetupPlugin } from "../channels/plugins/bundled.js";
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { listActiveChannelSetupPlugins } from "../channels/plugins/setup-registry.js";
@@ -136,6 +137,7 @@ export async function setupChannels(
   runtime: RuntimeEnv,
   prompter: WizardPrompter,
   options?: SetupChannelsOptions,
+  context?: { agentId: string },
 ): Promise<OpenClawConfig> {
   let next = cfg;
   const deferStatusUntilSelection = options?.deferStatusUntilSelection === true;
@@ -144,7 +146,10 @@ export async function setupChannels(
     ...options?.accountIds,
   };
   const scopedPluginsById = new Map<ChannelChoice, ChannelSetupPlugin>();
-  const resolveWorkspaceDir = () => resolveChannelSetupWorkspaceDir(next);
+  const resolveWorkspaceDir = () =>
+    context
+      ? resolveAgentWorkspaceDir(next, context.agentId)
+      : resolveChannelSetupWorkspaceDir(next);
   const rememberScopedPlugin = (plugin: ChannelSetupPlugin) => {
     const channel = plugin.id;
     scopedPluginsById.set(channel, plugin);
@@ -251,6 +256,7 @@ export async function setupChannels(
         accountOverrides,
         installedPlugins: listVisibleInstalledPlugins(),
         resolveAdapter: getVisibleSetupFlowAdapter,
+        workspaceDir: resolveWorkspaceDir(),
       });
   const { statusByChannel, statusLines } = statusSummary;
   if (!options?.skipStatusNote && statusLines.length > 0) {
@@ -1013,6 +1019,7 @@ export async function setupChannels(
     cfg: next,
     installedPlugins: listVisibleInstalledPlugins(),
     selection,
+    workspaceDir: resolveWorkspaceDir(),
   });
   if (selectedLines.length > 0) {
     await prompter.note(selectedLines.join("\n"), t("wizard.channels.selectedTitle"));
