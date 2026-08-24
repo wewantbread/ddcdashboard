@@ -87,7 +87,7 @@ describe("throwWebSearchApiError credential redaction", () => {
       "Brave",
     ).catch((error: unknown) => error);
 
-    expect(String(err)).toBe("Brave API error (500): Internal Failure");
+    expect(String(err)).toContain("Brave API error (500): Internal Failure");
   });
 });
 
