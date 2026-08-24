@@ -53,11 +53,11 @@ describe("throwWebSearchApiError credential redaction", () => {
     const err = await throwWebSearchApiError(reflectedCredentialResponse(), "Perplexity", {
       Authorization: "Bearer sk-live-abcdef123456",
       "Content-Type": "application/json",
-    }).catch((error: Error) => error);
+    }).catch((error: unknown) => error);
 
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).not.toContain("sk-live-abcdef123456");
-    expect(err.message).toContain("***");
+    expect(String(err)).not.toContain("sk-live-abcdef123456");
+    expect(String(err)).toContain("***");
   });
 
   it("masks non-Authorization header credentials like x-api-key values", async () => {
@@ -65,10 +65,10 @@ describe("throwWebSearchApiError credential redaction", () => {
       new Response("bad key: super-secret-key-42", { status: 403 }),
       "Tavily",
       { "x-api-key": "super-secret-key-42" },
-    ).catch((error: Error) => error);
+    ).catch((error: unknown) => error);
 
-    expect(err.message).not.toContain("super-secret-key-42");
-    expect(err.message).toContain("***");
+    expect(String(err)).not.toContain("super-secret-key-42");
+    expect(String(err)).toContain("***");
   });
 
   it("drops truncated error bodies instead of risking a half-redacted credential", async () => {
@@ -77,17 +77,17 @@ describe("throwWebSearchApiError credential redaction", () => {
       (error: Error) => error,
     );
 
-    expect(err.message).not.toContain("sk-live-abcdef123456");
-    expect(err.message).toMatch(/API error \(429\): $/u);
+    expect(String(err)).not.toContain("sk-live-abcdef123456");
+    expect(String(err)).toMatch(/API error \(429\): $/u);
   });
 
   it("falls back to status text when the body is empty", async () => {
     const err = await throwWebSearchApiError(
       new Response("", { status: 500, statusText: "Internal Failure" }),
       "Brave",
-    ).catch((error: Error) => error);
+    ).catch((error: unknown) => error);
 
-    expect(err.message).toBe("Brave API error (500): Internal Failure");
+    expect(String(err)).toBe("Brave API error (500): Internal Failure");
   });
 });
 
@@ -136,11 +136,11 @@ describe("postTrustedWebToolsJson reflected credentials over real loopback", () 
         errorLabel: "Tavily",
       },
       async () => ({}),
-    ).catch((error: Error) => error);
+    ).catch((error: unknown) => error);
 
     expect(seenAuthorization).toBe(`Bearer ${apiKey}`);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).not.toContain(apiKey);
-    expect(err.message).toContain("rejected credential ***");
+    expect(String(err)).not.toContain(apiKey);
+    expect(String(err)).toContain("rejected credential ***");
   });
 });
