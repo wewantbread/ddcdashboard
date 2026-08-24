@@ -89,6 +89,14 @@ export type TrustedAgentToolCaller = Readonly<{
   sessionKey: string;
 }>;
 
+/** Closure-bound streaming hooks attached only to trusted plugin-owned synthetic clients. */
+export type GatewayNodeInvokeStream = {
+  onProgress: (chunk: string) => void;
+  onDispatchReady: (invokeId: string) => void;
+  idleTimeoutMs?: number;
+  isRuntimeCurrent: () => boolean;
+};
+
 /** Per-connection client metadata captured after the gateway handshake. */
 export type GatewayClient = {
   connect: ConnectParams;
@@ -128,6 +136,8 @@ export type GatewayClient = {
     cronRunContinuation?: boolean;
     agentRuntimeIdentity?: AgentRuntimeIdentity;
     pluginRuntimeOwnerId?: string;
+    /** Plugin-owned in-process invoke hooks; never accepted from Gateway wire params. */
+    nodeInvokeStream?: GatewayNodeInvokeStream;
     agentRunTracking?: GatewayAgentRunTaskOwner;
     /** Host-captured requester lineage for opt-in plugin subagent completion delivery. */
     pluginSubagentRequester?: PluginSubagentRequesterContext;
@@ -136,6 +146,8 @@ export type GatewayClient = {
     internalDeliverySuppressText?: boolean;
     /** Plugin-owned tools authorized for this internal subagent run. */
     runtimePluginToolGrant?: RuntimePluginToolGrant;
+    /** Host-owned exact tool cap for a tracked plugin subagent run. */
+    pluginSubagentToolsAllow?: string[];
     /** Opaque in-process subagent-completion capability; never accepted from wire params. */
     delegatedToolPolicyHandoffId?: string;
   };

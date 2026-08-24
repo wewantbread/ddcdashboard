@@ -9,7 +9,7 @@ import { readImageMetadataFromHeader } from "../media/media-services.js";
 import { effectiveImageBytesCap, optimizeImageBufferForWebMedia } from "../media/web-media.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
 
-const HEIC_MIME_RE = /^image\/hei[cf]$/i;
+const HEIC_MIME_RE = /^image\/hei[cf](?:-sequence)?$/i;
 const HEIC_EXT_RE = /\.(heic|heif)$/i;
 const MEDIA_UNDERSTANDING_MAX_SOURCE_PIXELS = 40_000_000;
 
