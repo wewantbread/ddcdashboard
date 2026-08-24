@@ -53,7 +53,7 @@ function isProbeThrottleOpen(now: number, throttleKey: string): boolean {
 let probeReservationSeq = 0;
 
 /** Marks the probe throttle and returns a collision-safe reservation token. */
-export function markProbeAttempt(now: number, throttleKey: string): number {
+function markProbeAttempt(now: number, throttleKey: string): number {
   pruneProbeState(now);
   // A monotonic token (not the timestamp) is the release identity: two probes
   // for the same key can share one millisecond, and an older abort must never
