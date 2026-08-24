@@ -99,6 +99,7 @@ export async function runActiveReplySteer(params: ActiveReplySteerParams): Promi
   );
   const parked = parkSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
   if (!parked) {
+    completeFollowupRunLifecycle(followupRun);
     releaseAdmissionTicket();
     typing.cleanup();
     return "handled";

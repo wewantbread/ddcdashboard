@@ -13,6 +13,23 @@ import {
 } from "./queue/types.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 
+async function waitForDirectoryRemoval(dirPath: string, timeoutMs = 2000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const exists = await fs
+      .stat(dirPath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      return true;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 5);
+    });
+  }
+  return false;
+}
+
 describe("stageSandboxMedia host staging lifecycle cleanup", () => {
   it("returns hostWorkspaceStagingDir and cleans up staging directory on completeFollowupRunLifecycle", async () => {
     await withSandboxMediaTempHome("staging-cleanup-test", async (home) => {
@@ -60,17 +77,9 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Trigger lifecycle completion
       completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
 
-      // Allow microtask / async fs.rm to execute
-      await new Promise((resolve) => {
-        setTimeout(resolve, 50);
-      });
-
-      // Verify directory has been completely cleaned up
-      const exists = await fs
-        .stat(stagingDir)
-        .then(() => true)
-        .catch(() => false);
-      expect(exists).toBe(false);
+      // Verify directory has been completely cleaned up via observable polling helper
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
       expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
@@ -112,15 +121,8 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Simulate active-run drop disposition triggering completeFollowupRunLifecycle directly
       completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
 
-      await new Promise((resolve) => {
-        setTimeout(resolve, 50);
-      });
-
-      const exists = await fs
-        .stat(stagingDir)
-        .then(() => true)
-        .catch(() => false);
-      expect(exists).toBe(false);
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
       expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
@@ -167,15 +169,8 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Direct terminal cleanup removes staging directory without triggering queue abandonment
       cleanHostWorkspaceStaging(followupRun as unknown as FollowupRun);
 
-      await new Promise((resolve) => {
-        setTimeout(resolve, 50);
-      });
-
-      const exists = await fs
-        .stat(stagingDir)
-        .then(() => true)
-        .catch(() => false);
-      expect(exists).toBe(false);
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
       expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
       expect(onAbandoned).not.toHaveBeenCalled();
     });
@@ -185,7 +180,7 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
     await withSandboxMediaTempHome("preaccepted-turn-cleanup-test", async (home) => {
       const mediaDir = path.join(home, ".openclaw", "media", "inbound");
       await fs.mkdir(mediaDir, { recursive: true });
-      const sampleFile = path.join(mediaDir, "sample4.jpg");
+      const sampleFile = path.join(home, ".openclaw", "media", "inbound", "sample4.jpg");
       await fs.writeFile(sampleFile, "preaccepted-turn-media-content");
 
       const mediaUri = `media://inbound/sample4.jpg`;
@@ -224,7 +219,7 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       const hostStagingDir = followupRun.hostWorkspaceStagingDir;
       delete followupRun.hostWorkspaceStagingDir;
       void ownerSettlement.then(() => {
-        completeFollowupRunLifecycle({ hostWorkspaceStagingDir: hostStagingDir });
+        completeFollowupRunLifecycle({ hostWorkspaceStagingDir: hostStagingDir } as FollowupRun);
       });
 
       // Verify directory exists before settlement
@@ -237,15 +232,52 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       // Settle active operation
       resolveSettlement!();
       await ownerSettlement;
-      await new Promise((resolve) => {
-        setTimeout(resolve, 50);
+
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
+    });
+  });
+
+  it("cleans up staging directory on skipped reply turn admission preparation exit", async () => {
+    await withSandboxMediaTempHome("skipped-admission-cleanup-test", async (home) => {
+      const mediaDir = path.join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      const sampleFile = path.join(home, ".openclaw", "media", "inbound", "sample5.jpg");
+      await fs.writeFile(sampleFile, "skipped-admission-media-content");
+
+      const mediaUri = `media://inbound/sample5.jpg`;
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      const cfg = {
+        ...createSandboxMediaStageConfig(home),
+        agents: {
+          defaults: {
+            sandbox: { mode: "off" },
+          },
+        },
+      } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
+      const workspaceDir = path.join(home, "openclaw");
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "session-5",
+        workspaceDir,
       });
 
-      exists = await fs
-        .stat(stagingDir)
-        .then(() => true)
-        .catch(() => false);
-      expect(exists).toBe(false);
+      const stagingDir = result.hostWorkspaceStagingDir!;
+      expect(stagingDir).toBeDefined();
+
+      const followupRun: Partial<FollowupRun> = {
+        hostWorkspaceStagingDir: stagingDir,
+      };
+
+      // Simulate skipped admission preparation exit calling completeFollowupRunLifecycle
+      completeFollowupRunLifecycle(followupRun as unknown as FollowupRun);
+
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
+      expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
 });

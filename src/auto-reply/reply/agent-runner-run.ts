@@ -482,6 +482,7 @@ export async function runReplyAgent(
           : { status: "skipped", reason: admission.reason };
     }
     if (admission.status === "skipped") {
+      completeFollowupRunLifecycle(followupRun);
       releaseAdmissionTicket();
       typing.cleanup();
       if (admission.reason !== "active-run" || replyTurnKind !== "visible") {
