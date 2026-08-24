@@ -247,19 +247,9 @@ export function toRetryError(value: unknown, fallbackMessage = "Non-Error thrown
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    // Object.assign minus __proto__: enumerate own string and Symbol keys and
-    // recheck each key's current enumerability inside the loop, mirroring
-    // Object.assign (which calls [[GetOwnProperty]] per step, so an earlier
-    // getter that makes a later field non-enumerable is respected — Object.keys
-    // snapshots before any getter runs). Mirrors toErrorObject; retry stays
-    // zero-dependency so the loop is inlined. [[Set]] preserves existing Error
-    // field descriptors and propagates throwing source accessors; a non-writable
-    // target field (hardened prototype / frozen subclass) makes [[Set]] throw
-    // under Object.assign, so Reflect.set returning false is re-raised to keep
-    // that throwing path. Skipping __proto__ alone blocks the prototype-hijack
-    // (a JSON.parse'd own enumerable __proto__ would otherwise replace the
-    // Error's prototype). Reflect.get avoids a type assertion — value is
-    // already narrowed above.
+    // Object.assign minus __proto__: a parsed own enumerable __proto__ would
+    // replace this Error's prototype, so it is skipped to block prototype hijack.
+    // Inlined rather than shared with toErrorObject because retry is zero-dependency.
     for (const key of Reflect.ownKeys(value)) {
       if (key === "__proto__") {
         continue;

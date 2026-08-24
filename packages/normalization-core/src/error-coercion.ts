@@ -146,17 +146,8 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    // Object.assign minus __proto__: enumerate own string and Symbol keys and
-    // recheck each key's current enumerability inside the loop, mirroring
-    // Object.assign (which calls [[GetOwnProperty]] per step, so an earlier
-    // getter that makes a later field non-enumerable is respected — Object.keys
-    // snapshots string keys before any getter runs). [[Set]] preserves existing
-    // Error field descriptors and propagates throwing source accessors; a
-    // non-writable target field (hardened prototype / frozen subclass) makes
-    // [[Set]] throw under Object.assign, so Reflect.set returning false is
-    // re-raised to keep that throwing path. Skipping __proto__ alone blocks the
-    // prototype-setter hijack. Reflect.get avoids a type assertion — value is
-    // already narrowed to an object/function above.
+    // Object.assign minus __proto__: a parsed own enumerable __proto__ would
+    // replace this Error's prototype, so it is skipped to block prototype hijack.
     for (const key of Reflect.ownKeys(value)) {
       if (key === "__proto__") {
         continue;
