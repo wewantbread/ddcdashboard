@@ -460,6 +460,7 @@ export function createBeamMirrorRunner(params: {
       );
       const catalogById = new Map(catalogs.map((catalog) => [catalog.id, catalog]));
       const candidates: BeamMirrorCandidate[] = [];
+      const activeKeysByFullyObservedHost = new Map<string, Set<string>>();
       for (const catalog of catalogs) {
         signal.throwIfAborted();
         try {
@@ -467,7 +468,26 @@ export function createBeamMirrorRunner(params: {
             catalog.list({ agentId, limitPerHost: MIRROR_LIST_LIMIT }),
           );
           signal.throwIfAborted();
-          candidates.push(...hostCandidates(catalog.id, hosts, activeSinceMs));
+          for (const host of hosts) {
+            const hostSessions = hostCandidates(catalog.id, [host], activeSinceMs);
+            candidates.push(...hostSessions);
+            if (
+              host.kind === "gateway" &&
+              host.connected &&
+              !host.error &&
+              host.nextCursor === undefined
+            ) {
+              activeKeysByFullyObservedHost.set(
+                `${catalog.id}\0${host.hostId}`,
+                new Set(
+                  hostSessions.map(
+                    (candidate) =>
+                      `${candidate.catalogId}\0${candidate.hostId}\0${candidate.threadId}`,
+                  ),
+                ),
+              );
+            }
+          }
         } catch (error) {
           signal.throwIfAborted();
           warnThrottled(`beam mirror list failed for ${catalog.id}: ${String(error)}`);
@@ -475,11 +495,9 @@ export function createBeamMirrorRunner(params: {
       }
       candidates.sort((left, right) => right.recencyAt - left.recencyAt);
       const selected = candidates.slice(0, MIRROR_MAX_SESSIONS);
-      const selectedKeys = new Set<string>();
       for (const candidate of selected) {
         signal.throwIfAborted();
         const key = `${candidate.catalogId}\0${candidate.hostId}\0${candidate.threadId}`;
-        selectedKeys.add(key);
         const catalog = catalogById.get(candidate.catalogId);
         if (!catalog) {
           continue;
@@ -501,11 +519,14 @@ export function createBeamMirrorRunner(params: {
           warnThrottled(`beam mirror upload failed for ${candidate.catalogId}: ${String(error)}`);
         }
       }
-      // Sessions that left the active window get one final completed upload so
-      // remote rows flip from live to completed instead of lingering until TTL.
+      // A missing key proves inactivity only when that host was fully observed;
+      // upload selection remains capped independently from completion state.
       for (const [key, entry] of tracked) {
         signal.throwIfAborted();
-        if (selectedKeys.has(key)) {
+        const activeKeys = activeKeysByFullyObservedHost.get(
+          `${entry.candidate.catalogId}\0${entry.candidate.hostId}`,
+        );
+        if (!activeKeys || activeKeys.has(key)) {
           continue;
         }
         tracked.delete(key);
