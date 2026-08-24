@@ -1039,6 +1039,10 @@
     {
       "source": "/automation/gmail-pubsub",
       "destination": "/automation/cron-jobs"
+    },
+    {
+      "source": "/providers/inferrs",
+      "destination": "/providers/llmman"
     }
   ],
   "navigation": {
@@ -1546,10 +1550,10 @@
                   "providers/gradium",
                   "providers/groq",
                   "providers/huggingface",
-                  "providers/inferrs",
                   "providers/inworld",
                   "providers/kilocode",
                   "providers/litellm",
+                  "providers/llmman",
                   "providers/lmstudio",
                   "providers/longcat",
                   "providers/meta",
