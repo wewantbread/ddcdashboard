@@ -54,6 +54,7 @@ import {
   resolveModelFallbackCandidateAgentRuntime,
   resolveModelFallbackCandidateHarnessAuthPrecheck,
   resolveNextFallbackCandidateIndex,
+  resolveExhaustedFallbackOutcome,
   runFallbackAttempt,
   sameModelCandidate,
   shouldDiscardDeferredSessionSuspension,
@@ -757,25 +758,12 @@ async function runWithModelFallbackInternal<T>(
   }
 
   if (exhaustionResult) {
-    if (latestClassifiedResult && params.mergeExhaustedResult) {
-      return {
-        outcome: "exhausted",
-        result: params.mergeExhaustedResult({
-          latestResult: latestClassifiedResult.result,
-          preferredResult: exhaustionResult.result,
-        }),
-        provider: latestClassifiedResult.provider,
-        model: latestClassifiedResult.model,
-        attempts,
-      };
-    }
-    return {
-      outcome: "exhausted",
-      result: exhaustionResult.result,
-      provider: exhaustionResult.provider,
-      model: exhaustionResult.model,
+    return resolveExhaustedFallbackOutcome({
+      exhaustionResult,
+      latestClassifiedResult,
       attempts,
-    };
+      mergeExhaustedResult: params.mergeExhaustedResult,
+    });
   }
 
   return throwFallbackFailureSummary({
