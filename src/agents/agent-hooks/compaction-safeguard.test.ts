@@ -2458,7 +2458,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(auditInput.identifiers).toEqual([]);
   });
 
-  it("rejects all-preserved fallback output that truncates source facts", async () => {
+  it("degrades all-preserved fallback output that truncates source facts", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "report deployment status";
     const identifier = "/tmp/all-preserved-truncated.log";
@@ -2478,7 +2478,11 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    expect(result).toEqual({ cancel: true });
+    // Cancelling here strands the session: nothing shrinks, so every later turn
+    // fails preflight the same way. A lossy summary beats an uncompactable
+    // session, so the guard degrades and records why.
+    expect(result).not.toEqual({ cancel: true });
+    expect(expectCompactionResult(result).summary).toBeTruthy();
     expect(mockSummarizeInStages).not.toHaveBeenCalled();
     expect(mockAuditSummaryQuality).toHaveBeenCalledTimes(1);
     const auditInput = requireRecord(mockCallArg(mockAuditSummaryQuality));
@@ -2491,9 +2495,9 @@ describe("compaction-safeguard recent-turn preservation", () => {
       ok: false,
       reasons: [`missing_identifiers:${identifier}`, "latest_user_ask_not_reflected"],
     });
-    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBe(
-      "Compaction safeguard finalized summary failed quality checks.",
-    );
+    // No cancel reason: the guard degraded rather than cancelling, so the
+    // session stays usable and the degradation is recorded in the warning below.
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
     const terminalWarnings = compactionLogger.warn.mock.calls.flat().join("\n");
     expect(terminalWarnings).toContain(
       "reasonCodes=missing_identifiers,latest_user_ask_not_reflected",
