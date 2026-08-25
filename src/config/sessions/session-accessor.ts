@@ -286,6 +286,10 @@ export type {
   SessionTranscriptMessageEventPage,
 } from "./session-accessor.sqlite-active-events.js";
 export {
+  readSessionTranscriptRestorableMessageSnapshot,
+  type SessionTranscriptRestorableMessageSnapshot,
+} from "./session-accessor.sqlite-restorable-messages.js";
+export {
   readSessionTranscriptWatermark,
   readSessionTranscriptWatermarkBatch,
   type SessionTranscriptWatermark,
