@@ -36,8 +36,16 @@ type RuntimeEntryParams = {
   requesterScope?: SessionMcpRequesterScope;
   requesterConnect?: RequesterMcpConnect;
   configFingerprint?: string;
+  currentMcpServers?: Record<string, BundleMcpServerConfig>;
   toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
 };
+
+function updateRuntimeVolatileHeaders(
+  runtime: SessionMcpRuntime,
+  servers: Record<string, BundleMcpServerConfig>,
+): void {
+  runtime.updateVolatileHeaders?.(servers);
+}
 
 type SessionMcpRuntimeManagerInstall = {
   getOrCreateRuntimeEntry: (params: RuntimeEntryParams) => Promise<SessionMcpRuntime>;
@@ -102,19 +110,25 @@ export function createSessionMcpRuntimeManagerInstall(
   const getOrCreateRuntimeEntry = async (
     params: RuntimeEntryParams,
   ): Promise<SessionMcpRuntime> => {
-    const nextFingerprint =
-      params.configFingerprint ??
-      loadSessionMcpConfig({
-        workspaceDir: params.workspaceDir,
-        cfg: params.cfg,
-        logDiagnostics: false,
-        manifestRegistry: params.manifestRegistry,
-        includeServerNames: params.includeServerNames,
-        excludeServerNames: params.excludeServerNames,
-        redactConnectionServerNames: params.redactConnectionServerNames,
-        safeServerNamesByServer: params.safeServerNamesByServer,
-        toolOverrides: params.toolOverrides,
-      }).fingerprint;
+    const currentConfig =
+      params.configFingerprint === undefined || params.currentMcpServers === undefined
+        ? loadSessionMcpConfig({
+            workspaceDir: params.workspaceDir,
+            cfg: params.cfg,
+            logDiagnostics: false,
+            manifestRegistry: params.manifestRegistry,
+            includeServerNames: params.includeServerNames,
+            excludeServerNames: params.excludeServerNames,
+            redactConnectionServerNames: params.redactConnectionServerNames,
+            safeServerNamesByServer: params.safeServerNamesByServer,
+            toolOverrides: params.toolOverrides,
+          })
+        : undefined;
+    const nextFingerprint = params.configFingerprint ?? currentConfig?.fingerprint;
+    const currentMcpServers = params.currentMcpServers ?? currentConfig?.loaded.mcpServers;
+    if (!nextFingerprint || !currentMcpServers) {
+      throw new Error("Session MCP runtime config was not prepared");
+    }
     const existing = store.runtimesBySessionId.get(params.runtimeKey);
     if (existing) {
       if (
@@ -132,6 +146,7 @@ export function createSessionMcpRuntimeManagerInstall(
       } else {
         reconcileReusableRetirement(params.sessionId, existing);
         existing.markUsed();
+        updateRuntimeVolatileHeaders(existing, currentMcpServers);
         store.idleTtlMsBySessionId.set(params.runtimeKey, params.idleTtlMs);
         return existing;
       }
@@ -146,7 +161,10 @@ export function createSessionMcpRuntimeManagerInstall(
           candidate: inFlight,
         })
       ) {
-        return inFlight.promise;
+        return inFlight.promise.then((runtime) => {
+          updateRuntimeVolatileHeaders(runtime, currentMcpServers);
+          return runtime;
+        });
       }
       store.createInFlight.delete(params.runtimeKey);
       const staleRuntime = await inFlight.promise.catch(() => undefined);
@@ -176,6 +194,7 @@ export function createSessionMcpRuntimeManagerInstall(
     ).then((runtime) => {
       reconcileReusableRetirement(params.sessionId, runtime);
       runtime.markUsed();
+      updateRuntimeVolatileHeaders(runtime, currentMcpServers);
       store.runtimesBySessionId.set(params.runtimeKey, runtime);
       store.idleTtlMsBySessionId.set(params.runtimeKey, params.idleTtlMs);
       return runtime;
@@ -211,7 +230,7 @@ export function createSessionMcpRuntimeManagerInstall(
     requesterScope: SessionMcpRequesterScope;
     toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
   }): Promise<SessionMcpRuntime> => {
-    const { fingerprint: resolvedFingerprint } = loadSessionMcpConfig({
+    const { loaded, fingerprint: resolvedFingerprint } = loadSessionMcpConfig({
       workspaceDir: params.workspaceDir,
       cfg: params.cfg,
       logDiagnostics: false,
@@ -245,6 +264,7 @@ export function createSessionMcpRuntimeManagerInstall(
         connectionHash,
         resolvedAt: store.now(),
       });
+      updateRuntimeVolatileHeaders(existing, loaded.mcpServers);
       return existing;
     }
     if (existing) {
@@ -269,6 +289,7 @@ export function createSessionMcpRuntimeManagerInstall(
       requesterScope: params.requesterScope,
       requesterConnect: params.requesterConnect,
       configFingerprint: runtimeFingerprint,
+      currentMcpServers: loaded.mcpServers,
       toolOverrides: params.toolOverrides,
     });
     store.connectionMetaByRuntimeKey.set(params.runtimeKey, {
@@ -319,16 +340,17 @@ export function createSessionMcpRuntimeManagerInstall(
       ...(requesterConnect?.authorizedServerNames ?? []),
       ...params.resolverRequesterServerNames,
     ]);
-    const { fingerprint: expectedLiveFingerprint } = loadSessionMcpConfig({
-      workspaceDir: params.workspaceDir,
-      cfg: params.cfg,
-      logDiagnostics: false,
-      manifestRegistry: params.manifestRegistry,
-      includeServerNames: expectedLiveNameSet,
-      redactConnectionServerNames: new Set(params.resolverRequesterServerNames),
-      safeServerNamesByServer: params.safeServerNamesByServer,
-      toolOverrides: params.toolOverrides,
-    });
+    const { loaded: expectedLiveConfig, fingerprint: expectedLiveFingerprint } =
+      loadSessionMcpConfig({
+        workspaceDir: params.workspaceDir,
+        cfg: params.cfg,
+        logDiagnostics: false,
+        manifestRegistry: params.manifestRegistry,
+        includeServerNames: expectedLiveNameSet,
+        redactConnectionServerNames: new Set(params.resolverRequesterServerNames),
+        safeServerNamesByServer: params.safeServerNamesByServer,
+        toolOverrides: params.toolOverrides,
+      });
     const scopedFingerprint = requesterRuntimeFingerprint(
       expectedLiveFingerprint,
       requesterConnect,
@@ -353,6 +375,7 @@ export function createSessionMcpRuntimeManagerInstall(
     ) {
       reconcileReusableRetirement(params.sessionId, existing);
       existing.markUsed();
+      updateRuntimeVolatileHeaders(existing, expectedLiveConfig.mcpServers);
       store.idleTtlMsBySessionId.set(params.runtimeKey, params.idleTtlMs);
       return existing;
     }

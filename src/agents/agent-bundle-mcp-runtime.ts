@@ -1,4 +1,5 @@
 /** Session-scoped MCP runtime catalog loader and transport lifecycle. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Client, type ClientOptions } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
@@ -72,6 +73,7 @@ import { sanitizeMcpMetadataText } from "./mcp-metadata.js";
 import { collectMcpPaginatedItems } from "./mcp-pagination.js";
 import { isMcpToolAllowed, normalizeMcpToolFilter } from "./mcp-tool-filter.js";
 import { normalizeMcpToolCatalog, type McpToolCatalogMetadata } from "./mcp-tool-metadata.js";
+import { resolveMcpVolatileHeaders } from "./mcp-transport-config.js";
 import { resolveMcpTransport } from "./mcp-transport.js";
 
 type BundleMcpSession = {
@@ -121,6 +123,19 @@ type McpServerBackoffState = {
   failures: number;
   retryAfterMs?: number;
 };
+
+type VolatileHeadersByServer = ReadonlyMap<string, Readonly<Record<string, string>>>;
+
+function buildVolatileHeadersSnapshot(
+  servers: Record<string, Record<string, unknown>>,
+): VolatileHeadersByServer {
+  return new Map(
+    Object.entries(servers).flatMap(([serverName, rawServer]) => {
+      const headers = resolveMcpVolatileHeaders(rawServer);
+      return headers ? ([[serverName, Object.freeze(headers)]] as const) : [];
+    }),
+  );
+}
 
 export { createMcpJsonSchemaValidator as createBundleMcpJsonSchemaValidator };
 
@@ -296,6 +311,8 @@ export function createSessionMcpRuntime(params: {
   let lastUsedAt = createdAt;
   let activeLeases = 0;
   let disposed = false;
+  let latestVolatileHeaders = buildVolatileHeadersSnapshot(loaded.mcpServers);
+  const turnVolatileHeaders = new AsyncLocalStorage<VolatileHeadersByServer>();
   const lifecycleAbortController = new AbortController();
   let catalog: McpToolCatalog | null = null;
   let catalogRetryAfterMs: number | undefined;
@@ -620,6 +637,12 @@ export function createSessionMcpRuntime(params: {
             agentDir: params.agentDir,
             prepareDataDir: dataDirOwnership?.dataDir,
             requesterScope: params.requesterScope,
+            getVolatileHeaders: () =>
+              // Tool executors install their immutable turn snapshot. Catalog
+              // refreshes and reconnects without a turn owner use the latest snapshot.
+              turnVolatileHeaders.getStore()?.get(serverName) ??
+              latestVolatileHeaders.get(serverName),
+            getLatestVolatileHeaders: () => latestVolatileHeaders.get(serverName),
           });
           if (!resolved) {
             continue;
@@ -1012,6 +1035,15 @@ export function createSessionMcpRuntime(params: {
     },
     markUsed() {
       lastUsedAt = Date.now();
+    },
+    updateVolatileHeaders(nextServers: Record<string, Record<string, unknown>>) {
+      latestVolatileHeaders = buildVolatileHeadersSnapshot(nextServers);
+    },
+    captureVolatileHeadersForTurn() {
+      const snapshot = latestVolatileHeaders;
+      return {
+        run: <T>(task: () => T): T => turnVolatileHeaders.run(snapshot, task),
+      };
     },
     async callTool(serverName, toolName, input) {
       const session = await getActiveSession(serverName);

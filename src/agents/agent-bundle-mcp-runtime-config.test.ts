@@ -140,6 +140,57 @@ describe("session MCP config discovery cache", () => {
     expect(first.fingerprint).not.toBe(second.fingerprint);
   });
 
+  it("excludes volatile headers from catalog fingerprints", () => {
+    const first = loadSessionMcpConfig({
+      workspaceDir: "/volatile-headers-workspace",
+      cfg: {
+        mcp: {
+          servers: {
+            docs: {
+              url: "https://mcp.example.test",
+              headers: { "X-Tenant": "docs" },
+              volatileHeaders: { traceparent: "first" },
+            },
+          },
+        },
+      },
+    });
+    const volatileChange = loadSessionMcpConfig({
+      workspaceDir: "/volatile-headers-workspace",
+      cfg: {
+        mcp: {
+          servers: {
+            docs: {
+              url: "https://mcp.example.test",
+              headers: { "X-Tenant": "docs" },
+              volatileHeaders: { traceparent: "second" },
+            },
+          },
+        },
+      },
+    });
+    const stableChange = loadSessionMcpConfig({
+      workspaceDir: "/volatile-headers-workspace",
+      cfg: {
+        mcp: {
+          servers: {
+            docs: {
+              url: "https://mcp.example.test",
+              headers: { "X-Tenant": "other" },
+              volatileHeaders: { traceparent: "second" },
+            },
+          },
+        },
+      },
+    });
+
+    expect(volatileChange.fingerprint).toBe(first.fingerprint);
+    expect(volatileChange.loaded.mcpServers.docs?.volatileHeaders).toEqual({
+      traceparent: "second",
+    });
+    expect(stableChange.fingerprint).not.toBe(first.fingerprint);
+  });
+
   it("keeps process-wide discovery isolated across sessions on the same agent", () => {
     const cfg = { mcp: { servers: { docs: { command: "docs" } } } };
     const disabled = loadSessionMcpConfig({
