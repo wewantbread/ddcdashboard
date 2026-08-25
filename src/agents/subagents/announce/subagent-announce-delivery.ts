@@ -220,7 +220,7 @@ export async function deliverSubagentAnnouncement(params: {
     return { delivered: false, path: "queued", disposition: "session_queued" };
   }
 
-  return await runSubagentAnnounceDispatch({
+  const delivery = await runSubagentAnnounceDispatch({
     expectsCompletionMessage: params.expectsCompletionMessage,
     requireDirectDelivery: params.requireDirectDelivery,
     signal: params.signal,
@@ -266,6 +266,20 @@ export async function deliverSubagentAnnouncement(params: {
       });
     },
   });
+  const failedDirect = params.expectsCompletionMessage
+    ? delivery.phases?.find(
+        (phase) => phase.phase === "direct-primary" && !phase.delivered && phase.path === "direct",
+      )
+    : undefined;
+  if (failedDirect?.error) {
+    const source = params.sourceRunId
+      ? `run ${params.sourceRunId}`
+      : `session ${params.sourceSessionKey ?? params.requesterSessionKey}`;
+    defaultRuntime.log(
+      `[warn] Subagent completion direct announce failed for ${source}: ${failedDirect.error}${delivery.delivered ? "; recovered via steered" : ""}`,
+    );
+  }
+  return delivery;
 }
 
 const testing = {
