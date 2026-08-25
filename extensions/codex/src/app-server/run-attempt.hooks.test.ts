@@ -21,6 +21,7 @@ import {
 import { GPT5_BEHAVIOR_CONTRACT as CODEX_GPT5_BEHAVIOR_CONTRACT } from "openclaw/plugin-sdk/provider-model-shared";
 import { describe, expect, it, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
+import { itemNotification } from "./protocol.test-helpers.js";
 import {
   assistantMessage,
   createAppServerHarness,
@@ -51,6 +52,66 @@ function flushDiagnosticEvents() {
 setupRunAttemptTestHooks();
 
 describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
+  it("preserves authenticated channel context across prompt and compaction hooks", async () => {
+    const beforePromptBuild = vi.fn(() => undefined);
+    const beforeCompaction = vi.fn(() => undefined);
+    const afterCompaction = vi.fn(() => undefined);
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_prompt_build", handler: beforePromptBuild },
+        { hookName: "before_compaction", handler: beforeCompaction },
+        { hookName: "after_compaction", handler: afterCompaction },
+      ]),
+    );
+    const sessionFile = path.join(tempDir, "authenticated-compaction.jsonl");
+    const workspaceDir = path.join(tempDir, "authenticated-compaction-workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.messageChannel = "telegram";
+    params.messageProvider = "telegram";
+    params.currentChannelId = "telegram:-100123";
+    params.messageTo = "telegram:-100123";
+    params.agentAccountId = "account-a";
+    params.senderId = "sender-a";
+    params.channelContext = {
+      sender: { id: "stale-sender", profile: "sender-profile" },
+      chat: { id: "stale-chat", thread: "chat-thread" },
+    };
+    const harness = createStartedThreadHarness();
+
+    const run = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+    await harness.notify(
+      itemNotification("item/started", { type: "contextCompaction", id: "compact-1" }),
+    );
+    await harness.notify(
+      itemNotification("item/completed", { type: "contextCompaction", id: "compact-1" }),
+    );
+    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await run;
+
+    const expectedContext = {
+      accountId: "account-a",
+      channel: "telegram",
+      messageProvider: "telegram",
+      channelId: "-100123",
+      chatId: "-100123",
+      senderId: "sender-a",
+      channelContext: {
+        sender: { id: "sender-a", profile: "sender-profile" },
+        chat: { id: "-100123", thread: "chat-thread" },
+      },
+    };
+    for (const [hookName, hook] of [
+      ["before_prompt_build", beforePromptBuild],
+      ["before_compaction", beforeCompaction],
+      ["after_compaction", afterCompaction],
+    ] as const) {
+      expect(hook).toHaveBeenCalledOnce();
+      const [, hookContext] = mockCall(hook, hookName) as [unknown, Record<string, unknown>];
+      expect(hookContext).toMatchObject(expectedContext);
+    }
+  });
+
   it.each([
     { label: "completed", status: "completed" as const, error: undefined },
     { label: "failed", status: "failed" as const, error: "codex exploded" },
