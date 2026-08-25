@@ -17,6 +17,7 @@ import {
 } from "../../../infra/outbound/session-binding-service.js";
 import { normalizeLegacySessionEntryDelivery } from "../../../infra/state-migrations.legacy-session-store.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
+import { defaultRuntime } from "../../../runtime.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -33,6 +34,7 @@ import {
 import {
   createTaskCompletionEvent,
   expectDeliveryPath,
+  expectRecord,
   expectRecordFields,
   imageCompletionEvents,
   mockCallArg,
@@ -1680,6 +1682,71 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
     expect(onDeliveryResult).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a sent-then-failed direct text completion ambiguous and terminal", async () => {
+    const callGateway = createPayloadGatewayMock();
+    const sendMessage = vi.fn(async () => {
+      throw Object.assign(
+        new Error("session file changed while embedded prompt lock was released"),
+        { sentBeforeError: true },
+      );
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      internalEvents: taskCompletionEvents({ childSessionId: "child-session-id" }),
+    });
+
+    // `ambiguous` is what actually stops the steer fallback and the registry
+    // retry; `terminal` alone is not consulted on the completion-handoff path.
+    expectRecordFields(result, {
+      delivered: false,
+      path: "direct",
+      terminal: true,
+      disposition: "ambiguous",
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a never-sent direct text completion retryable", async () => {
+    const callGateway = createPayloadGatewayMock();
+    const sendMessage = vi.fn(async () => {
+      throw new Error("transient transport failure");
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      internalEvents: taskCompletionEvents({ childSessionId: "child-session-id" }),
+    });
+
+    const record = expectRecord(result, "never-sent direct text completion");
+    expect(record.terminal).toBeUndefined();
+    expect(record.disposition).toBeUndefined();
+  });
+
+  it("logs why a direct text completion salvage declined", async () => {
+    const callGateway = createPayloadGatewayMock();
+    const sendMessage = createSendMessageMock();
+    const logSpy = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+
+    await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      internalEvents: taskCompletionEvents({
+        childSessionId: "child-session-id",
+        status: "error",
+        statusLabel: "failed",
+      }),
+    });
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Subagent completion text-direct salvage skipped: contentChars=0"),
+    );
+    logSpy.mockRestore();
   });
 
   it("uses the caller owner for direct completion delivery to a bare requester key", async () => {
