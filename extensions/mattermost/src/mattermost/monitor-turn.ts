@@ -23,6 +23,7 @@ import { normalizeMattermostAllowEntry } from "./monitor-auth.js";
 import {
   formatMattermostFinalDeliveryOutcomeLog,
   resolveMattermostReplyRootId,
+  resolveMattermostProgressDeliveryPolicy,
   shouldSuppressMattermostDefaultToolProgressMessages,
   shouldUpdateMattermostDraftToolProgress,
 } from "./monitor-context.js";
@@ -38,6 +39,7 @@ import { deliverMattermostReplyPayload, joinMattermostVisibleContent } from "./r
 import type { HistoryEntry, ReplyPayload } from "./runtime-api.js";
 import { createChannelMessageReplyPipeline } from "./runtime-api.js";
 import { sendMessageMattermost } from "./send.js";
+import { createMattermostSeparateProgressController } from "./separate-progress.js";
 import { recordMattermostThreadParticipation } from "./thread-participation.js";
 
 type MattermostInboundTurnParams = {
@@ -61,6 +63,7 @@ function createDisabledMattermostDraftStream(): ReturnType<typeof createMattermo
     postId: () => undefined,
     clear: noopAsync,
     discardPending: noopAsync,
+    retainTerminalText: async () => false,
     seal: noopAsync,
     stop: noopAsync,
     forceNewMessage: noopAsync,
@@ -114,11 +117,20 @@ export async function dispatchMattermostInboundTurn(
     draftPreviewEnabled && shouldUpdateMattermostDraftToolProgress(account);
   const suppressDefaultToolProgressMessages =
     draftPreviewEnabled && shouldSuppressMattermostDefaultToolProgressMessages(account);
+  const {
+    separate: separateProgressFinalDelivery,
+    postType: progressPostType,
+    pinnedLabel: pinnedProgressLabel,
+    seed: progressSeed,
+  } = resolveMattermostProgressDeliveryPolicy(account, channelId);
+  const observedSeparateFinalDeliveryEnabled = draftPreviewEnabled && separateProgressFinalDelivery;
   const draftStream = draftPreviewEnabled
     ? createMattermostDraftStream({
         client,
         channelId,
         rootId: effectiveReplyToId,
+        ...(progressPostType ? { postType: progressPostType } : {}),
+        cleanupMode: separateProgressFinalDelivery ? "strict" : "best-effort",
         throttleMs: 1200,
         chunkText: (value) =>
           core.channel.text.chunkMarkdownTextWithMode(
@@ -130,6 +142,12 @@ export async function dispatchMattermostInboundTurn(
         warn: monitor.logVerboseMessage,
       })
     : createDisabledMattermostDraftStream();
+  const separateProgress = createMattermostSeparateProgressController({
+    enabled: separateProgressFinalDelivery,
+    pinnedLabel: pinnedProgressLabel,
+    draftStream,
+    logVerboseMessage: monitor.logVerboseMessage,
+  });
   const previewBoundaryController = createMattermostDraftPreviewBoundaryController({
     enabled: draftPreviewEnabled && account.streamingMode === "block",
     forceNewMessage: async () => {
@@ -146,9 +164,9 @@ export async function dispatchMattermostInboundTurn(
     entry: account.config,
     mode: account.streamingMode,
     active: draftPreviewEnabled,
-    seed: `${account.accountId}:${channelId}`,
+    seed: progressSeed,
     update: async (previewText, options) => {
-      draftStream.update(previewText);
+      draftStream.update(separateProgress.formatDraft(previewText));
       if (options?.flush) {
         await draftStream.flush();
       }
@@ -292,6 +310,7 @@ export async function dispatchMattermostInboundTurn(
         // Final text uses only confirmed-visible generations, so join prior boundary work before deciding whether to edit in place.
         await draftStream.settleBoundaries();
         progressDraft.markFinalReplyStarted();
+        await separateProgress.prepareFinal(payloadEntry.isError === true);
       }
       // A visible same-thread final can be a send or an in-place draft edit; either path records participation.
       let threadParticipationRecorded = false;
@@ -312,7 +331,9 @@ export async function dispatchMattermostInboundTurn(
         effectiveReplyToId,
         resolvePreviewFinalText,
         previewState,
+        separateProgressFinalDelivery,
         logVerboseMessage: monitor.logVerboseMessage,
+        recordSuccessfulFinal: separateProgress.recordSuccessfulFinal,
         recordThreadParticipation: markThreadParticipation,
         deliverPayload: async (payloadToDeliver) => {
           const finalTextResolution =
@@ -387,6 +408,7 @@ export async function dispatchMattermostInboundTurn(
         markThreadParticipation();
       }
       if (info.kind === "final") {
+        await separateProgress.settleFinal(result, payloadEntry.isError === true);
         progressDraft.markFinalReplyDelivered();
       }
       return result;
@@ -468,8 +490,11 @@ export async function dispatchMattermostInboundTurn(
               ? true
               : undefined,
             preserveProgressCallbackStartOrder: draftPreviewEnabled ? true : undefined,
-            onObservedReplyDelivery: draftToolProgressEnabled
-              ? () => draftStream.clear()
+            onObservedReplyDelivery: observedSeparateFinalDeliveryEnabled
+              ? async () => {
+                  separateProgress.recordSuccessfulFinal();
+                  await draftStream.clear();
+                }
               : undefined,
             disableBlockStreaming: draftPreviewEnabled ? true : replyOptions.disableBlockStreaming,
             ...(suppressDefaultToolProgressMessages
@@ -507,6 +532,7 @@ export async function dispatchMattermostInboundTurn(
                   payloadResult.text || "Thinking…",
                   {
                     snapshot: payloadResult.isReasoningSnapshot === true,
+                    startImmediately: separateProgress.startReasoningImmediately,
                   },
                 );
               }
@@ -572,6 +598,9 @@ export async function dispatchMattermostInboundTurn(
         }),
       },
     });
+  } catch (error: unknown) {
+    await separateProgress.settleTurnError();
+    throw error;
   } finally {
     try {
       await draftStream.stop();
