@@ -254,6 +254,77 @@ describe("createBlockReplyDeliveryHandler", () => {
     });
   });
 
+  it("trims the first block and preserves a paragraph boundary in later blocks", async () => {
+    const blockReplyPipeline = {
+      enqueue: vi.fn(),
+    } as unknown as BlockReplyPipelineLike;
+
+    const handler = createBlockReplyDeliveryHandler({
+      onBlockReply: vi.fn(async () => {}),
+      normalizeStreamingText: (payload) => ({ text: payload.text, skip: false }),
+      applyReplyToMode: (payload) => payload,
+      typingSignals: {
+        signalTextDelta: vi.fn(async () => {}),
+      } as unknown as TypingSignaler,
+      blockStreamingEnabled: true,
+      blockReplyPipeline,
+      directlySentBlockKeys: new Set(),
+      directlySentBlockPayloads: [],
+    });
+
+    await handler({ text: "\n\n# Title" });
+    await handler({ text: "\n\nFirst paragraph." });
+    await handler({ text: " \n  Trimmed continuation" });
+
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "# Title" }),
+    );
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ text: "\n\nFirst paragraph." }),
+    );
+    expect(blockReplyPipeline.enqueue).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ text: "Trimmed continuation" }),
+    );
+  });
+
+  it("preserves a later paragraph boundary during concurrent media normalization", async () => {
+    const enqueue = vi.fn();
+    const normalizationResolvers: Array<() => void> = [];
+    const handler = createBlockReplyDeliveryHandler({
+      onBlockReply: vi.fn(async () => {}),
+      normalizeStreamingText: (payload) => ({ text: payload.text, skip: false }),
+      applyReplyToMode: (payload) => payload,
+      normalizeMediaPaths: (payload) =>
+        new Promise<ReplyPayload>((resolve) => {
+          normalizationResolvers.push(() => resolve(payload));
+        }),
+      typingSignals: {
+        signalTextDelta: vi.fn(async () => {}),
+      } as unknown as TypingSignaler,
+      blockStreamingEnabled: true,
+      blockReplyPipeline: { enqueue } as unknown as BlockReplyPipelineLike,
+      directlySentBlockKeys: new Set(),
+      directlySentBlockPayloads: [],
+    });
+
+    const first = handler({ text: "First block" });
+    const second = handler({ text: "\n\nSecond block" });
+    expect(normalizationResolvers).toHaveLength(2);
+
+    normalizationResolvers[0]?.();
+    await first;
+    normalizationResolvers[1]?.();
+    await second;
+
+    expect(enqueue.mock.calls.map(([payload]) => payload.text)).toEqual([
+      "First block",
+      "\n\nSecond block",
+    ]);
+  });
+
   it("suppresses implicit current-message threading for block replies when reply threading denies it", async () => {
     const blockReplyPipeline = {
       enqueue: vi.fn(),
