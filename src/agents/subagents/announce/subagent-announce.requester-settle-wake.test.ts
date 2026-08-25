@@ -104,6 +104,27 @@ function makeSettledChild(overrides: SettledChildOverrides): SubagentRunRecord {
   };
 }
 
+function makeYieldedChild(
+  params: {
+    execution?: SubagentRunRecord["execution"];
+    afterRequesterYield?: boolean;
+  } = {},
+): SubagentRunRecord {
+  return makeSettledChild({
+    runId: "run-b",
+    ...(params.execution ? { execution: params.execution } : {}),
+    delivery: { status: "delivered" },
+    requesterSettleWake: {
+      status: "pending",
+      attemptCount: 0,
+      batchRunIds: ["run-b"],
+      requesterYieldBatch: true,
+      ...(params.afterRequesterYield ? { afterRequesterYield: true } : {}),
+      rearmGeneration: 1,
+    },
+  });
+}
+
 const transitionBatchSpy = vi.fn();
 const completeBatchSpy = vi.fn();
 
@@ -165,6 +186,15 @@ function deliveredCallArg(): Record<string, unknown> {
     throw new Error("expected deliverSubagentAnnouncement call");
   }
   return call;
+}
+
+function expectContinuationFirstWake(call: Record<string, unknown>): void {
+  expect(call.requireVisibleReply).toBeUndefined();
+  const message = String(call.triggerMessage);
+  expect(message).toContain("deciding whether the original task is done");
+  expect(message).toContain("If additional action is required, continue the task");
+  expect(message).not.toContain("send your consolidated final answer to the user now");
+  expect(message).toContain("NO_REPLY");
 }
 
 describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
@@ -419,17 +449,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
   });
 
   it("wakes after a yielded requester's active child completes", async () => {
-    const child = makeSettledChild({
-      runId: "run-b",
-      delivery: { status: "delivered" },
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        batchRunIds: ["run-b"],
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
-      },
-    });
+    const child = makeYieldedChild();
     registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
 
     const woke = await maybeWakeRequesterAfterAllChildrenSettled(
@@ -438,15 +458,40 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
 
     expect(woke).toBe(true);
     expect(deliverSpy).toHaveBeenCalledOnce();
-    expect(deliveredCallArg().requireVisibleReply).toBe(true);
-    const message = String(deliveredCallArg().triggerMessage);
-    expect(message).not.toContain("NO_REPLY");
-    expect(message).toContain("original user request still requires your visible final answer");
+    expectContinuationFirstWake(deliveredCallArg());
     expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
     expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
       delivered: true,
       path: "direct",
     });
+  });
+
+  it("completes a yielded wake when the requester continues without a visible final", async () => {
+    const child = makeYieldedChild();
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
+    deliverSpy.mockImplementationOnce(async (params) =>
+      params.requireVisibleReply
+        ? {
+            delivered: false,
+            path: "direct",
+            reason: "visible_reply_missing",
+          }
+        : {
+            delivered: true,
+            path: "direct",
+          },
+    );
+
+    await expect(
+      maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
+    ).resolves.toBe(true);
+
+    expectContinuationFirstWake(deliveredCallArg());
+    expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
+      delivered: true,
+      path: "direct",
+    });
+    expect(child.requesterSettleWake).toBeUndefined();
   });
 
   it.each([
@@ -459,18 +504,8 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
   ] as const)(
     "does not wake a yielded requester while its only frozen child %s",
     async (_description, execution) => {
-      const activeChild = makeSettledChild({
-        runId: "run-b",
-        execution,
-        delivery: { status: "pending" },
-        requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
-          batchRunIds: ["run-b"],
-          requesterYieldBatch: true,
-          rearmGeneration: 1,
-        },
-      });
+      const activeChild = makeYieldedChild({ execution });
+      activeChild.delivery = { status: "pending" };
       registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([activeChild]);
 
       const woke = await maybeWakeRequesterAfterAllChildrenSettled(
@@ -510,18 +545,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
   });
 
   it("wakes after a requester yields with one already-delivered completion", async () => {
-    const child = makeSettledChild({
-      runId: "run-b",
-      delivery: { status: "delivered" },
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        batchRunIds: ["run-b"],
-        requesterYieldBatch: true,
-        afterRequesterYield: true,
-        rearmGeneration: 1,
-      },
-    });
+    const child = makeYieldedChild({ afterRequesterYield: true });
     registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
 
     const woke = await maybeWakeRequesterAfterAllChildrenSettled(
@@ -530,10 +554,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
 
     expect(woke).toBe(true);
     expect(deliverSpy).toHaveBeenCalledOnce();
-    expect(deliveredCallArg().requireVisibleReply).toBe(true);
-    const message = String(deliveredCallArg().triggerMessage);
-    expect(message).not.toContain("NO_REPLY");
-    expect(message).toContain("original user request still requires your visible final answer");
+    expectContinuationFirstWake(deliveredCallArg());
     expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
     expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
       delivered: true,
@@ -672,23 +693,13 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
-  it("retains a yielded wake after a silent final and retries its visible reply", async () => {
-    const child = makeSettledChild({
-      runId: "run-b",
-      delivery: { status: "delivered" },
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        batchRunIds: ["run-b"],
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
-      },
-    });
+  it("retains a yielded wake after a transient continuation handoff failure", async () => {
+    const child = makeYieldedChild();
     registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
     deliverSpy.mockResolvedValueOnce({
       delivered: false,
       path: "direct",
-      reason: "visible_reply_missing",
+      reason: "continuation_handoff_failed",
     });
 
     vi.useFakeTimers();
@@ -704,7 +715,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         nextAttemptAt: 30_000,
         requesterYieldBatch: true,
         rearmGeneration: 1,
-        lastError: "visible_reply_missing",
+        lastError: "continuation_handoff_failed",
       });
 
       await vi.advanceTimersByTimeAsync(30_000);

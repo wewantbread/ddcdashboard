@@ -4284,6 +4284,17 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expected: missingRequesterFinal,
     },
     {
+      name: "accepts a follow-on subagent spawn when the settle turn may continue",
+      response: {
+        result: {
+          payloads: [],
+          acceptedSessionSpawns: [{ runId: "run-next", childSessionKey: "agent:main:next" }],
+        },
+      },
+      requireVisibleReply: false,
+      expected: deliveredRequesterFinal,
+    },
+    {
       name: "rejects a cron side effect without a final reply",
       response: { result: { payloads: [], successfulCronAdds: 1 } },
       requireVisibleReply: true,
