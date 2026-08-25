@@ -578,10 +578,12 @@ async function executeSessionPatchMutations(params: {
       sessionKey: target.canonicalKey,
       targetAgentId: target.targetAgentId,
     });
+    const modelCatalog = await loadModelCatalog(target.targetAgentId);
     emitSessionsChanged(params.context, {
       sessionKey: target.canonicalKey,
       ...(target.requestedAgentId ? { agentId: target.requestedAgentId } : {}),
       reason: "patch",
+      modelCatalog,
     });
     patched = true;
     if (target.fullPatch.archived === true) {
