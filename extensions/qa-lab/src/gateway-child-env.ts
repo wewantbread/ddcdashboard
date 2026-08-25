@@ -136,6 +136,7 @@ export async function stageQaCodexMockModelCatalog(params: {
   providerMode: QaProviderMode;
   primaryModel?: string;
   alternateModel?: string;
+  autoCompactTokenLimit?: number;
 }): Promise<string | undefined> {
   if (params.forcedRuntime !== "codex" || params.providerMode !== "mock-openai") {
     return undefined;
@@ -144,11 +145,15 @@ export async function stageQaCodexMockModelCatalog(params: {
   const selectedModelRefs = [params.primaryModel, params.alternateModel].filter(
     (model): model is string => typeof model === "string" && model.length > 0,
   );
-  await fs.writeFile(
-    modelCatalogPath,
-    `${JSON.stringify({ models: listMockCodexModelInfos(selectedModelRefs) }, null, 2)}\n`,
-    { encoding: "utf8", mode: 0o600 },
+  const models = listMockCodexModelInfos(selectedModelRefs).map((model) =>
+    params.autoCompactTokenLimit
+      ? { ...model, auto_compact_token_limit: params.autoCompactTokenLimit }
+      : model,
   );
+  await fs.writeFile(modelCatalogPath, `${JSON.stringify({ models }, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return modelCatalogPath;
 }
 
