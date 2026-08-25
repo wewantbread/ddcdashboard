@@ -135,6 +135,22 @@ describe("scanPolicyToolPosture", () => {
       ]),
     );
   });
+
+  it("uses canonical agent entries when legacy roster data is also present", () => {
+    const evidence = scanPolicyToolPosture({
+      agents: {
+        entries: { canonical: { tools: { exec: { mode: "ask" } } } },
+        list: [{ id: "legacy", tools: { exec: { mode: "full" } } }],
+      },
+    });
+
+    expect(evidence).toEqual(
+      expect.arrayContaining([expect.objectContaining({ agentId: "canonical" })]),
+    );
+    expect(evidence).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ agentId: "legacy" })]),
+    );
+  });
 });
 
 describe("scanPolicyChannels", () => {

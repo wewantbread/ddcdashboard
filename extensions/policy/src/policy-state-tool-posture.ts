@@ -5,6 +5,7 @@ import {
   asBoolean as readBoolean,
   normalizeOptionalString as readString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { collectPolicyAgentRoster } from "./policy-state-agent-roster.js";
 import { ocPathSegment } from "./policy-state-helpers.js";
 import type { PolicyToolPostureEvidence } from "./policy-state-types.js";
 
@@ -29,41 +30,10 @@ export function scanPolicyToolPosture(
     inheritedSourceBase: "oc://openclaw.config/tools",
   });
 
-  const entryAgents = isRecord(agents.entries)
-    ? Object.entries(agents.entries).map(([agentId, value]) => ({
-        agentId,
-        container: "entries" as const,
-        pathId: agentId,
-        value,
-      }))
-    : [];
-  const legacyAgents = Array.isArray(agents.list)
-    ? agents.list.flatMap((value, index) => {
-        if (!isRecord(value)) {
-          return [];
-        }
-        return [
-          {
-            agentId:
-              typeof value.id === "string" && value.id.trim() !== ""
-                ? value.id.trim()
-                : `agent-${index}`,
-            container: "list" as const,
-            pathId: String(index),
-            value,
-          },
-        ];
-      })
-    : [];
-  const configuredAgents = entryAgents.length > 0 ? entryAgents : legacyAgents;
-  configuredAgents.forEach(({ agentId, container, pathId, value: agent }) => {
+  collectPolicyAgentRoster(cfg).forEach(({ agentId, sourceBase, value: agent }) => {
     if (!isRecord(agent)) {
       return;
     }
-    const sourceAgentId =
-      container === "entries"
-        ? `agents/entries/${ocPathSegment(pathId)}`
-        : `agents/list/#${pathId}`;
     pushToolPostureEvidence(entries, {
       id: agentId,
       scope: "agent",
@@ -72,7 +42,7 @@ export function scanPolicyToolPosture(
       inheritedTools: globalTools,
       sandbox: asNonArrayRecord(agent.sandbox),
       inheritedSandbox: defaultSandbox,
-      sourceBase: `oc://openclaw.config/${sourceAgentId}/tools`,
+      sourceBase: `${sourceBase}/tools`,
       inheritedSourceBase: "oc://openclaw.config/tools",
     });
   });

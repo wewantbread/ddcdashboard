@@ -73,4 +73,28 @@ describe("scanPolicyDataHandling", () => {
       }),
     );
   });
+
+  it("uses canonical agent entries when legacy roster data is also present", () => {
+    const evidence = scanPolicyDataHandling({
+      memory: { search: { experimental: { sessionMemory: false } } },
+      agents: {
+        entries: {
+          canonical: {
+            memory: { search: { sources: ["sessions"], experimental: { sessionMemory: true } } },
+          },
+        },
+        list: [
+          {
+            id: "legacy",
+            memory: { search: { sources: ["sessions"], experimental: { sessionMemory: true } } },
+          },
+        ],
+      },
+    });
+
+    expect(evidence).toContainEqual(expect.objectContaining({ agentId: "canonical" }));
+    expect(evidence).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ agentId: "legacy" })]),
+    );
+  });
 });
