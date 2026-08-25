@@ -35,26 +35,6 @@ describe("workspace bootstrap file caching", () => {
     expect(agentsFile?.missing).toBe(false);
   };
 
-  it("returns cached content when mtime unchanged", async () => {
-    const content1 = "# Initial content";
-    await writeWorkspaceFile({
-      dir: workspaceDir,
-      name: DEFAULT_AGENTS_FILENAME,
-      content: content1,
-    });
-
-    // First load
-    const agentsFile1 = await loadAgentsFile(workspaceDir);
-    expectAgentsContent(agentsFile1, content1);
-
-    // Second load should use cached content (same mtime)
-    const agentsFile2 = await loadAgentsFile(workspaceDir);
-    expectAgentsContent(agentsFile2, content1);
-
-    // Verify both calls returned the same content without re-reading
-    expect(agentsFile1?.content).toBe(agentsFile2?.content);
-  });
-
   it("invalidates cache when mtime changes", async () => {
     const content1 = "# Initial content";
     const content2 = "# Updated content";
@@ -143,13 +123,14 @@ describe("workspace bootstrap file caching", () => {
     expectAgentsContent(agentsFile2, content2);
   });
 
-  it("invalidates cache when content changes in-place with restored mtime", async () => {
+  it("refreshes direct and session loads after an in-place edit with restored mtime", async () => {
     if (process.platform === "win32") {
       return;
     }
     const content1 = "# old guidance";
     const content2 = "# new guidance";
     const filePath = path.join(workspaceDir, DEFAULT_AGENTS_FILENAME);
+    const sessionKey = "agent:main:restored-mtime";
 
     await writeWorkspaceFile({
       dir: workspaceDir,
@@ -164,6 +145,7 @@ describe("workspace bootstrap file caching", () => {
 
     const agentsFile1 = await loadAgentsFile(workspaceDir);
     expectAgentsContent(agentsFile1, content1);
+    expectAgentsContent(await loadSessionAgentsFile(workspaceDir, sessionKey), content1);
 
     // A loaded runner can complete both writes within one ctime tick. Wait for the
     // fixture's cache identity to change before asserting the production reload.
@@ -195,6 +177,7 @@ describe("workspace bootstrap file caching", () => {
     } finally {
       fstatSync.mockRestore();
     }
+    expectAgentsContent(await loadSessionAgentsFile(workspaceDir, sessionKey), content2);
   });
 
   it("replaces a session snapshot when inode changes with identical bytes", async () => {

@@ -13,6 +13,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import { readWorkspaceFileCache, writeWorkspaceFileCache } from "./workspace-file-cache.js";
 import {
   clearExpiredWorkspaceStateForVanishedWorkspace,
   deleteWorkspaceState,
@@ -372,6 +373,17 @@ describe("workspace state store", () => {
       .db.prepare("SELECT alias_key FROM workspace_path_aliases")
       .all();
     expect(aliases).toEqual([]);
+  });
+
+  it("retires cached workspace files with deleted state", () => {
+    const dir = workspaceDir();
+    const filePath = path.join(dir, "nested", "AGENTS.md");
+    mergeWorkspaceSetupState(dir, { bootstrapSeededAt: "2026-07-16T01:00:00.000Z" }, 1_000);
+    writeWorkspaceFileCache({ filePath, content: "cached", identity: "identity" });
+
+    deleteState(dir);
+
+    expect(readWorkspaceFileCache(filePath, "identity")).toBeUndefined();
   });
 
   it("clears expired setup-only state for a vanished workspace", () => {

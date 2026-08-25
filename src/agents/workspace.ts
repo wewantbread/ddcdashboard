@@ -35,6 +35,11 @@ import {
 } from "./workspace-bootstrap-read.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR } from "./workspace-default.js";
 import {
+  deleteWorkspaceFileCacheEntry,
+  readWorkspaceFileCache,
+  writeWorkspaceFileCache,
+} from "./workspace-file-cache.js";
+import {
   assertNoUnmigratedWorkspaceState,
   LEGACY_WORKSPACE_STATE_CURRENT_FILENAME,
   LEGACY_WORKSPACE_STATE_DIRNAME,
@@ -85,8 +90,6 @@ const workspaceTemplateCache = new Map<string, Promise<string>>();
 // Git availability is process-stable; cache the probe result, including failure, until restart.
 let gitAvailabilityPromise: Promise<boolean> | null = null;
 
-// File content cache keyed by stable file identity to avoid stale reads.
-const workspaceFileCache = new Map<string, { content: string; identity: string }>();
 type WorkspaceFileSourceIdentity = readonly [
   canonicalPath: string,
   stat: FileIdentityStat,
@@ -95,9 +98,7 @@ type WorkspaceFileSourceIdentity = readonly [
 // Loader-owned records retain the pinned-open identity through final session filtering.
 const workspaceFileSourceIdentities = new WeakMap<object, WorkspaceFileSourceIdentity>();
 
-/**
- * Read workspace files via boundary-safe open and cache by inode/dev/size/mtime/ctime identity.
- */
+/** Read workspace files via a pinned open and bounded metadata-identity cache. */
 type WorkspaceGuardedReadResult =
   | { ok: true; content: string; sourceIdentity: WorkspaceFileSourceIdentity }
   | { ok: false; reason: "path" | "validation" | "io"; error?: unknown };
@@ -162,23 +163,27 @@ async function readWorkspaceFileWithGuards(params: {
           if (isTransientWorkspaceReadError(opened.error)) {
             throw opened.error;
           }
-          workspaceFileCache.delete(params.filePath);
+          deleteWorkspaceFileCacheEntry(params.filePath);
           return opened;
         }
 
         const identity = workspaceFileIdentity(opened.stat, opened.path);
         const sourceIdentity = [opened.path, opened.stat, identity] as const;
         const cached =
-          params.useCache === false ? undefined : workspaceFileCache.get(params.filePath);
-        if (cached?.identity === identity) {
+          params.useCache === false ? undefined : readWorkspaceFileCache(params.filePath, identity);
+        if (cached !== undefined) {
           syncFs.closeSync(opened.fd);
-          return { ok: true, content: cached.content, sourceIdentity };
+          return { ok: true, content: cached, sourceIdentity };
         }
 
         try {
           const content = await readWorkspaceBootstrapFile(opened.fd);
           if (params.useCache !== false) {
-            workspaceFileCache.set(params.filePath, { content, identity });
+            writeWorkspaceFileCache({
+              filePath: params.filePath,
+              content,
+              identity,
+            });
           }
           return { ok: true, content, sourceIdentity };
         } finally {
@@ -194,7 +199,7 @@ async function readWorkspaceFileWithGuards(params: {
     );
   } catch (error) {
     // Non-transient read failure, or transient retries exhausted.
-    workspaceFileCache.delete(params.filePath);
+    deleteWorkspaceFileCacheEntry(params.filePath);
     return { ok: false, reason: error instanceof RangeError ? "validation" : "io", error };
   }
 }
