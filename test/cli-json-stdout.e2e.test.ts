@@ -55,6 +55,310 @@ async function seedTrajectorySession(tempHome: string, sessionKey: string) {
 describe("cli json stdout contract", () => {
   it.each([
     {
+      name: "implicit JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--disable"],
+    },
+    {
+      name: "explicit JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--disable", "--json"],
+    },
+    {
+      name: "automation alias implicit JSON",
+      args: ["automations", "edit", "job-1", "--enable", "--disable"],
+    },
+    {
+      name: "ordinary local validation failure",
+      args: ["cron", "edit", "job-1", "--command-cwd", "", "--json"],
+      message: "--command-cwd must not be blank",
+    },
+    {
+      name: "Gateway failure implicit JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--port", "29793", "--token", "fixture-token"],
+      gatewayRequest: true,
+    },
+    {
+      name: "Gateway failure explicit JSON",
+      args: [
+        "cron",
+        "edit",
+        "job-1",
+        "--enable",
+        "--port",
+        "29793",
+        "--token",
+        "fixture-token",
+        "--json",
+      ],
+      gatewayRequest: true,
+    },
+    {
+      name: "forced Commander JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--disable", "--json"],
+      commander: true,
+    },
+    {
+      name: "dual-TTY implicit JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--disable"],
+      tty: true,
+    },
+    {
+      name: "dual-TTY automation alias implicit JSON",
+      args: ["automations", "edit", "job-1", "--enable", "--disable"],
+      tty: true,
+    },
+    {
+      name: "dual-TTY implicit JSON command sibling",
+      args: ["cron", "runs", "--id", "job-1", "--limit", "invalid"],
+      message: "Invalid --limit (must be a positive integer).",
+      tty: true,
+    },
+    {
+      name: "dual-TTY raw-output command sibling",
+      args: ["cron", "scratch", "job-1", "--set", "updated", "--unset"],
+      message: "choose only one of --set, --file, or --unset",
+      tty: true,
+    },
+    {
+      name: "dual-TTY explicit JSON",
+      args: ["cron", "edit", "job-1", "--enable", "--disable", "--json"],
+      tty: true,
+    },
+    {
+      name: "human-output sibling",
+      args: ["cron", "list", "--agent", ""],
+      message: "--agent must not be blank",
+      human: true,
+    },
+    {
+      name: "dual-TTY human-output sibling",
+      args: ["cron", "list", "--agent", ""],
+      message: "--agent must not be blank",
+      human: true,
+      tty: true,
+    },
+  ])("renders cron edit failures through the shared owner for $name", async (testCase) => {
+    await withTempHome(
+      async (tempHome) => {
+        const configPath = path.join(tempHome, "missing-openclaw.json");
+        const stateDir = path.join(tempHome, "isolated-state");
+        const gatewayError = "AUTOQA_INJECTED_GATEWAY_FAILURE";
+        const preload = Buffer.from(
+          [
+            'import net from "node:net";',
+            `net.Socket.prototype.connect = function () { throw new Error(${JSON.stringify(gatewayError)}); };`,
+            ...("tty" in testCase
+              ? [
+                  'Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });',
+                  'Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });',
+                ]
+              : []),
+          ].join("\n"),
+        ).toString("base64");
+        const result = runBuiltCli(tempHome, testCase.args, {
+          NODE_OPTIONS: `--import=data:text/javascript;base64,${preload}`,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_STATE_DIR: stateDir,
+          ...("commander" in testCase ? { OPENCLAW_DISABLE_ROUTE_FIRST: "1" } : {}),
+          ...("tty" in testCase ? { FORCE_COLOR: "1" } : {}),
+        });
+        const message =
+          "gatewayRequest" in testCase
+            ? gatewayError
+            : (testCase.message ?? "Choose --enable or --disable, not both");
+
+        expect(result.status, result.stderr).toBe(1);
+        if ("human" in testCase) {
+          if ("tty" in testCase) {
+            expect(result.stdout).toContain("OpenClaw");
+          } else {
+            expect(result.stdout).toBe("");
+          }
+        } else {
+          expect(result.stdout, result.stderr).not.toMatch(/[\u001B\u0007]/u);
+          expect(JSON.parse(result.stdout)).toEqual({
+            ok: false,
+            error: { type: "cli_error", message },
+          });
+        }
+        expect(result.stderr).toContain(message);
+        if ("gatewayRequest" in testCase) {
+          expect(result.stderr).toContain(gatewayError);
+        } else {
+          expect(result.stderr).not.toContain(gatewayError);
+          await expect(fs.stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        if ("tty" in testCase && !("human" in testCase)) {
+          expect(result.stderr).toContain("\u001B[?25h");
+        }
+        await expect(fs.stat(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      { prefix: "openclaw-cron-edit-json-failure-e2e-" },
+    );
+  });
+
+  it.each([
+    {
+      name: "invalid call params in JSON mode",
+      args: ["gateway", "call", "system-presence", "--params", "not-json", "--json"],
+      message: "--params must be valid JSON.",
+    },
+    {
+      name: "invalid call params in human mode",
+      args: ["gateway", "call", "system-presence", "--params", "not-json"],
+      message: "--params must be valid JSON.",
+      human: true,
+    },
+    {
+      name: "invalid call params through forced Commander",
+      args: ["gateway", "call", "system-presence", "--params", "not-json", "--json"],
+      message: "--params must be valid JSON.",
+      commander: true,
+    },
+    {
+      name: "invalid call params with dual TTYs",
+      args: ["gateway", "call", "system-presence", "--params", "not-json", "--json"],
+      message: "--params must be valid JSON.",
+      tty: true,
+    },
+    {
+      name: "contradictory usage options in JSON mode",
+      args: ["gateway", "usage-cost", "--agent", "alpha", "--all-agents", "--json"],
+      message: "Use --agent or --all-agents, not both",
+    },
+    {
+      name: "contradictory usage options in human mode",
+      args: ["gateway", "usage-cost", "--agent", "alpha", "--all-agents"],
+      message: "Use --agent or --all-agents, not both",
+      human: true,
+    },
+    {
+      name: "contradictory usage options through forced Commander",
+      args: ["gateway", "usage-cost", "--agent", "alpha", "--all-agents", "--json"],
+      message: "Use --agent or --all-agents, not both",
+      commander: true,
+    },
+    {
+      name: "contradictory usage options with dual TTYs",
+      args: ["gateway", "usage-cost", "--agent", "alpha", "--all-agents", "--json"],
+      message: "Use --agent or --all-agents, not both",
+      tty: true,
+    },
+    {
+      name: "routed Gateway health config failure in JSON mode",
+      args: ["gateway", "health", "--port", "29793", "--json"],
+      message: "AUTOQA_ROUTE_CONFIG_READ_FAILURE",
+      configReadFailure: true,
+    },
+    {
+      name: "Gateway health config failure in human mode",
+      args: ["gateway", "health", "--port", "29793"],
+      message: "AUTOQA_ROUTE_CONFIG_READ_FAILURE",
+      configReadFailure: true,
+      human: true,
+    },
+    {
+      name: "Gateway health config failure through forced Commander",
+      args: ["gateway", "health", "--port", "29793", "--json"],
+      message: "AUTOQA_ROUTE_CONFIG_READ_FAILURE",
+      configReadFailure: true,
+      commander: true,
+    },
+    {
+      name: "routed Gateway health config failure with dual TTYs",
+      args: ["gateway", "health", "--port", "29793", "--json"],
+      message: "AUTOQA_ROUTE_CONFIG_READ_FAILURE",
+      configReadFailure: true,
+      tty: true,
+    },
+    {
+      name: "specialized explicit Gateway authentication failure",
+      args: ["gateway", "call", "system-presence", "--url", "ws://127.0.0.1:29793", "--json"],
+      specializedAuth: true,
+    },
+  ])("renders Gateway query failures through the Gateway owner for $name", async (testCase) => {
+    await withTempHome(
+      async (tempHome) => {
+        const configPath = path.join(tempHome, "missing-openclaw.json");
+        const stateDir = path.join(tempHome, "isolated-state");
+        const gatewayError = "AUTOQA_INJECTED_GATEWAY_FAILURE";
+        const preload = Buffer.from(
+          [
+            'import net from "node:net";',
+            `net.Socket.prototype.connect = function () { throw new Error(${JSON.stringify(gatewayError)}); };`,
+            ...("configReadFailure" in testCase
+              ? [
+                  'import fs from "node:fs";',
+                  "const originalExistsSync = fs.existsSync;",
+                  "fs.existsSync = function (target, ...args) {",
+                  '  if (String(target) === process.env.OPENCLAW_CONFIG_PATH && new Error().stack?.includes("readNonObservingHealthConfig")) {',
+                  `    throw new Error(${JSON.stringify(testCase.message)});`,
+                  "  }",
+                  "  return originalExistsSync.call(this, target, ...args);",
+                  "};",
+                ]
+              : []),
+            ...("tty" in testCase
+              ? [
+                  'Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });',
+                  'Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });',
+                ]
+              : []),
+          ].join("\n"),
+        ).toString("base64");
+        const result = runBuiltCli(tempHome, testCase.args, {
+          NODE_OPTIONS: `--import=data:text/javascript;base64,${preload}`,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_STATE_DIR: stateDir,
+          ...("commander" in testCase ? { OPENCLAW_DISABLE_ROUTE_FIRST: "1" } : {}),
+          ...("tty" in testCase ? { FORCE_COLOR: "1", NO_COLOR: undefined } : {}),
+        });
+
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stdout, result.stderr).not.toMatch(/[\u001B\u0007]/u);
+        expect(result.stdout).not.toContain(gatewayError);
+        expect(result.stderr).not.toContain(gatewayError);
+        if ("human" in testCase) {
+          expect(result.stdout).toBe("");
+          expect(result.stderr).toContain(testCase.message);
+        } else if ("specializedAuth" in testCase) {
+          expect(JSON.parse(result.stdout)).toEqual({
+            ok: false,
+            error: {
+              type: "gateway_credentials_required",
+              message: [
+                "gateway url override requires explicit credentials",
+                "Fix: pass --token or --password with --url (or gatewayToken in tools).",
+                "For the default local or SSH-tunneled Gateway, remove --url to use the configured target.",
+                `Config: ${configPath}`,
+              ].join("\n"),
+            },
+          });
+          expect(result.stderr).toBe("");
+        } else {
+          expect(JSON.parse(result.stdout)).toEqual({
+            ok: false,
+            error: { type: "cli_error", message: testCase.message },
+          });
+          if ("configReadFailure" in testCase && !("commander" in testCase)) {
+            expect(result.stderr).toContain(testCase.message);
+          } else {
+            expect(result.stderr).not.toContain(testCase.message);
+          }
+        }
+        if ("tty" in testCase) {
+          expect(result.stderr).toContain("\u001B[?25h");
+        }
+        await expect(fs.stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+      },
+      { prefix: "openclaw-gateway-query-json-failure-e2e-" },
+    );
+  });
+
+  it.each([
+    {
       name: "bare report with parent JSON",
       args: ["hooks", "--agent", "retired", "--json"],
     },

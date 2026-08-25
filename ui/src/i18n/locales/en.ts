@@ -1127,7 +1127,6 @@ export const en: TranslationMap = {
     statusTimeout: "Timed out",
     waitingForAnswer: "Waiting for your answer",
     waitingForApproval: "Waiting for approval",
-    waitingForConcurrency: "Waiting for a concurrency slot",
     runFailedReason: "Run failed: {reason}",
     runErrorTimedOut: "Timed out",
     runErrorUnknown: "Unknown error",
@@ -5647,6 +5646,7 @@ export const en: TranslationMap = {
       sendMessage: "Send message",
     },
     queue: {
+      notSent: "Not sent",
       retry: "Retry",
       retryQueuedMessage: "Retry queued message",
       steer: "Steer",
@@ -5774,6 +5774,7 @@ export const en: TranslationMap = {
       refreshingModels: "Refreshing models…",
       modelsUnavailable: "Models unavailable",
       noModelsAvailable: "No models available",
+      emptyModelsAction: "Manage models",
       providerModels: "{provider} models",
       fastResponsesAria: "Fast responses: {state}",
     },
