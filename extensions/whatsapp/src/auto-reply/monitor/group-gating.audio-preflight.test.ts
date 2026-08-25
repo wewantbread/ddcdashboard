@@ -212,6 +212,40 @@ describe("applyGroupGating audio preflight mention text", () => {
     expect(followUp.groupMention).toEqual({ wasMentioned: false, requireMention: false });
   });
 
+  it("opens the listen-after-mention window from quoted replies to the bot", async () => {
+    const first = makeGroupAudioMsg();
+    first.quote = {
+      id: "quoted-bot-reply",
+      body: "bot said hi",
+      sender: {
+        jid: "15550000001@s.whatsapp.net",
+        e164: "+15550000001",
+      },
+    };
+    first.platform.selfJid = "15550000001@s.whatsapp.net";
+    first.platform.selfE164 = "+15550000001";
+    const firstParams = makeParams(first, groupHistories);
+    (
+      firstParams.cfg as never as { channels: { whatsapp: { groups?: unknown } } }
+    ).channels.whatsapp.groups = {
+      "1203630@g.us": {
+        requireMention: true,
+        listenAfterMentionMs: 10 * 60 * 1000,
+      },
+    };
+
+    await expect(applyGroupGating(firstParams)).resolves.toEqual({ shouldProcess: true });
+    expect(first.groupMention).toEqual({ wasMentioned: true, requireMention: true });
+
+    vi.setSystemTime(new Date("2026-07-18T19:05:00.000Z"));
+    const followUp = makeGroupAudioMsg();
+    const followUpParams = makeParams(followUp, groupHistories);
+    followUpParams.cfg = firstParams.cfg;
+
+    await expect(applyGroupGating(followUpParams)).resolves.toEqual({ shouldProcess: true });
+    expect(followUp.groupMention).toEqual({ wasMentioned: false, requireMention: false });
+  });
+
   it("stops extending the listen-after-mention window at the configured cap", async () => {
     const first = makeGroupAudioMsg();
     const firstParams = makeParams(first, groupHistories);
@@ -244,6 +278,31 @@ describe("applyGroupGating audio preflight mention text", () => {
     });
 
     vi.setSystemTime(new Date("2026-07-18T19:16:00.000Z"));
+    const expiredFollowUpParams = makeParams(makeGroupAudioMsg(), groupHistories);
+    expiredFollowUpParams.cfg = firstParams.cfg;
+    await expect(applyGroupGating(expiredFollowUpParams)).resolves.toEqual({
+      shouldProcess: false,
+    });
+  });
+
+  it("honors a configured cap that is shorter than the base listen window", async () => {
+    const first = makeGroupAudioMsg();
+    const firstParams = makeParams(first, groupHistories);
+    (
+      firstParams.cfg as never as { channels: { whatsapp: { groups?: unknown } } }
+    ).channels.whatsapp.groups = {
+      "*": {
+        listenAfterMentionMs: 10 * 60 * 1000,
+        listenAfterMentionMaxMs: 5 * 60 * 1000,
+      },
+    };
+
+    await applyGroupGating({
+      ...firstParams,
+      mentionText: "openclaw please summarize the thread",
+    });
+
+    vi.setSystemTime(new Date("2026-07-18T19:06:00.000Z"));
     const expiredFollowUpParams = makeParams(makeGroupAudioMsg(), groupHistories);
     expiredFollowUpParams.cfg = firstParams.cfg;
     await expect(applyGroupGating(expiredFollowUpParams)).resolves.toEqual({

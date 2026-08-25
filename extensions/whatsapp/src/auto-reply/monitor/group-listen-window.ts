@@ -81,8 +81,7 @@ export function resolveGroupListenWindowConfig(params: {
   );
   return {
     durationMs,
-    maxMs:
-      configuredMaxMs && configuredMaxMs > 0 ? Math.max(durationMs, configuredMaxMs) : durationMs,
+    maxMs: configuredMaxMs && configuredMaxMs > 0 ? configuredMaxMs : durationMs,
   };
 }
 
