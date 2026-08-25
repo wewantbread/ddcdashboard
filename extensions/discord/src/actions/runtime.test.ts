@@ -8,6 +8,9 @@ import {
 import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig, DiscordActionConfig } from "openclaw/plugin-sdk/config-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { GatewayPlugin } from "../internal/gateway.js";
+import { createInternalTestClient } from "../internal/test-builders.test-support.js";
+import { registerGateway, unregisterGateway } from "../monitor/gateway-registry.js";
 import { clearPresences, setPresence } from "../monitor/presence-cache.js";
 import { DiscordThreadInitialMessageError } from "../send.js";
 import { handleDiscordMessageAction } from "./handle-action.js";
@@ -2361,6 +2364,55 @@ describe("handleDiscordMessagingAction", () => {
     });
   });
 
+  it.each([
+    { label: "forum message", parentType: ChannelType.GuildForum, components: false },
+    { label: "media message", parentType: ChannelType.GuildMedia, components: false },
+    { label: "forum component media", parentType: ChannelType.GuildForum, components: true },
+    { label: "media component media", parentType: ChannelType.GuildMedia, components: true },
+  ])("renames the newly created $label thread", async ({ parentType, components }) => {
+    const sender = components ? sendDiscordComponentMessage : sendMessageDiscord;
+    sender.mockResolvedValueOnce({
+      messageId: "M1",
+      channelId: "T1",
+      receipt: { threadId: "T1" },
+    });
+    fetchChannelInfoDiscord.mockImplementation(async (channelId) => ({
+      id: channelId,
+      type: channelId === "P1" ? parentType : ChannelType.PublicThread,
+    }));
+    editChannelDiscord.mockResolvedValueOnce({
+      id: "T1",
+      name: "chosen-thread",
+    });
+
+    const result = await handleMessagingAction(
+      "sendMessage",
+      {
+        to: "channel:P1",
+        content: "A generated thread title",
+        threadName: "chosen-thread",
+        ...(components
+          ? {
+              components: { blocks: [{ type: "text", text: "A generated thread title" }] },
+              mediaUrl: "/tmp/image.png",
+            }
+          : {}),
+      },
+      enableAllActions,
+    );
+
+    expect(fetchChannelInfoDiscord).toHaveBeenCalledWith("T1", { cfg: DISCORD_TEST_CFG });
+    expect(editChannelDiscord).toHaveBeenCalledWith(
+      { channelId: "T1", name: "chosen-thread" },
+      { cfg: DISCORD_TEST_CFG },
+    );
+    expect(result.details).toMatchObject({
+      ok: true,
+      result: { channelId: "T1", receipt: { threadId: "T1" } },
+      threadRename: { ok: true, channelId: "T1", name: "chosen-thread" },
+    });
+  });
+
   it("forwards sendMessage suppressEmbeds overrides", async () => {
     sendMessageDiscord.mockClear();
 
@@ -2750,6 +2802,45 @@ describe("handleDiscordGuildAction", () => {
         { name: "beta", identifier: "beta:2" },
       ],
     });
+  });
+
+  it("reuses the gateway-owned normalized emoji list across requests with different limits", async () => {
+    const client = createInternalTestClient();
+    registerGateway("default", {
+      fetchGuildEmojis: client.fetchGuildEmojis.bind(client),
+    } as GatewayPlugin);
+    listGuildEmojisDiscord.mockResolvedValueOnce([
+      { id: "2", name: "beta" },
+      { id: "1", name: "alpha" },
+    ]);
+
+    try {
+      const first = await handleGuildAction(
+        "emojiList",
+        { guildId: "G1", limit: 1 },
+        enableAllActions,
+      );
+      const second = await handleGuildAction(
+        "emojiList",
+        { guildId: "G1", limit: 2 },
+        enableAllActions,
+      );
+
+      expect(first.details).toEqual({
+        ok: true,
+        emojis: [{ name: "alpha", identifier: "alpha:1" }],
+      });
+      expect(second.details).toEqual({
+        ok: true,
+        emojis: [
+          { name: "alpha", identifier: "alpha:1" },
+          { name: "beta", identifier: "beta:2" },
+        ],
+      });
+      expect(listGuildEmojisDiscord).toHaveBeenCalledTimes(1);
+    } finally {
+      unregisterGateway("default");
+    }
   });
 
   it("bounds emoji-list output even when a larger limit is requested", async () => {
