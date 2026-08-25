@@ -312,6 +312,14 @@ describe("AppSidebar gateway session pagination", () => {
       harness.sessions,
     );
 
+    const loadMoreSessions = sidebar.querySelector<HTMLButtonElement>(
+      ".sidebar-recent-sessions > .sidebar-session-pagination button",
+    );
+    expect(loadMoreSessions).not.toBeNull();
+    expect(loadMoreSessions?.textContent?.trim()).toBe("Load more sessions");
+    loadMoreSessions?.click();
+    await waitForFast(() => expect(refresh).toHaveBeenCalled());
+
     for (let page = 0; page < 5; page += 1) {
       const button = sidebar.querySelector<HTMLButtonElement>('button[aria-label="Show more"]');
       expect(button).not.toBeNull();
@@ -333,6 +341,84 @@ describe("AppSidebar gateway session pagination", () => {
       }),
     );
     expect(sidebar.querySelector('button[aria-label="Show more"]')).toBeNull();
+  });
+
+  it("keeps global pagination outside sections and regroups appended rows", async () => {
+    const jesseKeys = Array.from({ length: 10 }, (_, index) => `agent:main:jesse-${index}`);
+    const otherKeys = Array.from({ length: 59 }, (_, index) => `agent:main:other-${index}`);
+    const harness = createSessionsHarness("main", [jesseKeys[0]!, ...otherKeys]);
+    const firstPage = harness.sessions.state.result;
+    const nextPage = createSessionState("main", jesseKeys.slice(1)).result;
+    if (!firstPage || !nextPage) {
+      throw new Error("expected grouped session results");
+    }
+    firstPage.sessions[0]!.category = "Jesse";
+    for (const row of nextPage.sessions) {
+      row.category = "Jesse";
+    }
+    Object.assign(firstPage, {
+      count: 60,
+      totalCount: 69,
+      limitApplied: 60,
+      nextOffset: 60,
+      hasMore: true,
+    });
+    const refresh = vi.spyOn(harness.sessions, "refresh").mockImplementation(async (options) => {
+      if (options?.offset !== 60) {
+        return;
+      }
+      harness.publishList({
+        agentId: "main",
+        result: {
+          ...firstPage,
+          count: 69,
+          totalCount: 69,
+          limitApplied: 60,
+          nextOffset: null,
+          hasMore: false,
+          sessions: [...firstPage.sessions, ...nextPage.sessions],
+        },
+      });
+    });
+
+    const { sidebar } = await mountSidebar(
+      createGateway({} as GatewayBrowserClient),
+      harness.sessions,
+    );
+    sidebar.sessionOrganizer.saveCollapsedSessionSections(new Set(["category:Jesse", "ungrouped"]));
+    harness.publish({ groups: ["Jesse"] });
+    harness.publishList({ result: firstPage, agentId: "main" });
+    await sidebar.updateComplete;
+
+    const globalPagination = sidebar.querySelector<HTMLElement>(
+      ".sidebar-recent-sessions > .sidebar-session-pagination",
+    );
+    expect(globalPagination).not.toBeNull();
+    expect(globalPagination?.closest("[data-session-section]")).toBeNull();
+
+    globalPagination?.querySelector<HTMLButtonElement>("button")?.click();
+    await waitForFast(() => expect(refresh).toHaveBeenCalled());
+
+    const jesseGroup = sidebar.querySelector('[data-session-section="category:Jesse"]');
+    const toggle = jesseGroup?.querySelector<HTMLButtonElement>(".sidebar-session-group-toggle");
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    await waitForFast(() => {
+      expect(
+        sidebar.querySelectorAll('[data-session-section="category:Jesse"] [data-session-key]'),
+      ).toHaveLength(10);
+    });
+    expect(refresh).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        archivedFilter: "active",
+        offset: 60,
+        append: true,
+      }),
+    );
+    expect(
+      sidebar.querySelector(".sidebar-recent-sessions > .sidebar-session-pagination"),
+    ).toBeNull();
   });
 
   it("derives the active page offset when the Gateway omits its optional cursor", async () => {
@@ -490,6 +576,15 @@ describe("AppSidebar gateway session pagination", () => {
       sidebar.sessionData.resetForStatusFilter(statusFilter);
       await sidebar.sessionData.refreshSidebarSessions("main");
       await sidebar.updateComplete;
+
+      const loadMoreSessions = sidebar.querySelector<HTMLButtonElement>(
+        ".sidebar-recent-sessions > .sidebar-session-pagination button",
+      );
+      expect(loadMoreSessions).not.toBeNull();
+      loadMoreSessions?.click();
+      await waitForFast(() =>
+        expect(harness.list).toHaveBeenCalledWith(expect.objectContaining({ offset: 60 })),
+      );
 
       for (let page = 0; page < 6; page += 1) {
         const button = sidebar.querySelector<HTMLButtonElement>('button[aria-label="Show more"]');

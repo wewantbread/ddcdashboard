@@ -5606,6 +5606,7 @@ export const en: TranslationMap = {
       serverUpdatedRefresh: "Refresh for full capabilities",
       threads: "Sessions",
       otherSessions: "Other",
+      loadMoreSessions: "Load more sessions",
       groups: "Groups",
       coding: "Coding",
       catalogViewOptions: "View options",

@@ -53,7 +53,6 @@ type SessionCatalogRenderSnapshot = {
 function renderSessionSection(params: {
   host: SidebarSessionListHost;
   section: RenderableSessionSection;
-  nativeSessionsHaveMore?: boolean;
 }) {
   const { host, section } = params;
   const totalRowCount = section.totalRowCount;
@@ -236,11 +235,7 @@ function renderSessionSection(params: {
                   ${section.rows.map((session) => renderSessionTree({ host, session }))}
                 </div>`
               : nothing}
-            ${renderSessionPagination({
-              host,
-              section,
-              nativeSessionsHaveMore: params.nativeSessionsHaveMore ?? false,
-            })}
+            ${renderSessionPagination({ host, section })}
           `}
     </div>
   `;
@@ -249,11 +244,9 @@ function renderSessionSection(params: {
 function renderSessionPagination(params: {
   host: SidebarSessionListHost;
   section: RenderableSessionSection;
-  nativeSessionsHaveMore: boolean;
 }) {
   const { host, section } = params;
-  const canLoadMore = section.id === "ungrouped" && params.nativeSessionsHaveMore;
-  const canShowMore = section.visibleRowCount < section.totalRowCount || canLoadMore;
+  const canShowMore = section.visibleRowCount < section.totalRowCount;
   const canShowLess =
     section.visibleRowCount > SIDEBAR_SESSION_SEE_LESS_THRESHOLD &&
     section.visibleRowCount > section.collapsedVisibleRowCount;
@@ -270,9 +263,6 @@ function renderSessionPagination(params: {
             @click=${() => {
               const nextLimit = section.visibleLimit + SIDEBAR_SESSION_PAGE_SIZE;
               host.setVisibleSessionLimit(section.id, nextLimit);
-              if (canLoadMore && nextLimit > section.totalRowCount) {
-                void host.loadMoreSidebarSessions();
-              }
             }}
           >
             ${t("chat.selectors.loadMoreSessions")}
@@ -361,7 +351,6 @@ function renderSessionCatalog(params: {
 function renderSessionListBody(params: {
   host: SidebarSessionListHost;
   sections: RenderableSessionSection[];
-  nativeSessionsHaveMore: boolean;
   catalogs: SessionCatalogRenderSnapshot;
   catalogRenderer: SessionCatalogGroupsRenderer | null;
 }) {
@@ -392,19 +381,29 @@ function renderSessionListBody(params: {
       if (
         section.id === "ungrouped" &&
         section.totalRowCount === 0 &&
-        !params.nativeSessionsHaveMore &&
         !host.sessionOwnershipVisible &&
         host.sessionsStatusFilter === "active" &&
         host.sessionOrganizer.draggingSessionKey === null
       ) {
         return nothing;
       }
-      return renderSessionSection({
-        host,
-        section,
-        nativeSessionsHaveMore: params.nativeSessionsHaveMore,
-      });
+      return renderSessionSection({ host, section });
     })}
+  `;
+}
+
+function renderGlobalSessionPagination(host: SidebarSessionListHost) {
+  const label = t("chat.sidebar.loadMoreSessions");
+  return html`
+    <div class="sidebar-session-pagination">
+      <button
+        type="button"
+        class="sidebar-session-pagination__button"
+        @click=${() => void host.loadMoreSidebarSessions()}
+      >
+        ${label}
+      </button>
+    </div>
   `;
 }
 
@@ -490,10 +489,10 @@ export function renderSessionList(params: {
         ${renderSessionListBody({
           host,
           sections: params.sections,
-          nativeSessionsHaveMore: params.nativeSessionsHaveMore,
           catalogs: params.catalogs,
           catalogRenderer: params.catalogRenderer,
         })}
+        ${params.nativeSessionsHaveMore ? renderGlobalSessionPagination(host) : nothing}
         ${host.sessionsStatusFilter === "archived" && params.empty
           ? html`<span class="sidebar-session-empty-hint"
               >${t("sessionsView.noArchivedSessions")}</span
