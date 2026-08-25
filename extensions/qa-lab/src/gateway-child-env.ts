@@ -145,11 +145,12 @@ export async function stageQaCodexMockModelCatalog(params: {
   const selectedModelRefs = [params.primaryModel, params.alternateModel].filter(
     (model): model is string => typeof model === "string" && model.length > 0,
   );
-  const models = listMockCodexModelInfos(selectedModelRefs).map((model) =>
-    params.autoCompactTokenLimit
-      ? { ...model, auto_compact_token_limit: params.autoCompactTokenLimit }
-      : model,
-  );
+  const models = listMockCodexModelInfos(selectedModelRefs);
+  if (params.autoCompactTokenLimit) {
+    for (const model of models) {
+      Object.assign(model, { auto_compact_token_limit: params.autoCompactTokenLimit });
+    }
+  }
   await fs.writeFile(modelCatalogPath, `${JSON.stringify({ models }, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
