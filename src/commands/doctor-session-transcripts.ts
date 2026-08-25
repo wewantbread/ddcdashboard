@@ -509,7 +509,7 @@ export async function noteSessionTranscriptHealth(params?: {
             ? ` openai-codex=${result.legacyOpenAICodexEntries}`
             : "";
         const reason =
-          !result.repaired && result.reason && result.reason !== "no active branch"
+          result.reason && !(result.repaired && result.reason === "no active branch")
             ? ` error=${result.reason.replace(/\s+/g, " ").trim()}`
             : "";
         return `- ${shortenHomePath(result.filePath)} ${status} entries=${result.originalEntries}->${result.activeEntries + 1}${metadata}${backup}${reason}`;
