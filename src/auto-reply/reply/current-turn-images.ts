@@ -122,13 +122,27 @@ function resolveMergedTurnImages(entries: OrderedTurnImage[]): {
     }
     return left.sequence - right.sequence;
   });
-  const images = merged.flatMap((entry) => (entry.image ? [entry.image] : []));
+  const seenImages: ImageContent[] = [];
+  const deduped = merged.filter((entry) => {
+    if (!entry.image) {
+      return true;
+    }
+    const duplicate = seenImages.some(
+      (image) => image.mimeType === entry.image?.mimeType && image.data === entry.image?.data,
+    );
+    if (duplicate) {
+      return false;
+    }
+    seenImages.push(entry.image);
+    return true;
+  });
+  const images = deduped.flatMap((entry) => (entry.image ? [entry.image] : []));
   const result = {
     ...(images.length > 0 ? { images } : {}),
-    imageOrder: merged.map((entry) => entry.imageOrder),
+    imageOrder: deduped.map((entry) => entry.imageOrder),
   };
   Object.defineProperty(result, "imageSourceIndexes", {
-    value: merged.map((entry) => entry.sourceIndex),
+    value: deduped.map((entry) => entry.sourceIndex),
   });
   return result;
 }

@@ -11,11 +11,19 @@ describe("codex conversation turn input", () => {
           content: "what is this?",
           channel: "telegram",
           isGroup: false,
-          metadata: {
-            mediaPaths: ["/tmp/photo.png", "/tmp/readme.txt"],
-            mediaUrls: ["https://example.test/photo.png"],
-            mediaTypes: ["image/png", "text/plain"],
-          },
+          media: [
+            {
+              path: "/tmp/photo.png",
+              url: "https://example.test/photo.png",
+              contentType: "image/png",
+              kind: "image",
+            },
+            {
+              path: "/tmp/readme.txt",
+              contentType: "text/plain",
+              kind: "document",
+            },
+          ],
         },
       }),
     ).toEqual([
@@ -34,11 +42,8 @@ describe("codex conversation turn input", () => {
         content: "what is this?",
         channel: "imessage",
         isGroup: false,
-        metadata: {
-          mediaPaths: [stagedPath],
-          mediaTypes: ["image/jpeg"],
-          originalMediaPaths: [rawPath],
-        },
+        media: [{ path: stagedPath, contentType: "image/jpeg", kind: "image" }],
+        originalMedia: [{ path: rawPath, contentType: "image/jpeg", kind: "image" }],
       },
     });
 
@@ -57,9 +62,7 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaUrl: "https://example.test/photo.webp?sig=1",
-          },
+          media: [{ url: "https://example.test/photo.webp?sig=1", kind: "image" }],
         },
       }),
     ).toEqual([
@@ -76,9 +79,7 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaUrl: "//cdn.example.test/photo.webp",
-          },
+          media: [{ url: "//cdn.example.test/photo.webp", kind: "image" }],
         },
       }),
     ).toEqual([
@@ -95,10 +96,13 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaPath: "file:///tmp/OpenClaw%20QA/photo.png",
-            mediaType: "image/png",
-          },
+          media: [
+            {
+              path: "file:///tmp/OpenClaw%20QA/photo.png",
+              contentType: "image/png",
+              kind: "image",
+            },
+          ],
         },
       }),
     ).toEqual([
@@ -115,10 +119,13 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaPath: "file:///tmp/%zz/photo.png",
-            mediaType: "image/png",
-          },
+          media: [
+            {
+              path: "file:///tmp/%zz/photo.png",
+              contentType: "image/png",
+              kind: "image",
+            },
+          ],
         },
       }),
     ).toEqual([{ type: "text", text: "look", text_elements: [] }]);
@@ -132,10 +139,14 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaUrls: ["/tmp/staged-photo.png", "file:///tmp/OpenClaw%20QA/second.jpg"],
-            mediaTypes: ["image/png", "image/jpeg"],
-          },
+          media: [
+            { url: "/tmp/staged-photo.png", contentType: "image/png", kind: "image" },
+            {
+              url: "file:///tmp/OpenClaw%20QA/second.jpg",
+              contentType: "image/jpeg",
+              kind: "image",
+            },
+          ],
         },
       }),
     ).toEqual([
@@ -153,10 +164,13 @@ describe("codex conversation turn input", () => {
           content: "look",
           channel: "webchat",
           isGroup: false,
-          metadata: {
-            mediaUrl: "C:\\OpenClaw QA\\photo.png",
-            mediaType: "image/png",
-          },
+          media: [
+            {
+              url: "C:\\OpenClaw QA\\photo.png",
+              contentType: "image/png",
+              kind: "image",
+            },
+          ],
         },
       }),
     ).toEqual([

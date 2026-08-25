@@ -37,6 +37,23 @@ function isAuthorityResolutionOperationAbort(error: unknown, signal: AbortSignal
   return signal?.aborted === true && error === signal.reason;
 }
 
+export function resolveCodexDurableToolRegistrationParams(
+  params: CodexAttemptRuntime["runtimeParams"],
+): CodexAttemptRuntime["runtimeParams"] {
+  if (params.senderIsOwner === true && (params.images?.length ?? 0) === 0) {
+    return params;
+  }
+  return {
+    ...params,
+    // Durable registration advertises the stable owner-capable superset. The
+    // executable surface below still uses the real sender and remains the
+    // authority boundary for every tool call.
+    senderIsOwner: true,
+    // Current-turn native vision input must not change the durable tool schema.
+    images: undefined,
+  };
+}
+
 export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   const {
     connection,
@@ -260,6 +277,10 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
   });
   const registeredTools = await buildDynamicTools({
     ...commonToolParams,
+    // Durable registration is a stable advertised superset, not execution
+    // authority. Owner-only schemas remain registered so owner turns can use
+    // them, while the current executable map still enforces the real sender.
+    params: resolveCodexDurableToolRegistrationParams(dynamicToolParams),
     forceHeartbeatTool: true,
     ignoreDisableMessageTool: true,
     ignoreRuntimePlan: true,

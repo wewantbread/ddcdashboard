@@ -2,13 +2,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginHookInboundClaimEvent } from "openclaw/plugin-sdk/plugin-entry";
-import { normalizeSingleOrTrimmedStringList } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { CodexUserInput } from "./app-server/protocol.js";
 
 type InboundMedia = {
   path?: string;
   url?: string;
   mimeType?: string;
+  kind?: string;
 };
 
 const IMAGE_EXTENSIONS = new Set([".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
@@ -26,29 +26,15 @@ export function buildCodexConversationTurnInput(params: {
 }
 
 function extractInboundMedia(event: PluginHookInboundClaimEvent): InboundMedia[] {
-  const metadata = event.metadata ?? {};
-  // OpenClaw channels expose either local staged files or remote URLs. Keep
-  // them separate so Codex can receive the cheaper localImage input when a file
-  // is already present, while still supporting remote-only transports.
-  const paths = normalizeSingleOrTrimmedStringList(metadata.mediaPaths).concat(
-    normalizeSingleOrTrimmedStringList(metadata.mediaPath),
-  );
-  const urls = normalizeSingleOrTrimmedStringList(metadata.mediaUrls).concat(
-    normalizeSingleOrTrimmedStringList(metadata.mediaUrl),
-  );
-  const mimeTypes = normalizeSingleOrTrimmedStringList(metadata.mediaTypes).concat(
-    normalizeSingleOrTrimmedStringList(metadata.mediaType),
-  );
-  const count = Math.max(paths.length, urls.length, mimeTypes.length);
-  const media: InboundMedia[] = [];
-  for (let index = 0; index < count; index += 1) {
-    media.push({
-      path: paths[index],
-      url: urls[index],
-      mimeType: mimeTypes[index] ?? mimeTypes[0],
-    });
-  }
-  return media;
+  // event.media is the canonical ordered attachment representation. The legacy
+  // metadata aliases are independently compacted projections, so their indexes
+  // cannot safely be zipped back together for mixed remote/local attachments.
+  return (event.media ?? []).map((media) => ({
+    path: media.path,
+    url: media.url,
+    mimeType: media.contentType,
+    kind: media.kind,
+  }));
 }
 
 function toCodexImageInput(media: InboundMedia): CodexUserInput | undefined {
@@ -64,7 +50,7 @@ function toCodexImageInput(media: InboundMedia): CodexUserInput | undefined {
 }
 
 function isImageMedia(media: InboundMedia): boolean {
-  if (media.mimeType?.toLowerCase().startsWith("image/")) {
+  if (media.kind === "image" || media.mimeType?.toLowerCase().startsWith("image/")) {
     return true;
   }
   const candidate = media.path ?? media.url;
