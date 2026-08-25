@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUNDLED_PLUGIN_ROOT_DIR } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
@@ -17,6 +18,22 @@ const fullReleaseValidationWorkflowPath = join(
   ".github/workflows/full-release-validation.yml",
 );
 const dockerSetupDockerfilePaths = ["Dockerfile", "scripts/docker/sandbox/Dockerfile"] as const;
+
+type DockerReleaseWorkflowStep = {
+  name?: string;
+  uses?: string;
+  with?: Record<string, unknown>;
+};
+
+type DockerReleaseWorkflow = {
+  jobs: Record<
+    string,
+    {
+      outputs?: Record<string, unknown>;
+      steps?: DockerReleaseWorkflowStep[];
+    }
+  >;
+};
 
 function collapseDockerContinuations(dockerfile: string): string {
   return dockerfile.replace(/\\\r?\n[ \t]*/g, " ");
@@ -544,6 +561,97 @@ describe("Dockerfile", () => {
         "OPENCLAW_BUILD_TIMESTAMP=${{ needs.resolve_build_provenance.outputs.built_at }}",
       ).length - 1,
     ).toBe(4);
+  });
+
+  it("stamps and validates the full correction-release version in official images", async () => {
+    const [rawDockerfile, rawWorkflow] = await Promise.all([
+      readFile(dockerfilePath, "utf8"),
+      readFile(dockerReleaseWorkflowPath, "utf8"),
+    ]);
+    const dockerfile = collapseDockerContinuations(rawDockerfile);
+    const workflow = parse(rawWorkflow) as DockerReleaseWorkflow;
+    const sourceCopyIndex = dockerfile.indexOf("COPY . .");
+    const versionArgIndex = dockerfile.indexOf('ARG OPENCLAW_DOCKER_BUILD_VERSION=""');
+    const versionStampIndex = dockerfile.indexOf(
+      'pnpm pkg set "version=$OPENCLAW_DOCKER_BUILD_VERSION"',
+    );
+    const buildIndex = dockerfile.indexOf(
+      'OPENCLAW_INTERNAL_DOCKER_BUILD_PLUGIN_IDS="$selected_plugin_dirs" OPENCLAW_RUN_NODE_SKIP_DTS_BUILD="$OPENCLAW_DOCKER_BUILD_SKIP_DTS" OPENCLAW_TSDOWN_MAX_OLD_SPACE_MB="$OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB" NODE_OPTIONS="$OPENCLAW_DOCKER_BUILD_NODE_OPTIONS" pnpm_config_verify_deps_before_run=false pnpm build:docker',
+    );
+
+    expect(versionArgIndex).toBeGreaterThan(-1);
+    expect(versionStampIndex).toBeGreaterThan(sourceCopyIndex);
+    expect(versionStampIndex).toBeGreaterThan(versionArgIndex);
+    expect(versionStampIndex).toBeLessThan(buildIndex);
+    expect(workflow.jobs.resolve_build_provenance?.outputs?.release_version).toBe(
+      "${{ needs.resolve_release_policy.outputs.version }}",
+    );
+
+    const buildSteps = ["build-amd64", "build-arm64"].flatMap(
+      (jobName) =>
+        workflow.jobs[jobName]?.steps?.filter((step) =>
+          step.uses?.startsWith("docker/build-push-action@"),
+        ) ?? [],
+    );
+    expect(buildSteps.map((step) => step.name)).toEqual([
+      "Build and push amd64 image",
+      "Build and push amd64 browser image",
+      "Build and push arm64 image",
+      "Build and push arm64 browser image",
+    ]);
+    for (const step of buildSteps) {
+      const buildArgs = step.with?.["build-args"];
+      const versionArgs =
+        typeof buildArgs === "string"
+          ? buildArgs
+              .split(/\r?\n/u)
+              .map((line) => line.trim())
+              .filter((line) => line.startsWith("OPENCLAW_DOCKER_BUILD_VERSION="))
+          : [];
+      expect(versionArgs, step.name).toEqual([
+        "OPENCLAW_DOCKER_BUILD_VERSION=${{ needs.resolve_build_provenance.outputs.release_version }}",
+      ]);
+    }
+
+    const runtimeStageIndex = dockerfile.lastIndexOf("FROM base-runtime");
+    const packageCopyIndex = dockerfile.indexOf(
+      "COPY --from=runtime-assets --chown=node:node /app/package.json .",
+      runtimeStageIndex,
+    );
+    const launcherCopyIndex = dockerfile.indexOf(
+      "COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .",
+      runtimeStageIndex,
+    );
+    const runtimeVersionArgIndex = dockerfile.indexOf(
+      "ARG OPENCLAW_DOCKER_BUILD_VERSION",
+      runtimeStageIndex,
+    );
+    const runtimeVersionCheckIndex = dockerfile.indexOf(
+      'package_version="$(node -p "require(\\"/app/package.json\\").version")"',
+      runtimeStageIndex,
+    );
+    const userIndex = dockerfile.indexOf("USER node", runtimeStageIndex);
+
+    expect(runtimeStageIndex).toBeGreaterThan(-1);
+    expect(packageCopyIndex).toBeGreaterThan(runtimeStageIndex);
+    expect(launcherCopyIndex).toBeGreaterThan(packageCopyIndex);
+    expect(runtimeVersionArgIndex).toBeGreaterThan(launcherCopyIndex);
+    expect(runtimeVersionCheckIndex).toBeGreaterThan(runtimeVersionArgIndex);
+    expect(runtimeVersionCheckIndex).toBeLessThan(userIndex);
+    expect(dockerfile).toContain(
+      'build_info_version="$(node -p "require(\\"/app/dist/build-info.json\\").version")"',
+    );
+    expect(dockerfile).toContain(
+      'build_commit="$(node -p "require(\\"/app/dist/build-info.json\\").commit?.slice(0, 7) ?? \\"\\"")"',
+    );
+    expect(dockerfile).toContain('cli_version="$(node /app/openclaw.mjs --version)"');
+    expect(dockerfile).toContain('expected_cli="OpenClaw $OPENCLAW_DOCKER_BUILD_VERSION"');
+    expect(dockerfile).toContain(
+      'if [ -n "$build_commit" ]; then expected_cli="$expected_cli ($build_commit)"; fi',
+    );
+    expect(dockerfile).toContain('test "$package_version" = "$OPENCLAW_DOCKER_BUILD_VERSION"');
+    expect(dockerfile).toContain('test "$build_info_version" = "$OPENCLAW_DOCKER_BUILD_VERSION"');
+    expect(dockerfile).toContain('test "$cli_version" = "$expected_cli"');
   });
 
   it("publishes official Docker browser images with baked Chromium", async () => {
