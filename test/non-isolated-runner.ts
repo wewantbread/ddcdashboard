@@ -4,8 +4,6 @@ import { TestRunner, type RunnerTask, type RunnerTestFile, vi } from "vitest";
 import { resetAgentEventsForTest } from "../src/infra/agent-events.js";
 import { loggingState } from "../src/logging/state.js";
 import { clearNamedPluginRuntimeStoresForTest } from "../src/plugin-sdk/runtime-store-registry.js";
-import { clearCurrentPluginMetadataSnapshot } from "../src/plugins/current-plugin-metadata-state.js";
-import { registerPluginMetadataSnapshotReaders } from "../src/plugins/plugin-metadata-snapshot.runtime.js";
 import {
   type CustomElementTracking,
   dropRepoOwnedCustomElements,
@@ -334,31 +332,6 @@ function resetOpenClawSessionSuspensionState(): void {
   api?.resetSessionSuspensionStateForTest?.();
 }
 
-function resetOpenClawPluginMetadataState(modules: EvaluatedModules): void {
-  let clearLifecycle: (() => void) | undefined;
-  for (const [modulePath, module] of modules.idToModuleMap) {
-    if (
-      modulePath.startsWith("mock:") ||
-      !/\/src\/plugins\/plugin-metadata-lifecycle\.(?:ts|js)(?:\?.*)?$/u.test(modulePath) ||
-      !module.exports ||
-      typeof module.exports !== "object"
-    ) {
-      continue;
-    }
-    const clear = Reflect.get(module.exports, "clearPluginMetadataLifecycleCaches");
-    if (typeof clear === "function") {
-      clearLifecycle = clear;
-    }
-  }
-  (clearLifecycle ?? clearCurrentPluginMetadataSnapshot)();
-
-  // Existing lightweight bridges retain the slot, so reset reader closures in place.
-  registerPluginMetadataSnapshotReaders({
-    getCurrentPluginMetadataSnapshot: undefined,
-    resolvePluginMetadataSnapshot: undefined,
-  });
-}
-
 const SERIALIZED_RESOLVE_MOCKS = Symbol.for("openclaw.serializedResolveMocks");
 
 type SerializedResolveMocksState = {
@@ -401,15 +374,20 @@ export function serializeMockerResolveMocks(mocker: SerializableMocker): void {
   const original = mocker.resolveMocks.bind(mocker);
   const statics = mocker.constructor as { pendingIds?: unknown[] };
   const runPass = async (): Promise<void> => {
-    const queue = statics.pendingIds;
-    const processedCount = queue?.length ?? 0;
-    await original();
-    // Upstream snapshots the queue contents at pass start and reassigns the
-    // pendingIds static to [] at the end, so ids queued during the pass's RPC
-    // window land in the abandoned array. Requeue them so the next chained
-    // pass registers them instead of silently dropping the registration.
-    if (queue && queue !== statics.pendingIds && queue.length > processedCount) {
-      statics.pendingIds?.push(...queue.slice(processedCount));
+    while (true) {
+      const queue = statics.pendingIds;
+      const processedCount = queue?.length ?? 0;
+      await original();
+      // Upstream snapshots the queue contents at pass start and reassigns the
+      // pendingIds static to [] at the end, so ids queued during the pass's RPC
+      // window land in the abandoned array. Requeue and drain them before this
+      // caller proceeds so a later module fetch cannot invalidate mocks mid-import.
+      if (queue && queue !== statics.pendingIds && queue.length > processedCount) {
+        statics.pendingIds?.push(...queue.slice(processedCount));
+      }
+      if ((statics.pendingIds?.length ?? 0) === 0) {
+        return;
+      }
     }
   };
   mocker.resolveMocks = () => {
@@ -500,12 +478,10 @@ export default class OpenClawNonIsolatedRunner extends TestRunner {
     // Named plugin runtimes intentionally survive duplicate module evaluation in production.
     // Clear their shared slots here so one test file cannot lend a partial runtime to the next.
     clearNamedPluginRuntimeStoresForTest();
-    const evaluatedModules = internals.workerState.evaluatedModules as EvaluatedModules;
-    resetOpenClawPluginMetadataState(evaluatedModules);
     dropTrackedRepoOwnedCustomElements();
     resetSharedDocumentBody();
     vi.resetModules();
     internals.moduleRunner?.mocker?.reset?.();
-    resetEvaluatedModules(evaluatedModules, true);
+    resetEvaluatedModules(internals.workerState.evaluatedModules as EvaluatedModules, true);
   }
 }
