@@ -29,6 +29,7 @@ import {
   type ResolvedGatewayAuth,
 } from "./auth.js";
 import type { ControlUiPluginFrameGrantAck } from "./control-ui-contract.js";
+import { verifyControlUiDeviceCredential } from "./control-ui-device-credential.js";
 import {
   resolveControlUiPluginAuthCookieGrants,
   setControlUiPluginAuthCookie,
@@ -337,7 +338,27 @@ export async function authorizeControlUiReadRequestOrReply(
           retryAfterMs: deviceRateCheck.retryAfterMs,
         };
       } else {
-        const verifiedScopes = await verifyControlUiDeviceReadToken(token, authGeneration);
+        // The post-connect credential is redeemable only on the managed-Serve
+        // ingress and only by the tailnet principal it was minted for, which the
+        // verifier re-resolves from this request's own whois-checked identity.
+        // Redemption re-reads `allowTailscale` because nothing rotates an
+        // outstanding credential when that flag flips: without this an operator
+        // who turns the Tailscale lane off would keep serving credential-bearing
+        // reads for the rest of the 12h TTL, on the very lane they disabled.
+        // Falling through leaves paired-device tokens their existing
+        // ingress-agnostic reach.
+        const serveIngress =
+          auth.allowTailscale && ingressAttribution.kind === "tailscale-serve"
+            ? ingressAttribution
+            : null;
+        const verifiedScopes =
+          (serveIngress
+            ? await verifyControlUiDeviceCredential({
+                credential: token,
+                authGeneration,
+                resolvePresentedPrincipal: async () => (await serveIngress.verifyIdentity())?.login,
+              })
+            : null) ?? (await verifyControlUiDeviceReadToken(token, authGeneration));
         if (verifiedScopes) {
           deviceScopes = verifiedScopes;
           params.rateLimiter?.reset(clientIp, AUTH_RATE_LIMIT_SCOPE_DEVICE_TOKEN);
