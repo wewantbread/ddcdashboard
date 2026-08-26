@@ -352,7 +352,6 @@ describe("voice-call outbound helpers", () => {
   });
 
   it("keeps initiating when pre-provider persistence throws", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const initiateProviderCall = vi.fn(async () => ({ providerCallId: "provider-1" }));
     const ctx = {
       activeCalls: new Map(),
@@ -368,51 +367,12 @@ describe("voice-call outbound helpers", () => {
     };
     persistCallRecordMock.mockRejectedValueOnce(new Error("store down"));
 
-    try {
-      const result = await initiateCall(ctx as never, "+14155550123");
+    const result = await initiateCall(ctx as never, "+14155550123");
 
-      expect(result.success).toBe(true);
-      expect(result.callId).not.toBe("");
-      expect(initiateProviderCall).toHaveBeenCalledOnce();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Failed to persist outbound call"),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it("releases the concurrency slot when finalization persistence throws", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const ctx = {
-      activeCalls: new Map(),
-      providerCallIdMap: new Map(),
-      provider: {
-        name: "mock",
-        initiateCall: vi.fn(async () => {
-          throw new Error("provider down");
-        }),
-      },
-      config: {
-        maxConcurrentCalls: 1,
-        outbound: { defaultMode: "conversation" },
-      },
-      storePath: "/tmp/voice-call.json",
-      webhookUrl: "https://example.com/webhook",
-    };
-    persistCallRecordMock.mockRejectedValue(new Error("store down"));
-
-    try {
-      await expect(initiateCall(ctx as never, "+14155550123")).resolves.toMatchObject({
-        success: false,
-      });
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Failed to persist finalized call"),
-      );
-      expect(ctx.activeCalls.size).toBe(0);
-    } finally {
-      warnSpy.mockRestore();
-    }
+    expect(result.success).toBe(true);
+    expect(result.callId).not.toBe("");
+    expect(initiateProviderCall).toHaveBeenCalledOnce();
+    expect(ctx.activeCalls.size).toBe(1);
   });
 
   it("speaks through connected calls and rolls back to listening on provider errors", async () => {

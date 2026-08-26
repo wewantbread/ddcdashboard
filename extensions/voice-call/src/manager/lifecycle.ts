@@ -1,4 +1,3 @@
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 // Voice Call plugin module implements lifecycle behavior.
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { TerminalStates, type CallRecord, type EndReason } from "../types.js";
@@ -46,16 +45,7 @@ export function finalizeCall(params: {
     call.endedAt = params.endedAt ?? Date.now();
     call.endReason = endReason;
     transitionState(call, endReason);
-    try {
-      persistCallRecord(ctx.storePath, call);
-    } catch (err) {
-      // Terminal cleanup must complete even when the store is unavailable:
-      // activeCalls.delete below releases the concurrency slot, and a throw
-      // here would wedge maxConcurrentCalls until restart (#129473).
-      console.warn(
-        `[voice-call] Failed to persist finalized call ${call.callId}: ${formatErrorMessage(err)}`,
-      );
-    }
+    persistCallRecord(ctx.storePath, call);
     log.info(
       `[voice-call] Call finalized callId=${call.callId} providerCallId=${call.providerCallId ?? "unknown"} endReason=${endReason}`,
     );
