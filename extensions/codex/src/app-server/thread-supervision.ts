@@ -28,11 +28,12 @@ import type {
   CodexTurnEnvironmentParams,
   JsonObject,
 } from "./protocol.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerBindingStore,
-  CodexAppServerPendingSupervisionBranch,
-  CodexAppServerThreadBinding,
+import {
+  resolveCodexBindingReasoningEffort,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerBindingStore,
+  type CodexAppServerPendingSupervisionBranch,
+  type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import {
   CodexThreadBindingConflictAfterCleanupError,
@@ -224,6 +225,10 @@ export async function materializePendingSupervisionBranch(
     ]);
     params.throwIfAborted();
     const startResponse = assertCodexThreadStartResponse(rawStartResponse);
+    const reasoningEffort = resolveCodexBindingReasoningEffort(
+      startResponse.reasoningEffort,
+      probeResponse.reasoningEffort,
+    );
     assertExactSupervisionModelSelection(startResponse, {
       model: nativeModel,
       modelProvider: nativeModelProvider,
@@ -301,6 +306,7 @@ export async function materializePendingSupervisionBranch(
           ...params.bindingPatch,
           model: nativeModel,
           modelProvider: bindingModelProvider,
+          reasoningEffort,
           historyCoveredThrough,
         },
       });
@@ -361,6 +367,7 @@ export async function materializePendingSupervisionBranch(
       pendingSupervisionBranch: undefined,
       model: nativeModel,
       modelProvider: bindingModelProvider,
+      reasoningEffort,
       historyCoveredThrough,
       lifecycle: { action: "forked" },
     };

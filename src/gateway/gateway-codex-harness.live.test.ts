@@ -308,6 +308,20 @@ function resolveCodexHarnessExpectedRequestEffort(modelId: string): string | nul
   return configuredEffort === "ultra" ? "max" : configuredEffort;
 }
 
+function resolveCodexHarnessExpectedNativeEffort(modelId: string): string | null {
+  const configured = process.env.OPENCLAW_LIVE_CODEX_HARNESS_EXPECTED_EFFORT;
+  if (configured?.trim()) {
+    const expected = resolveCodexHarnessThinkingLevel(configured);
+    return expected === "off" ? "none" : expected;
+  }
+  const requestEffort = resolveCodexHarnessExpectedRequestEffort(modelId);
+  return CODEX_HARNESS_THINKING === "off"
+    ? "none"
+    : CODEX_HARNESS_THINKING === "ultra" && requestEffort === "max"
+      ? "ultra"
+      : requestEffort;
+}
+
 function logCodexLiveStep(step: string, details?: Record<string, unknown>): void {
   if (!CODEX_HARNESS_DEBUG) {
     return;
@@ -860,6 +874,13 @@ function recordCodexAttemptIdentity(params: {
     typeof threadId === "string" && threadId.trim().length > 0,
     `expected Codex thread_ready identity for ${params.sessionKey}; events=${JSON.stringify(events)}`,
   ).toBe(true);
+  if (observedCodexThreadIds.get(params.sessionKey) === threadId) {
+    // Codex persists the accepted turn setting on the thread. Preparing that
+    // same thread again must report the authoritative native setting.
+    expect(threadReady?.data?.reasoningEffort ?? null).toBe(
+      resolveCodexHarnessExpectedNativeEffort(expectedModel),
+    );
+  }
   observedCodexThreadIds.set(params.sessionKey, threadId as string);
   const clientId = threadReady?.data?.clientId;
   expect(
@@ -2028,7 +2049,6 @@ async function verifyCodexNativeSubagentBridgeProbe(params: {
       text,
     )}; events=${JSON.stringify(events)}; tasks=${JSON.stringify(codexNativeTasks)}`,
   ).toBeDefined();
-
   function listCodexNativeTasks() {
     return listTaskRecords().filter(
       (entry) => entry.runtime === "subagent" && entry.taskKind === "codex-native",

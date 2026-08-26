@@ -17,8 +17,17 @@ import {
   hashCodexAppServerBindingFingerprint,
   readCodexAppServerThreadBinding,
   reclaimCurrentCodexSessionGeneration,
+  resolveCodexBindingReasoningEffort,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
+
+describe("resolveCodexBindingReasoningEffort", () => {
+  it("preserves omission while applying explicit values and clears", () => {
+    expect(resolveCodexBindingReasoningEffort(undefined, "high")).toBe("high");
+    expect(resolveCodexBindingReasoningEffort("low", "high")).toBe("low");
+    expect(resolveCodexBindingReasoningEffort(null, "high")).toBeNull();
+  });
+});
 
 function createStateStore() {
   const values = new Map<string, StoredCodexAppServerBinding>();

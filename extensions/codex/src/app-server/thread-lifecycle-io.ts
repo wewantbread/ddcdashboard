@@ -38,6 +38,7 @@ import type {
   CodexAppServerContextEngineBinding,
   CodexAppServerThreadBinding,
 } from "./session-binding.js";
+import { resolveCodexBindingReasoningEffort } from "./session-binding.js";
 import { isCodexAppServerStartSelectionChangedError } from "./shared-client.js";
 import {
   fingerprintCodexThreadConfig,
@@ -288,6 +289,10 @@ export async function resumeExistingCodexThread(
       modelProvider: normalizeBindingModelProvider(
         boundAuthProfileId,
         response.modelProvider ?? requestModelProvider ?? startModelProvider,
+      ),
+      reasoningEffort: resolveCodexBindingReasoningEffort(
+        response.reasoningEffort,
+        resumeBinding.reasoningEffort,
       ),
       dynamicToolsFingerprint,
       dynamicToolsContainDeferred,
@@ -608,6 +613,7 @@ export async function startFreshCodexThread(
       agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
       model: response.model ?? startParams.model ?? params.params.modelId,
       modelProvider: bindingModelProvider,
+      reasoningEffort: response.reasoningEffort,
       dynamicToolsFingerprint,
       dynamicToolsContainDeferred,
       webSearchThreadConfigFingerprint,
