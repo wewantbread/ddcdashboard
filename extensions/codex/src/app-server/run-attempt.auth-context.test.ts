@@ -74,4 +74,60 @@ describe("runCodexAppServerAttempt authenticated hook context", () => {
       expect(hookContext).toMatchObject(expectedContext);
     }
   });
+
+  it("omits sender and chat identity from non-user prompt and compaction hooks", async () => {
+    const beforePromptBuild = vi.fn(() => undefined);
+    const beforeCompaction = vi.fn(() => undefined);
+    const afterCompaction = vi.fn(() => undefined);
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_prompt_build", handler: beforePromptBuild },
+        { hookName: "before_compaction", handler: beforeCompaction },
+        { hookName: "after_compaction", handler: afterCompaction },
+      ]),
+    );
+    const params = createParams(
+      path.join(tempDir, "system-compaction.jsonl"),
+      path.join(tempDir, "system-compaction-workspace"),
+    );
+    params.trigger = "heartbeat";
+    params.messageChannel = "telegram";
+    params.messageProvider = "telegram";
+    params.currentChannelId = "telegram:-100123";
+    params.agentAccountId = "account-a";
+    params.senderId = "must-not-leak";
+    params.channelContext = {
+      sender: { id: "must-not-leak" },
+      chat: { id: "must-not-leak" },
+    };
+    const harness = createStartedThreadHarness();
+
+    const run = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+    await harness.notify(
+      itemNotification("item/started", { type: "contextCompaction", id: "compact-1" }),
+    );
+    await harness.notify(
+      itemNotification("item/completed", { type: "contextCompaction", id: "compact-1" }),
+    );
+    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await run;
+
+    for (const [hookName, hook] of [
+      ["before_prompt_build", beforePromptBuild],
+      ["before_compaction", beforeCompaction],
+      ["after_compaction", afterCompaction],
+    ] as const) {
+      expect(hook).toHaveBeenCalledOnce();
+      const [, hookContext] = mockCall(hook, hookName) as [unknown, Record<string, unknown>];
+      expect(hookContext).toMatchObject({
+        accountId: "account-a",
+        channel: "telegram",
+        trigger: "heartbeat",
+      });
+      expect(hookContext).not.toHaveProperty("senderId");
+      expect(hookContext).not.toHaveProperty("chatId");
+      expect(hookContext).not.toHaveProperty("channelContext");
+    }
+  });
 });
