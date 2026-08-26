@@ -10,6 +10,7 @@ DOCKER_E2E_HARNESS_ROOT_DIR="$HARNESS_ROOT_DIR"
 source "$HARNESS_ROOT_DIR/scripts/lib/docker-e2e-image.sh"
 source "$HARNESS_ROOT_DIR/scripts/lib/docker-e2e-package.sh"
 source "$HARNESS_ROOT_DIR/scripts/lib/openclaw-e2e-instance.sh"
+source "$HARNESS_ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"
 
 IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-upgrade-survivor-e2e" OPENCLAW_UPGRADE_SURVIVOR_E2E_IMAGE)"
 SKIP_BUILD="${OPENCLAW_UPGRADE_SURVIVOR_E2E_SKIP_BUILD:-0}"
@@ -109,18 +110,7 @@ if [ -n "${OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_DEGRADED:-}" ]; then
   )
 fi
 configure_prepublish_plugin_registry() {
-  local registry_dir="$1"
-  PREPUBLISH_PLUGIN_REGISTRY_DIR="$(
-    cd "$registry_dir" && pwd
-  )"
-  if [ ! -f "$PREPUBLISH_PLUGIN_REGISTRY_DIR/prepublish-plugin-registry.json" ]; then
-    echo "Prepublish plugin registry manifest is missing." >&2
-    exit 1
-  fi
-  PREPUBLISH_PLUGIN_REGISTRY_ARGS=(
-    -e OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR=/tmp/openclaw-prepublish-plugin-registry
-    -v "$PREPUBLISH_PLUGIN_REGISTRY_DIR:/tmp/openclaw-prepublish-plugin-registry:ro"
-  )
+  prepublish_plugin_registry_mount_args "$1" PREPUBLISH_PLUGIN_REGISTRY_ARGS
 }
 if [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
   configure_prepublish_plugin_registry "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR"
@@ -291,6 +281,7 @@ docker_e2e_run_with_harness \
   "$IMAGE_NAME" \
   timeout --kill-after=30s "$DOCKER_RUN_TIMEOUT" bash -lc 'set -euo pipefail
 source scripts/lib/openclaw-e2e-instance.sh
+source scripts/e2e/lib/prepublish-plugin-registry.sh
 
 export npm_config_loglevel=error
 export npm_config_fund=false
@@ -387,40 +378,11 @@ configure_plugin_registry() {
   local fixture_root="$OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT/plugin-registry"
   local package_dir="$fixture_root/package"
   local tarball="$fixture_root/openclaw-brave-plugin-2026.5.2.tgz"
-  local port_file="$fixture_root/npm-registry-port"
-  local log_file="$fixture_root/npm-registry.log"
   local registry_args=()
 
   if [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
     local manifest="$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR/prepublish-plugin-registry.json"
-    local registry_rows
-    registry_rows="$(
-      PREPUBLISH_PLUGIN_REGISTRY_MANIFEST="$manifest" node <<'"'"'NODE'"'"'
-const fs = require("node:fs");
-const path = require("node:path");
-const manifestPath = process.env.PREPUBLISH_PLUGIN_REGISTRY_MANIFEST;
-const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-if (!Array.isArray(manifest.packages) || manifest.packages.length === 0) {
-  throw new Error("prepublish plugin registry manifest must contain packages");
-}
-for (const entry of manifest.packages) {
-  if (
-    typeof entry.name !== "string" ||
-    typeof entry.version !== "string" ||
-    typeof entry.tarball !== "string" ||
-    path.basename(entry.tarball) !== entry.tarball
-  ) {
-    throw new Error("invalid prepublish plugin registry package entry");
-  }
-  process.stdout.write(
-    `${entry.name}\t${entry.version}\t${path.join(path.dirname(manifestPath), entry.tarball)}\n`,
-  );
-}
-NODE
-    )"
-    while IFS=$'"'"'\t'"'"' read -r plugin_package_name plugin_package_version plugin_package_tarball; do
-      registry_args+=("$plugin_package_name" "$plugin_package_version" "$plugin_package_tarball")
-    done <<<"$registry_rows"
+    prepublish_plugin_registry_append_manifest_args "$manifest" registry_args
   fi
 
   if [ "${OPENCLAW_UPGRADE_SURVIVOR_SCENARIO:-base}" = "configured-plugin-installs" ]; then
@@ -483,18 +445,12 @@ NODE
     return 0
   fi
 
-  mkdir -p "$fixture_root"
-  OPENCLAW_NPM_REGISTRY_DIST_TAGS="beta=$package_version" \
-  OPENCLAW_NPM_REGISTRY_UPSTREAM=https://registry.npmjs.org \
-    node scripts/e2e/lib/plugins/npm-registry-server.mjs \
-    "$port_file" \
-    "${registry_args[@]}" \
-    >"$log_file" 2>&1 &
-  plugin_registry_pid="$!"
-
-  wait_for_fixture_port "$plugin_registry_pid" "$port_file" "$log_file" "npm registry"
-  export NPM_CONFIG_REGISTRY="http://127.0.0.1:$(cat "$port_file")"
-  export npm_config_registry="$NPM_CONFIG_REGISTRY"
+  prepublish_plugin_registry_start_npm_server \
+    "$fixture_root" \
+    "upgrade survivor npm registry" \
+    plugin_registry_pid \
+    "beta=$package_version" \
+    "${registry_args[@]}"
 }
 
 openclaw_e2e_eval_test_state_from_b64 "${OPENCLAW_TEST_STATE_SCRIPT_B64:?missing OPENCLAW_TEST_STATE_SCRIPT_B64}"

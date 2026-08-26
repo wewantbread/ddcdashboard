@@ -2654,6 +2654,30 @@ describe("package acceptance workflow", () => {
     expect(workflow).toContain(
       "package_version: ${{ needs.resolve_package.outputs.package_version }}",
     );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_artifact_name: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactName || '' }}",
+    );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_artifact_id: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactId || '' }}",
+    );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_artifact_digest: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactDigest || '' }}",
+    );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_artifact_run_attempt: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactRunAttempt || '' }}",
+    );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_artifact_run_id: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactRunId || '' }}",
+    );
+    expect(workflow).toContain(
+      "prepublish_plugin_registry_manifest_sha256: ${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryManifestSha256 || '' }}",
+    );
+    expect(packageTelegram.with?.prepublish_plugin_registry_artifact_run_id).toBe(
+      "${{ fromJSON(inputs.candidate_artifact_json || '{}').prepublishPluginRegistryArtifactRunId || '' }}",
+    );
+    expect(packageTelegram.with?.prepublish_plugin_registry_artifact_run_id).not.toBe(
+      packageTelegram.with?.package_artifact_run_id,
+    );
     expect(workflow).toContain("telegram_scenarios:");
     expect(packageTelegram.with?.scenario).toBe(
       "${{ needs.resolve_package.outputs.telegram_scenarios }}",
@@ -5656,8 +5680,21 @@ describe("package artifact reuse", () => {
       job,
       "Download package-under-test artifact from release run",
     );
+    const currentRunRegistryDownload = workflowStep(
+      job,
+      "Download current-run prerelease plugin registry artifact",
+    );
+    const releaseRunRegistryDownload = workflowStep(
+      job,
+      "Download release-run prerelease plugin registry artifact",
+    );
     const validateStep = workflowStep(job, "Validate inputs and secrets");
     const identityStep = workflowStep(job, "Validate package artifact identity");
+    const registryIdentityStep = workflowStep(
+      job,
+      "Validate prerelease plugin registry artifact identity",
+    );
+    const registryManifestStep = workflowStep(job, "Validate prerelease plugin registry manifest");
     const runStep = workflowStep(job, "Run package Telegram E2E");
 
     expect(currentRunDownload).toEqual({
@@ -5687,7 +5724,16 @@ describe("package artifact reuse", () => {
       "Artifact-backed Telegram E2E requires all artifact identity fields or none.",
       "package_spec must be openclaw@alpha",
       "Artifact-backed Telegram E2E requires the complete immutable artifact and package identity tuple.",
+      "Prerelease plugin registry requires the complete immutable artifact and manifest identity tuple.",
+      "Prerelease plugin registry requires an artifact-backed Telegram package candidate.",
+      "PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256",
     ]);
+    expect(validateStep.run).not.toContain(
+      "Prerelease plugin registry and package artifact must come from the same producer run attempt.",
+    );
+    expect(validateStep.run).not.toContain(
+      'PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_RUN_ID" != "$PACKAGE_ARTIFACT_RUN_ID',
+    );
     expect(identityStep.env).toMatchObject({
       ARTIFACT_DIGEST: "${{ inputs.package_artifact_digest }}",
       ARTIFACT_ID: "${{ inputs.package_artifact_id }}",
@@ -5710,11 +5756,57 @@ describe("package artifact reuse", () => {
       "Package Telegram artifact creation time is outside the declared producer run attempt.",
       "Package Telegram artifact producer run attempt does not match the requested tuple.",
     ]);
+    expect(registryIdentityStep.if).toBe("inputs.prepublish_plugin_registry_artifact_name != ''");
+    expect(registryIdentityStep.env).toMatchObject({
+      ARTIFACT_DIGEST: "${{ inputs.prepublish_plugin_registry_artifact_digest }}",
+      ARTIFACT_ID: "${{ inputs.prepublish_plugin_registry_artifact_id }}",
+      ARTIFACT_NAME: "${{ inputs.prepublish_plugin_registry_artifact_name }}",
+      ARTIFACT_RUN_ATTEMPT: "${{ inputs.prepublish_plugin_registry_artifact_run_attempt }}",
+      ARTIFACT_RUN_ID: "${{ inputs.prepublish_plugin_registry_artifact_run_id }}",
+    });
+    expectTextToIncludeAll(registryIdentityStep.run, [
+      "actions/artifacts/${ARTIFACT_ID}",
+      '--arg digest "sha256:${ARTIFACT_DIGEST}"',
+      "actions/runs/${ARTIFACT_RUN_ID}/attempts/${ARTIFACT_RUN_ATTEMPT}",
+      "Prerelease plugin registry producer run attempt does not match the requested tuple.",
+      '[[ "$ARTIFACT_NAME" == *"-${ARTIFACT_RUN_ID}-${ARTIFACT_RUN_ATTEMPT}" ]]',
+    ]);
+    expect(currentRunRegistryDownload).toMatchObject({
+      if: "inputs.prepublish_plugin_registry_artifact_name != '' && inputs.prepublish_plugin_registry_artifact_run_id == github.run_id",
+      name: "Download current-run prerelease plugin registry artifact",
+      uses: DOWNLOAD_ARTIFACT_V8,
+      with: {
+        "artifact-ids": "${{ inputs.prepublish_plugin_registry_artifact_id }}",
+        "github-token": "${{ github.token }}",
+        path: ".artifacts/telegram-prepublish-plugin-registry",
+        "run-id": "${{ inputs.prepublish_plugin_registry_artifact_run_id }}",
+      },
+    });
+    expect(releaseRunRegistryDownload).toMatchObject({
+      if: "inputs.prepublish_plugin_registry_artifact_name != '' && inputs.prepublish_plugin_registry_artifact_run_id != github.run_id",
+      name: "Download release-run prerelease plugin registry artifact",
+      uses: DOWNLOAD_ARTIFACT_V8,
+      with: {
+        "artifact-ids": "${{ inputs.prepublish_plugin_registry_artifact_id }}",
+        "github-token": "${{ github.token }}",
+        path: ".artifacts/telegram-prepublish-plugin-registry",
+        "run-id": "${{ inputs.prepublish_plugin_registry_artifact_run_id }}",
+      },
+    });
+    expect(registryManifestStep.env?.EXPECTED_MANIFEST_SHA256).toBe(
+      "${{ inputs.prepublish_plugin_registry_manifest_sha256 }}",
+    );
+    expectTextToIncludeAll(registryManifestStep.run, [
+      ".artifacts/telegram-prepublish-plugin-registry/prepublish-plugin-registry.json",
+      "Prerelease plugin registry manifest SHA-256 differs from the declared identity.",
+    ]);
     expect(runStep.env).toMatchObject({
       PACKAGE_FILE_NAME: "${{ inputs.package_file_name || '' }}",
       PACKAGE_SHA256: "${{ inputs.package_sha256 || '' }}",
       PACKAGE_SOURCE_SHA: "${{ inputs.package_source_sha || '' }}",
       PACKAGE_VERSION: "${{ inputs.package_version || '' }}",
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_NAME:
+        "${{ inputs.prepublish_plugin_registry_artifact_name || '' }}",
     });
     expectTextToIncludeAll(runStep.run, [
       'declared_package_tgz="${package_dir}/${PACKAGE_FILE_NAME}"',
@@ -5732,6 +5824,7 @@ describe("package artifact reuse", () => {
       "Package Telegram artifact source SHA/version differs from the declared identity.",
       'export OPENCLAW_NPM_TELEGRAM_PACKAGE_DIR="${package_dir}"',
       'export OPENCLAW_NPM_TELEGRAM_PACKAGE_TGZ="${package_tgz}"',
+      'export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR=".artifacts/telegram-prepublish-plugin-registry"',
     ]);
   });
 
@@ -5802,6 +5895,28 @@ describe("package artifact reuse", () => {
     expect(result.stderr).toContain(
       "Artifact-backed Telegram E2E requires all artifact identity fields or none.",
     );
+  });
+
+  it("accepts upstream prerelease registry provenance with a downstream package re-upload", () => {
+    const result = runNpmTelegramInputValidation({
+      PACKAGE_ARTIFACT_DIGEST: "a".repeat(64),
+      PACKAGE_ARTIFACT_ID: "4567",
+      PACKAGE_ARTIFACT_NAME: "package-under-test-456-2",
+      PACKAGE_ARTIFACT_RUN_ATTEMPT: "2",
+      PACKAGE_ARTIFACT_RUN_ID: "456",
+      PACKAGE_FILE_NAME: "openclaw-2026.8.26-1.tgz",
+      PACKAGE_SHA256: "b".repeat(64),
+      PACKAGE_SOURCE_SHA: "c".repeat(40),
+      PACKAGE_VERSION: "2026.8.26-1",
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_DIGEST: "d".repeat(64),
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_ID: "1234",
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_NAME: "prepublish-plugin-registry-123-1",
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_RUN_ATTEMPT: "1",
+      PREPUBLISH_PLUGIN_REGISTRY_ARTIFACT_RUN_ID: "123",
+      PREPUBLISH_PLUGIN_REGISTRY_MANIFEST_SHA256: "e".repeat(64),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("uses bounded Convex lease waits instead of GitHub concurrency for CI Telegram consumers", () => {

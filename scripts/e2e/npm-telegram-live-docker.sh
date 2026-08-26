@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/lib/docker-e2e-image.sh"
+source "$ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"
 
 IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-npm-telegram-live-e2e" OPENCLAW_NPM_TELEGRAM_LIVE_E2E_IMAGE)"
 DOCKER_TARGET="${OPENCLAW_NPM_TELEGRAM_DOCKER_TARGET:-build}"
@@ -108,6 +109,7 @@ process.stdin.on("end", () => {
 
 package_mount_args=()
 registry_helper_mount_args=()
+prepublish_plugin_registry_args=()
 package_install_source="$PACKAGE_SPEC"
 package_source_kind="npm-package"
 resolved_package_tgz="$(resolve_package_tgz "$PACKAGE_TGZ")"
@@ -137,6 +139,11 @@ elif [ -n "$resolved_package_tgz" ]; then
   package_mount_args=(-v "$resolved_package_tgz:$package_install_source:ro")
 else
   validate_openclaw_package_spec "$PACKAGE_SPEC"
+fi
+if [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
+  prepublish_plugin_registry_mount_args \
+    "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR" \
+    prepublish_plugin_registry_args
 fi
 if [ -z "$PACKAGE_LABEL" ]; then
   if [ -n "$resolved_package_tgz" ]; then
@@ -418,6 +425,7 @@ EOF
 # package candidate. The candidate remains the absolute CLI/runtime SUT.
 run_logged_print_heartbeat "npm-telegram-live-suite" 60 docker_e2e_run_with_harness \
   "${docker_env[@]}" \
+  ${prepublish_plugin_registry_args[@]+"${prepublish_plugin_registry_args[@]}"} \
   -v "$ROOT_DIR/.artifacts:/app/.artifacts" \
   -v "$OUTPUT_DIR_HOST:$OUTPUT_DIR_CONTAINER" \
   -v "$harness_package_json:/app/package.json:ro" \
@@ -432,6 +440,7 @@ run_logged_print_heartbeat "npm-telegram-live-suite" 60 docker_e2e_run_with_harn
   -i "$IMAGE_NAME" bash -s <<'EOF'
 set -euo pipefail
 source scripts/lib/openclaw-e2e-instance.sh
+source scripts/e2e/lib/prepublish-plugin-registry.sh
 
 runtime_home="$(mktemp -d "/tmp/openclaw-npm-telegram-runtime.XXXXXX")"
 export HOME="$runtime_home"
@@ -440,6 +449,7 @@ export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 export OPENCLAW_NPM_TELEGRAM_REPO_ROOT="/app"
 export OPENCLAW_NPM_TELEGRAM_PACKAGE_VERSION="$(node -e 'const pkg = require("/npm-global/lib/node_modules/openclaw/package.json"); process.stdout.write(pkg.version)')"
 sut_command="/npm-global/bin/openclaw"
+plugin_registry_pid=""
 
 dump_hotpath_logs() {
   local status="$1"
@@ -456,6 +466,25 @@ dump_hotpath_logs() {
   done
 }
 trap 'status=$?; dump_hotpath_logs "$status"; exit "$status"' ERR
+
+cleanup_runtime() {
+  openclaw_e2e_stop_process "${plugin_registry_pid:-}"
+}
+trap cleanup_runtime EXIT
+
+configure_plugin_registry() {
+  [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] || return 0
+  local registry_args=()
+  prepublish_plugin_registry_append_manifest_args \
+    "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR/prepublish-plugin-registry.json" \
+    registry_args
+  prepublish_plugin_registry_start_npm_server \
+    /tmp/openclaw-npm-telegram-plugin-registry \
+    "package Telegram prerelease plugin registry" \
+    plugin_registry_pid \
+    "latest=0.0.0,beta=$OPENCLAW_NPM_TELEGRAM_PACKAGE_VERSION" \
+    "${registry_args[@]}"
+}
 
 test -x "$sut_command"
 openclaw_e2e_run_command "$sut_command" --version
@@ -503,6 +532,8 @@ for workspace_dir in /app/packages/* /app/extensions/*; do
   link_harness_dependency "$workspace_dir" "$workspace_name"
 done
 link_harness_dependency /app openclaw
+
+configure_plugin_registry
 
 if [ "${OPENCLAW_NPM_TELEGRAM_SKIP_HOTPATH:-0}" != "1" ]; then
   hotpath_home="$(mktemp -d "/tmp/openclaw-npm-telegram-hotpath.XXXXXX")"

@@ -100,10 +100,21 @@ describe("package Telegram live Docker E2E", () => {
     const runtimeRun = script.slice(runtimeRunStart);
 
     expect(runtimeRunStart).toBeGreaterThanOrEqual(0);
+    expect(script).toContain('source "$ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"');
+    expect(script).toContain("prepublish_plugin_registry_mount_args");
+    expect(runtimeRun).toContain(
+      '${prepublish_plugin_registry_args[@]+"${prepublish_plugin_registry_args[@]}"}',
+    );
     expect(script).toContain(
       '-e OPENCLAW_E2E_COMMAND_TIMEOUT="${OPENCLAW_E2E_COMMAND_TIMEOUT:-300s}"',
     );
     expect(runtimeRun).toContain("source scripts/lib/openclaw-e2e-instance.sh");
+    expect(runtimeRun).toContain("source scripts/e2e/lib/prepublish-plugin-registry.sh");
+    expect(runtimeRun).toContain("prepublish_plugin_registry_append_manifest_args");
+    expect(runtimeRun).toContain("prepublish_plugin_registry_start_npm_server");
+    expect(runtimeRun.indexOf("\nconfigure_plugin_registry\n")).toBeLessThan(
+      runtimeRun.indexOf('\nif [ "${OPENCLAW_NPM_TELEGRAM_SKIP_HOTPATH:-0}" != "1" ]; then'),
+    );
     expect(runtimeRun).toContain('sut_command="/npm-global/bin/openclaw"');
     expect(runtimeRun).toContain('openclaw_e2e_run_command "$sut_command" --version');
     expect(runtimeRun).toContain('openclaw_e2e_run_command "$sut_command" onboard');

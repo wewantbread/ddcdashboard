@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/lib/docker-e2e-image.sh"
 source "$ROOT_DIR/scripts/lib/docker-e2e-package.sh"
+source "$ROOT_DIR/scripts/e2e/lib/prepublish-plugin-registry.sh"
 
 IMAGE_NAME="$(docker_e2e_resolve_image "openclaw-codex-on-demand-e2e" OPENCLAW_CODEX_ON_DEMAND_E2E_IMAGE)"
 DOCKER_TARGET="${OPENCLAW_CODEX_ON_DEMAND_DOCKER_TARGET:-bare}"
@@ -21,17 +22,7 @@ run_log=""
 export OPENCLAW_E2E_NPM_INSTALL_TIMEOUT="${OPENCLAW_E2E_NPM_INSTALL_TIMEOUT:-1200s}"
 
 configure_prepublish_plugin_registry() {
-  local registry_dir="$1"
-  local resolved_registry_dir
-  resolved_registry_dir="$(cd "$registry_dir" && pwd)"
-  if [ ! -f "$resolved_registry_dir/prepublish-plugin-registry.json" ]; then
-    echo "Prepublish plugin registry manifest is missing." >&2
-    exit 1
-  fi
-  PREPUBLISH_PLUGIN_REGISTRY_ARGS=(
-    -e OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR=/tmp/openclaw-prepublish-plugin-registry
-    -v "$resolved_registry_dir:/tmp/openclaw-prepublish-plugin-registry:ro"
-  )
+  prepublish_plugin_registry_mount_args "$1" PREPUBLISH_PLUGIN_REGISTRY_ARGS
 }
 if [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
   configure_prepublish_plugin_registry "$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR"
@@ -94,6 +85,7 @@ if ! docker_e2e_run_with_harness \
 set -euo pipefail
 
 source scripts/lib/openclaw-e2e-instance.sh
+source scripts/e2e/lib/prepublish-plugin-registry.sh
 openclaw_e2e_eval_test_state_from_b64 "${OPENCLAW_TEST_STATE_SCRIPT_B64:?missing OPENCLAW_TEST_STATE_SCRIPT_B64}"
 export NPM_CONFIG_PREFIX="$HOME/.npm-global"
 export npm_config_prefix="$NPM_CONFIG_PREFIX"
@@ -125,52 +117,14 @@ configure_plugin_registry() {
   [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] || return 0
   local registry_root="/tmp/openclaw-codex-registry"
   local manifest="$OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR/prepublish-plugin-registry.json"
-  local package_name package_version package_tarball
-  IFS=$'\t' read -r package_name package_version package_tarball < <(
-    PREPUBLISH_PLUGIN_REGISTRY_MANIFEST="$manifest" node <<'NODE'
-const fs = require("node:fs");
-const path = require("node:path");
-const manifestPath = process.env.PREPUBLISH_PLUGIN_REGISTRY_MANIFEST;
-const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-const matches = Array.isArray(manifest.packages)
-  ? manifest.packages.filter((entry) => entry?.name === "@openclaw/codex")
-  : [];
-if (matches.length !== 1) {
-  throw new Error("prepublish plugin registry must contain exactly one @openclaw/codex package");
-}
-const entry = matches[0];
-if (
-  typeof entry.version !== "string" ||
-  typeof entry.tarball !== "string" ||
-  path.basename(entry.tarball) !== entry.tarball
-) {
-  throw new Error("invalid @openclaw/codex prepublish plugin registry entry");
-}
-process.stdout.write(
-  `${entry.name}\t${entry.version}\t${path.join(path.dirname(manifestPath), entry.tarball)}\n`,
-);
-NODE
-  )
-  mkdir -p "$registry_root"
-  OPENCLAW_NPM_REGISTRY_DIST_TAGS="latest=0.0.0,beta=$package_version" \
-  OPENCLAW_NPM_REGISTRY_UPSTREAM=https://registry.npmjs.org \
-    node scripts/e2e/lib/plugins/npm-registry-server.mjs \
-    "$registry_root/port" \
-    "$package_name" "$package_version" "$package_tarball" \
-    >"$registry_root/server.log" 2>&1 &
-  plugin_registry_pid="$!"
-  for _ in $(seq 1 100); do
-    [ -s "$registry_root/port" ] && break
-    openclaw_e2e_process_alive "$plugin_registry_pid" || break
-    sleep 0.1
-  done
-  if [ ! -s "$registry_root/port" ]; then
-    openclaw_e2e_print_log "$registry_root/server.log" >&2
-    echo "Timed out waiting for Codex npm registry." >&2
-    return 1
-  fi
-  export NPM_CONFIG_REGISTRY="http://127.0.0.1:$(cat "$registry_root/port")"
-  export npm_config_registry="$NPM_CONFIG_REGISTRY"
+  local registry_args=()
+  prepublish_plugin_registry_append_manifest_args "$manifest" registry_args "@openclaw/codex"
+  prepublish_plugin_registry_start_npm_server \
+    "$registry_root" \
+    "Codex npm registry" \
+    plugin_registry_pid \
+    "latest=0.0.0,beta=${registry_args[1]}" \
+    "${registry_args[@]}"
 }
 
 mkdir -p "$NPM_CONFIG_PREFIX" "$XDG_CACHE_HOME" "$NPM_CONFIG_CACHE"
