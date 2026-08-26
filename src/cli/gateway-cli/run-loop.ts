@@ -38,6 +38,7 @@ const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
 const RESTART_DRAIN_STILL_PENDING_WARN_MS = 30_000;
 const RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS = 10_000;
+const LAUNCHD_SHUTDOWN_RESERVE_MS = 5_000;
 const UPDATE_RESPAWN_HEALTH_TIMEOUT_MS = 10_000;
 const UPDATE_RESPAWN_HEALTH_POLL_MS = 200;
 const LOG_FLUSH_EXIT_TIMEOUT_MS = 4_000;
@@ -524,8 +525,26 @@ export async function runGatewayLoop(params: {
   };
 
   const runAcceptedRequest = (acceptedRequest: GatewayRunSignalRequest) => {
-    const { action, restartIntent } = acceptedRequest;
+    const { action, signal, restartIntent } = acceptedRequest;
     const isRestart = action === "restart";
+    const isLaunchdManagedSigtermRestart =
+      isRestart &&
+      signal === "SIGTERM" &&
+      restartIntent?.reason === eagerLifecycleRuntime.GATEWAY_LAUNCHD_RESTART_REASON &&
+      process.ppid === 1 &&
+      eagerLifecycleRuntime.detectGatewayRespawnSupervisor(process.env, process.platform) ===
+        "launchd";
+    const launchdExitTimeoutMs = isLaunchdManagedSigtermRestart
+      ? eagerLifecycleRuntime.resolveGatewayLaunchdExitTimeoutMs(process.env)
+      : undefined;
+    const hasBoundedLaunchdExitTimeout = launchdExitTimeoutMs !== undefined;
+    const launchdShutdownDeadlineAt = hasBoundedLaunchdExitTimeout
+      ? Date.now() + Math.max(0, launchdExitTimeoutMs - LAUNCHD_SHUTDOWN_RESERVE_MS)
+      : undefined;
+    const resolveShutdownTimeoutMs = () =>
+      launchdShutdownDeadlineAt === undefined
+        ? SHUTDOWN_TIMEOUT_MS
+        : Math.max(0, launchdShutdownDeadlineAt - Date.now());
     if (isRestart) {
       activeRestartRequest = acceptedRequest;
     }
@@ -562,7 +581,7 @@ export async function runGatewayLoop(params: {
       forceActiveRestartExit = () => {
         clearForceExitTimer();
         if (!getManagedUpdateOwner()) {
-          armForceExitTimer(SHUTDOWN_TIMEOUT_MS);
+          armForceExitTimer(resolveShutdownTimeoutMs());
         }
       };
     }
@@ -574,23 +593,51 @@ export async function runGatewayLoop(params: {
         | "restored-in-process"
         | "restart-after-exit"
         | undefined;
-      const restartDrainTimeoutMs = isRestart ? resolveRestartDrainTimeoutMs(restartIntent) : 0;
+      const shutdownTimeoutMs = resolveShutdownTimeoutMs();
+      const requestedRestartDrainTimeoutMs = isRestart
+        ? resolveRestartDrainTimeoutMs(restartIntent)
+        : 0;
+      const launchdRestartDrainTimeoutMs = Math.max(
+        0,
+        shutdownTimeoutMs - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS,
+      );
+      const restartDrainTimeoutMs = hasBoundedLaunchdExitTimeout
+        ? Math.min(
+            requestedRestartDrainTimeoutMs ?? launchdRestartDrainTimeoutMs,
+            launchdRestartDrainTimeoutMs,
+          )
+        : requestedRestartDrainTimeoutMs;
       const restartDrainDeadlineAt =
         isRestart && restartDrainTimeoutMs !== undefined
           ? Date.now() + restartDrainTimeoutMs
           : undefined;
       // Managed helpers must reach native parking before either exit watchdog can arm.
       if (!isRestart) {
-        armForceExitTimer(SHUTDOWN_TIMEOUT_MS);
+        armForceExitTimer(shutdownTimeoutMs);
+      } else if (hasBoundedLaunchdExitTimeout && !getManagedUpdateOwner()) {
+        // launchd sends SIGKILL once ExitTimeOut elapses. Keep both the active-work
+        // drain and the process watchdog inside that external deadline so the
+        // Gateway can release owned resources before launchd replaces it.
+        armForceExitTimer(shutdownTimeoutMs);
       } else if (restartDrainTimeoutMs !== undefined && !getManagedUpdateOwner()) {
         // Allow extra time for draining active turns on explicitly capped restarts.
-        armForceExitTimer(restartDrainTimeoutMs + SHUTDOWN_TIMEOUT_MS);
+        armForceExitTimer(restartDrainTimeoutMs + shutdownTimeoutMs);
       }
 
       const formatRestartDrainBudget = () =>
         restartDrainTimeoutMs === undefined
           ? "without a timeout"
           : `with timeout ${restartDrainTimeoutMs}ms`;
+      const resolveRestartCloseDrainTimeoutMs = () => {
+        if (!isRestart) {
+          return null;
+        }
+        if (restartDrainTimeoutMs === undefined) {
+          return Math.max(0, shutdownTimeoutMs - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS);
+        }
+        return Math.max(0, (restartDrainDeadlineAt ?? Date.now()) - Date.now());
+      };
+
       try {
         // On restart, wait for the canonical process activity inventory before
         // tearing down the server so active work can settle.
@@ -721,13 +768,9 @@ export async function runGatewayLoop(params: {
           !forceExitTimer &&
           (!managedUpdateOwner || managedUpdateCancellation === "restored-in-process")
         ) {
-          armForceExitTimer(SHUTDOWN_TIMEOUT_MS);
+          armForceExitTimer(resolveShutdownTimeoutMs());
         }
-        const closeDrainTimeoutMs = !isRestart
-          ? null
-          : restartDrainTimeoutMs === undefined
-            ? SHUTDOWN_TIMEOUT_MS - RESTART_CLOSE_REPLY_DRAIN_SHUTDOWN_RESERVE_MS
-            : Math.max(0, (restartDrainDeadlineAt ?? Date.now()) - Date.now());
+        const closeDrainTimeoutMs = resolveRestartCloseDrainTimeoutMs();
         await server?.close({
           reason: isRestart ? "gateway restarting" : "gateway stopping",
           restartExpectedMs: isRestart ? 1500 : null,

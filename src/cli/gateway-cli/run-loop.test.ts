@@ -153,6 +153,8 @@ const abortEmbeddedAgentRun = vi.fn(
   (_sessionId?: string, _opts?: { mode?: "all" | "compacting"; reason?: "restart" }) => false,
 );
 const DEFAULT_RESTART_DEFERRAL_TIMEOUT_MS = 300_000;
+const LAUNCHD_RESTART_DRAIN_TIMEOUT_MS = 5_000;
+const resolveGatewayLaunchdExitTimeoutMs = vi.fn<() => number | undefined>(() => 20_000);
 const gatewayLog = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -192,6 +194,7 @@ vi.mock("../../infra/restart.js", async (importOriginal) => {
 vi.mock("../../infra/restart-intent.js", () => ({
   consumeGatewayRestartIntentPayloadSync: () => consumeGatewayRestartIntentPayloadSync(),
   consumeGatewayRestartIntentSync: () => consumeGatewayRestartIntentSync(),
+  GATEWAY_LAUNCHD_RESTART_REASON: "gateway.restart.launchd",
 }));
 
 vi.mock("../../infra/update-managed-service-handoff.js", () => ({
@@ -226,6 +229,14 @@ vi.mock("../../infra/restart-sentinel.js", () => ({
 vi.mock("../../infra/restart-handoff.js", () => ({
   writeGatewayRestartHandoffSync: (opts: unknown) => writeGatewayRestartHandoffSync(opts),
 }));
+
+vi.mock("../../infra/supervisor-markers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../infra/supervisor-markers.js")>();
+  return {
+    ...actual,
+    resolveGatewayLaunchdExitTimeoutMs: () => resolveGatewayLaunchdExitTimeoutMs(),
+  };
+});
 
 vi.mock("../../infra/gateway-active-work.js", () => ({
   createGatewayActiveWorkSnapshot: () => createGatewayActiveWorkSnapshot(),
@@ -284,6 +295,7 @@ vi.mock("./shutdown-hard-exit.js", () => ({
 const LOOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGUSR1"] as const;
 type LoopSignal = (typeof LOOP_SIGNALS)[number];
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const originalPpidDescriptor = Object.getOwnPropertyDescriptor(process, "ppid");
 
 function setPlatform(platform: string) {
   if (!originalPlatformDescriptor) {
@@ -292,6 +304,16 @@ function setPlatform(platform: string) {
   Object.defineProperty(process, "platform", {
     ...originalPlatformDescriptor,
     value: platform,
+  });
+}
+
+function setParentPid(ppid: number) {
+  if (!originalPpidDescriptor) {
+    return;
+  }
+  Object.defineProperty(process, "ppid", {
+    ...originalPpidDescriptor,
+    value: ppid,
   });
 }
 
@@ -514,6 +536,8 @@ beforeEach(async () => {
     options?.onSnapshot?.(snapshot);
     return { drained: snapshot.idle, snapshot };
   });
+  resolveGatewayLaunchdExitTimeoutMs.mockReset();
+  resolveGatewayLaunchdExitTimeoutMs.mockReturnValue(20_000);
   cancelManagedServiceUpdateHandoff.mockReset();
   cancelManagedServiceUpdateHandoff.mockResolvedValue("restored-in-process");
   claimManagedServiceUpdateHandoff.mockReset();
@@ -970,6 +994,57 @@ describe("runGatewayLoop", () => {
         restartExpectedMs: null,
       });
     });
+  });
+
+  it("caps launchd-managed SIGTERM restart drain inside ExitTimeOut", async () => {
+    vi.clearAllMocks();
+    const previousLabel = process.env.OPENCLAW_LAUNCHD_LABEL;
+    process.env.OPENCLAW_LAUNCHD_LABEL = "ai.openclaw.gateway";
+    setPlatform("darwin");
+    setParentPid(1);
+    consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({
+      reason: "gateway.restart.launchd",
+    });
+    createGatewayActiveWorkSnapshot
+      .mockReturnValueOnce(
+        createActiveWorkSnapshot({ activeTasks: 1 }, [
+          { kind: "task", count: 1, message: "1 active background task run(s)" },
+        ]),
+      )
+      .mockReturnValue(idleActiveWorkSnapshot);
+
+    try {
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const { start, exited } = await createSignaledLoopHarness();
+        const sigterm = captureSignal("SIGTERM");
+        const sigint = captureSignal("SIGINT");
+
+        sigterm();
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+
+        expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
+        expect(waitForGatewayActiveWork.mock.calls[0]?.[0]).toBeLessThanOrEqual(
+          LAUNCHD_RESTART_DRAIN_TIMEOUT_MS,
+        );
+        expect(start).toHaveBeenCalledTimes(2);
+
+        sigint();
+        await expect(exited).resolves.toBe(0);
+      });
+    } finally {
+      setPlatform(originalPlatformDescriptor?.value as string);
+      setParentPid(originalPpidDescriptor?.value as number);
+      if (previousLabel === undefined) {
+        delete process.env.OPENCLAW_LAUNCHD_LABEL;
+      } else {
+        process.env.OPENCLAW_LAUNCHD_LABEL = previousLabel;
+      }
+    }
   });
 
   it("uses restart intent wait overrides for SIGTERM drain", async () => {

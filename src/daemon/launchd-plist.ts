@@ -35,6 +35,12 @@ export function parseLaunchdPlistLabel(contents: string): string | null {
   return rawLabel === undefined ? null : plistUnescape(rawLabel).trim() || null;
 }
 
+export function parseLaunchdPlistExitTimeoutSeconds(contents: string): number | null {
+  const match = contents.match(/<key>ExitTimeOut<\/key>\s*<integer>\s*(\d+)\s*<\/integer>/i);
+  const value = Number(match?.at(1));
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 type ReadLaunchAgentProgramArgumentsOptions = {
   expectedEnvironmentWrapperPath?: string;
   expectedEnvironmentFilePath?: string;

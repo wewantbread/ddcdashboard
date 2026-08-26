@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
+import { GATEWAY_LAUNCHD_RESTART_REASON } from "../infra/restart-reasons.js";
 import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
 import {
@@ -76,6 +77,7 @@ function ignoreServiceWriteResult<TArgs extends GatewayServiceInstallArgs>(
 
 export type GatewayService = {
   label: string;
+  restartIntentReason?: string;
   loadedText: string;
   notLoadedText: string;
   stage: (args: GatewayServiceStageArgs) => Promise<void>;
@@ -356,6 +358,7 @@ function createUnsupportedGatewayService(): GatewayService {
 const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayService> = {
   darwin: {
     label: "LaunchAgent",
+    restartIntentReason: GATEWAY_LAUNCHD_RESTART_REASON,
     loadedText: "loaded",
     notLoadedText: "not loaded",
     stage: ignoreServiceWriteResult(stageLaunchAgent),

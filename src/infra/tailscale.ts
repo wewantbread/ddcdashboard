@@ -280,6 +280,7 @@ async function startTailscaleRouteOwner(argv: string[]): Promise<TailscaleRouteC
     {
       execArgv,
       stdio: ["ignore", "ignore", "ignore", "ipc"],
+      detached: process.platform !== "win32",
     },
   );
   let routePid: number | undefined;
@@ -318,10 +319,9 @@ async function startTailscaleRouteOwner(argv: string[]): Promise<TailscaleRouteC
         return;
       }
       if (event.type === "spawned") {
-        if (typeof event.pid !== "number") {
-          return;
+        if (typeof event.pid === "number") {
+          routePid = event.pid;
         }
-        routePid = event.pid;
       } else if (event.type === "ready") {
         ready = true;
         active = true;
@@ -380,7 +380,11 @@ async function startTailscaleRouteOwner(argv: string[]): Promise<TailscaleRouteC
     if (routePid) {
       signalProcessTree(routePid, "SIGKILL", { detached: process.platform !== "win32" });
     }
-    worker.kill("SIGKILL");
+    if (process.platform !== "win32" && worker.pid) {
+      signalProcessTree(worker.pid, "SIGKILL", { detached: true });
+    } else {
+      worker.kill("SIGKILL");
+    }
     await exited;
   };
 
