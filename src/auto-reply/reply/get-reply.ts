@@ -1127,7 +1127,6 @@ export async function getReplyFromConfig(
   cleanedBody = inlineActionResult.cleanedBody;
   const explicitSkillSelections = inlineActionResult.explicitSkillSelections;
   const queueModeOverride = inlineActionResult.queueModeOverride;
-  const preparedReplyOpts = withExtractedFileImages(resolvedOpts, extractedFileImages);
   abortedLastRun = inlineActionResult.abortedLastRun ?? abortedLastRun;
   const runAutoFallbackPrimaryProbe = directives.hasModelDirective
     ? undefined
@@ -1297,7 +1296,9 @@ export async function getReplyFromConfig(
       perMessageQueueMode,
       perMessageQueueOptions,
       typing,
-      opts: queueModeOverride ? { ...preparedReplyOpts, queueModeOverride } : preparedReplyOpts,
+      opts: queueModeOverride
+        ? { ...withExtractedFileImages(resolvedOpts, extractedFileImages), queueModeOverride }
+        : withExtractedFileImages(resolvedOpts, extractedFileImages),
       defaultModel,
       timeoutMs,
       isNewSession,

@@ -280,4 +280,47 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
+
+  it("cleans up staging directory on prepared reply early admission / queue-state short-circuit", async () => {
+    await withSandboxMediaTempHome("short-circuit-cleanup-test", async (home) => {
+      const mediaDir = path.join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      const sampleFile = path.join(home, ".openclaw", "media", "inbound", "sample6.jpg");
+      await fs.writeFile(sampleFile, "short-circuit-media-content");
+
+      const mediaUri = `media://inbound/sample6.jpg`;
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      const cfg = {
+        ...createSandboxMediaStageConfig(home),
+        agents: {
+          defaults: {
+            sandbox: { mode: "off" },
+          },
+        },
+      } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
+      const workspaceDir = path.join(home, "openclaw");
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "session-6",
+        workspaceDir,
+      });
+
+      const stagingDir = result.hostWorkspaceStagingDir!;
+      expect(stagingDir).toBeDefined();
+
+      const runOpts: { hostWorkspaceStagingDir?: string } = {
+        hostWorkspaceStagingDir: stagingDir,
+      };
+
+      // Simulate early admission/queue-state reply return calling cleanHostWorkspaceStaging on options
+      cleanHostWorkspaceStaging(runOpts);
+
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
+      expect(runOpts.hostWorkspaceStagingDir).toBeUndefined();
+    });
+  });
 });
