@@ -173,6 +173,7 @@ describe("plugin runtime command execution", () => {
   it("exposes reset freshness resolver on the host channel runtime", () => {
     const sessionRuntime = createPluginRuntime().channel.session as Record<string, unknown>;
     expect(typeof sessionRuntime.resolveEntryResetFreshness).toBe("function");
+    expect(typeof sessionRuntime.resetSessionEntryLifecycle).toBe("function");
   });
 
   it("maps deprecated runtime.system.requestHeartbeatNow to an immediate compatibility wake", async () => {
@@ -354,6 +355,7 @@ describe("plugin runtime command execution", () => {
           "getSessionEntry",
           "listSessionEntries",
           "patchSessionEntry",
+          "resetSessionEntryLifecycle",
           "upsertSessionEntry",
           "runWithWorkAdmission",
           "updateSessionStoreEntry",

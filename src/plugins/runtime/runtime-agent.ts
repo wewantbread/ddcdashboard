@@ -33,6 +33,7 @@ import {
 import { normalizeResolvedMaintenanceConfigInput } from "../../config/sessions/store-maintenance.js";
 import type { ResolvedSessionMaintenanceConfigInput } from "../../config/sessions/store-maintenance.js";
 import type { SessionAcpMeta, SessionEntry } from "../../config/sessions/types.js";
+import { resetPluginRuntimeSessionEntryLifecycle } from "../../plugin-sdk/session-store-lifecycle-runtime.js";
 import {
   beginSessionWorkAdmission,
   isSessionWorkAdmissionActive,
@@ -670,6 +671,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
     getSessionEntry,
     listSessionEntries,
     patchSessionEntry,
+    resetSessionEntryLifecycle: resetPluginRuntimeSessionEntryLifecycle,
     upsertSessionEntry,
     runWithWorkAdmission: runWithSessionWorkAdmission,
     updateSessionStoreEntry,

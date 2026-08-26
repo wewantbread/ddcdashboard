@@ -500,7 +500,12 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
     recordSessionMetaFromInbound:
       vi.fn<PluginRuntime["channel"]["session"]["recordSessionMetaFromInbound"]>(),
     recordInboundSession: vi.fn<PluginRuntime["channel"]["session"]["recordInboundSession"]>(),
-    updateLastRoute: vi.fn<PluginRuntime["channel"]["session"]["updateLastRoute"]>(),
+    resetSessionEntryLifecycle: vi
+      .fn()
+      .mockResolvedValue(
+        null,
+      ) as unknown as PluginRuntime["channel"]["session"]["resetSessionEntryLifecycle"],
+    updateLastRoute: vi.fn() as unknown as PluginRuntime["channel"]["session"]["updateLastRoute"],
     resolveEntryResetFreshness: vi.fn(resolveSessionEntryResetFreshness),
   };
   const base: PluginRuntime = {
@@ -646,6 +651,11 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         patchSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["patchSessionEntry"]>()
           .mockResolvedValue(null),
+        resetSessionEntryLifecycle: vi
+          .fn()
+          .mockResolvedValue(
+            null,
+          ) as unknown as PluginRuntime["agent"]["session"]["resetSessionEntryLifecycle"],
         upsertSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["upsertSessionEntry"]>()
           .mockResolvedValue(undefined),

@@ -83,6 +83,14 @@ import type { PluginRuntime } from "./types.js";
 export function createRuntimeChannel(options?: {
   dispatchReplyFromConfig?: PluginRuntime["channel"]["reply"]["dispatchReplyFromConfig"];
 }): PluginRuntime["channel"] {
+  const resetSessionEntryLifecycle = async (
+    params: Parameters<PluginRuntime["channel"]["session"]["resetSessionEntryLifecycle"]>[0],
+  ) => {
+    const { channelId: _channelId, ...request } = params;
+    return await import("../../plugin-sdk/session-store-lifecycle-runtime.js").then((runtime) =>
+      runtime.resetPluginRuntimeSessionEntryLifecycle(request),
+    );
+  };
   const dispatchInbound: typeof dispatchRoutedChannelTurn = (params) =>
     dispatchRoutedChannelTurn({
       ...params,
@@ -97,6 +105,7 @@ export function createRuntimeChannel(options?: {
     // route through the session accessor boundary.
     recordSessionMetaFromInbound: recordInboundSessionMeta,
     recordInboundSession,
+    resetSessionEntryLifecycle,
     updateLastRoute: updateSessionLastRoute,
     resolveEntryResetFreshness: resolveSessionEntryResetFreshness,
   };

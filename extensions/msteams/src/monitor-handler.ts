@@ -4,6 +4,7 @@ import { serializeMSTeamsAdaptiveCardActionValue } from "./adaptive-card-submit.
 import { formatUnknownError } from "./errors.js";
 import type { MSTeamsMessageHandlerDeps } from "./monitor-handler.types.js";
 import { resolveMSTeamsSenderAccess } from "./monitor-handler/access.js";
+import { handleMSTeamsLifecycleRemove } from "./monitor-handler/lifecycle-handler.js";
 import { createMSTeamsMessageHandler } from "./monitor-handler/message-handler.js";
 import { createMSTeamsReactionHandler } from "./monitor-handler/reaction-handler.js";
 import type { MSTeamsIngressDispatchResult, MSTeamsIngressLifecycle } from "./msteams-ingress.js";
@@ -21,6 +22,12 @@ export type MSTeamsActivityHandler = {
   onMembersAdded: (
     handler: (context: unknown, next: () => Promise<void>) => Promise<void>,
   ) => MSTeamsActivityHandler;
+  onMembersRemoved: (
+    handler: (context: unknown, next: () => Promise<void>) => Promise<void>,
+  ) => MSTeamsActivityHandler;
+  onInstallationUpdate: (
+    handler: (context: unknown, next: () => Promise<void>) => Promise<void>,
+  ) => MSTeamsActivityHandler;
   onReactionsAdded: (
     handler: (context: unknown, next: () => Promise<void>) => Promise<void>,
   ) => MSTeamsActivityHandler;
@@ -32,6 +39,11 @@ export type MSTeamsActivityHandler = {
     turnAdoptionLifecycle?: MSTeamsIngressLifecycle,
   ) => Promise<MSTeamsIngressDispatchResult | void>;
 };
+
+function asMSTeamsTurnContext(context: unknown): MSTeamsTurnContext {
+  // SAFETY: Teams ActivityHandler callbacks supply the turn-context contract used here.
+  return context as MSTeamsTurnContext;
+}
 
 async function isInvokeAuthorized(params: {
   context: MSTeamsTurnContext;
@@ -244,6 +256,27 @@ export function registerMSTeamsHandlers<T extends MSTeamsActivityHandler>(
       } else {
         deps.log.debug?.("member added", { member: member.id });
       }
+    }
+    await next();
+  });
+
+  handler.onMembersRemoved(async (context, next) => {
+    try {
+      await handleMSTeamsLifecycleRemove(asMSTeamsTurnContext(context), deps);
+    } catch (err) {
+      // The lifecycle owner persists initializationPending before awaited reset work.
+      // Logging a failure here therefore cannot reopen the removed chat's old transcript.
+      deps.runtime.error(`msteams lifecycle handler failed: ${formatUnknownError(err)}`);
+    }
+    await next();
+  });
+
+  handler.onInstallationUpdate(async (context, next) => {
+    try {
+      await handleMSTeamsLifecycleRemove(asMSTeamsTurnContext(context), deps);
+    } catch (err) {
+      // Re-add retries the durable pending boundary; until it succeeds, work stays blocked.
+      deps.runtime.error(`msteams lifecycle handler failed: ${formatUnknownError(err)}`);
     }
     await next();
   });
