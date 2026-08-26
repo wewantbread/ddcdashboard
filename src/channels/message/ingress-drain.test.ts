@@ -10,6 +10,7 @@ import {
 import {
   createTestIngressQueue,
   type IngressDrainTestPayload as Payload,
+  seedPendingBacklog,
   withTempState,
 } from "./ingress-drain.test-helpers.js";
 
@@ -1119,6 +1120,37 @@ describe("channel ingress drain", () => {
       expect(oldAborted).toBe(false);
       const again = await queue.enqueue("old", { text: "old" });
       expect(again.kind).toBe("completed");
+      drain.dispose();
+    });
+  });
+
+  // Regression for openclaw#127474: a backlog larger than SQLite's bind-variable
+  // ceiling must not wedge the drain. The drain must not transport the full
+  // pending id set into a SQLite IN predicate; it claims straight from the
+  // pending table in global order.
+  it("drains a backlog larger than SQLite's bind-variable ceiling", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir, { now: () => 1_000 });
+      // Node 22/24 cap SQLite bind variables at 32,766; seed just above it.
+      seedPendingBacklog(stateDir, 33_000);
+
+      const dispatches: string[] = [];
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        now: () => 1_000,
+        startLimit: 32,
+        dispatchClaimedEvent: async (event, lifecycle) => {
+          dispatches.push(event.id);
+          await lifecycle.onAdopted();
+        },
+      });
+      // Before the fix this threw "too many SQL variables" and started 0.
+      const result = await drain.drainOnce();
+      await drain.waitForIdle();
+      expect(result.started).toBe(32);
+      expect(dispatches).toHaveLength(32);
+      // Global order is preserved: the first claimed event is the earliest.
+      expect(dispatches[0]).toBe("evt-0");
       drain.dispose();
     });
   });

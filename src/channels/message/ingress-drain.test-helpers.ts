@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Insertable } from "kysely";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
 
 export type IngressDrainTestPayload = { text: string };
@@ -30,5 +36,41 @@ export async function withTempState<T>(fn: (stateDir: string) => Promise<T>): Pr
   } finally {
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
+  }
+}
+
+// Seed many pending rows directly into the table for backlog-scale regression
+// tests (openclaw#127474). enqueue-per-row is too slow above the SQLite bind
+// ceiling; batches stay well below that ceiling. Rows use no lane key and
+// increasing received_at so global order is deterministic.
+export function seedPendingBacklog(stateDir: string, total: number, batchSize = 500): void {
+  const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } });
+  const kysely = getNodeSqliteKysely<Pick<OpenClawStateKyselyDatabase, "channel_ingress_events">>(
+    database.db,
+  );
+  for (let offset = 0; offset < total; offset += batchSize) {
+    const rows: Array<Insertable<OpenClawStateKyselyDatabase["channel_ingress_events"]>> = [];
+    const end = Math.min(offset + batchSize, total);
+    for (let index = offset; index < end; index += 1) {
+      rows.push({
+        queue_name: JSON.stringify(["test", "a"]),
+        event_id: `evt-${index}`,
+        channel_id: "test",
+        account_id: "a",
+        status: "pending",
+        lane_key: null,
+        payload_json: JSON.stringify({ text: `msg-${index}` }),
+        metadata_json: null,
+        completed_metadata_json: null,
+        received_at: index,
+        updated_at: index,
+        attempts: 0,
+        claim_token: null,
+        claim_owner: null,
+        claimed_at: null,
+        completed_at: null,
+      });
+    }
+    executeSqliteQuerySync(database.db, kysely.insertInto("channel_ingress_events").values(rows));
   }
 }

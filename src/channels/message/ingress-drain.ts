@@ -732,18 +732,23 @@ export function createChannelIngressDrain<
       }
     }
 
-    const candidateIds = new Set(pending.map((event) => event.id));
     let started = 0;
     while (started < startLimit) {
       if (shouldStop()) {
         break;
       }
+      // Claim straight from the pending table in global order without passing
+      // a candidate id list. The snapshot's lane state already lives in
+      // blockedLaneKeys above; binding every pending id into a SQLite IN list
+      // would exceed the bind-variable ceiling on a large backlog and wedge
+      // the queue (openclaw#127474). A claimed row transitions to status
+      // "claimed", and a released claim returns to "pending" for the next pump,
+      // so neither is re-selected within this pass.
       const claimed = await queue.claimNext({
         ownerId,
         blockedLaneKeys,
         orderBy,
         scanLimit,
-        candidateIds,
         deriveLaneKey: options.deriveLaneKey,
         ...(options.reconcileStoredLaneKey
           ? { reconcileStoredLaneKey: options.reconcileStoredLaneKey }
@@ -752,9 +757,6 @@ export function createChannelIngressDrain<
       if (!claimed) {
         break;
       }
-      // One snapshot row gets one attempt per pass. A released claim remains
-      // pending for the next pump instead of spinning through SQLite here.
-      candidateIds.delete(claimed.id);
       if (shouldStop()) {
         await queue.release(claimed, { recordAttempt: false });
         break;
