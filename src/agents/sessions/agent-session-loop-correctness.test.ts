@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createAssistantMessageEventStream,
@@ -33,6 +34,7 @@ import {
   createResourceLoader,
 } from "./agent-session-loop-resource-loader.test-support.js";
 import type { AgentSessionEvent } from "./agent-session-types.js";
+import { clearExtensionCache, loadExtensionsCached } from "./extensions/loader.js";
 import type { ToolDefinition } from "./extensions/types.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
@@ -577,7 +579,7 @@ describe("AgentSession loop correctness", () => {
     expect(compactionEvents).toEqual([]);
   });
 
-  it("does not request another model turn after extension middleware terminates a tool result", async () => {
+  it("does not request another model turn after a loaded plugin terminates a tool result", async () => {
     const passthroughTool: ToolDefinition = {
       name: "finish_via_middleware",
       label: "Finish via middleware",
@@ -588,18 +590,28 @@ describe("AgentSession loop correctness", () => {
         details: {},
       }),
     };
-    const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>([
-      [
-        "tool_result",
-        [
-          async (event: unknown) => ({
-            ...(event as object),
-            content: [{ type: "text", text: "middleware stopped the turn" }],
-            terminate: true,
-          }),
-        ],
-      ],
-    ]);
+    const pluginDir = tempDirs.make("openclaw-terminate-plugin-");
+    const pluginPath = path.join(pluginDir, "extension.mjs");
+    await writeFile(
+      pluginPath,
+      `export default async function(api) {
+  api.on("tool_result", async (event) => ({
+    ...event,
+    content: [{ type: "text", text: "middleware stopped the turn" }],
+    terminate: true,
+  }));
+}
+`,
+    );
+    clearExtensionCache();
+    const loaded = await loadExtensionsCached([pluginPath], pluginDir);
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.extensions).toHaveLength(1);
+    expect(loaded.extensions[0]?.handlers.get("tool_result")).toHaveLength(1);
+    const resourceLoader = {
+      ...createResourceLoader(),
+      getExtensions: () => loaded,
+    };
     streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
       createAssistantResultStream(
         createAssistant(activeModel, [
@@ -613,11 +625,11 @@ describe("AgentSession loop correctness", () => {
       ),
     );
     const { session } = await createTestSession({
-      resourceLoader: createResourceLoader(handlers),
+      resourceLoader,
       customTools: [passthroughTool],
     });
 
-    await session.prompt("finish through middleware");
+    await session.prompt("finish through loaded middleware");
 
     expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
   });
