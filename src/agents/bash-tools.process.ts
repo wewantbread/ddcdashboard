@@ -84,7 +84,7 @@ function defaultTailNote(totalLines: number, usingDefaultTail: boolean) {
 
 function retentionCapNote(session: Pick<ProcessSession, "totalOutputChars" | "aggregated">) {
   return session.totalOutputChars > session.aggregated.length
-    ? "\n\n[earlier output was discarded at the retention cap and cannot be recovered]"
+    ? "[earlier output was discarded at the retention cap and cannot be recovered]\n\n"
     : "";
 }
 
@@ -198,17 +198,17 @@ function finishedPollResult(
   // the exact snapshot; a reused slug must never point the model at successor logs.
   const retainedOutputNote = outputDropped
     ? getFinishedSession(sessionId) === finished
-      ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
-      : "\n\n[earlier output is omitted from this poll; omitted output is no longer available through action=log]"
+      ? "[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]\n\n"
+      : "[earlier output is omitted from this poll; omitted output is no longer available through action=log]\n\n"
     : "";
   return {
     content: [
       {
         type: "text",
         text: appendExecTimeoutRetryGuidance(
-          (output || "(no new output)") +
-            retentionCapNote(finished) +
+          retentionCapNote(finished) +
             retainedOutputNote +
+            (output || "(no new output)") +
             `\n\nProcess exited with ${renderExecExitLabel(finished)}.`,
           finished.exitReason,
         ),
@@ -472,7 +472,7 @@ export function createProcessTool(
           const output = unreadOutput.trim();
           const aggregateOutputNote = retentionCapNote(scopedSession);
           const retainedOutputNote = outputDropped
-            ? "\n\n[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]"
+            ? "[earlier output is omitted from this poll; use action=log with offset and limit to inspect retained output]\n\n"
             : "";
           const hasNewOutput = output.length > 0;
           const retryInMs = recordPollRetrySuggestion(params.sessionId, hasNewOutput);
@@ -481,11 +481,13 @@ export function createProcessTool(
             content: [
               {
                 type: "text",
-                text:
-                  (output || "(no new output)") +
+                text: appendExecTimeoutRetryGuidance(
                   aggregateOutputNote +
-                  retainedOutputNote +
-                  (buildInputWaitHint(runtime) || "\n\nProcess still running."),
+                    retainedOutputNote +
+                    (output || "(no new output)") +
+                    (buildInputWaitHint(runtime) || "\n\nProcess still running."),
+                  undefined,
+                ),
               },
             ],
             details: {
@@ -517,9 +519,9 @@ export function createProcessTool(
                 {
                   type: "text",
                   text:
+                    retentionCapNote(scopedSession) +
                     (slice || "(no output yet)") +
                     logDefaultTailNote +
-                    retentionCapNote(scopedSession) +
                     buildInputWaitHint(runtime),
                 },
               ],
@@ -547,9 +549,9 @@ export function createProcessTool(
                 {
                   type: "text",
                   text: appendExecTimeoutRetryGuidance(
-                    (slice || "(no output recorded)") +
-                      defaultTailNote(totalLines, window.usingDefaultTail) +
-                      retentionCapNote(scopedFinished),
+                    retentionCapNote(scopedFinished) +
+                      (slice || "(no output recorded)") +
+                      defaultTailNote(totalLines, window.usingDefaultTail),
                     scopedFinished.exitReason,
                   ),
                 },
