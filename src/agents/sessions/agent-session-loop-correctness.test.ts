@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import path from "node:path";
 import {
   createAssistantMessageEventStream,
@@ -594,26 +595,32 @@ describe("AgentSession loop correctness", () => {
     const pluginPath = path.join(pluginDir, "extension.mjs");
     await writeFile(
       pluginPath,
-      `export default async function(api) {
-  api.on("tool_result", async (event) => ({
-    ...event,
-    content: [{ type: "text", text: "middleware stopped the turn" }],
-    terminate: true,
-  }));
-}
-`,
+      `export default async api => api.on("tool_result", async event => ({...event, terminate: true}));\n`,
     );
     clearExtensionCache();
     const loaded = await loadExtensionsCached([pluginPath], pluginDir);
     expect(loaded.errors).toEqual([]);
     expect(loaded.extensions).toHaveLength(1);
     expect(loaded.extensions[0]?.handlers.get("tool_result")).toHaveLength(1);
-    const resourceLoader = {
-      ...createResourceLoader(),
-      getExtensions: () => loaded,
-    };
-    streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
-      createAssistantResultStream(
+    const resourceLoader = { ...createResourceLoader(), getExtensions: () => loaded };
+    const providerRequests: string[] = [];
+    const providerServer = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => providerRequests.push(request.method ?? "unknown"));
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      providerServer.once("error", reject);
+      providerServer.listen(0, "127.0.0.1", resolve);
+    });
+    const address = providerServer.address();
+    if (!address || typeof address === "string") {
+      providerServer.close();
+      throw new Error("provider loopback server did not bind to a TCP port");
+    }
+    const providerUrl = `http://127.0.0.1:${address.port}/v1/responses`;
+    streamMocks.streamSimple.mockImplementation((activeModel: Model) => {
+      const stream = createAssistantResultStream(
         createAssistant(activeModel, [
           {
             type: "toolCall",
@@ -622,16 +629,29 @@ describe("AgentSession loop correctness", () => {
             arguments: {},
           },
         ]),
-      ),
-    );
-    const { session } = await createTestSession({
-      resourceLoader,
-      customTools: [passthroughTool],
+      );
+      void fetch(providerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestNumber: 1 }),
+      });
+      return stream;
     });
+    try {
+      const { session } = await createTestSession({
+        resourceLoader,
+        customTools: [passthroughTool],
+      });
 
-    await session.prompt("finish through loaded middleware");
+      await session.prompt("finish through loaded middleware");
 
-    expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(providerRequests).toEqual(["POST"]));
+      expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        providerServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("forwards an explicit false tool result termination override", async () => {
