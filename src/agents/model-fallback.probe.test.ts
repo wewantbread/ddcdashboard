@@ -5,6 +5,7 @@ import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import { WorkerRunnerUnavailableError } from "../gateway/worker-environments/tunnel-contract.js";
 import { createDiagnosticLogRecordCapture } from "../logging/test-helpers/diagnostic-log-capture.js";
 import type { AuthProfileStore } from "./auth-profiles.js";
 import type { SessionSuspensionParams } from "./session-suspension.js";
@@ -389,6 +390,58 @@ describe("runWithModelFallback – probe logic", () => {
     expectPrimaryProbeSuccess(result, run, "ok");
   });
 
+  it("releases the probe slot when a probe aborts on a local coordination failure (#127649)", async () => {
+    const cfg = makeCfg();
+    const expiresIn30Min = NOW + 30 * 60 * 1000;
+    mockedGetSoonestCooldownExpiry.mockReturnValue(expiresIn30Min);
+
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new WorkerRunnerUnavailableError())
+      .mockResolvedValue("ok");
+
+    // First turn: probe is marked, then the local coordination abort rethrows.
+    await expect(runPrimaryCandidate(cfg, run)).rejects.toBeInstanceOf(
+      WorkerRunnerUnavailableError,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    // The just-taken slot was released instead of staying armed for 30s.
+    expect(probeThrottleInternals.lastProbeAttempt.get("openai")).toBeUndefined();
+
+    // Immediate next turn must still probe: the slot was released because the
+    // candidate never reached the provider.
+    const retry = vi.fn().mockResolvedValue("ok");
+    const result = await runPrimaryCandidate(cfg, retry);
+    expectPrimaryProbeSuccess(result, retry, "ok");
+  });
+
+  it("releaseProbeAttempt only clears its own reservation token", () => {
+    const key = probeThrottleInternals.resolveProbeThrottleKey("openai");
+    const token = probeThrottleInternals.markProbeAttempt(NOW, key);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 1_000, key)).toBe(false);
+
+    probeThrottleInternals.releaseProbeAttempt(key, token - 1);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 2_000, key)).toBe(false);
+
+    probeThrottleInternals.releaseProbeAttempt(key, token);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 3_000, key)).toBe(true);
+  });
+
+  it("keeps a newer same-millisecond reservation when an older probe releases", () => {
+    const key = probeThrottleInternals.resolveProbeThrottleKey("xai");
+    // Two probes land in the same millisecond: tokens, not timestamps, must
+    // separate ownership so the first abort cannot erase the second probe.
+    const firstToken = probeThrottleInternals.markProbeAttempt(NOW, key);
+    const secondToken = probeThrottleInternals.markProbeAttempt(NOW, key);
+    expect(secondToken).not.toBe(firstToken);
+
+    probeThrottleInternals.releaseProbeAttempt(key, firstToken);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 1_000, key)).toBe(false);
+
+    probeThrottleInternals.releaseProbeAttempt(key, secondToken);
+    expect(probeThrottleInternals.isProbeThrottleOpen(NOW + 2_000, key)).toBe(true);
+  });
+
   it("uses inferred unavailable reason when skipping a cooldowned primary model", async () => {
     await expectPrimarySkippedAfterLongCooldown("billing");
   });
@@ -418,7 +471,7 @@ describe("runWithModelFallback – probe logic", () => {
 
     // The 30s probe throttle is still honored so recovery probing cannot hammer
     // the upstream: a recent probe on the same key suspends until the slot opens.
-    probeThrottleInternals.lastProbeAttempt.set("recent-openai", NOW - 10_000);
+    probeThrottleInternals.lastProbeAttempt.set("recent-openai", { ts: NOW - 10_000, token: 1 });
     expectOpenAiProbeSuspension(
       resolveOpenAiCooldownDecision({
         reason: "rate_limit",
@@ -472,7 +525,7 @@ describe("runWithModelFallback – probe logic", () => {
       }),
     ).toEqual({ type: "attempt", reason: "rate_limit", markProbe: true });
 
-    probeThrottleInternals.lastProbeAttempt.set("recent-openai", NOW - 10_000);
+    probeThrottleInternals.lastProbeAttempt.set("recent-openai", { ts: NOW - 10_000, token: 1 });
     expectOpenAiProbeSuspension(
       resolveOpenAiCooldownDecision({
         reason: "rate_limit",
@@ -706,11 +759,11 @@ describe("runWithModelFallback – probe logic", () => {
   });
 
   it("prunes stale probe throttle entries before checking eligibility", () => {
-    probeThrottleInternals.lastProbeAttempt.set(
-      "stale",
-      NOW - probeThrottleInternals.PROBE_STATE_TTL_MS - 1,
-    );
-    probeThrottleInternals.lastProbeAttempt.set("fresh", NOW - 5_000);
+    probeThrottleInternals.lastProbeAttempt.set("stale", {
+      ts: NOW - probeThrottleInternals.PROBE_STATE_TTL_MS - 1,
+      token: 1,
+    });
+    probeThrottleInternals.lastProbeAttempt.set("fresh", { ts: NOW - 5_000, token: 1 });
 
     expect(probeThrottleInternals.lastProbeAttempt.has("stale")).toBe(true);
 
@@ -722,7 +775,7 @@ describe("runWithModelFallback – probe logic", () => {
 
   it("caps probe throttle state by evicting the oldest entries", () => {
     for (let i = 0; i < probeThrottleInternals.MAX_PROBE_KEYS; i += 1) {
-      probeThrottleInternals.lastProbeAttempt.set(`key-${i}`, NOW - (i + 1));
+      probeThrottleInternals.lastProbeAttempt.set(`key-${i}`, { ts: NOW - (i + 1), token: i + 1 });
     }
 
     probeThrottleInternals.markProbeAttempt(NOW, "freshest");
@@ -791,7 +844,7 @@ describe("runWithModelFallback – probe logic", () => {
   it("scopes probe throttling by agentDir to avoid cross-agent suppression", () => {
     const agentAKey = probeThrottleInternals.resolveProbeThrottleKey("openai", "/tmp/agent-a");
     const agentBKey = probeThrottleInternals.resolveProbeThrottleKey("openai", "/tmp/agent-b");
-    probeThrottleInternals.lastProbeAttempt.set(agentAKey, NOW - 10_000);
+    probeThrottleInternals.lastProbeAttempt.set(agentAKey, { ts: NOW - 10_000, token: 1 });
 
     expectOpenAiProbeSuspension(
       resolveOpenAiCooldownDecision({
@@ -964,7 +1017,7 @@ describe("runWithModelFallback – probe logic", () => {
     });
 
     // Throttle primary probe so billing records terminal session suspension.
-    probeThrottleInternals.lastProbeAttempt.set("openai", NOW - 10_000);
+    probeThrottleInternals.lastProbeAttempt.set("openai", { ts: NOW - 10_000, token: 1 });
 
     const run = vi.fn().mockResolvedValue("should-not-run");
 

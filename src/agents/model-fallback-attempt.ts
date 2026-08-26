@@ -131,6 +131,38 @@ export type ModelFallbackClassifiedResult<T> = Pick<
   "result" | "provider" | "model"
 >;
 
+/**
+ * Shapes the terminal exhausted outcome once every candidate is spent. When a
+ * classified result was preserved for exhaustion-merging, it is combined with
+ * (and preferred over) the highest-priority exhaustion result.
+ */
+export function resolveExhaustedFallbackOutcome<T>(params: {
+  exhaustionResult: ModelFallbackExhaustionResult<T>;
+  latestClassifiedResult: ModelFallbackClassifiedResult<T> | undefined;
+  attempts: FallbackAttempt[];
+  mergeExhaustedResult?: ((mergeParams: { latestResult: T; preferredResult: T }) => T) | undefined;
+}): ModelFallbackRunResult<T> {
+  if (params.latestClassifiedResult && params.mergeExhaustedResult) {
+    return {
+      outcome: "exhausted",
+      result: params.mergeExhaustedResult({
+        latestResult: params.latestClassifiedResult.result,
+        preferredResult: params.exhaustionResult.result,
+      }),
+      provider: params.latestClassifiedResult.provider,
+      model: params.latestClassifiedResult.model,
+      attempts: params.attempts,
+    };
+  }
+  return {
+    outcome: "exhausted",
+    result: params.exhaustionResult.result,
+    provider: params.exhaustionResult.provider,
+    model: params.exhaustionResult.model,
+    attempts: params.attempts,
+  };
+}
+
 export type ModelFallbackAuthRuntime = typeof import("./auth-profiles.runtime.js");
 
 export function isTranscriptNotContinuableError(err: unknown): boolean {

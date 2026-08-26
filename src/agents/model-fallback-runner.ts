@@ -54,6 +54,7 @@ import {
   resolveModelFallbackCandidateAgentRuntime,
   resolveModelFallbackCandidateHarnessAuthPrecheck,
   resolveNextFallbackCandidateIndex,
+  resolveExhaustedFallbackOutcome,
   runFallbackAttempt,
   sameModelCandidate,
   shouldDiscardDeferredSessionSuspension,
@@ -61,7 +62,8 @@ import {
 } from "./model-fallback-attempt.js";
 import { resolveModelCandidateChain } from "./model-fallback-candidates.js";
 import {
-  markProbeAttempt,
+  markProbeReservation,
+  releaseProbeAttempt,
   resolveCooldownDecision,
   resolveProbeThrottleKey,
 } from "./model-fallback-cooldown.js";
@@ -265,6 +267,9 @@ async function runWithModelFallbackInternal<T>(
       continue;
     }
     const candidateRef = { provider: candidate.provider, model: candidate.model };
+    // Probe reservation taken for this candidate, if any. Kept at iteration
+    // scope so a post-attempt coordination abort can release the slot.
+    let probeReservation: { throttleKey: string; token: number } | undefined;
     const nextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
       currentIndex: i,
@@ -463,7 +468,7 @@ async function runWithModelFallbackInternal<T>(
         }
 
         if (decision.markProbe) {
-          markProbeAttempt(now, probeThrottleKey);
+          probeReservation = markProbeReservation(now, probeThrottleKey);
         }
         if (shouldAllowCooldownProbeForReason(decision.reason)) {
           // Probe at most once per provider per fallback run when all profiles
@@ -494,27 +499,39 @@ async function runWithModelFallbackInternal<T>(
       }
     }
 
-    const attemptRun = await runFallbackAttempt({
-      run: params.run,
-      ...candidate,
-      attempts,
-      captureHarnessPreflight: true,
-      options: {
-        ...runOptions,
-        isFinalFallbackAttempt: !hasRemainingCandidate,
-      },
-      // Only the outer fallback loop knows another candidate remains. Carry
-      // that fact through this attempt so the embedded runner does not freeze
-      // the shared lane before the next candidate can run.
-      deferSessionSuspension: hasRemainingCandidate,
-      onDeferredSessionSuspension: (suspension) => {
-        deferredSuspension.pending = suspension;
-      },
-      classifyResult: params.classifyResult,
-      ...attemptContext,
-      attribution: runAttribution,
-      abortSignal: params.abortSignal,
-    });
+    let attemptRun;
+    try {
+      attemptRun = await runFallbackAttempt({
+        run: params.run,
+        ...candidate,
+        attempts,
+        captureHarnessPreflight: true,
+        options: {
+          ...runOptions,
+          isFinalFallbackAttempt: !hasRemainingCandidate,
+        },
+        // Only the outer fallback loop knows another candidate remains. Carry
+        // that fact through this attempt so the embedded runner does not freeze
+        // the shared lane before the next candidate can run.
+        deferSessionSuspension: hasRemainingCandidate,
+        onDeferredSessionSuspension: (suspension) => {
+          deferredSuspension.pending = suspension;
+        },
+        classifyResult: params.classifyResult,
+        ...attemptContext,
+        attribution: runAttribution,
+        abortSignal: params.abortSignal,
+      });
+    } catch (error) {
+      // Coordination classes propagate as throws from the attempt layer. The
+      // candidate never reached the provider, so release the just-taken
+      // recovery-probe slot (timestamp identity guards against clearing a
+      // newer reservation) before rethrowing.
+      if (probeReservation && isNonProviderRuntimeCoordinationError(error)) {
+        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.token);
+      }
+      throw error;
+    }
     if ("success" in attemptRun) {
       if (i > 0 || attempts.length > 0 || attemptedDuringCooldown) {
         await observeCandidateDecision("candidate_succeeded", {
@@ -610,6 +627,13 @@ async function runWithModelFallbackInternal<T>(
     // the same local condition and surfacing a misleading "All models
     // failed" summary. See #83510.
     if (isNonProviderRuntimeCoordinationError(err)) {
+      // The candidate never reached the provider, so this abort did not test
+      // provider callability. Release the just-taken recovery-probe slot
+      // (timestamp identity guards against clearing a newer reservation) so
+      // the next turn can still probe instead of waiting out the throttle.
+      if (probeReservation) {
+        releaseProbeAttempt(probeReservation.throttleKey, probeReservation.token);
+      }
       throw err;
     }
     if (isTranscriptNotContinuableError(err)) {
@@ -733,25 +757,12 @@ async function runWithModelFallbackInternal<T>(
   }
 
   if (exhaustionResult) {
-    if (latestClassifiedResult && params.mergeExhaustedResult) {
-      return {
-        outcome: "exhausted",
-        result: params.mergeExhaustedResult({
-          latestResult: latestClassifiedResult.result,
-          preferredResult: exhaustionResult.result,
-        }),
-        provider: latestClassifiedResult.provider,
-        model: latestClassifiedResult.model,
-        attempts,
-      };
-    }
-    return {
-      outcome: "exhausted",
-      result: exhaustionResult.result,
-      provider: exhaustionResult.provider,
-      model: exhaustionResult.model,
+    return resolveExhaustedFallbackOutcome({
+      exhaustionResult,
+      latestClassifiedResult,
       attempts,
-    };
+      mergeExhaustedResult: params.mergeExhaustedResult,
+    });
   }
 
   return throwFallbackFailureSummary({
