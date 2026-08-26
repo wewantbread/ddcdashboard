@@ -4139,7 +4139,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
 
   type RequesterSettleDeliveryCase = {
     name: string;
-    response: unknown;
+    response: Record<string, unknown>;
     requireVisibleReply: boolean;
     requireContinuationProgress?: boolean;
     expected: typeof deliveredRequesterFinal | typeof missingRequesterFinal;
