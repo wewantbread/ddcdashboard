@@ -315,7 +315,7 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
         hostWorkspaceStagingDir: stagingDir,
       };
 
-      // Simulate early admission/queue-state reply return calling cleanHostWorkspaceStaging on options
+      // When prepareReplyRunAdmission returns kind: "reply", cleanHostWorkspaceStaging cleans opts
       cleanHostWorkspaceStaging(runOpts);
 
       const removed = await waitForDirectoryRemoval(stagingDir);

@@ -1,6 +1,7 @@
 /** Prepares and runs auto-reply agent turns, including prompt context and session policy. */
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+import { cleanHostWorkspaceStaging } from "./queue.js";
 import type { ReplyPayload } from "../types.js";
 import { prepareReplyRunAdmission } from "./get-reply-run-admission.js";
 import { prepareReplyRunContext } from "./get-reply-run-context.js";
@@ -13,6 +14,9 @@ async function executePreparedReplyContext(
 ) {
   const admission = await prepareReplyRunAdmission(context);
   if (admission.kind === "reply") {
+    if (context.params.opts?.hostWorkspaceStagingDir) {
+      cleanHostWorkspaceStaging(context.params.opts);
+    }
     return admission.reply;
   }
 
@@ -25,6 +29,9 @@ export async function runPreparedReply(
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const context = await prepareReplyRunContext(params);
   if (context.kind === "reply") {
+    if (params.opts?.hostWorkspaceStagingDir) {
+      cleanHostWorkspaceStaging(params.opts);
+    }
     return context.reply;
   }
 
