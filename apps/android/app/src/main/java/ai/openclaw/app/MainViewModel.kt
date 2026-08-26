@@ -611,6 +611,10 @@ class MainViewModel private constructor(
   val onboardingCompleted: StateFlow<Boolean> = prefs.onboardingCompleted
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
   val accessibilityControlEnabled: StateFlow<Boolean> = prefs.accessibilityControlEnabled
+  val popupOpacity: StateFlow<Float> = prefs.popupOpacity
+  val popupAutoDismissSeconds: StateFlow<Int> = prefs.popupAutoDismissSeconds
+  val popupCardColor: StateFlow<Int> = prefs.popupCardColor
+  val popupCardCornerRadiusDp: StateFlow<Int> = prefs.popupCardCornerRadiusDp
   val speakerEnabled: StateFlow<Boolean> = prefs.speakerEnabled
   val preferredCameraFacing: StateFlow<String> = prefs.preferredCameraFacing
   val preferredAudioInputDevice: StateFlow<String?> = prefs.preferredAudioInputDevice
@@ -933,6 +937,22 @@ class MainViewModel private constructor(
 
   fun setAccessibilityControlEnabled(value: Boolean) {
     prefs.setAccessibilityControlEnabled(value)
+  }
+
+  fun setPopupOpacity(value: Float) {
+    prefs.setPopupOpacity(value)
+  }
+
+  fun setPopupAutoDismissSeconds(value: Int) {
+    prefs.setPopupAutoDismissSeconds(value)
+  }
+
+  fun setPopupCardColor(value: Int) {
+    prefs.setPopupCardColor(value)
+  }
+
+  fun setPopupCardCornerRadiusDp(value: Int) {
+    prefs.setPopupCardCornerRadiusDp(value)
   }
 
   fun setNotificationForwardingEnabled(value: Boolean) {
