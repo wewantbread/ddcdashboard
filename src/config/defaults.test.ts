@@ -430,5 +430,100 @@ describe("applyModelDefaults catalog seeding", () => {
     );
     expect(model.input).toEqual(["text"]);
     expect(model.reasoning).toBe(false);
+    expect(model.maxTokens).toBe(8192);
+  });
+
+  it("leaves omitted maxTokens unset for custom reasoning models", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 131_072,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized reasoning model entry",
+    );
+    expect(model.reasoning).toBe(true);
+    expect(model.maxTokens).toBeUndefined();
+  });
+
+  it("keeps an explicit custom-provider maxTokens below the reasoning fallback", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "openai-completions",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 131_072,
+                  maxTokens: 8_192,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized reasoning model entry",
+    );
+    expect(model.maxTokens).toBe(8_192);
+  });
+
+  it("keeps omitted maxTokens at 8192 for custom anthropic-messages reasoning models", async () => {
+    const { applyModelDefaults } = await import("./defaults.js");
+    const cfg = applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              api: "anthropic-messages",
+              models: [
+                {
+                  id: "reasoning-model",
+                  name: "Reasoning Model",
+                  reasoning: true,
+                  contextWindow: 200_000,
+                } as never,
+              ],
+            },
+          },
+        },
+      },
+      { manifestRegistry: catalogRegistry },
+    );
+    const model = expectDefined(
+      cfg.models?.providers?.custom?.models?.[0],
+      "materialized anthropic reasoning model entry",
+    );
+    expect(model.reasoning).toBe(true);
+    expect(model.api).toBe("anthropic-messages");
+    expect(model.maxTokens).toBe(8192);
   });
 });

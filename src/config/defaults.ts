@@ -320,26 +320,36 @@ export function applyModelDefaults(
         }
 
         const maxTokenContextWindow = contextWindow ?? DEFAULT_CONTEXT_TOKENS;
-        const defaultMaxTokens = Math.min(
-          providerMaxTokens ?? DEFAULT_MODEL_MAX_TOKENS,
-          maxTokenContextWindow,
-        );
-        const rawMaxTokens = isPositiveNumber(raw.maxTokens)
+        const authoredOrCatalogMaxTokens = isPositiveNumber(raw.maxTokens)
           ? raw.maxTokens
           : isPositiveNumber(catalogModel?.maxTokens)
             ? catalogModel.maxTokens
-            : defaultMaxTokens;
-        const maxTokens = resolveNormalizedProviderModelMaxTokens({
-          providerId,
-          modelId: id,
-          contextWindow: maxTokenContextWindow,
-          rawMaxTokens,
-        });
-        if (raw.maxTokens !== maxTokens) {
-          modelMutated = true;
-        }
+            : isPositiveNumber(providerMaxTokens)
+              ? providerMaxTokens
+              : undefined;
         const api = raw.api ?? providerApi;
         if (raw.api !== api) {
+          modelMutated = true;
+        }
+        // maxTokens is a wire-level output cap. Unknown OpenAI Completions
+        // reasoning proxies keep it absent so the provider applies its own
+        // limit. Anthropic Messages requires max_tokens and keeps 8192.
+        const omitUnknownOutputCap = reasoning && api === "openai-completions";
+        const rawMaxTokens =
+          authoredOrCatalogMaxTokens ??
+          (omitUnknownOutputCap
+            ? undefined
+            : Math.min(DEFAULT_MODEL_MAX_TOKENS, maxTokenContextWindow));
+        const maxTokens =
+          rawMaxTokens === undefined
+            ? undefined
+            : resolveNormalizedProviderModelMaxTokens({
+                providerId,
+                modelId: id,
+                contextWindow: maxTokenContextWindow,
+                rawMaxTokens,
+              });
+        if (raw.maxTokens !== maxTokens) {
           modelMutated = true;
         }
 
@@ -369,8 +379,8 @@ export function applyModelDefaults(
             cost,
             contextWindow,
             contextTokens,
-            maxTokens,
             api,
+            ...(maxTokens !== undefined ? { maxTokens } : {}),
           },
           thinkingLevelMap !== undefined ? { thinkingLevelMap } : {},
           compat !== undefined ? { compat } : {},
