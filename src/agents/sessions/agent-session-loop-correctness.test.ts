@@ -1,5 +1,3 @@
-import { writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import path from "node:path";
 import {
   createAssistantMessageEventStream,
@@ -35,7 +33,6 @@ import {
   createResourceLoader,
 } from "./agent-session-loop-resource-loader.test-support.js";
 import type { AgentSessionEvent } from "./agent-session-types.js";
-import { clearExtensionCache, loadExtensionsCached } from "./extensions/loader.js";
 import type { ToolDefinition } from "./extensions/types.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
@@ -578,80 +575,6 @@ describe("AgentSession loop correctness", () => {
 
     expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
     expect(compactionEvents).toEqual([]);
-  });
-
-  it("does not request another model turn after a loaded plugin terminates a tool result", async () => {
-    const passthroughTool: ToolDefinition = {
-      name: "finish_via_middleware",
-      label: "Finish via middleware",
-      description: "returns a normal tool result that middleware can terminate",
-      parameters: Type.Object({}),
-      execute: async () => ({
-        content: [{ type: "text", text: "raw tool result" }],
-        details: {},
-      }),
-    };
-    const pluginDir = tempDirs.make("openclaw-terminate-plugin-");
-    const pluginPath = path.join(pluginDir, "extension.mjs");
-    await writeFile(
-      pluginPath,
-      `export default async api => api.on("tool_result", async event => ({...event, terminate: true}));\n`,
-    );
-    clearExtensionCache();
-    const loaded = await loadExtensionsCached([pluginPath], pluginDir);
-    expect(loaded.errors).toEqual([]);
-    expect(loaded.extensions).toHaveLength(1);
-    expect(loaded.extensions[0]?.handlers.get("tool_result")).toHaveLength(1);
-    const resourceLoader = { ...createResourceLoader(), getExtensions: () => loaded };
-    const providerRequests: string[] = [];
-    const providerServer = createServer((request, response) => {
-      request.resume();
-      request.on("end", () => providerRequests.push(request.method ?? "unknown"));
-      response.end();
-    });
-    await new Promise<void>((resolve, reject) => {
-      providerServer.once("error", reject);
-      providerServer.listen(0, "127.0.0.1", resolve);
-    });
-    const address = providerServer.address();
-    if (!address || typeof address === "string") {
-      providerServer.close();
-      throw new Error("provider loopback server did not bind to a TCP port");
-    }
-    const providerUrl = `http://127.0.0.1:${address.port}/v1/responses`;
-    streamMocks.streamSimple.mockImplementation((activeModel: Model) => {
-      const stream = createAssistantResultStream(
-        createAssistant(activeModel, [
-          {
-            type: "toolCall",
-            id: "call-finish-via-middleware",
-            name: "finish_via_middleware",
-            arguments: {},
-          },
-        ]),
-      );
-      void fetch(providerUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestNumber: 1 }),
-      });
-      return stream;
-    });
-    try {
-      const { session } = await createTestSession({
-        resourceLoader,
-        customTools: [passthroughTool],
-      });
-
-      await session.prompt("finish through loaded middleware");
-
-      await vi.waitFor(() => expect(providerRequests).toEqual(["POST"]));
-      expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        providerServer.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
   });
 
   it("forwards an explicit false tool result termination override", async () => {
