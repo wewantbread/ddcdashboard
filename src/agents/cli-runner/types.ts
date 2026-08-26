@@ -133,6 +133,7 @@ export type RunCliAgentParams = {
   currentInboundEventKind?: InboundEventKind;
   currentInboundContext?: CurrentInboundPromptContext;
   inputProvenance?: InputProvenance;
+
   /** Selected model provider used for tool policy; distinct from a CLI runtime id. */
   modelProvider?: string;
   /** Vision capability resolved by the run owner from its prepared model catalog. */

@@ -2,11 +2,13 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { PreparedAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import type { BootstrapContextRunKind } from "../../agents/bootstrap-mode.js";
+import { buildCliMcpDelegationCapabilityBinding } from "../../agents/cli-runner/mcp-grant-context.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import {
   getCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "../../agents/cli-session.js";
+import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import type { ContextEngineLogicalTurnLease } from "../../agents/harness/context-engine-logical-turn.js";
@@ -388,6 +390,20 @@ export async function runCliFallbackCandidate(params: {
             currentInboundEventKind: turn.followupRun.currentInboundEventKind,
             currentInboundContext: turn.followupRun.currentInboundContext,
             inputProvenance: turn.followupRun.run.inputProvenance,
+            // Only reached from runAgentFallbackCandidates, so this attempt is
+            // a fallback by construction; the embedded candidate derives the
+            // same bit from the resolved runtime's fallbackActive. The tool
+            // inputs are passed from the same source the run itself uses, so
+            // this surface stays on the shared contract rather than assuming
+            // fallback state is the only restriction.
+            ...buildCliMcpDelegationCapabilityBinding(
+              resolveDelegationCapability({
+                fallbackActive: true,
+                inputProvenance: turn.followupRun.run.inputProvenance,
+                disableTools: turn.opts?.disableTools,
+                toolsAllow: turn.opts?.toolsAllow,
+              }),
+            ),
             modelProvider: params.provider,
             modelHasVision,
             modelContextWindow: selectedModelEntry?.contextWindow,
