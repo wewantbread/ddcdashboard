@@ -1,7 +1,10 @@
 import {
   createAssistantMessageEventStream,
+  type Api,
   type AssistantMessage,
   type Model,
+  type SimpleStreamOptions,
+  type StreamFunction,
 } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, vi } from "vitest";
 import { createResourceLoader } from "./agent-session-loop-resource-loader.test-support.js";
@@ -116,11 +119,16 @@ export async function createTestSession(
     resourceLoader?: ResourceLoader;
     customTools?: ToolDefinition[];
     contextOverflowRecoveryOwner?: "session" | "caller";
+    provider?: {
+      model: Model;
+      streamSimple: StreamFunction<Api, SimpleStreamOptions>;
+      apiKey?: string;
+    };
   } = {},
 ) {
-  const model = options.model ?? testModel;
+  const model = options.provider?.model ?? options.model ?? testModel;
   const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey(model.provider, "test-api-key");
+  authStorage.setRuntimeApiKey(model.provider, options.provider?.apiKey ?? "test-api-key");
   const settingsManager =
     options.settingsManager ??
     SettingsManager.inMemory({
@@ -131,7 +139,7 @@ export async function createTestSession(
   const modelRegistry = ModelRegistry.inMemory(authStorage);
   modelRegistry.registerProvider(model.provider, {
     api: model.api,
-    streamSimple: streamMocks.streamSimple,
+    streamSimple: options.provider?.streamSimple ?? streamMocks.streamSimple,
   });
   const sessionOptions = {
     model,
