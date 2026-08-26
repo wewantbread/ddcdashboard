@@ -296,4 +296,59 @@ suite.define(() => {
       },
     );
   });
+
+  it("keeps a focused scalar edit alive while applied config polling is pending", async () => {
+    await suite.withPage({ serviceWorkers: "block" }, async ({ page }) => {
+      const gateway = await installMockGateway(page, {
+        methodResponses: configFormIntegrityMocks(),
+      });
+      await page.goto(`${suite.server.baseUrl}settings/advanced?section=laboratory`);
+
+      const endpoint = page.getByRole("textbox", { name: "Endpoint slug" });
+      const retryBudget = page.getByRole("spinbutton", { name: "Retry budget" });
+      await expect.poll(() => endpoint.inputValue()).toBe("local-api");
+
+      await gateway.deferNext("config.set");
+      const initialSetCount = (await gateway.getRequests("config.set")).length;
+      await retryBudget.fill("6");
+      await gateway.waitForRequest("config.set", { after: initialSetCount });
+      const firstSetCount = (await gateway.getRequests("config.set")).length;
+
+      const endpointHandle = await endpoint.elementHandle();
+      expect(endpointHandle).not.toBeNull();
+      await endpointHandle!.evaluate((element) => {
+        element.focus();
+        (element as HTMLInputElement).value = "poll-safe-api";
+      });
+      const configGetCount = (await gateway.getRequests("config.get")).length;
+      await gateway.deferNext("config.get");
+      await gateway.resolveDeferred("config.set");
+      await gateway.waitForRequest("config.get", { after: configGetCount });
+
+      expect(
+        await endpointHandle!.evaluate((element) => [
+          element.isConnected,
+          !(element as HTMLInputElement).disabled,
+          document.activeElement === element,
+          (element as HTMLInputElement).value,
+        ]),
+      ).toEqual([true, true, true, "poll-safe-api"]);
+
+      await gateway.deferNext("config.set");
+      await endpointHandle!.evaluate((element) => {
+        element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      });
+      await gateway.resolveDeferred("config.get", {
+        ...configFormIntegrityMocks()["config.get"],
+        appliedConfigHash: "mock-config-hash-1",
+        configRevisionHash: "mock-config-hash-1",
+        hash: "mock-config-hash-1",
+      });
+      const request = await gateway.waitForRequest("config.set", { after: firstSetCount });
+      expect(JSON.parse(String((request.params as { raw?: string }).raw))).toMatchObject({
+        laboratory: { endpoint: "poll-safe-api", retryBudget: 6 },
+      });
+      await gateway.resolveDeferred("config.set");
+    });
+  });
 });

@@ -226,6 +226,7 @@ export async function loadConfig(
   state: RuntimeConfigState,
   options: LoadConfigOptions = {},
   isCurrentLoad: () => boolean = () => true,
+  execution: { presentation?: "background" | "foreground" } = {},
 ): Promise<boolean> {
   const client = state.client;
   if (!client || !state.connected) {
@@ -233,7 +234,10 @@ export async function loadConfig(
   }
   const connectionEpoch = currentConfigConnectionEpoch(state);
   const version = nextRequestVersion(state, "config");
-  state.configLoading = true;
+  const foreground = execution.presentation !== "background";
+  if (foreground) {
+    state.configLoading = true;
+  }
   state.lastError = null;
   state.chatError = null;
   try {
@@ -249,7 +253,7 @@ export async function loadConfig(
     }
     return false;
   } finally {
-    if (isCurrentRequest(state, "config", version, client, connectionEpoch)) {
+    if (foreground && isCurrentRequest(state, "config", version, client, connectionEpoch)) {
       state.configLoading = false;
     }
   }
