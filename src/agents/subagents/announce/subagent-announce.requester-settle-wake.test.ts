@@ -190,6 +190,7 @@ function deliveredCallArg(): Record<string, unknown> {
 
 function expectContinuationFirstWake(call: Record<string, unknown>): void {
   expect(call.requireVisibleReply).toBeUndefined();
+  expect(call.requireContinuationProgress).toBe(true);
   const message = String(call.triggerMessage);
   expect(message).toContain("deciding whether the original task is done");
   expect(message).toContain("If additional action is required, continue the task");
@@ -466,32 +467,28 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     });
   });
 
-  it("completes a yielded wake when the requester continues without a visible final", async () => {
+  it("keeps a yielded wake pending when the requester records no continuation", async () => {
     const child = makeYieldedChild();
     registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
-    deliverSpy.mockImplementationOnce(async (params) =>
-      params.requireVisibleReply
-        ? {
-            delivered: false,
-            path: "direct",
-            reason: "visible_reply_missing",
-          }
-        : {
-            delivered: true,
-            path: "direct",
-          },
-    );
+    deliverSpy.mockResolvedValueOnce({
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+    });
 
     await expect(
       maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
 
     expectContinuationFirstWake(deliveredCallArg());
-    expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
-      delivered: true,
-      path: "direct",
+    expect(completeBatchSpy).not.toHaveBeenCalled();
+    expect(child.requesterSettleWake).toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      requesterYieldBatch: true,
+      rearmGeneration: 1,
+      lastError: "visible_reply_missing",
     });
-    expect(child.requesterSettleWake).toBeUndefined();
   });
 
   it.each([
@@ -699,7 +696,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     deliverSpy.mockResolvedValueOnce({
       delivered: false,
       path: "direct",
-      reason: "continuation_handoff_failed",
+      reason: "visible_reply_missing",
     });
 
     vi.useFakeTimers();
@@ -715,7 +712,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         nextAttemptAt: 30_000,
         requesterYieldBatch: true,
         rearmGeneration: 1,
-        lastError: "continuation_handoff_failed",
+        lastError: "visible_reply_missing",
       });
 
       await vi.advanceTimersByTimeAsync(30_000);

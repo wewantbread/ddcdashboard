@@ -96,6 +96,7 @@ export async function deliverSubagentAnnouncement(params: {
   requesterIsSubagent: boolean;
   expectsCompletionMessage: boolean;
   requireDirectDelivery?: boolean;
+  requireContinuationProgress?: boolean;
   requireVisibleReply?: boolean;
   bestEffortDeliver?: boolean;
   directIdempotencyKey: string;
@@ -258,6 +259,7 @@ export async function deliverSubagentAnnouncement(params: {
         isCompletionOwnedByRequesterYield: params.isCompletionOwnedByRequesterYield,
         requesterIsSubagent: params.requesterIsSubagent,
         expectsCompletionMessage: params.expectsCompletionMessage,
+        requireContinuationProgress: params.requireContinuationProgress,
         requireVisibleReply: params.requireVisibleReply,
         onDeliveryResult: params.onDeliveryResult,
         signal: params.signal,

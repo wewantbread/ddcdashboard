@@ -447,6 +447,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         requesterIsSubagent: false,
         expectsCompletionMessage: false,
         requireDirectDelivery: true,
+        ...(requesterYieldedAfterDelivery ? { requireContinuationProgress: true } : {}),
         directIdempotencyKey: buildAnnounceIdempotencyKey(
           attemptIndex === 0 ? wakeKeyBase : `${wakeKeyBase}:retry-${attemptIndex}`,
         ),
