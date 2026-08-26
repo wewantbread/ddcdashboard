@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -28,6 +29,9 @@ const archiveMaterializationHook = vi.hoisted(() => ({
 }));
 const archivePublicationHook = vi.hoisted(() => ({
   failNext: undefined as Error | undefined,
+}));
+const reclamationHook = vi.hoisted(() => ({
+  afterLifecycleArtifactReclamation: undefined as (() => Promise<void>) | undefined,
 }));
 
 // Place test mutations after the real Worker finishes but before cleanup opens
@@ -66,6 +70,20 @@ vi.mock("./session-accessor.sqlite-archive-store.js", async (importOriginal) => 
   };
 });
 
+vi.mock("./session-accessor.sqlite-reclamation.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./session-accessor.sqlite-reclamation.js")>();
+  return {
+    ...actual,
+    runSqliteLifecycleArtifactReclamation: async (
+      ...args: Parameters<typeof actual.runSqliteLifecycleArtifactReclamation>
+    ) => {
+      const result = await actual.runSqliteLifecycleArtifactReclamation(...args);
+      await reclamationHook.afterLifecycleArtifactReclamation?.();
+      return result;
+    },
+  };
+});
+
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("SQLite lifecycle cleanup races", () => {
@@ -82,6 +100,7 @@ describe("SQLite lifecycle cleanup races", () => {
     archiveMaterializationHook.afterMaterialize = undefined;
     archiveMaterializationHook.onMaterialize = undefined;
     archivePublicationHook.failNext = undefined;
+    reclamationHook.afterLifecycleArtifactReclamation = undefined;
     closeOpenClawAgentDatabasesForTest();
   });
 
@@ -712,6 +731,64 @@ describe("SQLite lifecycle cleanup races", () => {
     });
     await expect(writer).resolves.toMatchObject({ label: "progressed" });
     expect(progressedDuringMaterialization).toBe(true);
+  });
+
+  it("emits cleanup deletion before a queued replacement creates the same identity", async () => {
+    const now = Date.now();
+    const sessionKey = "agent:main:cleanup-event-order";
+    await replaceSessionEntry(
+      { sessionKey, storePath },
+      { sessionId: "cleanup-event-old", updatedAt: now - 600_000 },
+    );
+
+    let markReclamationCommitted: () => void = () => undefined;
+    const reclamationCommitted = new Promise<void>((resolve) => {
+      markReclamationCommitted = resolve;
+    });
+    let releaseReclamation: () => void = () => undefined;
+    const reclamationGate = new Promise<void>((resolve) => {
+      releaseReclamation = resolve;
+    });
+    reclamationHook.afterLifecycleArtifactReclamation = async () => {
+      markReclamationCommitted();
+      await reclamationGate;
+    };
+    const observedKinds: string[] = [];
+    const unsubscribe = onSessionIdentityMutation((mutation) => {
+      const keys =
+        mutation.kind === "delete"
+          ? mutation.previous.sessionKeys
+          : [...mutation.previous.sessionKeys, ...mutation.current.sessionKeys];
+      if (keys.includes(sessionKey)) {
+        observedKinds.push(mutation.kind);
+      }
+    });
+
+    try {
+      const cleanup = cleanupSessionLifecycleArtifactsCore({
+        storePath,
+        sessionKeySegmentPrefix: "cleanup-event-",
+        transcriptContentMarker: "unused-cleanup-event-marker",
+        orphanTranscriptMinAgeMs: 300_000,
+        nowMs: now,
+      });
+      await reclamationCommitted;
+      const replacement = replaceSessionEntry(
+        { sessionKey, storePath },
+        { sessionId: "cleanup-event-new", updatedAt: now + 1 },
+      );
+      releaseReclamation();
+
+      await expect(cleanup).resolves.toEqual({
+        removedEntries: 1,
+        archivedTranscriptArtifacts: 0,
+      });
+      await expect(replacement).resolves.toMatchObject({ sessionId: "cleanup-event-new" });
+      expect(observedKinds).toEqual(["delete", "create"]);
+    } finally {
+      unsubscribe();
+      releaseReclamation();
+    }
   });
 
   it("releases the store writer while a lifecycle mutation archives a transcript", async () => {
