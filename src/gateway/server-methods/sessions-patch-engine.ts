@@ -287,19 +287,6 @@ async function executeSessionPatchMutations(params: {
     }
     return promise;
   };
-  const eventModelCatalogByAgent = new Map<string, Promise<ModelCatalog | undefined>>();
-  const loadEventModelCatalog = (agentId: string) => {
-    let promise = eventModelCatalogByAgent.get(agentId);
-    if (!promise) {
-      promise =
-        typeof params.context.loadGatewayModelCatalog === "function"
-          ? params.context.loadGatewayModelCatalog({ agentId })
-          : Promise.resolve(undefined);
-      eventModelCatalogByAgent.set(agentId, promise);
-    }
-    return promise;
-  };
-
   if (prepared.length > 0) {
     try {
       await runExclusiveSessionLifecycleMutation({
@@ -593,7 +580,10 @@ async function executeSessionPatchMutations(params: {
       sessionKey: target.canonicalKey,
       targetAgentId: target.targetAgentId,
     });
-    const modelCatalog = await loadEventModelCatalog(target.targetAgentId);
+    const modelCatalogPromise = modelCatalogByAgent.get(target.targetAgentId);
+    const modelCatalog = modelCatalogPromise
+      ? await modelCatalogPromise.catch(() => undefined)
+      : undefined;
     emitSessionsChanged(params.context, {
       sessionKey: target.canonicalKey,
       ...(target.requestedAgentId ? { agentId: target.requestedAgentId } : {}),
