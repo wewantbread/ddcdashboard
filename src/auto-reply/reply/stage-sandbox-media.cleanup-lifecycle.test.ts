@@ -11,6 +11,7 @@ import {
   completeFollowupRunLifecycle,
   type FollowupRun,
 } from "./queue/types.js";
+import { runPreparedReply } from "./get-reply-run.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 
 async function waitForDirectoryRemoval(dirPath: string, timeoutMs = 2000): Promise<boolean> {
@@ -315,9 +316,42 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
         hostWorkspaceStagingDir: stagingDir,
       };
 
-      // When prepareReplyRunAdmission returns kind: "reply", cleanHostWorkspaceStaging cleans opts
-      cleanHostWorkspaceStaging(runOpts);
+      // When prepareReplyRunContext returns kind: "reply" (e.g. empty body), runPreparedReply cleans staging opts
+      const emptyReply = await runPreparedReply({
+        ctx: { ...ctx, Body: "" },
+        sessionCtx: { ...sessionCtx, Body: "", media: undefined, MediaPaths: undefined },
+        cfg,
+        agentId: "main",
+        agentDir: path.join(home, "agent"),
+        agentCfg: (cfg as { agents?: { defaults?: unknown } }).agents?.defaults ?? {},
+        sessionCfg: undefined,
+        commandAuthorized: true,
+        command: { commandBodyNormalized: "" } as unknown as Parameters<
+          typeof runPreparedReply
+        >[0]["command"],
+        allowTextCommands: true,
+        directives: {
+          hasThinkDirective: false,
+          hasVerboseDirective: false,
+          hasFastDirective: false,
+          hasReasoningDirective: false,
+          hasElevatedDirective: false,
+          hasExecDirective: false,
+          hasModelDirective: false,
+          hasQueueDirective: false,
+          hasTraceDirective: false,
+          hasStatusDirective: false,
+        } as unknown as Parameters<typeof runPreparedReply>[0]["directives"],
+        defaultActivation: "always",
+        resolvedThinkLevel: "off",
+        typing: {
+          cleanup: () => {},
+          onReplyStart: async () => {},
+        } as unknown as Parameters<typeof runPreparedReply>[0]["typing"],
+        opts: runOpts,
+      });
 
+      expect(emptyReply).toBeDefined();
       const removed = await waitForDirectoryRemoval(stagingDir);
       expect(removed).toBe(true);
       expect(runOpts.hostWorkspaceStagingDir).toBeUndefined();

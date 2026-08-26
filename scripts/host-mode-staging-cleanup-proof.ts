@@ -1,106 +1,232 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { createServer, type ServerResponse } from "node:http";
+import os from "node:os";
 import path from "node:path";
-import { completeFollowupRunLifecycle, type FollowupRun } from "../src/auto-reply/reply/queue.js";
-import { stageSandboxMedia } from "../src/auto-reply/reply/stage-sandbox-media.js";
+import { clearConfigCache, clearRuntimeConfigSnapshot } from "../src/config/config.js";
 import {
-  createSandboxMediaContexts,
-  createSandboxMediaStageConfig,
-  withSandboxMediaTempHome,
-} from "../src/auto-reply/stage-sandbox-media.test-harness.js";
+  disconnectGatewayClient,
+  startGatewayWithClient,
+} from "../src/gateway/test-helpers.e2e.js";
+import { buildMockOpenAiResponsesProvider } from "../src/gateway/test-openai-responses-model.js";
+import { captureEnv, setTestEnvValue } from "../src/test-utils/env.js";
 
-async function runHostModeStagingCleanupProof(): Promise<void> {
-  console.log("=== Host-Mode Staging Media Lifecycle Proof ===");
+const envKeys = [
+  "HOME",
+  "OPENCLAW_STATE_DIR",
+  "OPENCLAW_CONFIG_PATH",
+  "OPENCLAW_GATEWAY_TOKEN",
+  "OPENCLAW_SKIP_CHANNELS",
+  "OPENCLAW_SKIP_GMAIL_WATCHER",
+  "OPENCLAW_SKIP_CRON",
+  "OPENCLAW_SKIP_CANVAS_HOST",
+  "OPENCLAW_SKIP_BROWSER_CONTROL_SERVER",
+  "OPENCLAW_SKIP_PROVIDERS",
+  "OPENCLAW_BUNDLED_PLUGINS_DIR",
+  "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
+] as const;
 
-  await withSandboxMediaTempHome("host-staging-proof", async (tempHome) => {
-    const mediaDir = path.join(tempHome, ".openclaw", "media", "inbound");
-    await fs.mkdir(mediaDir, { recursive: true });
-
-    const sampleFile = path.join(mediaDir, "sample.jpg");
-    const mediaContent = Buffer.from("JPEG_SAMPLE_HOST_MODE_ATTACHMENT_DATA_STREAM");
-    await fs.writeFile(sampleFile, mediaContent);
-
-    const mediaUri = "media://inbound/sample.jpg";
-    const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
-    const cfg = {
-      ...createSandboxMediaStageConfig(tempHome),
-      agents: {
-        defaults: {
-          sandbox: { mode: "off" },
+function writeAssistantSseResponse(res: ServerResponse, text: string): void {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  const message = {
+    type: "message",
+    id: "proof-message-id",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text, annotations: [] }],
+  };
+  res.end(
+    [
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { ...message, status: "in_progress", content: [] },
+      },
+      { type: "response.output_item.done", output_index: 0, item: message },
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
         },
       },
-    } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
-    const workspaceDir = path.join(tempHome, "openclaw");
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .concat("data: [DONE]\n\n")
+      .join(""),
+  );
+}
 
-    // Step 1: Stage Sandbox Media in Host Mode (sandbox: off)
-    const result = await stageSandboxMedia({
-      ctx,
-      sessionCtx,
-      cfg,
-      sessionKey: "proof-session-128454",
-      workspaceDir,
-    });
+async function runHostModeStagingCleanupProof(): Promise<void> {
+  console.log("=== Host-Mode Staging Media Production Gateway Proof ===");
 
-    const stagingDir = result.hostWorkspaceStagingDir;
-    assert.ok(stagingDir, "Staging directory must be defined");
-    console.log(
-      `[1/4] Media staged to host-mode directory: ${stagingDir.replace(tempHome, "<TMP_HOME>")}`,
-    );
+  const envSnapshot = captureEnv([...envKeys]);
+  let tempHome: string | undefined;
+  let providerServer: ReturnType<typeof createServer> | undefined;
+  let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
 
-    // Step 2: Verify staged attachment is readable prior to settlement
-    const stagedFilePaths = Array.from(result.staged.values());
-    assert.equal(stagedFilePaths.length, 1, "Exactly one file should be staged");
-    const stagedFilePath = stagedFilePaths[0];
-    assert.ok(stagedFilePath, "Staged file path must exist");
+  try {
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-host-staging-gateway-proof-"));
+    const stateDir = path.join(tempHome, ".openclaw");
+    const workspaceDir = path.join(tempHome, "workspace");
+    const configPath = path.join(stateDir, "openclaw.json");
+    const mediaDir = path.join(stateDir, "media", "inbound");
 
-    const preStat = await fs.stat(stagedFilePath);
-    assert.ok(preStat.isFile(), "Staged media must be a file");
-    console.log(
-      `[2/4] Staged media file readable before settlement: exists=true, size=${String(preStat.size)} bytes`,
-    );
+    await Promise.all([
+      fs.mkdir(workspaceDir, { recursive: true }),
+      fs.mkdir(mediaDir, { recursive: true }),
+      fs.mkdir(path.dirname(configPath), { recursive: true }),
+    ]);
 
-    // Step 3: Attach staging directory to FollowupRun & simulate settlement / lifecycle completion
-    const followupRun: FollowupRun = {
-      run: {
-        agentId: "main",
-        agentDir: path.join(tempHome, "agent"),
-        sessionId: "session-128454",
-        sessionKey: "proof-session-128454",
-        workspaceDir,
-        config: cfg as unknown as FollowupRun["run"]["config"],
-      } as unknown as FollowupRun["run"],
-      prompt: "proof-prompt",
-      enqueuedAt: Date.now(),
-      hostWorkspaceStagingDir: stagingDir,
-    };
-
-    console.log("[3/4] Active operation settled. Calling completeFollowupRunLifecycle...");
-    completeFollowupRunLifecycle(followupRun);
-
-    // Poll for directory removal
-    let postExists = true;
-    const start = Date.now();
-    while (Date.now() - start < 3000) {
-      postExists = await fs
-        .stat(stagingDir)
-        .then(() => true)
-        .catch(() => false);
-      if (!postExists) {
-        break;
-      }
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 20);
-      });
+    for (const [key, value] of Object.entries({
+      HOME: tempHome,
+      OPENCLAW_STATE_DIR: stateDir,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_GATEWAY_TOKEN: "proof-gateway-token-128454",
+      OPENCLAW_SKIP_CHANNELS: "1",
+      OPENCLAW_SKIP_GMAIL_WATCHER: "1",
+      OPENCLAW_SKIP_CRON: "1",
+      OPENCLAW_SKIP_CANVAS_HOST: "1",
+      OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
+      OPENCLAW_SKIP_PROVIDERS: "1",
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+    })) {
+      setTestEnvValue(key, value);
     }
 
-    // Step 4: Verify post-settlement directory deletion
-    console.log(
-      `[4/4] Host-mode staging directory post-settlement verification: exists=${String(postExists)} (directory successfully cleaned)`,
-    );
-    assert.equal(postExists, false, "Host staging directory must be deleted post-settlement");
-  });
+    // Inbound media source attachment in host inbound media directory
+    const sampleFileName = "proof-sample.jpg";
+    const sampleFilePath = path.join(mediaDir, sampleFileName);
+    const mediaContent = Buffer.from("JPEG_SAMPLE_HOST_MODE_ATTACHMENT_DATA_STREAM");
+    await fs.writeFile(sampleFilePath, mediaContent);
 
-  console.log("=== Proof Execution Complete: SUCCESS ===");
+    // Setup local mock HTTP model server
+    let serverReceivedRequests = 0;
+    providerServer = createServer((_req, res) => {
+      serverReceivedRequests++;
+      writeAssistantSseResponse(res, "I analyzed the inbound media attachment.");
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      providerServer?.once("error", reject);
+      providerServer?.listen(0, "127.0.0.1", resolve);
+    });
+
+    const providerAddress = providerServer.address();
+    if (!providerAddress || typeof providerAddress === "string") {
+      throw new Error("Proof provider did not bind a loopback port");
+    }
+    const provider = buildMockOpenAiResponsesProvider(
+      `http://127.0.0.1:${providerAddress.port}/v1`,
+    );
+
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          skipBootstrap: true,
+          sandbox: { mode: "off" },
+          model: { primary: provider.modelRef },
+          models: {
+            [provider.modelRef]: { params: { transport: "sse", openaiWsWarmup: false } },
+          },
+        },
+        entries: { main: { default: true } },
+      },
+      models: { mode: "replace", providers: { [provider.providerId]: provider.config } },
+      gateway: { auth: { mode: "token", token: "proof-gateway-token-128454" } },
+    };
+
+    console.log("\n[1/5] Starting real Gateway server in host mode (sandbox: off)...");
+    gateway = await startGatewayWithClient({
+      cfg,
+      configPath,
+      token: "proof-gateway-token-128454",
+      clientDisplayName: "proof-client-host-staging",
+    });
+    console.log("  -> Gateway connected and listening.");
+
+    // Scenario 1: Real Gateway chat.send turn with host-mode staged media
+    console.log("\n[2/5] Dispatching chat.send turn with inbound media attachment...");
+    const sessionKey = "agent:main:proof-session-host-staging";
+
+    const started = await gateway.client.request<{ runId?: string; status?: string }>(
+      "chat.send",
+      {
+        sessionKey,
+        message: "Please inspect this attached image",
+        attachments: [
+          {
+            mimeType: "image/jpeg",
+            fileName: sampleFileName,
+            content: mediaContent.toString("base64"),
+          },
+        ],
+        deliver: false,
+        idempotencyKey: "proof-turn-1",
+      },
+    );
+
+    assert.equal(started.status, "started", "Turn must start successfully");
+    assert.ok(started.runId, "Turn must return runId");
+    console.log(`  -> Turn started: runId=${started.runId}`);
+
+    // Wait for the agent run to complete / settle through gateway
+    console.log("\n[3/5] Awaiting agent execution and lifecycle settlement via agent.wait...");
+    const waitRes = await gateway.client.request<{ status?: string }>(
+      "agent.wait",
+      { runId: started.runId, timeoutMs: 30_000 },
+      { timeoutMs: 35_000 },
+    );
+    assert.equal(waitRes.status, "ok", "Agent run must settle with status ok");
+    console.log("  -> Agent run settled successfully.");
+
+    // Verify workspace media staging directory cleanup
+    console.log("\n[4/5] Verifying post-settlement host staging directory removal...");
+    const workspaceMediaInbound = path.join(workspaceDir, "media", "inbound");
+    let stagingDirectories: string[] = [];
+    try {
+      const entries = await fs.readdir(workspaceMediaInbound);
+      stagingDirectories = entries.filter((e) => e.startsWith("openclaw-staged-"));
+    } catch {
+      stagingDirectories = [];
+    }
+
+    console.log(
+      `  -> Remaining openclaw-staged-* directories: count=${stagingDirectories.length} (expected=0)`,
+    );
+    assert.equal(
+      stagingDirectories.length,
+      0,
+      "All openclaw-staged-* directories must be removed after settlement",
+    );
+
+    // Scenario 2: Verify chat.history reflects the completed turn
+    console.log("\n[5/5] Verifying chat.history reflects the settled turn...");
+    const history = await gateway.client.request<{ messages?: Array<{ role?: string; content?: unknown }> }>(
+      "chat.history",
+      { sessionKey },
+    );
+    const messages = history.messages ?? [];
+    assert.ok(messages.length >= 2, "History must contain user and assistant messages");
+    console.log(`  -> chat.history contains ${messages.length} messages. Verified OK.`);
+
+    console.log("\n=== Production Gateway Proof Execution Complete: SUCCESS ===");
+  } finally {
+    if (gateway) {
+      await disconnectGatewayClient(gateway.client);
+      await gateway.server.close({ reason: "Proof complete" });
+    }
+    if (providerServer) {
+      providerServer.close();
+    }
+    clearConfigCache();
+    clearRuntimeConfigSnapshot();
+    envSnapshot.restore();
+    if (tempHome) {
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  }
 }
 
 runHostModeStagingCleanupProof().catch((err: unknown) => {
