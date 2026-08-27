@@ -136,7 +136,7 @@ export function migrateWhatsAppAckSettings(raw: Record<string, unknown>, changes
       // branch below already discloses that the legacy value was dropped.
       if (rawEmoji === "") {
         changes.push(
-          `Note: ${path}.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "${writtenEmoji}" was applied instead. channels.whatsapp.reactionLevel: "off" suppresses WhatsApp reactions again, but also disables agent-initiated reactions; there is no exact ack-only equivalent.`,
+          `Note: ${path}.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "${writtenEmoji}" was applied instead. ${path}.reactionLevel: "off" suppresses WhatsApp reactions again for this account, but also disables agent-initiated reactions; there is no exact ack-only equivalent.`,
         );
       }
     } else {
