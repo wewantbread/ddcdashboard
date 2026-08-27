@@ -706,12 +706,15 @@ describe("buildGatewayReloadPlan", () => {
     });
   });
 
-  it("reloads loaded channel plugins when plugin entry state changes", () => {
-    const plan = buildGatewayReloadPlan(["plugins.entries.telegram.enabled"]);
+  it.each([
+    ["a channel plugin", "plugins.entries.telegram.enabled"],
+    ["another plugin", "plugins.entries.memory-core.enabled"],
+  ])("restarts every loaded channel when %s reloads the runtime registry", (_label, path) => {
+    const plan = buildGatewayReloadPlan([path]);
     expect(plan.restartGateway).toBe(false);
     expect(plan.reloadPlugins).toBe(true);
     expect(plan.disposeMcpRuntimes).toBe(true);
-    expect(plan.restartChannels).toEqual(new Set(["telegram"]));
+    expect(plan.restartChannels).toEqual(new Set(["telegram", "whatsapp", "mattermost"]));
   });
 
   it("keeps restart-owned plugin paths ahead of the generic plugin hot rule", () => {
