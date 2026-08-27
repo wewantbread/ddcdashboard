@@ -22,6 +22,10 @@ type ComparableHistoryMessage = {
   isCliAggregate?: boolean;
   hasNonTextContent?: boolean;
   isToolResultOnly?: boolean;
+  // Set when this imported block belongs to a turn that replaced a persisted
+  // aggregate: it is then the only copy of that text, so weak text dedupe must
+  // not discard it against an unrelated local message repeating it.
+  claimedAggregate?: boolean;
   provider?: string;
   importedFrom?: string;
 };
@@ -223,6 +227,7 @@ function isPersistedCliAggregate(rawApi: unknown, rawIdempotencyKey: unknown): b
 
 type PartialAssistantTurn = {
   fragments: string[];
+  entries: ComparableHistoryMessage[];
   hasNonTextContent: boolean;
   importedFrom?: string;
   terminalTimestamp?: number;
@@ -235,7 +240,7 @@ type AggregateCandidate = {
 
 type TurnGroup = {
   aggregateCandidates: AggregateCandidate[];
-  terminalTimestamps: number[];
+  turns: { terminalTimestamp: number; entries: ComparableHistoryMessage[] }[];
 };
 
 type ImportedTurnIndex = Map<string, Map<string, TurnGroup>>;
@@ -248,7 +253,7 @@ function resolveTurnGroup(index: ImportedTurnIndex, text: string, provider: stri
   }
   let group = byProvider.get(provider);
   if (!group) {
-    group = { aggregateCandidates: [], terminalTimestamps: [] };
+    group = { aggregateCandidates: [], turns: [] };
     byProvider.set(provider, group);
   }
   return group;
@@ -280,13 +285,15 @@ function indexImportedAssistantTurns(
     if (turn.fragments.length < 2 && !turn.hasNonTextContent) {
       return;
     }
-    resolveTurnGroup(index, turn.fragments.join(" "), turn.importedFrom).terminalTimestamps.push(
-      turn.terminalTimestamp,
-    );
+    resolveTurnGroup(index, turn.fragments.join(" "), turn.importedFrom).turns.push({
+      terminalTimestamp: turn.terminalTimestamp,
+      entries: turn.entries,
+    });
   };
   for (const entry of importedEntries) {
     if (entry.role === "assistant") {
-      current ??= { fragments: [], hasNonTextContent: false };
+      current ??= { fragments: [], entries: [], hasNonTextContent: false };
+      current.entries.push(entry);
       if (entry.text !== undefined) {
         current.fragments.push(entry.text);
       }
@@ -337,17 +344,14 @@ function findCoveredAggregates(
   const covered = new Set<ComparableHistoryMessage>();
   for (const byProvider of groups.values()) {
     for (const group of byProvider.values()) {
-      group.terminalTimestamps.sort((left, right) => left - right);
+      group.turns.sort((left, right) => left.terminalTimestamp - right.terminalTimestamp);
       group.aggregateCandidates.sort((left, right) => left.timestamp - right.timestamp);
       let turnIndex = 0;
       let aggregateIndex = 0;
-      while (
-        turnIndex < group.terminalTimestamps.length &&
-        aggregateIndex < group.aggregateCandidates.length
-      ) {
-        const turnTimestamp = group.terminalTimestamps[turnIndex]!;
+      while (turnIndex < group.turns.length && aggregateIndex < group.aggregateCandidates.length) {
+        const turn = group.turns[turnIndex]!;
         const aggregate = group.aggregateCandidates[aggregateIndex]!;
-        const elapsed = aggregate.timestamp - turnTimestamp;
+        const elapsed = aggregate.timestamp - turn.terminalTimestamp;
         if (elapsed < 0) {
           aggregateIndex += 1;
           continue;
@@ -357,6 +361,9 @@ function findCoveredAggregates(
           continue;
         }
         covered.add(aggregate.entry);
+        for (const entry of turn.entries) {
+          entry.claimedAggregate = true;
+        }
         turnIndex += 1;
         aggregateIndex += 1;
       }
@@ -423,7 +430,8 @@ export function mergeImportedChatHistoryMessages(params: {
   for (const imported of importedEntries) {
     const duplicate = imported.externalIdentityKey
       ? exactExternalIdentityIndex.has(imported.externalIdentityKey) ||
-        hasRoleTextCandidate(identitylessRoleTextIndex, imported)
+        (imported.claimedAggregate !== true &&
+          hasRoleTextCandidate(identitylessRoleTextIndex, imported))
       : hasRoleTextCandidate(allMessageRoleTextIndex, imported);
     if (duplicate) {
       continue;

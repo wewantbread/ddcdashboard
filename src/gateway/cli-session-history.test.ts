@@ -1914,6 +1914,69 @@ describe("persisted CLI aggregate suppression", () => {
     expect(merged.some(isCliAggregate)).toBe(false);
   });
 
+  it("keeps a lone text turn deduplicated against its persisted aggregate", () => {
+    // The base case of openclaw/openclaw#123792: a single-block turn is not
+    // indexed as covering, so only weak text dedupe keeps it from rendering
+    // twice. No other test pins it, and it is the case a narrower fix breaks.
+    const localMessages = [
+      buildCliAggregate({ text: "hello there", timestamp: TURN_START + 2000 }),
+    ];
+    const importedMessages = [
+      importedTurnMessage({
+        content: [{ type: "text", text: "hello there" }],
+        offsetMs: 1000,
+        externalId: "assistant-1",
+      }),
+    ];
+
+    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(localMessages[0]);
+  });
+
+  it("keeps a claimed turn's covering blocks when an earlier aggregate repeats one", () => {
+    // Regression for the mixed short-earlier/long-later shape: the later
+    // aggregate is claimed and dropped, so its first native block must survive
+    // weak text dedupe against the unrelated earlier aggregate that happens to
+    // carry the same text inside the five-minute window.
+    const localMessages = [
+      buildCliAggregate({ text: "part one", timestamp: TURN_START, runId: "run-0" }),
+      buildCliAggregate({
+        text: "part one\n\npart two",
+        timestamp: TURN_START + 64_000,
+        runId: "run-1",
+      }),
+    ];
+    const importedMessages = [
+      importedTurnMessage({
+        content: "second prompt",
+        offsetMs: 60_000,
+        externalId: "user-2",
+        role: "user",
+      }),
+      ...importedMultiBlockTurn({ offsetMs: 61_000, idPrefix: "later-" }),
+    ];
+
+    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
+
+    // The earlier aggregate is unrelated to the imported turn and stays put.
+    expect(merged).toContain(localMessages[0]);
+    // The claimed turn keeps every block that covered the dropped aggregate.
+    const assistantTexts = merged
+      .filter((message) => readRecord(message).role === "assistant")
+      .flatMap((message) => {
+        const content = readRecord(message).content;
+        return Array.isArray(content)
+          ? content
+              .filter((block) => readRecord(block).type === "text")
+              .map((block) => readRecord(block).text as string)
+          : [];
+      });
+    expect(assistantTexts).toContain("part two");
+    expect(assistantTexts.filter((text) => text === "part one")).toHaveLength(2);
+  });
+
   it.each([
     [
       "the aggregate has no timestamp",
