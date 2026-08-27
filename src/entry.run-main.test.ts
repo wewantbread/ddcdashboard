@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { ExpectedCliError } from "./cli/failure-output.js";
 import { runMainOrRootHelp } from "./entry.js";
 
+vi.mock("./logging.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./logging.js")>();
+  return {
+    ...actual,
+    enableConsoleCapture: vi.fn(),
+  };
+});
+
 describe("entry run-main boundary", () => {
   it("retains JSON console routing through process finalization", async () => {
     const runCli = vi.fn(async () => undefined);
@@ -29,7 +37,7 @@ describe("entry run-main boundary", () => {
     process.exitCode = undefined;
 
     try {
-      await runMainOrRootHelp(["node", "openclaw", "workboard", "list"], {
+      await runMainOrRootHelp(["node", "openclaw", "status"], {
         loadRunCli: async () => ({
           runCli: vi.fn(async () => {
             throw error;
