@@ -743,7 +743,16 @@ describe("retired runtime config migrations", () => {
     );
   });
 
-  it("preserves a whitespace-only legacy emoji on write so multi-agent WhatsApp keeps the routed agent's fallback (#119501)", () => {
+  it("writes the default agent's concrete emoji for a blank legacy value in multi-agent WhatsApp, never blank (#119501)", () => {
+    // codex review: messages.ackReaction is shared by every channel, not just
+    // WhatsApp. The generic resolveAckReaction (Discord/Slack/Signal/Telegram/
+    // Matrix) returns configured.trim() as soon as the key is defined at all —
+    // it never re-enters an identity fallback the way WhatsApp's own resolver
+    // does. Writing raw whitespace here (an earlier, reverted fix) would
+    // silently disable acknowledgements for every one of those other channels.
+    // The safest available write is the default agent's own concrete resolved
+    // emoji; the receipt still discloses that it's a best-effort pick, not a
+    // universal one, since "routed" and "main" resolve differently.
     const result = applyAll({
       messages: { ackReactionScope: "group-mentions" },
       agents: {
@@ -757,39 +766,10 @@ describe("retired runtime config migrations", () => {
       },
     });
 
-    // The persisted value must stay the raw whitespace string, not the default
-    // agent's resolved emoji: resolveWhatsAppAckEmoji
-    // (extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts:7-24, proven by
-    // its own "falls back to the routed agent identity for an empty emoji"
-    // case) trims messages.ackReaction at send time and, once trimmed empty,
-    // falls through to the *routed* agent's own identity emoji — not the
-    // default agent's. Baking a concrete emoji into the write here (the
-    // pre-fix regression) would short-circuit that per-agent fallback for
-    // every non-default agent in a multi-agent WhatsApp setup. Since "routed"
-    // and "main" resolve to different identity emojis, the receipt text must
-    // describe the effective value as route-dependent rather than naming the
-    // default agent's "🤖" as though it applied to every agent.
-    expect(result.raw).toHaveProperty("messages.ackReaction", " ");
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🤖");
     expect(result.changes).toContain(
       'Removed channels.whatsapp.ackReaction; applied a route-dependent legacy emoji (varies by agent identity, e.g. "🤖") to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
     );
-
-    // Mirrors the trim-then-identity-fallback contract of resolveWhatsAppAckEmoji
-    // as an oracle over the migrated config: with the raw whitespace value
-    // preserved, each routed agent still resolves its own identity emoji
-    // instead of the default agent's "🤖" getting baked in for everyone.
-    const resolveForAgent = (agentId: string): string => {
-      const configured = getPath(result.raw, "messages.ackReaction");
-      const trimmed = typeof configured === "string" ? configured.trim() : "";
-      if (trimmed) {
-        return trimmed;
-      }
-      const agentList = getPath(result.raw, "agents.list") as Array<Record<string, unknown>>;
-      const agent = agentList.find((candidate) => candidate.id === agentId);
-      return (getPath(agent, "identity.emoji") as string | undefined)?.trim() || "👀";
-    };
-    expect(resolveForAgent("routed")).toBe("🚀");
-    expect(resolveForAgent("main")).toBe("🤖");
   });
 
   it("reports a kept blank legacy emoji as route-dependent in multi-agent WhatsApp (#119501)", () => {
@@ -817,12 +797,13 @@ describe("retired runtime config migrations", () => {
     );
   });
 
-  it("preserves blank on write when the default identity is blank but a routed agent has its own emoji (#119501)", () => {
-    // codex review: the legacy object omits emoji entirely (not even whitespace),
-    // the DEFAULT agent has no identity emoji, but "routed" has "🚀". Writing the
-    // universal-looking "👀" here would bake it into messages.ackReaction and
-    // silently override "routed"'s own configured fallback at send time — only a
-    // value every agent already shares (or a raw passthrough) is safe to write.
+  it("bakes in the default agent's fallback (never blank) when the default identity is itself blank (#119501)", () => {
+    // The legacy object omits emoji entirely, the DEFAULT agent has no identity
+    // emoji either, but "routed" has "🚀". writeEmoji still must be a concrete,
+    // non-blank value (never "" or whitespace — see the cross-channel test
+    // above), so it falls all the way to the default agent's own resolved
+    // fallback ("👀", since main has no identity) — the best available single
+    // answer, disclosed as route-dependent rather than claimed as universal.
     const result = applyAll({
       messages: { ackReactionScope: "group-mentions" },
       agents: {
@@ -836,28 +817,10 @@ describe("retired runtime config migrations", () => {
       },
     });
 
-    // Never an empty string: resolveWhatsAppAckEmoji treats "" as an explicit
-    // disable sentinel and returns it immediately, never reaching the fallback
-    // chain — only a non-empty whitespace string is a safe passthrough.
-    expect(result.raw).toHaveProperty("messages.ackReaction", " ");
+    expect(result.raw).toHaveProperty("messages.ackReaction", "👀");
     expect(result.changes).toContain(
       'Removed channels.whatsapp.ackReaction; applied a route-dependent legacy emoji (varies by agent identity, e.g. "👀") to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
     );
-
-    // Oracle mirrors resolveWhatsAppAckEmoji: the written blank value still lets
-    // "routed" resolve to its OWN identity instead of a baked-in "👀".
-    const resolveForAgent = (agentId: string): string => {
-      const configured = getPath(result.raw, "messages.ackReaction");
-      const trimmed = typeof configured === "string" ? configured.trim() : "";
-      if (trimmed) {
-        return trimmed;
-      }
-      const agentList = getPath(result.raw, "agents.list") as Array<Record<string, unknown>>;
-      const agent = agentList.find((candidate) => candidate.id === agentId);
-      return (getPath(agent, "identity.emoji") as string | undefined)?.trim() || "👀";
-    };
-    expect(resolveForAgent("routed")).toBe("🚀");
-    expect(resolveForAgent("main")).toBe("👀");
   });
 
   it("never treats a canonical empty-string ackReaction as equivalent to a legacy fallback (#119501)", () => {
@@ -953,6 +916,27 @@ describe("retired runtime config migrations", () => {
     expect(result.raw).toHaveProperty("messages.ackReaction", "   ");
     expect(result.changes).toContain(
       "Moved translatable channels.whatsapp.ackReaction settings to messages ack settings.",
+    );
+  });
+
+  it("never writes an exact empty-string legacy emoji verbatim (#119501)", () => {
+    // codex review: an exact "" legacy emoji is not falsy for the per-channel
+    // object it lives in (the object itself is truthy), so WhatsApp still
+    // falls through normally there — but copying "" verbatim into the shared
+    // messages.ackReaction would convert "meant to fall through" into
+    // "explicitly disabled" once read there. Must resolve to a concrete
+    // fallback instead, exactly like an absent or whitespace-only legacy value.
+    const result = applyAll({
+      messages: { ackReactionScope: "group-mentions" },
+      agents: { list: [{ default: true, id: "main", identity: { emoji: "🤖" } }] },
+      channels: {
+        whatsapp: { ackReaction: { emoji: "", direct: false, group: "always" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🤖");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied effective legacy emoji "🤖" to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "group-all".',
     );
   });
 

@@ -391,25 +391,25 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
           );
     const universalFallback = perAgentFallback.size === 1 ? [...perAgentFallback][0] : undefined;
     const routeDependent = rawEffectiveEmoji === undefined && universalFallback === undefined;
-    // A concrete value is only safe to WRITE when it applies to every possible
-    // route: the raw legacy value itself (verbatim, so per-agent trim-and-fallback
-    // still runs at send time), or the one fallback every agent already shares.
-    // Baking in any other single value — even the default agent's own identity —
-    // would silently override every other agent's configured fallback. Never an
-    // empty string here: resolveWhatsAppAckEmoji treats "" as falsy and returns it
-    // immediately (explicitly disabled acks), skipping the fallback chain entirely,
-    // while a whitespace string is truthy and reaches that chain normally.
-    const writtenEmoji = rawEmoji ?? universalFallback ?? " ";
-    // For display only when route-dependent: the default agent's own resolved
-    // fallback is one illustrative example, never the value actually written.
+    // messages.ackReaction is shared by every channel, not just WhatsApp: the
+    // generic resolveAckReaction (Discord/Slack/Signal/Telegram/Matrix) returns
+    // configured.trim() as soon as the key is DEFINED AT ALL, with no further
+    // agent-identity fallback — unlike WhatsApp's own resolver, which re-enters
+    // that fallback after trimming. So neither "" nor a whitespace passthrough is
+    // safe to write here: either would silently disable acks for every other
+    // channel. The written value must always be a concrete, trimmed emoji — the
+    // raw legacy one if it has one, else the fallback every agent already shares,
+    // else (only when agents genuinely disagree) the default agent's own
+    // resolved value, the best available single answer for a key every channel
+    // reads the same way.
     const defaultAgent =
       agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
     const defaultAgentFallback =
       effectiveEmoji(getRecord(getRecord(defaultAgent)?.identity)?.emoji) ?? "👀";
-    const receiptEmoji = rawEffectiveEmoji ?? universalFallback ?? defaultAgentFallback;
+    const writtenEmoji = rawEffectiveEmoji ?? universalFallback ?? defaultAgentFallback;
     const describeEffectiveEmoji = routeDependent
-      ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${receiptEmoji}")`
-      : `effective legacy emoji "${receiptEmoji}"`;
+      ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${writtenEmoji}")`
+      : `effective legacy emoji "${writtenEmoji}"`;
     if (messages.ackReaction === undefined) {
       messages.ackReaction = writtenEmoji;
       applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);
@@ -429,7 +429,7 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
         ? false
         : routeDependent
           ? existingEffective === undefined
-          : receiptEmoji === (existingEffective ?? universalFallback ?? "👀");
+          : writtenEmoji === (existingEffective ?? universalFallback ?? "👀");
       if (!behaviorallyEquivalent) {
         kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
       }
