@@ -126,11 +126,17 @@ describe("runActiveReplySteer", () => {
       markAcceptedSteeredInboundAudio: vi.fn(),
     };
 
+    const onHostStagingDelegated = vi.fn();
     await runActiveReplySteer(
-      makeParams({ providedReplyOperation: activeReplyOperation, followupRun }),
+      makeParams({
+        providedReplyOperation: activeReplyOperation,
+        followupRun,
+        opts: { onHostStagingDelegated } as unknown as ActiveReplySteerParams["opts"],
+      }),
     );
 
     expect(mocks.parkedConsume).toHaveBeenCalled();
+    expect(onHostStagingDelegated).toHaveBeenCalled();
 
     // Staging properties are removed so the lifecycle doesn't double-clean them
     expect(followupRun.hostWorkspaceStagingDir).toBeUndefined();

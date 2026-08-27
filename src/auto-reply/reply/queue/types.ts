@@ -339,10 +339,19 @@ export function cleanHostWorkspaceStaging(run: Pick<FollowupRun, "hostWorkspaceS
   const hostWorkspaceStagingDir = run.hostWorkspaceStagingDir;
   if (hostWorkspaceStagingDir) {
     delete run.hostWorkspaceStagingDir;
-    void fs.rm(hostWorkspaceStagingDir, { recursive: true, force: true }).catch((err: unknown) => {
-      logVerbose(
-        `Failed to clean host workspace staging directory: ${hostWorkspaceStagingDir} (${err instanceof Error ? err.message : String(err)})`,
-      );
+    // Remove only if empty: staged files are persisted into the transcript and
+    // re-read by history hydration on subsequent turns. Recursive deletion
+    // would destroy attachments still needed by the running session.
+    void fs.rmdir(hostWorkspaceStagingDir).catch((err: unknown) => {
+      // ENOTEMPTY is expected when staging succeeded; ENOENT is fine on double-call.
+      if (
+        err instanceof Error &&
+        !("code" in err && (err.code === "ENOTEMPTY" || err.code === "ENOENT"))
+      ) {
+        logVerbose(
+          `Failed to clean host workspace staging directory: ${hostWorkspaceStagingDir} (${err.message})`,
+        );
+      }
     });
   }
 }

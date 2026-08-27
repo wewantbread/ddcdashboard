@@ -136,6 +136,13 @@ export async function stageSandboxMedia(params: {
         });
       }
     } catch (err) {
+      // copyIn may create the destination parent before a later source or
+      // identity check fails. The producer still owns that failed attempt, so
+      // remove only its destination and then the empty host staging directory.
+      await removeFailedStageDestination({ rootDir: effectiveWorkspaceDir, dest });
+      if (hostWorkspaceStagingDir) {
+        await fs.rmdir(hostWorkspaceStagingDir).catch(() => {});
+      }
       if (err instanceof FsSafeError && err.code === "too-large") {
         logVerbose(
           `Blocking inbound media staging above ${STAGED_MEDIA_MAX_BYTES} bytes: ${source.physicalPath}`,
@@ -186,6 +193,26 @@ export async function stageSandboxMedia(params: {
     staged,
     ...(hostWorkspaceStagingDir ? { hostWorkspaceStagingDir } : {}),
   };
+}
+
+async function removeFailedStageDestination(params: {
+  rootDir: string;
+  dest: string;
+}): Promise<void> {
+  const [rootReal, parentReal] = await Promise.all([
+    fs.realpath(params.rootDir),
+    fs.realpath(path.dirname(params.dest)),
+  ]).catch(() => [null, null] as const);
+  if (!rootReal || !parentReal) {
+    return;
+  }
+  const relativeParent = path.relative(rootReal, parentReal);
+  if (
+    relativeParent === "" ||
+    (!relativeParent.startsWith("..") && !path.isAbsolute(relativeParent))
+  ) {
+    await fs.unlink(params.dest).catch(() => {});
+  }
 }
 
 async function isUrlAliasForStagedSource(params: {

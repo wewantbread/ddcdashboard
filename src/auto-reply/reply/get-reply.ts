@@ -70,7 +70,6 @@ import type {
   InternalGetReplyOptions as BaseInternalGetReplyOptions,
   ReplySessionBinding,
 } from "./get-reply.types.js";
-import { cleanHostWorkspaceStaging } from "./queue.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import {
   hasInboundAudio,
@@ -86,6 +85,7 @@ import {
 } from "./pending-final-delivery.js";
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
+import { cleanHostWorkspaceStaging } from "./queue.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
@@ -1297,9 +1297,16 @@ export async function getReplyFromConfig(
       perMessageQueueMode,
       perMessageQueueOptions,
       typing,
-      opts: queueModeOverride
-        ? { ...withExtractedFileImages(resolvedOpts, extractedFileImages), queueModeOverride }
-        : withExtractedFileImages(resolvedOpts, extractedFileImages),
+      opts: {
+        ...(queueModeOverride
+          ? { ...withExtractedFileImages(resolvedOpts, extractedFileImages), queueModeOverride }
+          : withExtractedFileImages(resolvedOpts, extractedFileImages)),
+        onHostStagingDelegated: () => {
+          if (resolvedOpts) {
+            delete resolvedOpts.hostWorkspaceStagingDir;
+          }
+        },
+      },
       defaultModel,
       timeoutMs,
       isNewSession,
@@ -1321,7 +1328,7 @@ export async function getReplyFromConfig(
   try {
     replyResult = await runPreparedReplyPromise;
   } catch (err) {
-    if (resolvedOpts.hostWorkspaceStagingDir) {
+    if (resolvedOpts?.hostWorkspaceStagingDir) {
       cleanHostWorkspaceStaging(resolvedOpts);
     }
     throw err;
