@@ -10,7 +10,6 @@ import {
 import {
   hasConfigTrancheLegacyKeys,
   migrateConfigTranche,
-  visitAgentEntries,
 } from "./legacy-config-migrations.runtime.config-tranche.js";
 import {
   consolidateMediaCapabilityConfig,
@@ -351,13 +350,23 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     // Resolve both legacy halves before deciding, so the receipt compares the
     // same effective values the assignment would have written — an omitted
     // emoji still resolves through agent identity or the default.
-    // Covers both the canonical keyed roster (agents.entries) and the legacy
-    // array (agents.list) — a config already migrated to keyed entries must
-    // still be read for this receipt, not just the pre-migration array shape.
-    const agentEntries: Record<string, unknown>[] = [];
-    visitAgentEntries(raw, (entry) => {
-      agentEntries.push(entry);
-    });
+    // Canonical roster precedence (agents/agent-scope.ts:listAgentEntriesWithSource):
+    // a keyed agents.entries roster wins EXCLUSIVELY over agents.list when both are
+    // present — list is stale/unreachable then, not a second source to combine.
+    const agentsRoot = getRecord(raw.agents);
+    const keyedEntries = getRecord(agentsRoot?.entries);
+    const agentEntries: Record<string, unknown>[] =
+      agentsRoot && Object.hasOwn(agentsRoot, "entries") && keyedEntries
+        ? Object.values(keyedEntries).flatMap((value) => {
+            const entry = getRecord(value);
+            return entry ? [entry] : [];
+          })
+        : Array.isArray(agentsRoot?.list)
+          ? agentsRoot.list.flatMap((value) => {
+              const entry = getRecord(value);
+              return entry ? [entry] : [];
+            })
+          : [];
     // WhatsApp trims the reaction emoji at send time, so a whitespace-only
     // legacy value is not effective there — it falls back to per-agent identity,
     // then "👀". That fallback is per ROUTED agent, not the default agent, so a
@@ -386,8 +395,11 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     // route: the raw legacy value itself (verbatim, so per-agent trim-and-fallback
     // still runs at send time), or the one fallback every agent already shares.
     // Baking in any other single value — even the default agent's own identity —
-    // would silently override every other agent's configured fallback.
-    const writtenEmoji = rawEmoji ?? universalFallback ?? "";
+    // would silently override every other agent's configured fallback. Never an
+    // empty string here: resolveWhatsAppAckEmoji treats "" as falsy and returns it
+    // immediately (explicitly disabled acks), skipping the fallback chain entirely,
+    // while a whitespace string is truthy and reaches that chain normally.
+    const writtenEmoji = rawEmoji ?? universalFallback ?? " ";
     // For display only when route-dependent: the default agent's own resolved
     // fallback is one illustrative example, never the value actually written.
     const defaultAgent =
@@ -402,20 +414,22 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
       messages.ackReaction = writtenEmoji;
       applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);
     } else {
-      // Compare effective (trimmed) behavior, not raw strings: a canonical value
-      // that trims to the same emoji as the legacy one — including both being
-      // blank, which always falls back through the same per-agent identity
-      // regardless of route — is not a real conflict, even when route-dependent.
-      const existingEffective = effectiveEmoji(
-        typeof messages.ackReaction === "string" ? messages.ackReaction : undefined,
-      );
-      // The canonical value resolves through the identical fallback chain at
-      // runtime, so mirror it here: a blank canonical value is exactly as
-      // route-dependent as a blank legacy one (both blank means both resolve
-      // through the same per-agent lookup for any given route).
-      const behaviorallyEquivalent = routeDependent
-        ? existingEffective === undefined
-        : receiptEmoji === (existingEffective ?? universalFallback ?? "👀");
+      const existingRaw = typeof messages.ackReaction === "string" ? messages.ackReaction : "";
+      // An exact "" canonical value explicitly disables acks (resolveWhatsAppAckEmoji
+      // returns it immediately, never reaching identity/default) — a materially
+      // different behavior from any legacy value, concrete or route-dependent, so
+      // it is never treated as equivalent regardless of what the legacy side is.
+      const existingDisabled = existingRaw === "";
+      // Compare effective (trimmed) behavior, not raw strings, for the non-disabled
+      // case: a canonical value that trims to the same emoji as the legacy one —
+      // including both being whitespace-only, which always falls back through the
+      // same per-agent identity regardless of route — is not a real conflict.
+      const existingEffective = effectiveEmoji(existingRaw);
+      const behaviorallyEquivalent = existingDisabled
+        ? false
+        : routeDependent
+          ? existingEffective === undefined
+          : receiptEmoji === (existingEffective ?? universalFallback ?? "👀");
       if (!behaviorallyEquivalent) {
         kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
       }

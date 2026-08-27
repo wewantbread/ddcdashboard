@@ -836,7 +836,10 @@ describe("retired runtime config migrations", () => {
       },
     });
 
-    expect(result.raw).toHaveProperty("messages.ackReaction", "");
+    // Never an empty string: resolveWhatsAppAckEmoji treats "" as an explicit
+    // disable sentinel and returns it immediately, never reaching the fallback
+    // chain — only a non-empty whitespace string is a safe passthrough.
+    expect(result.raw).toHaveProperty("messages.ackReaction", " ");
     expect(result.changes).toContain(
       'Removed channels.whatsapp.ackReaction; applied a route-dependent legacy emoji (varies by agent identity, e.g. "👀") to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
     );
@@ -855,6 +858,44 @@ describe("retired runtime config migrations", () => {
     };
     expect(resolveForAgent("routed")).toBe("🚀");
     expect(resolveForAgent("main")).toBe("👀");
+  });
+
+  it("never treats a canonical empty-string ackReaction as equivalent to a legacy fallback (#119501)", () => {
+    // codex review: messages.ackReaction === "" is a distinct disable sentinel
+    // (resolveWhatsAppAckEmoji returns it immediately, skipping the fallback
+    // chain) — behaviorally different from any legacy value, so it must always
+    // be reported as a real conflict, never silently treated as "no change".
+    const result = applyAll({
+      messages: { ackReaction: "" },
+      channels: { whatsapp: { ackReaction: { emoji: " ", direct: false, group: "always" } } },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied legacy scope "group-all" to messages.ackReactionScope; kept existing messages.ackReaction over effective legacy emoji "👀".',
+    );
+  });
+
+  it("follows canonical entries-over-list roster precedence, not a merge of both (#119501)", () => {
+    // codex review: when agents.entries is present, runtime roster resolution
+    // (listAgentEntriesWithSource) uses it EXCLUSIVELY — a stale agents.list is
+    // never reachable and must not influence the receipt or the written value.
+    const result = applyAll({
+      messages: { ackReactionScope: "group-mentions" },
+      agents: {
+        entries: { main: { default: true, identity: { emoji: "🤖" } } },
+        // Stale/unreachable once agents.entries exists — must be ignored.
+        list: [{ id: "routed", identity: { emoji: "🚀" } }],
+      },
+      channels: {
+        whatsapp: { ackReaction: { direct: true, group: "never" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🤖");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied effective legacy emoji "🤖" to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
+    );
   });
 
   it("reads identity emojis from a canonical keyed agent roster, not just the legacy array (#119501)", () => {
