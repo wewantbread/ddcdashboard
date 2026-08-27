@@ -499,6 +499,28 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
       });
       return true;
     }
+    if (delivery.disposition === "agent_run_pending") {
+      const retryDelayMs = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0];
+      const lastError = delivery.error ?? "requester settle turn is still running";
+      // The admitted turn may later resolve through Gateway dedupe. Keep this
+      // batch dispatching and preserve the transport-failure replay budget.
+      state = {
+        status: "dispatching",
+        attemptCount: state.attemptCount,
+        ...(state.replayCount !== undefined ? { replayCount: state.replayCount } : {}),
+        nextAttemptAt: Date.now() + retryDelayMs,
+        batchRunIds,
+        ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
+        ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+        ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
+        lastError,
+      };
+      params.transitionBatch(batchRunIds, state);
+      logWarn(
+        `requester settle wake turn still running; same-key poll scheduled in ${Math.round(retryDelayMs / 1000)}s`,
+      );
+      return false;
+    }
     if (
       delivery.disposition === "ambiguous" ||
       delivery.disposition === "permanent_failure" ||

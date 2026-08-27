@@ -4136,13 +4136,21 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     path: "direct",
     reason: "visible_reply_missing",
   } as const;
+  const pendingRequesterFinal = {
+    delivered: false,
+    path: "direct",
+    disposition: "agent_run_pending",
+  } as const;
 
   type RequesterSettleDeliveryCase = {
     name: string;
     response: Record<string, unknown>;
     requireVisibleReply: boolean;
     requireContinuationProgress?: boolean;
-    expected: typeof deliveredRequesterFinal | typeof missingRequesterFinal;
+    expected:
+      | typeof deliveredRequesterFinal
+      | typeof missingRequesterFinal
+      | typeof pendingRequesterFinal;
   };
 
   it.each<RequesterSettleDeliveryCase>([
@@ -4303,6 +4311,13 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       requireContinuationProgress: true,
       expected: deliveredRequesterFinal,
     },
+    ...(["accepted", "started", "in_flight"] as const).map((status) => ({
+      name: `keeps a ${status} continuation turn pending`,
+      response: { status },
+      requireVisibleReply: false,
+      requireContinuationProgress: true,
+      expected: pendingRequesterFinal,
+    })),
     {
       name: "rejects an empty continuation turn",
       response: {},

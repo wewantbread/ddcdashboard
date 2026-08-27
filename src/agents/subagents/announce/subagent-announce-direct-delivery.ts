@@ -413,6 +413,14 @@ export async function sendSubagentAnnounceDirectly(params: {
 
     const directAnnounceStillPending = isGatewayAgentRunPending(directAnnounceResponse);
     if (directAnnounceStillPending) {
+      if (requireVisibleTurnOutcome) {
+        return {
+          delivered: false,
+          path: "direct",
+          disposition: "agent_run_pending",
+          error: "required requester turn is still running",
+        };
+      }
       return {
         delivered: true,
         path: "direct",
