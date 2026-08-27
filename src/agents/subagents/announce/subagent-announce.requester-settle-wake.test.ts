@@ -724,6 +724,121 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
+  it("accepts a fast-settled successor's durable wake without a duplicate final", async () => {
+    const original = makeSettledChild({
+      runId: "run-original",
+      delivery: { status: "delivered" },
+      requesterSettleWake: {
+        status: "pending",
+        attemptCount: 0,
+        batchRunIds: ["run-original"],
+        requesterYieldBatch: true,
+        rearmGeneration: 1,
+      },
+    });
+    const successor = makeSettledChild({
+      runId: "run-successor",
+      createdAt: 4_000,
+      delivery: { status: "delivered" },
+      requesterSettleWake: {
+        status: "pending",
+        attemptCount: 0,
+        batchRunIds: ["run-successor"],
+        requesterYieldBatch: true,
+        afterRequesterYield: true,
+        rearmGeneration: 1,
+      },
+    });
+    const children = [original];
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
+    // The requester continued and the successor finished so quickly that its
+    // own durable settle wake is persisted before this older wake returns.
+    deliverSpy.mockImplementationOnce(async () => {
+      children.push(successor);
+      return {
+        delivered: false,
+        path: "direct",
+        reason: "visible_reply_missing",
+      };
+    });
+
+    expect(
+      await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: original })),
+    ).toBe(true);
+    expect(original.requesterSettleWake).toBeUndefined();
+
+    expect(
+      await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: successor })),
+    ).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledTimes(2);
+    expect(completeBatchSpy).toHaveBeenCalledWith(["run-original"], 1, {
+      delivered: true,
+      path: "direct",
+    });
+    expect(completeBatchSpy).toHaveBeenCalledWith(["run-successor"], 1, {
+      delivered: true,
+      path: "direct",
+    });
+
+    // The retired older obligation cannot retry after the successor's final wake.
+    expect(
+      await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: original })),
+    ).toBe(false);
+    expect(deliverSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a visible final despite an unrelated durable yielded wake", async () => {
+    const original = makeSettledChild({
+      runId: "run-original",
+      createdAt: 1_000,
+      startedAt: 2_000,
+      endedAt: 3_000,
+      delivery: { status: "delivered" },
+      requesterSettleWake: {
+        status: "pending",
+        attemptCount: 0,
+        batchRunIds: ["run-original"],
+        requesterYieldBatch: true,
+        rearmGeneration: 1,
+      },
+    });
+    const unrelated = makeSettledChild({
+      runId: "run-unrelated",
+      createdAt: 2_000,
+      startedAt: 2_100,
+      endedAt: 2_500,
+      delivery: { status: "delivered" },
+      requesterSettleWake: {
+        status: "pending",
+        attemptCount: 0,
+        batchRunIds: ["run-unrelated"],
+        requesterYieldBatch: true,
+        afterRequesterYield: true,
+        rearmGeneration: 1,
+      },
+    });
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([original, unrelated]);
+    deliverSpy.mockResolvedValueOnce({
+      delivered: false,
+      path: "direct",
+      reason: "visible_reply_missing",
+    });
+
+    await expect(
+      maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: original })),
+    ).resolves.toBe(false);
+
+    expect(completeBatchSpy).not.toHaveBeenCalled();
+    expect(original.requesterSettleWake).toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      requesterYieldBatch: true,
+      rearmGeneration: 1,
+      lastError: "visible_reply_missing",
+    });
+    expect(deliverSpy).toHaveBeenCalledOnce();
+  });
+
   it("replays an ambiguous transport failure with the same idempotency key", async () => {
     const firstChild = makeSettledChild({ runId: "run-a" });
     const secondChild = makeSettledChild({ runId: "run-b" });
