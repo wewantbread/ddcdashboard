@@ -18,6 +18,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+import { readSessionIdentityMutationVersion } from "../sessions/session-lifecycle-events.js";
 import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
@@ -480,7 +481,11 @@ export function createLifecycleEventBroadcastHandler(params: {
       );
       return;
     }
+    const identityMutationVersion = readSessionIdentityMutationVersion();
     const modelCatalog = await params.loadModelCatalog?.(routingAgentId);
+    if (readSessionIdentityMutationVersion() !== identityMutationVersion) {
+      return;
+    }
     const sessionRow = loadGatewaySessionRow(event.sessionKey, {
       agentId: routingAgentId,
       ...(modelCatalog !== undefined ? { modelCatalog } : {}),
