@@ -724,8 +724,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
-
-
   it("replays an ambiguous transport failure with the same idempotency key", async () => {
     const firstChild = makeSettledChild({ runId: "run-a" });
     const secondChild = makeSettledChild({ runId: "run-b" });
