@@ -2,7 +2,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { formatCliCommand } from "../cli/command-format.js";
 import { ExpectedCliError } from "../cli/failure-output.js";
+import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { makeTempWorkspace } from "../test-helpers/workspace.js";
 import {
   baseConfigSnapshot,
@@ -233,16 +235,29 @@ describe("agents set-identity command", () => {
 
     const jsonRuntime = createCapturingTestRuntime();
     await agentsSetIdentityCommand({ agent: "main", name, json: true }, jsonRuntime.runtime);
-    expect(JSON.parse(jsonRuntime.logs.at(-1) ?? "{}")).toStrictEqual({
+    const payload = JSON.parse(jsonRuntime.logs.at(-1) ?? "{}") as {
+      agentId: string;
+      identity: { name: string };
+      workspace: string | null;
+      identityFile: string | null;
+      identitySource: string | null;
+      storedWorkspace: string;
+    };
+    expect(payload).toMatchObject({
       agentId: "main",
       identity: { name },
       workspace: null,
       identityFile: null,
+      identitySource: null,
     });
+    expect(payload.storedWorkspace).toEqual(expect.any(String));
+    expect(payload.storedWorkspace).not.toBe("");
   });
 
   it("reads identity from an explicit IDENTITY.md path", async () => {
-    const { workspace } = await createIdentityWorkspace();
+    const { root, workspace } = await createIdentityWorkspace();
+    const storedWorkspace = path.join(root, "stored");
+    await fs.mkdir(storedWorkspace, { recursive: true });
     const identityPath = await writeIdentityFile(workspace, [
       "- **Name:** C-3PO",
       "- **Creature:** Flustered Protocol Droid",
@@ -250,19 +265,45 @@ describe("agents set-identity command", () => {
       "- **Avatar:** avatars/c3po.png",
       "",
     ]);
-
     configMocks.readConfigFileSnapshot.mockResolvedValue({
       ...baseConfigSnapshot,
-      config: { agents: { entries: { main: {} } } },
+      config: { agents: { entries: { main: { workspace: storedWorkspace } } } },
     });
 
-    await agentsSetIdentityCommand({ agent: "main", identityFile: identityPath }, runtime);
+    const jsonRuntime = createCapturingTestRuntime();
+    await agentsSetIdentityCommand(
+      { agent: "main", identityFile: identityPath, json: true },
+      jsonRuntime.runtime,
+    );
 
-    expect(getWrittenMainIdentity()).toEqual({
-      name: "C-3PO",
-      theme: "Flustered Protocol Droid",
-      emoji: "🤖",
-      avatar: "avatars/c3po.png",
+    const [written] = configMocks.writeConfigFile.mock.calls[0] ?? [];
+    expect(written).toMatchObject({
+      agents: {
+        entries: {
+          main: {
+            workspace: storedWorkspace,
+            identity: {
+              name: "C-3PO",
+              theme: "Flustered Protocol Droid",
+              emoji: "🤖",
+              avatar: "avatars/c3po.png",
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.parse(jsonRuntime.logs.at(-1) ?? "{}")).toEqual({
+      agentId: "main",
+      identity: {
+        name: "C-3PO",
+        theme: "Flustered Protocol Droid",
+        emoji: "🤖",
+        avatar: "avatars/c3po.png",
+      },
+      workspace,
+      storedWorkspace,
+      identityFile: identityPath,
+      identitySource: workspace,
     });
   });
 
@@ -442,5 +483,74 @@ describe("agents set-identity command", () => {
     ).rejects.toBe(writeFailure);
     expect(runtime.error).not.toHaveBeenCalled();
     expect(runtime.exit).not.toHaveBeenCalled();
+  });
+
+  it("does not persist --workspace and reports stored workspace separately from the identity source", async () => {
+    const { root, workspace: storedWorkspace } = await createIdentityWorkspace("stored");
+    const identitySource = path.join(root, "relocated");
+    await fs.mkdir(identitySource, { recursive: true });
+
+    configMocks.readConfigFileSnapshot.mockResolvedValue({
+      ...baseConfigSnapshot,
+      config: { agents: { entries: { worker: { workspace: storedWorkspace } } } },
+    });
+
+    const jsonRuntime = createCapturingTestRuntime();
+    await agentsSetIdentityCommand(
+      {
+        agent: "worker",
+        workspace: identitySource,
+        name: "Worker",
+        json: true,
+      },
+      jsonRuntime.runtime,
+    );
+
+    const [written] = configMocks.writeConfigFile.mock.calls[0] ?? [];
+    expect(written).toMatchObject({
+      agents: {
+        entries: {
+          worker: {
+            workspace: storedWorkspace,
+            identity: { name: "Worker" },
+          },
+        },
+      },
+    });
+    expect(JSON.parse(jsonRuntime.logs.at(-1) ?? "{}")).toEqual({
+      agentId: "worker",
+      identity: { name: "Worker" },
+      workspace: identitySource,
+      storedWorkspace,
+      identitySource: null,
+      identityFile: null,
+    });
+  });
+
+  it("quotes the relocation hint when the locator path contains spaces", async () => {
+    const { root, workspace: storedWorkspace } = await createIdentityWorkspace("stored");
+    const identitySource = path.join(root, "My workspace");
+    await fs.mkdir(identitySource, { recursive: true });
+
+    configMocks.readConfigFileSnapshot.mockResolvedValue({
+      ...baseConfigSnapshot,
+      config: { agents: { entries: { worker: { workspace: storedWorkspace } } } },
+    });
+
+    const { runtime: capturingRuntime, logs } = createCapturingTestRuntime();
+    await agentsSetIdentityCommand(
+      {
+        agent: "worker",
+        workspace: identitySource,
+        name: "Worker",
+      },
+      capturingRuntime,
+    );
+
+    expect(logs).toContain(
+      `Stored workspace unchanged. Relocate with ${formatCliCommand(
+        `openclaw config set agents.entries.worker.workspace ${quoteCliArg(identitySource)}`,
+      )}.`,
+    );
   });
 });

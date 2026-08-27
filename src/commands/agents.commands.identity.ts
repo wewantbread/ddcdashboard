@@ -10,7 +10,9 @@ import {
 } from "../agents/agent-scope.js";
 import { loadAgentIdentityFromFile } from "../agents/identity-file.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../agents/workspace.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { ExpectedCliError } from "../cli/failure-output.js";
+import { quoteCliArg } from "../cli/quote-cli-arg.js";
 import { replaceConfigFile } from "../config/config.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
 import { logConfigUpdated } from "../config/logging.js";
@@ -198,12 +200,21 @@ export async function agentsSetIdentityCommand(
     ...(baseHash !== undefined ? { baseHash } : {}),
   });
 
+  const storedWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, resolvedAgentId);
+  const workspaceLocatorDir = workspaceDir;
+  const identitySourceDir = identityFromFile ? workspaceDir : undefined;
+  const locatorDiffers =
+    workspaceLocatorDir !== undefined &&
+    normalizeWorkspacePath(workspaceLocatorDir) !== normalizeWorkspacePath(storedWorkspaceDir);
+
   if (opts.json) {
     writeRuntimeJson(runtime, {
-      agentId,
+      agentId: resolvedAgentId,
       identity: nextIdentity,
-      workspace: workspaceDir ?? null,
+      workspace: workspaceLocatorDir ?? null,
+      storedWorkspace: storedWorkspaceDir,
       identityFile: identityFilePath ?? null,
+      identitySource: identitySourceDir ?? null,
     });
     return;
   }
@@ -222,7 +233,11 @@ export async function agentsSetIdentityCommand(
   if (nextIdentity.avatar) {
     runtime.log(`Avatar: ${sanitizeTerminalText(nextIdentity.avatar)}`);
   }
-  if (workspaceDir) {
-    runtime.log(`Workspace: ${sanitizeTerminalText(shortenHomePath(workspaceDir))}`);
+  runtime.log(`Workspace: ${sanitizeTerminalText(shortenHomePath(storedWorkspaceDir))}`);
+  if (locatorDiffers && workspaceLocatorDir) {
+    runtime.log(`Workspace locator: ${sanitizeTerminalText(shortenHomePath(workspaceLocatorDir))}`);
+    runtime.log(
+      `Stored workspace unchanged. Relocate with ${formatCliCommand(`openclaw config set agents.entries.${resolvedAgentId}.workspace ${quoteCliArg(workspaceLocatorDir)}`)}.`,
+    );
   }
 }
