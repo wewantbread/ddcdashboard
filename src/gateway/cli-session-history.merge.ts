@@ -33,28 +33,52 @@ type TimestampSummary = {
 
 type RoleTextIndex = Map<string, Map<string, TimestampSummary>>;
 
-function buildComparableText(
-  rawText: unknown,
-  rawContent: unknown,
-  role: string | undefined,
-): string | undefined {
-  const parts: string[] = [];
-  const text = readStringValue(rawText);
-  if (text !== undefined) {
-    parts.push(text);
+function normalizeContentBlockType(block: unknown): string | undefined {
+  if (!block || typeof block !== "object") {
+    return undefined;
   }
-  const content = readStringValue(rawContent);
-  if (content !== undefined) {
-    parts.push(content);
-  } else if (Array.isArray(rawContent)) {
-    for (const block of rawContent) {
-      if (block && typeof block === "object" && "text" in block) {
-        const blockText = readStringValue(block.text);
-        if (blockText !== undefined) {
-          parts.push(blockText);
-        }
+  const normalized = readStringValue((block as { type?: unknown }).type)?.toLowerCase();
+  return normalized ? normalized.replace(/_/g, "") : undefined;
+}
+
+function summarizeContent(rawContent: unknown): {
+  hasNonText: boolean;
+  textParts: string[];
+  toolResultOnly: boolean;
+} {
+  const directText = readStringValue(rawContent);
+  if (directText !== undefined) {
+    return { hasNonText: false, textParts: [directText], toolResultOnly: false };
+  }
+  if (!Array.isArray(rawContent)) {
+    return { hasNonText: false, textParts: [], toolResultOnly: false };
+  }
+  const textParts: string[] = [];
+  let hasNonText = false;
+  let toolResultOnly = rawContent.length > 0;
+  for (const block of rawContent) {
+    const type = normalizeContentBlockType(block);
+    hasNonText ||= type !== undefined && type !== "text";
+    toolResultOnly &&= type === "toolresult";
+    if (block && typeof block === "object" && "text" in block) {
+      const blockText = readStringValue(block.text);
+      if (blockText !== undefined) {
+        textParts.push(blockText);
       }
     }
+  }
+  return { hasNonText, textParts, toolResultOnly };
+}
+
+function buildComparableText(
+  rawText: unknown,
+  contentTextParts: string[],
+  role: string | undefined,
+): string | undefined {
+  const parts = [...contentTextParts];
+  const text = readStringValue(rawText);
+  if (text !== undefined) {
+    parts.unshift(text);
   }
   if (parts.length === 0) {
     return undefined;
@@ -87,17 +111,18 @@ function prepareComparableMessage(message: unknown, order: number): ComparableHi
   };
   const role = readStringValue(record.role);
   const rawContent = record.content;
+  const content = summarizeContent(rawContent);
   const meta = readOpenClawMeta(message);
   return {
     message,
     order,
     externalIdentityKey: resolveImportedExternalIdentityKey(meta),
     role,
-    text: buildComparableText(record.text, rawContent, role),
+    text: buildComparableText(record.text, content.textParts, role),
     timestamp: asFiniteNumber(record.timestamp),
     isCliAggregate: isPersistedCliAggregate(record.api, record.idempotencyKey),
-    hasNonTextContent: hasNonTextContentBlock(rawContent),
-    isToolResultOnly: isToolResultOnlyContent(role, rawContent),
+    hasNonTextContent: content.hasNonText,
+    isToolResultOnly: role === "user" && content.toolResultOnly,
     provider: normalizeOptionalString(record.provider),
     importedFrom: normalizeOptionalString(meta?.importedFrom),
   };
@@ -196,108 +221,38 @@ function isPersistedCliAggregate(rawApi: unknown, rawIdempotencyKey: unknown): b
   );
 }
 
-function normalizeContentBlockType(block: unknown): string | undefined {
-  if (!block || typeof block !== "object") {
-    return undefined;
-  }
-  const normalized = readStringValue((block as { type?: unknown }).type)?.toLowerCase();
-  return normalized ? normalized.replace(/_/g, "") : undefined;
-}
-
-function hasNonTextContentBlock(rawContent: unknown): boolean {
-  if (!Array.isArray(rawContent)) {
-    return false;
-  }
-  return rawContent.some((block) => {
-    const type = normalizeContentBlockType(block);
-    return type !== undefined && type !== "text";
-  });
-}
-
-function isToolResultOnlyContent(role: string | undefined, rawContent: unknown): boolean {
-  if (role !== "user" || !Array.isArray(rawContent) || rawContent.length === 0) {
-    return false;
-  }
-  return rawContent.every((block) => normalizeContentBlockType(block) === "toolresult");
-}
-
-type ImportedAssistantTurn = {
-  claimed: boolean;
-  timestamps: number[];
-  // Positions this turn owns in its sorted slot array, filled once the array is
-  // final. Claiming retires exactly these, so the cost is the turn's own block
-  // count and not the number of turns that share its text.
-  positions: number[];
-};
-
-// One timestamp of one turn. A turn spans several blocks, so it owns one slot
-// per block and any of them can be the nearest to a given aggregate.
-type TurnSlot = {
-  timestamp: number;
-  turn: ImportedAssistantTurn;
-};
-
-/**
- * The candidates for one aggregate text from one provider, ordered by
- * timestamp, with the claimed ones skipped in near-constant time.
- *
- * Keying by text alone is not enough to bound the match. A session that repeats
- * one short reply files every one of those turns under the same key, so picking
- * the nearest unclaimed candidate by scanning the bucket costs one pass per
- * aggregate and the merge becomes quadratic in the length of the history.
- * Sorting the slots lets a binary search land next to the aggregate, and the
- * two skip lists below jump straight over runs of already-claimed turns, so
- * each aggregate touches a handful of slots regardless of how many share its
- * text.
- */
-type CandidateSlots = {
-  slots: TurnSlot[];
-  // Disjoint-set forests over slot positions. `nextLive[i]` leads to the first
-  // live slot at or after `i` (`slots.length` when there is none) and
-  // `prevLive[i + 1]` to the first live slot at or before `i` (`0` when there
-  // is none). Claiming a slot points it at its neighbour; find() compresses the
-  // chain, so repeated skips stay near-constant.
-  nextLive: number[];
-  prevLive: number[];
-};
-
-// Keyed by the text a covering aggregate carries, then by the provider that
-// imported it, so provider mismatches are structural instead of a filter every
-// aggregate re-runs over the whole bucket.
-type ImportedTurnIndex = Map<string, Map<string, CandidateSlots>>;
-
-function findLive(forest: number[], start: number): number {
-  // Every position is seeded with itself, so a link always lands inside the
-  // array and the reads below can only miss if the caller passes an out-of-range
-  // start — which the two accessors clamp before calling.
-  let root = start;
-  let link = forest[root];
-  while (link !== undefined && link !== root) {
-    root = link;
-    link = forest[root];
-  }
-  let node = start;
-  let parent = forest[node];
-  while (parent !== undefined && parent !== root) {
-    forest[node] = root;
-    node = parent;
-    parent = forest[node];
-  }
-  return root;
-}
-
-/** Retires a slot from both skip lists so later searches jump over it. */
-function retireSlot(candidates: CandidateSlots, position: number): void {
-  candidates.nextLive[position] = position + 1;
-  candidates.prevLive[position + 1] = position;
-}
-
 type PartialAssistantTurn = {
   fragments: string[];
   hasNonTextContent: boolean;
   importedFrom?: string;
-  timestamps: number[];
+  terminalTimestamp?: number;
 };
+
+type AggregateCandidate = {
+  entry: ComparableHistoryMessage;
+  timestamp: number;
+};
+
+type TurnGroup = {
+  aggregateCandidates: AggregateCandidate[];
+  terminalTimestamps: number[];
+};
+
+type ImportedTurnIndex = Map<string, Map<string, TurnGroup>>;
+
+function resolveTurnGroup(index: ImportedTurnIndex, text: string, provider: string): TurnGroup {
+  let byProvider = index.get(text);
+  if (!byProvider) {
+    byProvider = new Map();
+    index.set(text, byProvider);
+  }
+  let group = byProvider.get(provider);
+  if (!group) {
+    group = { aggregateCandidates: [], terminalTimestamps: [] };
+    byProvider.set(provider, group);
+  }
+  return group;
+}
 
 /**
  * Indexes the imported assistant turns by the aggregate text that would cover
@@ -306,9 +261,7 @@ type PartialAssistantTurn = {
 function indexImportedAssistantTurns(
   importedEntries: ComparableHistoryMessage[],
 ): ImportedTurnIndex {
-  // Collected unsorted first; each group is sorted and given its skip lists
-  // once the whole import has been walked.
-  const collected = new Map<string, Map<string, TurnSlot[]>>();
+  const index: ImportedTurnIndex = new Map();
   let current: PartialAssistantTurn | undefined;
   const closeTurn = (): void => {
     const turn = current;
@@ -321,41 +274,29 @@ function indexImportedAssistantTurns(
     // dedupe window, no provider to match, or — for a lone text-only fragment —
     // an exact-equality case the per-message dedupe already resolves by
     // keeping the local copy.
-    if (turn.timestamps.length === 0 || turn.importedFrom === undefined) {
+    if (turn.terminalTimestamp === undefined || turn.importedFrom === undefined) {
       return;
     }
     if (turn.fragments.length < 2 && !turn.hasNonTextContent) {
       return;
     }
-    const aggregateText = turn.fragments.join(" ");
-    const covering: ImportedAssistantTurn = {
-      claimed: false,
-      timestamps: turn.timestamps,
-      positions: [],
-    };
-    let byProvider = collected.get(aggregateText);
-    if (byProvider === undefined) {
-      byProvider = new Map();
-      collected.set(aggregateText, byProvider);
-    }
-    const slots = byProvider.get(turn.importedFrom);
-    const owned = turn.timestamps.map((timestamp) => ({ timestamp, turn: covering }));
-    if (slots) {
-      slots.push(...owned);
-    } else {
-      byProvider.set(turn.importedFrom, owned);
-    }
+    resolveTurnGroup(index, turn.fragments.join(" "), turn.importedFrom).terminalTimestamps.push(
+      turn.terminalTimestamp,
+    );
   };
   for (const entry of importedEntries) {
     if (entry.role === "assistant") {
-      current ??= { fragments: [], hasNonTextContent: false, timestamps: [] };
+      current ??= { fragments: [], hasNonTextContent: false };
       if (entry.text !== undefined) {
         current.fragments.push(entry.text);
       }
       current.hasNonTextContent ||= entry.hasNonTextContent === true;
       current.importedFrom ??= entry.importedFrom;
-      if (entry.timestamp !== undefined) {
-        current.timestamps.push(entry.timestamp);
+      if (
+        entry.timestamp !== undefined &&
+        (current.terminalTimestamp === undefined || entry.timestamp > current.terminalTimestamp)
+      ) {
+        current.terminalTimestamp = entry.timestamp;
       }
       continue;
     }
@@ -368,129 +309,60 @@ function indexImportedAssistantTurns(
     closeTurn();
   }
   closeTurn();
-
-  const index: ImportedTurnIndex = new Map();
-  for (const [aggregateText, byProvider] of collected) {
-    const finalized = new Map<string, CandidateSlots>();
-    for (const [provider, slots] of byProvider) {
-      slots.sort((left, right) => left.timestamp - right.timestamp);
-      for (const [position, slot] of slots.entries()) {
-        slot.turn.positions.push(position);
-      }
-      finalized.set(provider, {
-        slots,
-        nextLive: Array.from({ length: slots.length + 1 }, (_unused, position) => position),
-        prevLive: Array.from({ length: slots.length + 1 }, (_unused, position) => position),
-      });
-    }
-    index.set(aggregateText, finalized);
-  }
   return index;
 }
 
-/** First live slot at or after `from`, or undefined past the end. */
-function liveAtOrAfter(candidates: CandidateSlots, from: number): number | undefined {
-  const position = findLive(candidates.nextLive, Math.max(from, 0));
-  return position < candidates.slots.length ? position : undefined;
-}
-
-/** First live slot at or before `from`, or undefined before the start. */
-function liveAtOrBefore(candidates: CandidateSlots, from: number): number | undefined {
-  if (from < 0) {
-    return undefined;
-  }
-  const position = findLive(candidates.prevLive, Math.min(from, candidates.slots.length - 1) + 1);
-  return position > 0 ? position - 1 : undefined;
-}
-
-/** Index of the first slot whose timestamp is >= `timestamp`. */
-function lowerBound(slots: TurnSlot[], timestamp: number): number {
-  let low = 0;
-  let high = slots.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (slots[middle]!.timestamp < timestamp) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  return low;
-}
-
-/** Retires every slot the claimed turn owns, so no later aggregate weighs it. */
-function retireClaimedTurn(candidates: CandidateSlots, turn: ImportedAssistantTurn): void {
-  turn.claimed = true;
-  for (const position of turn.positions) {
-    retireSlot(candidates, position);
-  }
-}
-
-/** Distance from the aggregate to its nearest block, or undefined when out of window. */
-function turnDistanceToAggregate(
-  turn: ImportedAssistantTurn,
-  timestamp: number,
-): number | undefined {
-  let nearest: number | undefined;
-  for (const value of turn.timestamps) {
-    const distance = Math.abs(value - timestamp);
-    if (nearest === undefined || distance < nearest) {
-      nearest = distance;
-    }
-  }
-  return nearest !== undefined && nearest <= DEDUPE_TIMESTAMP_WINDOW_MS ? nearest : undefined;
-}
-
-/**
- * Claims the nearest-in-time imported turn that still covers this aggregate.
- * Turns are consumed one-to-one: two genuinely repeated replies with identical
- * text are only suppressed when the import actually holds both of them.
- */
-function claimCoveringTurn(index: ImportedTurnIndex, entry: ComparableHistoryMessage): boolean {
-  if (entry.role !== "assistant" || entry.isCliAggregate !== true) {
-    return false;
-  }
-  // A local row that already carries an external identity came from a previous
-  // import, so it is not a locally persisted aggregate.
-  if (entry.externalIdentityKey !== undefined) {
-    return false;
-  }
-  const { provider, text, timestamp } = entry;
-  if (provider === undefined || text === undefined || timestamp === undefined) {
-    return false;
-  }
-  const candidates = index.get(text)?.get(provider);
-  if (candidates === undefined) {
-    return false;
-  }
-  // The nearest live slot to the aggregate belongs to the nearest live turn, so
-  // the two slots flanking the aggregate are the only candidates worth weighing.
-  const pivot = lowerBound(candidates.slots, timestamp);
-  const after = liveAtOrAfter(candidates, pivot);
-  const before = liveAtOrBefore(candidates, pivot - 1);
-  let claim: ImportedAssistantTurn | undefined;
-  let claimDistance: number | undefined;
-  // `before` first, so an aggregate equidistant from two turns claims the
-  // earlier one, as the chronological scan this replaced did.
-  for (const position of [before, after]) {
-    if (position === undefined) {
+function findCoveredAggregates(
+  localEntries: ComparableHistoryMessage[],
+  importedEntries: ComparableHistoryMessage[],
+): Set<ComparableHistoryMessage> {
+  const groups = indexImportedAssistantTurns(importedEntries);
+  for (const entry of localEntries) {
+    if (
+      entry.role !== "assistant" ||
+      entry.isCliAggregate !== true ||
+      entry.externalIdentityKey !== undefined ||
+      entry.provider === undefined ||
+      entry.text === undefined ||
+      entry.timestamp === undefined
+    ) {
       continue;
     }
-    const turn = candidates.slots[position]!.turn;
-    const distance = turnDistanceToAggregate(turn, timestamp);
-    if (distance === undefined) {
-      continue;
-    }
-    if (claimDistance === undefined || distance < claimDistance) {
-      claim = turn;
-      claimDistance = distance;
+    groups.get(entry.text)?.get(entry.provider)?.aggregateCandidates.push({
+      entry,
+      timestamp: entry.timestamp,
+    });
+  }
+
+  const covered = new Set<ComparableHistoryMessage>();
+  for (const byProvider of groups.values()) {
+    for (const group of byProvider.values()) {
+      group.terminalTimestamps.sort((left, right) => left - right);
+      group.aggregateCandidates.sort((left, right) => left.timestamp - right.timestamp);
+      let turnIndex = 0;
+      let aggregateIndex = 0;
+      while (
+        turnIndex < group.terminalTimestamps.length &&
+        aggregateIndex < group.aggregateCandidates.length
+      ) {
+        const turnTimestamp = group.terminalTimestamps[turnIndex]!;
+        const aggregate = group.aggregateCandidates[aggregateIndex]!;
+        const elapsed = aggregate.timestamp - turnTimestamp;
+        if (elapsed < 0) {
+          aggregateIndex += 1;
+          continue;
+        }
+        if (elapsed > DEDUPE_TIMESTAMP_WINDOW_MS) {
+          turnIndex += 1;
+          continue;
+        }
+        covered.add(aggregate.entry);
+        turnIndex += 1;
+        aggregateIndex += 1;
+      }
     }
   }
-  if (claim === undefined) {
-    return false;
-  }
-  retireClaimedTurn(candidates, claim);
-  return true;
+  return covered;
 }
 
 function compareHistoryMessages(a: ComparableHistoryMessage, b: ComparableHistoryMessage): number {
@@ -521,11 +393,13 @@ export function mergeImportedChatHistoryMessages(params: {
   // turn, so per-message equality can never pair them and the turn renders
   // twice (openclaw/openclaw#123792). Dropping the covered aggregate keeps the
   // native blocks, which are the copy that carries the tool calls.
-  const coveringTurns = indexImportedAssistantTurns(importedEntries);
+  // The aggregate is persisted after CLI completion. Pairing completed turns
+  // and aggregates in order preserves repeated replies without claim state.
+  const coveredAggregates = findCoveredAggregates(localEntries, importedEntries);
   const merged =
-    coveringTurns.size === 0
+    coveredAggregates.size === 0
       ? localEntries
-      : localEntries.filter((entry) => !claimCoveringTurn(coveringTurns, entry));
+      : localEntries.filter((entry) => !coveredAggregates.has(entry));
   const suppressedAggregate = merged.length !== localEntries.length;
 
   const exactExternalIdentityIndex = new Set<string>();

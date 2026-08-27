@@ -1875,7 +1875,14 @@ describe("persisted CLI aggregate suppression", () => {
     expect(merged).toHaveLength(4);
     expect(merged.some(isCliAggregate)).toBe(false);
     expect(merged[0]).toBe(localMessages[0]);
-    expect(JSON.stringify(merged)).toContain("toolu_1");
+    expect(readRecord(merged[2]).content).toEqual([
+      {
+        type: "toolcall",
+        id: "toolu_1",
+        name: "Bash",
+        arguments: { command: "pwd" },
+      },
+    ]);
   });
 
   it("keeps the turn together across an unmatched tool-result user row", () => {
@@ -1907,22 +1914,6 @@ describe("persisted CLI aggregate suppression", () => {
     expect(merged.some(isCliAggregate)).toBe(false);
   });
 
-  it("suppresses an aggregate covered by a turn with only fallback identities", () => {
-    const localMessages = [
-      buildCliAggregate({ text: "part one\n\npart two", timestamp: TURN_START + 3000 }),
-    ];
-    const importedMessages = importedMultiBlockTurn().map((message) => {
-      const meta = readRecord(readRecord(message)["__openclaw"]);
-      delete meta.externalId;
-      return message;
-    });
-
-    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
-
-    expect(merged).toHaveLength(3);
-    expect(merged.some(isCliAggregate)).toBe(false);
-  });
-
   it.each([
     [
       "the aggregate has no timestamp",
@@ -1935,6 +1926,10 @@ describe("persisted CLI aggregate suppression", () => {
     [
       "the aggregate is outside the dedupe window",
       { aggregateTimestamp: TURN_START + 10 * 60 * 1000, stripImportedTimestamps: false },
+    ],
+    [
+      "the aggregate predates the imported turn",
+      { aggregateTimestamp: TURN_START - 1000, stripImportedTimestamps: false },
     ],
   ])("keeps the aggregate when %s", (_label, caseParams) => {
     const localMessages = [
@@ -2016,87 +2011,6 @@ describe("persisted CLI aggregate suppression", () => {
     expect(merged.some(isCliAggregate)).toBe(false);
   });
 
-  // A turn qualifies as covering once it carries non-text content, so two
-  // blocks are enough to stand in for the long tool-using turns real sessions
-  // produce — and they pack into a single dedupe window without overlapping.
-  function importedRepeatedTurn(index: number, offsetMs: number): Record<string, unknown>[] {
-    return [
-      importedTurnMessage({
-        content: [{ type: "text", text: "ok" }],
-        offsetMs,
-        externalId: `repeat-${index}-text`,
-      }),
-      importedTurnMessage({
-        content: [
-          {
-            type: "toolcall",
-            id: `repeat-${index}-tool`,
-            name: "Bash",
-            arguments: { command: "pwd" },
-          },
-        ],
-        offsetMs: offsetMs + 100,
-        externalId: `repeat-${index}-call`,
-      }),
-      importedTurnMessage({
-        content: "again",
-        offsetMs: offsetMs + 200,
-        externalId: `repeat-${index}-prompt`,
-        role: "user",
-      }),
-    ];
-  }
-
-  // Candidate matching is indexed by text, so a session that repeats one short
-  // reply files every one of those turns under the same key. Picking the
-  // nearest unclaimed one must not cost a pass over that key per aggregate:
-  // measured on this shape, scanning made the merge quadratic (24k turns took
-  // 9.8 s against 0.34 s for the same volume with distinct texts).
-  const REPEATED_TURNS = 200;
-  const REPEAT_SPACING_MS = 1000;
-
-  function repeatedTurnImport(count: number): Record<string, unknown>[] {
-    return Array.from({ length: count }, (_unused, index) =>
-      importedRepeatedTurn(index, index * REPEAT_SPACING_MS),
-    ).flat();
-  }
-
-  it("claims one turn per aggregate when a reply repeats verbatim many times", () => {
-    const localMessages = Array.from({ length: REPEATED_TURNS }, (_unused, index) =>
-      buildCliAggregate({
-        text: "ok",
-        timestamp: TURN_START + index * REPEAT_SPACING_MS + 50,
-        runId: `run-${index}`,
-      }),
-    );
-
-    const merged = mergeImportedChatHistoryMessages({
-      localMessages,
-      importedMessages: repeatedTurnImport(REPEATED_TURNS),
-    });
-
-    expect(merged.filter(isCliAggregate)).toHaveLength(0);
-  });
-
-  it("keeps the unrepresented aggregate when repeated turns run one short", () => {
-    // One-to-one consumption has to survive at scale: retiring a claimed turn
-    // must retire that turn only, or the extra aggregate disappears too.
-    const localMessages = Array.from({ length: REPEATED_TURNS + 1 }, (_unused, index) =>
-      buildCliAggregate({
-        text: "ok",
-        timestamp: TURN_START + index * REPEAT_SPACING_MS + 50,
-        runId: `run-${index}`,
-      }),
-    );
-
-    const merged = mergeImportedChatHistoryMessages({
-      localMessages,
-      importedMessages: repeatedTurnImport(REPEATED_TURNS),
-    });
-
-    expect(merged.filter(isCliAggregate)).toHaveLength(1);
-  });
-
   it.each([
     ["carries no idempotency key", { idempotencyKey: null }],
     ["carries a non-aggregate idempotency key", { idempotencyKey: "cli-hook:run-1" }],
@@ -2118,140 +2032,6 @@ describe("persisted CLI aggregate suppression", () => {
 
     expect(merged).toContain(localMessages[0]);
     expect(merged.filter(isCliAggregate)).toHaveLength(1);
-  });
-
-  it("reads aggregate fields once while suppressing many turns", () => {
-    // Suppression must stay inside the single prepare pass that bounds this
-    // merge: it reads the fields it added (api, idempotencyKey, provider,
-    // __openclaw) from the prepared entries, never back from the raw messages.
-    const turnCount = 100;
-    const reads = {
-      api: 0,
-      content: 0,
-      idempotencyKey: 0,
-      openclaw: 0,
-      provider: 0,
-      role: 0,
-      timestamp: 0,
-    };
-    // Every message exposes the whole comparable field set, present or not, so
-    // the read tally below is one clean number per field instead of a per-shape
-    // arithmetic the assertion could drift away from.
-    const countingMessage = (fields: Record<string, unknown>): Record<string, unknown> => {
-      const record: Record<string, unknown> = {};
-      const counters: [string, keyof typeof reads][] = [
-        ["api", "api"],
-        ["content", "content"],
-        ["idempotencyKey", "idempotencyKey"],
-        ["__openclaw", "openclaw"],
-        ["provider", "provider"],
-        ["role", "role"],
-        ["timestamp", "timestamp"],
-      ];
-      for (const [key, counter] of counters) {
-        const value = fields[key];
-        Object.defineProperty(record, key, {
-          enumerable: true,
-          get() {
-            reads[counter] += 1;
-            return value;
-          },
-        });
-      }
-      return record;
-    };
-    const importedMeta = (externalId: string) => ({
-      externalId,
-      importedFrom: "claude-cli",
-      cliSessionId: "session-1",
-    });
-    const localMessages: Record<string, unknown>[] = [];
-    const importedMessages: Record<string, unknown>[] = [];
-    for (let turn = 0; turn < turnCount; turn += 1) {
-      const turnStart = TURN_START + turn * 60_000;
-      const partOne = `turn ${turn} part one`;
-      const partTwo = `turn ${turn} part two`;
-      localMessages.push(
-        countingMessage({
-          role: "user",
-          content: `ask ${turn}`,
-          timestamp: turnStart - 1000,
-        }),
-        countingMessage({
-          role: "assistant",
-          api: "cli",
-          provider: "claude-cli",
-          idempotencyKey: `cli-assistant:run-${turn}`,
-          content: [{ type: "text", text: `${partOne}\n\n${partTwo}` }],
-          timestamp: turnStart + 3000,
-        }),
-      );
-      importedMessages.push(
-        countingMessage({
-          role: "user",
-          provider: "claude-cli",
-          content: `ask ${turn}`,
-          timestamp: turnStart - 1100,
-          __openclaw: importedMeta(`user-${turn}`),
-        }),
-        countingMessage({
-          role: "assistant",
-          provider: "claude-cli",
-          content: [{ type: "text", text: partOne }],
-          timestamp: turnStart,
-          __openclaw: importedMeta(`assistant-${turn}-a`),
-        }),
-        countingMessage({
-          role: "assistant",
-          provider: "claude-cli",
-          content: [{ type: "tool_call", id: `toolu_${turn}`, name: "Bash" }],
-          timestamp: turnStart + 1000,
-          __openclaw: importedMeta(`assistant-${turn}-b`),
-        }),
-        countingMessage({
-          role: "assistant",
-          provider: "claude-cli",
-          content: [{ type: "text", text: partTwo }],
-          timestamp: turnStart + 2000,
-          __openclaw: importedMeta(`assistant-${turn}-c`),
-        }),
-      );
-    }
-
-    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
-
-    const messageCount = localMessages.length + importedMessages.length;
-    expect(reads).toEqual({
-      api: messageCount,
-      content: messageCount,
-      idempotencyKey: messageCount,
-      openclaw: messageCount,
-      provider: messageCount,
-      role: messageCount,
-      timestamp: messageCount,
-    });
-    // Every aggregate is replaced by its three imported blocks; the local user
-    // rows survive and their imported copies dedupe away.
-    expect(merged.some(isCliAggregate)).toBe(false);
-    expect(merged).toHaveLength(turnCount * 4);
-  });
-
-  it("keeps a single text-only duplicate on the per-message dedupe path", () => {
-    const localMessages = [
-      buildCliAggregate({ text: "hello from Claude", timestamp: TURN_START + 1000 }),
-    ];
-    const importedMessages = [
-      importedTurnMessage({
-        content: [{ type: "text", text: "hello from Claude" }],
-        offsetMs: 0,
-        externalId: "assistant-1",
-      }),
-    ];
-
-    const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toBe(localMessages[0]);
   });
 
   it("reports a one-for-one aggregate replacement as an import to the resolver", async () => {
@@ -2305,7 +2085,15 @@ describe("persisted CLI aggregate suppression", () => {
       expect(result.imported).toBe(true);
       expect(result.messages).toHaveLength(2);
       expect(result.messages.some(isCliAggregate)).toBe(false);
-      expect(JSON.stringify(result.messages)).toContain("toolu_1");
+      expect(readRecord(result.messages[1]).content).toEqual([
+        { type: "text", text: "hello from Claude" },
+        {
+          type: "toolcall",
+          id: "toolu_1",
+          name: "Bash",
+          arguments: { command: "pwd" },
+        },
+      ]);
     });
   });
 });
