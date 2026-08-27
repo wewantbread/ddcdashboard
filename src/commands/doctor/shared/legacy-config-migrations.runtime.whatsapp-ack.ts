@@ -111,6 +111,21 @@ export function migrateWhatsAppAckSettings(raw: Record<string, unknown>, changes
     const describeEffectiveEmoji = routeDependent
       ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${writtenEmoji}")`
       : `effective legacy emoji "${writtenEmoji}"`;
+    // Before the messages.* consolidation, the legacy resolver returned
+    // ack.emoji.trim() whenever the key was present at all, so an exact "" (or
+    // whitespace) emoji suppressed the ack outright — no identity fallback
+    // (git history: extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts,
+    // PR #111527, "keeps an explicit empty emoji disabled"). messages.ackReaction
+    // can't reproduce a WhatsApp-only disable: every other channel's
+    // resolveAckReaction returns it trimmed with no further fallback, so writing
+    // "" here would silently mute acks on channels the user never touched. Apply
+    // the same concrete fallback as any other blank value, but call out the lost
+    // disable intent explicitly instead of resolving it silently.
+    if (rawEmoji === "") {
+      changes.push(
+        `Note: ${path}.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "${writtenEmoji}" was applied instead. channels.whatsapp.reactionLevel: "off" suppresses WhatsApp reactions again, but also disables agent-initiated reactions; there is no exact ack-only equivalent.`,
+      );
+    }
     if (messages.ackReaction === undefined) {
       messages.ackReaction = writtenEmoji;
       applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);

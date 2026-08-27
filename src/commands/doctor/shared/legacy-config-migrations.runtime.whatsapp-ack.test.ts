@@ -248,13 +248,16 @@ describe("WhatsApp legacy ackReaction migration", () => {
     );
   });
 
-  it("never writes an exact empty-string legacy emoji verbatim (#119501)", () => {
-    // codex review: an exact "" legacy emoji is not falsy for the per-channel
-    // object it lives in (the object itself is truthy), so WhatsApp still
-    // falls through normally there — but copying "" verbatim into the shared
-    // messages.ackReaction would convert "meant to fall through" into
-    // "explicitly disabled" once read there. Must resolve to a concrete
-    // fallback instead, exactly like an absent or whitespace-only legacy value.
+  it("never writes an exact empty-string legacy emoji verbatim, but flags the lost disable intent (#119501)", () => {
+    // Historically (pre-consolidation), the legacy per-channel resolver returned
+    // ack.emoji.trim() whenever the key was present at all, so an exact "" emoji
+    // suppressed the ack outright with no identity fallback (git history:
+    // extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts, PR #111527,
+    // "keeps an explicit empty emoji disabled"). But messages.ackReaction is
+    // shared by every channel's resolveAckReaction, which returns it trimmed
+    // with no further fallback — writing "" there would silently mute acks on
+    // channels the user never configured. A concrete fallback is applied
+    // instead, with an explicit note calling out the lost disable intent.
     const result = applyAll({
       messages: { ackReactionScope: "group-mentions" },
       agents: { list: [{ default: true, id: "main", identity: { emoji: "🤖" } }] },
@@ -266,6 +269,9 @@ describe("WhatsApp legacy ackReaction migration", () => {
     expect(result.raw).toHaveProperty("messages.ackReaction", "🤖");
     expect(result.changes).toContain(
       'Removed channels.whatsapp.ackReaction; applied effective legacy emoji "🤖" to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "group-all".',
+    );
+    expect(result.changes).toContain(
+      'Note: channels.whatsapp.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "🤖" was applied instead. channels.whatsapp.reactionLevel: "off" suppresses WhatsApp reactions again, but also disables agent-initiated reactions; there is no exact ack-only equivalent.',
     );
   });
 
