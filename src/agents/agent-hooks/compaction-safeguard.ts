@@ -61,10 +61,13 @@ import { resolveCompactionInstructions } from "./compaction-instructions.js";
 import {
   appendSummarySection,
   auditSummaryQuality,
+  boundActiveAsk,
   buildCompactionStructureInstructions,
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
+  ensureActiveAskInStructuredSummary,
   extractOpaqueIdentifiers,
+  wrapActiveAskForInstruction,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
 import {
@@ -77,8 +80,10 @@ const log = createSubsystemLogger("compaction-safeguard");
 // Track session managers that have already logged the missing-model warning to avoid log spam.
 const missedModelWarningSessions = new WeakSet<object>();
 const TURN_PREFIX_INSTRUCTIONS =
-  "This summary covers the prefix of a split turn. Focus on the original request," +
-  " early progress, and any details needed to understand the retained suffix.";
+  "This summary covers the prefix of a split turn. Focus on the latest non-superseded" +
+  " user request as the active work item, early progress, and any details needed to" +
+  " understand the retained suffix. Earlier completed or abandoned tasks are historical" +
+  " context only and must not replace the active request.";
 const MAX_TOOL_FAILURES = 8;
 const MAX_TOOL_FAILURE_CHARS = 240;
 const CONTEXT_TRUNCATED_MARKER = "\n\n[Earlier compaction context truncated to fit budget]\n\n";
@@ -92,8 +97,6 @@ const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
 const MAX_RECENT_TURNS_PRESERVE = 12;
 const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const MAX_RECENT_TURN_TEXT_CHARS = 600;
-const MAX_REQUIRED_ASK_CONTEXT_CHARS = 2_000;
-const REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER = "\n[... split-turn ask context truncated ...]\n";
 const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
   "Previous compaction summary to re-distill with the current conversation. " +
   "Prune stale, duplicate, or superseded details instead of preserving it verbatim.";
@@ -809,44 +812,69 @@ function formatGeneratedSplitTurnSection(summary: string, onTruncated?: () => vo
   return `${heading}${cappedSummary}`;
 }
 
-function formatRequiredAskContext(summary: string): string {
-  const originalRequestHeading = "## Original Request";
-  const earlyProgressHeading = "## Early Progress";
-  const originalRequestStart = summary.indexOf(originalRequestHeading);
-  const originalRequestEnd =
-    originalRequestStart >= 0
-      ? summary.indexOf(earlyProgressHeading, originalRequestStart + originalRequestHeading.length)
-      : -1;
-  const source =
-    originalRequestStart >= 0
-      ? summary
-          .slice(
-            originalRequestStart + originalRequestHeading.length,
-            originalRequestEnd >= 0 ? originalRequestEnd : undefined,
-          )
-          .trim()
-      : summary.trim();
-  if (source.length <= MAX_REQUIRED_ASK_CONTEXT_CHARS) {
-    return source;
+/** Whether an assistant message is a terminal text reply (no pending tool call
+ * and not an overflow/error interruption).
+ *
+ * A mid-turn overflow leaves an error/overflow candidate (stopReason "error"
+ * or "length") or a tool-call sequence as the tail — never a terminal
+ * assistant text. A completed session ends with a terminal assistant reply
+ * (stopReason "stop" or similar). This distinguishes active (unresolved) work
+ * from completed work at the extractLatestUserAsk boundary (#123668 P1:
+ * completed-session regression). An overflow candidate may carry partial text
+ * content — it must not be mistaken for a completed reply.
+ */
+function isTerminalAssistantText(message: AgentMessage | undefined): boolean {
+  if (!message || message.role !== "assistant") {
+    return false;
   }
-  const contentBudget =
-    MAX_REQUIRED_ASK_CONTEXT_CHARS - REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER.length;
-  const headBudget = Math.floor(contentBudget / 2);
-  const tailBudget = contentBudget - headBudget;
-  return `${truncateUtf16Safe(source, headBudget)}${REQUIRED_ASK_CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(source, -tailBudget)}`;
+  // SAFETY: stopReason is an optional dynamic field on assistant messages, read as unknown then narrowed by equality checks.
+  const stopReason = (message as { stopReason?: unknown }).stopReason;
+  // Exclude non-terminal stop reasons: "error"/"length" (overflow candidate
+  // with partial text) and "aborted" (signal cancellation with partial text).
+  // These are owned non-success outcomes (packages/llm-core/src/types.ts:313
+  // StopReason; packages/ai/src/utils/provider-error.ts:109) grouped with
+  // error in transcript handling (packages/ai/src/transcript-transform.ts:164).
+  // Without this exclusion, an interrupted response would be misclassified as
+  // terminal, extractLatestUserAsk would return null, and the pending-ask
+  // audit would be skipped, reviving the superseded task (#123668 P1).
+  if (stopReason === "error" || stopReason === "length" || stopReason === "aborted") {
+    return false;
+  }
+  if (!extractMessageText(message).trim()) {
+    return false;
+  }
+  // A terminal assistant reply has no pending tool calls. Reuse the canonical
+  // extractToolCallsFromAssistant helper instead of a local block-type set so
+  // the definition stays aligned with main's tool-call extraction contract.
+  return extractToolCallsFromAssistant(message).length === 0;
 }
 
 function extractLatestUserAsk(messages: AgentMessage[]): string | null {
-  for (const message of messages.toReversed()) {
-    if (message.role !== "user") {
-      continue;
-    }
-    const text = extractMessageText(message);
-    if (text) {
-      return text;
+  let latestUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const candidate = messages[i];
+    if (candidate && candidate.role === "user" && extractMessageText(candidate)) {
+      latestUserIndex = i;
+      break;
     }
   }
-  return null;
+  if (latestUserIndex < 0) {
+    return null;
+  }
+  // The latest user request is only "active" (unresolved) when no terminal
+  // assistant reply follows it in the transcript. A mid-turn overflow leaves
+  // an error/overflow candidate or a tool-call sequence as the tail — never a
+  // terminal assistant text — so the ask stays active and the audit
+  // foregrounds it (#123668). A completed session ends with a terminal
+  // assistant reply; Pending user asks: None. is then correct and must not be
+  // rejected or revived (#123668 P1: completed-session regression).
+  for (let i = latestUserIndex + 1; i < messages.length; i += 1) {
+    if (isTerminalAssistantText(messages[i])) {
+      return null;
+    }
+  }
+  const latest = messages[latestUserIndex];
+  return latest ? extractMessageText(latest) : null;
 }
 
 /**
@@ -1095,6 +1123,8 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               },
               producerLosses,
             );
+            // Provider output keeps provider-owned validation; the built-in
+            // quality guard audits built-in LLM summaries only (#123668).
             return compactionResult(finalized.summary);
           }
           log.warn(
@@ -1256,12 +1286,29 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       // incorporates context from pruned messages instead of losing it entirely.
       const effectivePreviousSummary = droppedSummary ?? preparation.previousSummary;
 
-      let currentInstructions = structuredInstructions;
+      // When recent turns are preserved, the latest user ask is removed from
+      // messagesToSummarize and survives only in the preserved-turns suffix.
+      // The quality audit requires it in ## Pending user asks, but the LLM
+      // cannot produce it without seeing the ask. Wrap the active ask as
+      // bounded untrusted prompt data under a trusted instruction so the
+      // producer can satisfy the audit without granting the user-derived text
+      // instruction authority (#123668). The canonical untrusted-data wrapper
+      // sanitizes control characters, escapes tag delimiters, and caps length;
+      // the trusted outer instruction tells the model to use the data in the
+      // pending-asks section.
+      const activeAskBlock =
+        latestUserAsk && qualityGuardEnabled
+          ? wrapActiveAskForInstruction(boundActiveAsk(latestUserAsk))
+          : "";
+      const baseInstructions = activeAskBlock
+        ? `${structuredInstructions}\n\n${activeAskBlock}`
+        : structuredInstructions;
+
+      let currentInstructions = baseInstructions;
       const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
 
       for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
         let splitTurnSectionLocal = "";
-        let splitTurnAskContextLocal = "";
         let historySummary = "";
         const producerLosses = new Set<CompactionLoss>();
         try {
@@ -1274,7 +1321,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   customInstructions: currentInstructions,
                   previousSummary: effectivePreviousSummary,
                 })
-              : buildStructuredFallbackSummary(effectivePreviousSummary);
+              : buildStructuredFallbackSummary(
+                  effectivePreviousSummary,
+                  latestUserAsk ? boundActiveAsk(latestUserAsk) : undefined,
+                );
 
           if (preparation.isSplitTurn && turnPrefixMessages.length > 0) {
             const prefixSummary = await summarizeViaLLM({
@@ -1287,7 +1337,18 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             splitTurnSectionLocal = formatGeneratedSplitTurnSection(prefixSummary, () => {
               producerLosses.add("split-turn-tail");
             });
-            splitTurnAskContextLocal = formatRequiredAskContext(prefixSummary);
+            // The split-turn suffix becomes part of the emitted checkpoint
+            // and may contain its own ## Pending user asks section. Repair
+            // the leading pending item there too so a stale task in the
+            // suffix cannot foreground superseded work after the body was
+            // already repaired (#123668).
+            if (latestUserAsk) {
+              const boundedAsk = boundActiveAsk(latestUserAsk);
+              splitTurnSectionLocal = ensureActiveAskInStructuredSummary(
+                splitTurnSectionLocal,
+                boundedAsk,
+              );
+            }
           }
         } catch (attemptError) {
           if (signal?.aborted) {
@@ -1325,9 +1386,20 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
             ? {
                 auditSummary: unbudgetedSummary,
                 identifiers,
-                latestAsk: latestUserAsk,
-                requiredAskContext:
-                  splitTurnAskContextLocal || formatRequiredAskContext(latestUserAsk ?? ""),
+                // The LLM only sees the bounded active-ask fact (capped at
+                // MAX_ACTIVE_ASK_CHARS). The retention plan and the audit must
+                // use the same bounded representation, otherwise a long ask
+                // whose meaningful terms fall after the cap could pass the
+                // retention overlap check but fail the audit, cancelling
+                // compaction the summarizer could never satisfy (#123668).
+                latestAsk: latestUserAsk ? boundActiveAsk(latestUserAsk) : null,
+                // The leading pending item must be the bounded active ask —
+                // the same value the audit checks against latestAsk. Split-
+                // turn prefix context is preserved separately via the
+                // generatedSplitTurnSection; it must not replace the active
+                // ask as the leading item, or the audit rejects the
+                // prefix-derived first line and cancels compaction (#123668).
+                requiredAskContext: latestUserAsk ? boundActiveAsk(latestUserAsk) : "",
                 identifierPolicy,
               }
             : undefined,
@@ -1354,7 +1426,11 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           summary: finalized.summary,
           structuralSummary: finalized.structuralSummary,
           identifiers,
-          latestAsk: latestUserAsk,
+          // The LLM only sees the bounded active-ask fact (wrapActiveAskForInstruction
+          // caps at MAX_ACTIVE_ASK_CHARS). Audit the same bounded representation so
+          // a long ask whose meaningful terms fall after the cap cannot cancel
+          // compaction that the summarizer could never satisfy (#123668).
+          latestAsk: latestUserAsk ? boundActiveAsk(latestUserAsk) : null,
           identifierPolicy,
         });
         if (quality.ok) {
@@ -1385,8 +1461,8 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           `Previous summary failed quality checks (${reasons}).`,
         );
         currentInstructions = qualityFeedbackReasons
-          ? `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
-          : `${structuredInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}`;
+          ? `${baseInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}\n\n${qualityFeedbackReasons}`
+          : `${baseInstructions}\n\n${qualityFeedbackInstruction}\n${budgetInstruction}`;
       }
 
       throw new Error("Compaction safeguard exhausted summary attempts without a decision.");
