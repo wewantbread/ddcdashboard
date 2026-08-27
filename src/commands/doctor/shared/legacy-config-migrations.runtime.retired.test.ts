@@ -995,6 +995,23 @@ describe("retired runtime config migrations", () => {
     );
   });
 
+  it("treats an existing 'none' scope as equivalent to a legacy 'off' scope (#119501)", () => {
+    // codex review: shouldAckReaction (src/channels/ack-reactions.ts:34) treats
+    // "off" and "none" identically — both disable acks — so this must not be
+    // reported as the canonical scope shadowing legacy intent.
+    const result = applyAll({
+      messages: { ackReactionScope: "none" },
+      channels: {
+        whatsapp: { ackReaction: { emoji: "✅", direct: false, group: "never" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReactionScope", "none");
+    expect(result.changes).toContain(
+      "Moved translatable channels.whatsapp.ackReaction settings to messages ack settings.",
+    );
+  });
+
   it("moves aliases and strips dead keys", () => {
     const result = applyAll({
       tui: { footer: { showRemoteHost: true } },

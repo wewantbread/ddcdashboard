@@ -448,12 +448,19 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
               : !direct && group === "never"
                 ? "off"
                 : undefined;
+    // shouldAckReaction (src/channels/ack-reactions.ts) treats "off" and "none"
+    // identically — both disable acks — so they're not a real conflict here.
+    const normalizeDisabledScope = (value: unknown): unknown =>
+      value === "off" || value === "none" ? "off" : value;
     if (messages.ackReactionScope === undefined) {
       if (scope) {
         messages.ackReactionScope = scope;
         applied.push(`applied legacy scope "${scope}" to messages.ackReactionScope`);
       }
-    } else if (scope !== undefined && scope !== messages.ackReactionScope) {
+    } else if (
+      scope !== undefined &&
+      normalizeDisabledScope(scope) !== normalizeDisabledScope(messages.ackReactionScope)
+    ) {
       kept.push(`kept existing messages.ackReactionScope over legacy scope "${scope}"`);
     }
     delete entry.ackReaction;
