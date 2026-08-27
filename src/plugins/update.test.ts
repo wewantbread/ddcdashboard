@@ -11,6 +11,7 @@ import {
   computeDeclaredSurfaceHash,
   resolvePluginArtifactDeclaredSurface,
 } from "./capability-consent.js";
+import { resolvePluginInstallOwnerMigrations } from "./install-transaction.js";
 import { makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 
 const APP_ROOT = "/app";
@@ -4861,6 +4862,185 @@ describe("updateNpmInstalledPlugins", () => {
       expect(result.config.plugins?.installs?.["fish-audio"]).toBeUndefined();
     },
   );
+
+  it("rewrites @openclaw/qqbot under the canonical plugin id", async () => {
+    installPluginFromNpmSpecMock.mockResolvedValue(
+      createSuccessfulNpmUpdateResult({
+        pluginId: "openclaw-qqbot",
+        targetDir: "/tmp/openclaw-qqbot",
+        version: "2.0.1",
+        npmResolution: {
+          name: "@tencent-connect/openclaw-qqbot",
+          version: "2.0.1",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+        },
+      }),
+    );
+
+    const result = await updatePlugin(
+      createNpmInstallConfig({
+        pluginId: "openclaw-qqbot",
+        spec: "@openclaw/qqbot@1.9.0",
+        installPath: "/tmp/openclaw-qqbot",
+        resolvedName: "@openclaw/qqbot",
+        resolvedSpec: "@openclaw/qqbot@1.9.0",
+        resolvedVersion: "1.9.0",
+      }),
+      "openclaw-qqbot",
+    );
+
+    expectNpmUpdateCall({
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      expectedPluginId: "openclaw-qqbot",
+    });
+    expect(npmInstallCall()?.expectedReplacementPluginId).toBeUndefined();
+    expect(npmInstallCall()?.trustedSourceLinkedOfficialInstall).toBe(true);
+    expectRecordFields(result.config.plugins?.installs?.["openclaw-qqbot"], {
+      source: "npm",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      installPath: "/tmp/openclaw-qqbot",
+      version: "2.0.1",
+    });
+  });
+
+  it("migrates a qqbot install key to openclaw-qqbot while rewriting the package", async () => {
+    installPluginFromNpmSpecMock.mockResolvedValue(
+      createSuccessfulNpmUpdateResult({
+        pluginId: "openclaw-qqbot",
+        targetDir: "/tmp/openclaw-qqbot",
+        version: "2.0.1",
+        npmResolution: {
+          name: "@tencent-connect/openclaw-qqbot",
+          version: "2.0.1",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+        },
+      }),
+    );
+
+    const result = await updatePlugin(
+      createNpmInstallConfig({
+        pluginId: "qqbot",
+        spec: "@openclaw/qqbot@1.9.0",
+        installPath: "/tmp/openclaw-qqbot",
+        resolvedName: "@openclaw/qqbot",
+        resolvedSpec: "@openclaw/qqbot@1.9.0",
+        resolvedVersion: "1.9.0",
+      }),
+      "qqbot",
+    );
+
+    expectNpmUpdateCall({
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      expectedPluginId: "qqbot",
+    });
+    expect(npmInstallCall()?.expectedReplacementPluginId).toBe("openclaw-qqbot");
+    expect(npmInstallCall()?.trustedSourceLinkedOfficialInstall).toBe(true);
+    expect(result.config.plugins?.installs?.qqbot).toBeUndefined();
+    expectRecordFields(result.config.plugins?.installs?.["openclaw-qqbot"], {
+      source: "npm",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      installPath: "/tmp/openclaw-qqbot",
+      version: "2.0.1",
+    });
+  });
+
+  it("drops a duplicate qqbot install when openclaw-qqbot already exists", async () => {
+    installPluginFromNpmSpecMock.mockResolvedValue(
+      createSuccessfulNpmUpdateResult({
+        pluginId: "openclaw-qqbot",
+        targetDir: "/tmp/openclaw-qqbot-canonical",
+        version: "2.0.1",
+        npmResolution: {
+          name: "@tencent-connect/openclaw-qqbot",
+          version: "2.0.1",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+        },
+      }),
+    );
+
+    const result = await updatePlugin(
+      {
+        plugins: {
+          installs: {
+            qqbot: {
+              source: "npm",
+              spec: "@openclaw/qqbot@1.9.0",
+              resolvedName: "@openclaw/qqbot",
+              resolvedSpec: "@openclaw/qqbot@1.9.0",
+              installPath: "/tmp/openclaw-qqbot-legacy",
+            },
+            "openclaw-qqbot": {
+              source: "npm",
+              spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+              resolvedName: "@tencent-connect/openclaw-qqbot",
+              resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+              installPath: "/tmp/openclaw-qqbot-canonical",
+            },
+          },
+        },
+      },
+      "qqbot",
+    );
+
+    expect(result.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pluginId: "qqbot",
+          status: "skipped",
+          message:
+            'Removed duplicate "qqbot" install record; "openclaw-qqbot" is the canonical plugin id.',
+        }),
+      ]),
+    );
+    expect(result.config.plugins?.installs?.qqbot).toBeUndefined();
+    expectRecordFields(result.config.plugins?.installs?.["openclaw-qqbot"], {
+      source: "npm",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      installPath: "/tmp/openclaw-qqbot-canonical",
+      version: "2.0.1",
+    });
+    expect(resolvePluginInstallOwnerMigrations(result)).toEqual({
+      qqbot: "openclaw-qqbot",
+    });
+  });
+
+  it("rejects a catalog lookup alias when the canonical install is a third-party package", async () => {
+    const config = {
+      plugins: {
+        installs: {
+          qqbot: {
+            source: "npm",
+            spec: "@openclaw/qqbot@1.9.0",
+            resolvedName: "@openclaw/qqbot",
+            resolvedSpec: "@openclaw/qqbot@1.9.0",
+            installPath: "/tmp/openclaw-qqbot-legacy",
+          },
+          "openclaw-qqbot": {
+            source: "npm",
+            spec: "@vendor/openclaw-qqbot@1.0.0",
+            resolvedName: "@vendor/openclaw-qqbot",
+            resolvedSpec: "@vendor/openclaw-qqbot@1.0.0",
+            installPath: "/tmp/openclaw-qqbot-fork",
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const result = await updatePlugin(config, "qqbot");
+
+    expect(installPluginFromNpmSpecMock).not.toHaveBeenCalled();
+    expect(result.changed).toBe(false);
+    expect(result.config).toBe(config);
+    expect(result.config.plugins?.installs).toEqual(config.plugins?.installs);
+    expect(result.outcomes).toEqual([
+      {
+        pluginId: "qqbot",
+        status: "error",
+        message:
+          'Cannot replace "qqbot" with "openclaw-qqbot" because both plugin install records exist. Remove one of the conflicting installs, then retry the update.',
+      },
+    ]);
+  });
 
   it("rejects legacy id replacement when the canonical install already exists", async () => {
     const config = {

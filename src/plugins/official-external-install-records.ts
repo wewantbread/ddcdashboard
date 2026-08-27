@@ -8,6 +8,7 @@ import {
   resolveOfficialExternalPluginId,
   resolveOfficialExternalPluginInstall,
   resolveOfficialExternalPluginLegacyIds,
+  resolveOfficialExternalPluginLegacyNpmPackageNames,
   type OfficialExternalPluginCatalogEntry,
 } from "./official-external-plugin-catalog.js";
 
@@ -144,7 +145,64 @@ type TrustedSourceLinkedOfficialNpmInstall = {
   npmSpec: string;
   pluginId: string;
   replacementPluginId?: string;
+  // Package-name cutovers must rewrite the install spec even without --all.
+  replaceNpmPackage?: true;
 };
+
+function resolveOfficialNpmInstallIdentity(params: {
+  requestPluginId: string;
+  entry: OfficialExternalPluginCatalogEntry;
+  npmSpec: string;
+  replaceNpmPackage?: true;
+}): TrustedSourceLinkedOfficialNpmInstall {
+  const canonicalPluginId = resolveOfficialExternalPluginId(params.entry);
+  const pluginId =
+    canonicalPluginId && canonicalPluginId !== params.requestPluginId
+      ? canonicalPluginId
+      : params.requestPluginId;
+  return {
+    npmSpec: params.npmSpec,
+    pluginId,
+    ...(pluginId !== params.requestPluginId ? { replacementPluginId: pluginId } : {}),
+    ...(params.replaceNpmPackage ? { replaceNpmPackage: true as const } : {}),
+  };
+}
+
+/** True when the expected id is a catalog lookup alias for the replacement plugin. */
+export function isOfficialCatalogLookupPluginIdReplacement(params: {
+  expectedPluginId: string;
+  expectedReplacementPluginId: string;
+}): boolean {
+  if (params.expectedPluginId === params.expectedReplacementPluginId) {
+    return false;
+  }
+  const entry = getOfficialExternalPluginCatalogEntry(params.expectedPluginId);
+  return Boolean(
+    entry && resolveOfficialExternalPluginId(entry) === params.expectedReplacementPluginId,
+  );
+}
+
+/** True when a lookup alias can be dropped because the canonical record is trusted official. */
+export function isTrustedOfficialCatalogLookupDuplicate(params: {
+  pluginId: string;
+  replacementPluginId: string;
+  replacementRecord: PluginInstallRecord | undefined;
+}): boolean {
+  if (
+    !params.replacementRecord ||
+    !isOfficialCatalogLookupPluginIdReplacement({
+      expectedPluginId: params.pluginId,
+      expectedReplacementPluginId: params.replacementPluginId,
+    })
+  ) {
+    return false;
+  }
+  const canonicalInstall = resolveTrustedSourceLinkedOfficialNpmInstall({
+    pluginId: params.replacementPluginId,
+    record: params.replacementRecord,
+  });
+  return Boolean(canonicalInstall && !canonicalInstall.replacementPluginId);
+}
 
 /** Resolves exact package-bound official npm identity and any declared id migration. */
 export function resolveTrustedSourceLinkedOfficialNpmInstall(params: {
@@ -164,10 +222,26 @@ export function resolveTrustedSourceLinkedOfficialNpmInstall(params: {
       resolveNpmSpecPackageName(params.record.resolvedSpec),
     ].filter((value): value is string => Boolean(value));
     if (officialSpec && packageName && recordedPackageNames.includes(packageName)) {
-      return {
+      return resolveOfficialNpmInstallIdentity({
+        requestPluginId: params.pluginId,
+        entry: canonicalEntry,
         npmSpec: officialSpec,
-        pluginId: params.pluginId,
-      };
+      });
+    }
+    const recordedPackageName = resolveUnanimousRecordedNpmPackageName(params.record);
+    if (
+      officialSpec &&
+      recordedPackageName &&
+      resolveOfficialExternalPluginLegacyNpmPackageNames(canonicalEntry).includes(
+        recordedPackageName,
+      )
+    ) {
+      return resolveOfficialNpmInstallIdentity({
+        requestPluginId: params.pluginId,
+        entry: canonicalEntry,
+        npmSpec: officialSpec,
+        replaceNpmPackage: true,
+      });
     }
   }
 
@@ -193,11 +267,11 @@ export function resolveTrustedSourceLinkedOfficialNpmInstall(params: {
   ) {
     return undefined;
   }
-  return {
+  return resolveOfficialNpmInstallIdentity({
+    requestPluginId: params.pluginId,
+    entry,
     npmSpec: officialSpec,
-    pluginId: canonicalPluginId,
-    replacementPluginId: canonicalPluginId,
-  };
+  });
 }
 
 /** Resolves the official npm spec when an install record matches the trusted catalog package. */

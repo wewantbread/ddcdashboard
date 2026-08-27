@@ -26,6 +26,7 @@ import {
 import { ManagedPluginLifecycleError } from "./management-lifecycle-error.js";
 import type { PackageManifest } from "./manifest.js";
 import {
+  isTrustedOfficialCatalogLookupDuplicate,
   resolveTrustedSourceLinkedOfficialClawHubInstall as resolveOfficialClawHubInstall,
   resolveTrustedSourceLinkedOfficialNpmInstall as resolveOfficialNpmInstall,
 } from "./official-external-install-records.js";
@@ -34,10 +35,7 @@ import {
   buildClawHubTrustSkippedOutcome,
   buildDryRunPluginUpdateOutcome,
   buildPluginUpdateVersionOutcome,
-  formatClawHubInstallFailure,
-  formatGitInstallFailure,
-  formatMarketplaceInstallFailure,
-  formatNpmInstallFailure,
+  formatPluginUpdateFailureMessage,
   readClawHubTrustErrorCode,
   runPluginUpdateAttempt,
   shouldSkipClawHubTrustFailureForExistingInstall,
@@ -67,7 +65,6 @@ import {
   isNpmMetadataCompatibleWithCurrentHost,
   isPluginInstallRecordUpdateSource,
   isTrustedSourceLinkedOfficialNpmUpdate,
-  npmUpdateFailureSpec,
   resolveClawHubUpdateSpecs,
   resolveNpmSpecPackageName,
   resolveNpmUpdateSpecs,
@@ -114,7 +111,7 @@ export async function updateNpmInstalledPlugins(params: {
   const logger = params.logger ?? {};
   const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
   const installs = params.config.plugins?.installs ?? {};
-  const targets = params.pluginIds?.length ? params.pluginIds : Object.keys(installs);
+  const targets = [...(params.pluginIds?.length ? params.pluginIds : Object.keys(installs))];
   const normalizedPluginConfig = params.skipDisabledPlugins
     ? normalizePluginsConfig(params.config.plugins)
     : undefined;
@@ -174,6 +171,27 @@ export async function updateNpmInstalledPlugins(params: {
       replacementPluginId !== pluginId &&
       Object.hasOwn(installs, replacementPluginId)
     ) {
+      if (
+        isTrustedOfficialCatalogLookupDuplicate({
+          pluginId,
+          replacementPluginId,
+          replacementRecord: installs[replacementPluginId],
+        })
+      ) {
+        if (!params.dryRun) {
+          next = migratePluginConfigId(next, pluginId, replacementPluginId);
+          changed = true;
+          transactionState.installOwnerMigrations[pluginId] = replacementPluginId;
+        }
+        recordSkippedOutcome(
+          pluginId,
+          `Removed duplicate "${pluginId}" install record; "${replacementPluginId}" is the canonical plugin id.`,
+        );
+        if (!targets.includes(replacementPluginId) && !params.skipIds?.has(replacementPluginId)) {
+          targets.push(replacementPluginId);
+        }
+        continue;
+      }
       outcomes.push({
         pluginId,
         status: "error",
@@ -182,9 +200,12 @@ export async function updateNpmInstalledPlugins(params: {
       continue;
     }
     const trustedOfficialNpmSpec = trustedOfficialNpmInstall?.npmSpec;
+    const officialNpmPackageName = resolveNpmSpecPackageName(trustedOfficialNpmSpec);
     const npmSpecOverride =
       params.specOverrides?.[pluginId] ??
-      (replacementPluginId ? trustedOfficialNpmSpec : undefined);
+      (replacementPluginId || trustedOfficialNpmInstall?.replaceNpmPackage
+        ? trustedOfficialNpmSpec
+        : undefined);
     const trustedOfficialClawHubInstall = resolveOfficialClawHubInstall({ pluginId, record });
     const officialNpmSpec = params.syncOfficialPluginInstalls ? trustedOfficialNpmSpec : undefined;
     const officialClawHubSpec = params.syncOfficialPluginInstalls
@@ -197,7 +218,6 @@ export async function updateNpmInstalledPlugins(params: {
       (trustedOfficialNpmSpec || trustedOfficialClawHubInstall
         ? params.officialPluginUpdateChannel
         : undefined);
-    const officialNpmPackageName = resolveNpmSpecPackageName(trustedOfficialNpmSpec);
     if (normalizedPluginConfig) {
       const enableState = resolveEffectiveEnableState({
         id: pluginId,
@@ -557,41 +577,19 @@ export async function updateNpmInstalledPlugins(params: {
       }
       const phase = params.dryRun ? "check" : "update";
       const code = resultSource === "npm" && "code" in result ? result.code : undefined;
-      const message =
-        resultSource === "npm"
-          ? formatNpmInstallFailure({
-              pluginId,
-              spec: usedOfficialNpmFallback
-                ? (officialNpmFallbackInstallSpec ?? effectiveSpec ?? "")
-                : npmUpdateFailureSpec({
-                    effectiveSpec,
-                    fallbackSpec: npmSpecs?.fallbackSpec,
-                    usedFallback: usedNpmFallback,
-                  }),
-              phase,
-              result,
-            })
-          : resultSource === "clawhub"
-            ? formatClawHubInstallFailure({
-                pluginId,
-                spec: activeClawHubInstallSpec ?? `clawhub:${record.clawhubPackage!}`,
-                phase,
-                error: result.error,
-              })
-            : record.source === "git"
-              ? formatGitInstallFailure({
-                  pluginId,
-                  spec: effectiveSpec!,
-                  phase,
-                  error: result.error,
-                })
-              : formatMarketplaceInstallFailure({
-                  pluginId,
-                  marketplaceSource: record.marketplaceSource!,
-                  marketplacePlugin: record.marketplacePlugin!,
-                  phase,
-                  error: result.error,
-                });
+      const message = formatPluginUpdateFailureMessage({
+        resultSource,
+        pluginId,
+        phase,
+        result,
+        record,
+        effectiveSpec,
+        npmFallbackSpec: npmSpecs?.fallbackSpec,
+        usedNpmFallback,
+        usedOfficialNpmFallback,
+        officialNpmFallbackInstallSpec,
+        activeClawHubInstallSpec,
+      });
       recordFailure(pluginId, message, {
         channelFallback: npmChannelFallback,
         code,

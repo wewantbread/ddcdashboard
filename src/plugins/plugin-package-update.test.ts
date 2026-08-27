@@ -142,6 +142,74 @@ describe("plugin package update policy reconciliation", () => {
     expect(result).toMatchObject({ ok: false });
   });
 
+  it("follows catalog-alias install-owner migrations after dropping a duplicate record", () => {
+    const rootDir = "/packages/qqbot";
+    const before: InstalledPluginIndex = {
+      ...index(rootDir, [record("qqbot", rootDir, { channels: ["qqbot"] })]),
+      installRecords: {
+        qqbot: { source: "npm", installPath: rootDir, spec: "@openclaw/qqbot@1.9.0" },
+        "openclaw-qqbot": {
+          source: "npm",
+          installPath: `${rootDir}-canonical`,
+          spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+        },
+      },
+    };
+    before.plugins = [
+      recordInstalledPluginIndexInstallOwner(
+        record("qqbot", rootDir, { channels: ["qqbot"] }),
+        "qqbot",
+      ),
+    ];
+    const after: InstalledPluginIndex = {
+      ...index(`${rootDir}-canonical`, [
+        record("openclaw-qqbot", `${rootDir}-canonical`, { channels: ["qqbot"] }),
+      ]),
+      installRecords: {
+        "openclaw-qqbot": {
+          source: "npm",
+          installPath: `${rootDir}-canonical`,
+          spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+        },
+      },
+    };
+    after.plugins = [
+      recordInstalledPluginIndexInstallOwner(
+        record("openclaw-qqbot", `${rootDir}-canonical`, { channels: ["qqbot"] }),
+        "openclaw-qqbot",
+      ),
+    ];
+    const snapshot = capturePluginPackageUpdateSnapshot({
+      index: before,
+      installOwners: ["qqbot"],
+    });
+    expect(snapshot.ok).toBe(true);
+    if (!snapshot.ok) {
+      throw new Error(snapshot.error);
+    }
+    const missingMigration = reconcilePluginPackageUpdateConfig({
+      config: {},
+      beforeIndex: before,
+      afterIndex: after,
+      snapshot: snapshot.value,
+    });
+    expect(missingMigration).toMatchObject({ ok: false });
+    if (missingMigration.ok) {
+      throw new Error("expected missing alias migration to fail");
+    }
+    expect(missingMigration.error).toContain(
+      'Plugin "qqbot" is not associated with a tracked package install',
+    );
+    const migrated = reconcilePluginPackageUpdateConfig({
+      config: {},
+      beforeIndex: before,
+      afterIndex: after,
+      snapshot: snapshot.value,
+      installOwnerMigrations: { qqbot: "openclaw-qqbot" },
+    });
+    expect(migrated).toMatchObject({ ok: true });
+  });
+
   it("detects exact child load-path cleanup before an update starts", () => {
     const rootDir = "/packages/pack-v1";
     const before = index(rootDir, [record("pack/one", rootDir)]);

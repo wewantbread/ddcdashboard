@@ -388,6 +388,10 @@ describe("buildOfficialChannelCatalog", () => {
           "sha512-2010PaCummeQaxerLtaGfQ/5HChiXaW/KpTERid7V/1zyTs46S2ACi0hgZQ1SB7tH0t1InWr8tzVBJV/pLss3Q==",
       },
     });
+    expect(
+      findCatalogEntry(entries, (entry) => entry.name === "@tencent-connect/openclaw-qqbot")
+        .openclaw?.legacyNpmSpecs,
+    ).toEqual(["@openclaw/qqbot"]);
     expect(entries.some((entry) => entry.openclaw?.channel?.id === "local-only")).toBe(false);
   });
 

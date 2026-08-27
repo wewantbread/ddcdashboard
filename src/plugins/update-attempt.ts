@@ -18,6 +18,7 @@ import {
   describeBetaNpmFallback,
   describeNpmChannelFallback,
   formatBetaChannelFallbackOutcomeSuffix,
+  npmUpdateFailureSpec,
   resolveExactNpmSpecVersion,
   resolveNewerExactPinnedNpmDefaultLine,
   resolveNpmResultVersion,
@@ -155,6 +156,56 @@ export function formatGitInstallFailure(params: {
   error: string;
 }): string {
   return `Failed to ${params.phase} ${params.pluginId}: ${params.error} (git ${params.spec}).`;
+}
+
+/** Formats the install failure message for the source that produced a failed update attempt. */
+export function formatPluginUpdateFailureMessage(params: {
+  resultSource: UpdatablePluginInstallRecord["source"];
+  pluginId: string;
+  phase: "check" | "update";
+  result: Extract<PluginUpdateInstallResult, { ok: false }>;
+  record: UpdatablePluginInstallRecord;
+  effectiveSpec: string | undefined;
+  npmFallbackSpec: string | undefined;
+  usedNpmFallback: boolean;
+  usedOfficialNpmFallback: boolean;
+  officialNpmFallbackInstallSpec: string | undefined;
+  activeClawHubInstallSpec: string | undefined;
+}): string {
+  const { resultSource, pluginId, phase, result, record } = params;
+  if (resultSource === "npm") {
+    const spec = params.usedOfficialNpmFallback
+      ? (params.officialNpmFallbackInstallSpec ?? params.effectiveSpec ?? "")
+      : npmUpdateFailureSpec({
+          effectiveSpec: params.effectiveSpec,
+          fallbackSpec: params.npmFallbackSpec,
+          usedFallback: params.usedNpmFallback,
+        });
+    return formatNpmInstallFailure({ pluginId, spec, phase, result });
+  }
+  if (resultSource === "clawhub") {
+    return formatClawHubInstallFailure({
+      pluginId,
+      spec: params.activeClawHubInstallSpec ?? `clawhub:${record.clawhubPackage!}`,
+      phase,
+      error: result.error,
+    });
+  }
+  if (record.source === "git") {
+    return formatGitInstallFailure({
+      pluginId,
+      spec: params.effectiveSpec!,
+      phase,
+      error: result.error,
+    });
+  }
+  return formatMarketplaceInstallFailure({
+    pluginId,
+    marketplaceSource: record.marketplaceSource!,
+    marketplacePlugin: record.marketplacePlugin!,
+    phase,
+    error: result.error,
+  });
 }
 
 type InstallIntegrityDrift = {
