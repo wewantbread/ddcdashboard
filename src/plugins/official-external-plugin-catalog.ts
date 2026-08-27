@@ -92,6 +92,8 @@ type OfficialExternalCatalogChannel = PluginPackageChannel & {
 /** Manifest-like metadata stored in official external catalog entries. */
 type OfficialExternalPluginCatalogManifest = {
   legacyPluginIds?: readonly string[];
+  /** Former npm package names used only for trusted update migrations. */
+  legacyNpmSpecs?: readonly string[];
   plugin?: {
     id?: string;
     label?: string;
@@ -1481,6 +1483,17 @@ export function resolveOfficialExternalPluginLegacyIds(
     (getOfficialExternalPluginCatalogManifest(entry)?.legacyPluginIds ?? [])
       .map((pluginId) => normalizeOptionalString(pluginId))
       .filter((pluginId): pluginId is string => Boolean(pluginId)),
+  );
+}
+
+/** Returns former npm package names used only for trusted update migrations. */
+export function resolveOfficialExternalPluginLegacyNpmPackageNames(
+  entry: OfficialExternalPluginCatalogEntry,
+): string[] {
+  return uniqueStrings(
+    (getOfficialExternalPluginCatalogManifest(entry)?.legacyNpmSpecs ?? [])
+      .map((spec) => normalizeOptionalString(spec))
+      .filter((packageName): packageName is string => Boolean(packageName)),
   );
 }
 

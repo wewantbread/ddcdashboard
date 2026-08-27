@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isOfficialCatalogLookupPluginIdReplacement,
   resolveTrustedSourceLinkedOfficialClawHubInstall,
   resolveTrustedSourceLinkedOfficialNpmInstall,
   resolveTrustedSourceLinkedOfficialNpmSpec,
@@ -75,6 +76,69 @@ describe("trusted official npm install records", () => {
       resolveTrustedSourceLinkedOfficialNpmInstall({
         pluginId: "unrelated-plugin",
         record,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rewrites a catalog-declared legacy npm package to the current official spec", () => {
+    const record = {
+      source: "npm" as const,
+      spec: "@openclaw/qqbot@1.9.0",
+      resolvedName: "@openclaw/qqbot",
+      resolvedSpec: "@openclaw/qqbot@1.9.0",
+    };
+
+    expect(
+      resolveTrustedSourceLinkedOfficialNpmInstall({
+        pluginId: "openclaw-qqbot",
+        record,
+      }),
+    ).toEqual({
+      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
+      pluginId: "openclaw-qqbot",
+      replaceNpmPackage: true,
+    });
+    expect(
+      resolveTrustedSourceLinkedOfficialNpmInstall({
+        pluginId: "qqbot",
+        record,
+      }),
+    ).toEqual({
+      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
+      pluginId: "openclaw-qqbot",
+      replacementPluginId: "openclaw-qqbot",
+      replaceNpmPackage: true,
+    });
+    expect(
+      isOfficialCatalogLookupPluginIdReplacement({
+        expectedPluginId: "qqbot",
+        expectedReplacementPluginId: "openclaw-qqbot",
+      }),
+    ).toBe(true);
+    expect(
+      isOfficialCatalogLookupPluginIdReplacement({
+        expectedPluginId: "fish-audio",
+        expectedReplacementPluginId: "fish-audio-speech",
+      }),
+    ).toBe(false);
+    expect(
+      resolveTrustedSourceLinkedOfficialNpmInstall({
+        pluginId: "unrelated-plugin",
+        record,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("fails closed when a legacy npm package identity is mixed with another package", () => {
+    expect(
+      resolveTrustedSourceLinkedOfficialNpmInstall({
+        pluginId: "openclaw-qqbot",
+        record: {
+          source: "npm",
+          spec: "@openclaw/qqbot@1.9.0",
+          resolvedName: "@vendor/qqbot",
+          resolvedSpec: "@openclaw/qqbot@1.9.0",
+        },
       }),
     ).toBeUndefined();
   });

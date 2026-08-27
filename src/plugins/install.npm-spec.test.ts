@@ -3574,6 +3574,32 @@ describe("installPluginFromNpmSpec", () => {
     }
   });
 
+  it("accepts a trusted catalog lookup id replacement during update", async () => {
+    const npmRoot = path.join(suiteTempRootTracker.makeTempDir(), "npm");
+    mockNpmViewAndInstall({
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      packageName: "@tencent-connect/openclaw-qqbot",
+      version: "2.0.1",
+      pluginId: "openclaw-qqbot",
+      npmRoot,
+    });
+
+    const result = await installPluginFromNpmSpec({
+      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      npmDir: npmRoot,
+      mode: "update",
+      expectedPluginId: "qqbot",
+      expectedReplacementPluginId: "openclaw-qqbot",
+      trustedSourceLinkedOfficialInstall: true,
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.pluginId).toBe("openclaw-qqbot");
+    }
+  });
+
   it.each([
     {
       name: "untrusted source",
