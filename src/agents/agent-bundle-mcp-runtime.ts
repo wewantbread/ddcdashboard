@@ -16,6 +16,7 @@ import type { SessionToolOverrides } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { logWarn } from "../logger.js";
+import type { BundleMcpServerConfig } from "../plugins/bundle-mcp.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { mergeMcpToolCatalogs } from "./agent-bundle-mcp-combined.js";
@@ -72,7 +73,7 @@ import { sanitizeMcpMetadataText } from "./mcp-metadata.js";
 import { collectMcpPaginatedItems } from "./mcp-pagination.js";
 import { isMcpToolAllowed, normalizeMcpToolFilter } from "./mcp-tool-filter.js";
 import { normalizeMcpToolCatalog, type McpToolCatalogMetadata } from "./mcp-tool-metadata.js";
-import { resolveMcpTransport } from "./mcp-transport.js";
+import { resolveMcpTransport, type ResolvedMcpTransport } from "./mcp-transport.js";
 
 type BundleMcpSession = {
   serverName: string;
@@ -278,18 +279,34 @@ export function createSessionMcpRuntime(params: {
   requesterConnect?: RequesterMcpConnect;
   configFingerprint?: string;
   toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
+  /** Ephemeral executor-owned declarations; never persisted or merged into operator config. */
+  mcpServersOverride?: Record<string, BundleMcpServerConfig>;
+  resolveTransport?: (
+    serverName: string,
+    rawServer: BundleMcpServerConfig,
+  ) => Promise<ResolvedMcpTransport | null>;
 }): SessionMcpRuntime {
-  const { loaded, fingerprint: computedFingerprint } = loadSessionMcpConfig({
-    workspaceDir: params.workspaceDir,
-    cfg: params.cfg,
-    logDiagnostics: true,
-    manifestRegistry: params.manifestRegistry,
-    includeServerNames: params.includeServerNames,
-    excludeServerNames: params.excludeServerNames,
-    redactConnectionServerNames: params.redactConnectionServerNames,
-    safeServerNamesByServer: params.safeServerNamesByServer,
-    toolOverrides: params.toolOverrides,
-  });
+  const configured = params.mcpServersOverride
+    ? {
+        loaded: {
+          mcpServers: params.mcpServersOverride,
+          diagnostics: [],
+          prepareDataDirsByServer: {},
+        },
+        fingerprint: params.configFingerprint ?? "executor-owned",
+      }
+    : loadSessionMcpConfig({
+        workspaceDir: params.workspaceDir,
+        cfg: params.cfg,
+        logDiagnostics: true,
+        manifestRegistry: params.manifestRegistry,
+        includeServerNames: params.includeServerNames,
+        excludeServerNames: params.excludeServerNames,
+        redactConnectionServerNames: params.redactConnectionServerNames,
+        safeServerNamesByServer: params.safeServerNamesByServer,
+        toolOverrides: params.toolOverrides,
+      });
+  const { loaded, fingerprint: computedFingerprint } = configured;
   const configFingerprint = params.configFingerprint ?? computedFingerprint;
   const mcpAppsEnabled = params.cfg?.mcp?.apps?.enabled === true;
   const createdAt = Date.now();
@@ -615,12 +632,14 @@ export function createSessionMcpRuntime(params: {
           const dataDirOwnership = Object.hasOwn(loaded.prepareDataDirsByServer ?? {}, serverName)
             ? loaded.prepareDataDirsByServer?.[serverName]
             : undefined;
-          const resolved = resolveMcpTransport(serverName, transportSource, {
-            cfg: params.cfg,
-            agentDir: params.agentDir,
-            prepareDataDir: dataDirOwnership?.dataDir,
-            requesterScope: params.requesterScope,
-          });
+          const resolved = params.resolveTransport
+            ? await params.resolveTransport(serverName, transportSource)
+            : resolveMcpTransport(serverName, transportSource, {
+                cfg: params.cfg,
+                agentDir: params.agentDir,
+                prepareDataDir: dataDirOwnership?.dataDir,
+                requesterScope: params.requesterScope,
+              });
           if (!resolved) {
             continue;
           }
