@@ -4868,11 +4868,11 @@ describe("updateNpmInstalledPlugins", () => {
       createSuccessfulNpmUpdateResult({
         pluginId: "openclaw-qqbot",
         targetDir: "/tmp/openclaw-qqbot",
-        version: "2.0.1",
+        version: "2.0.3",
         npmResolution: {
           name: "@tencent-connect/openclaw-qqbot",
-          version: "2.0.1",
-          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+          version: "2.0.3",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
         },
       }),
     );
@@ -4890,16 +4890,16 @@ describe("updateNpmInstalledPlugins", () => {
     );
 
     expectNpmUpdateCall({
-      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.3",
       expectedPluginId: "openclaw-qqbot",
     });
     expect(npmInstallCall()?.expectedReplacementPluginId).toBeUndefined();
     expect(npmInstallCall()?.trustedSourceLinkedOfficialInstall).toBe(true);
     expectRecordFields(result.config.plugins?.installs?.["openclaw-qqbot"], {
       source: "npm",
-      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.3",
       installPath: "/tmp/openclaw-qqbot",
-      version: "2.0.1",
+      version: "2.0.3",
     });
   });
 
@@ -4908,11 +4908,11 @@ describe("updateNpmInstalledPlugins", () => {
       createSuccessfulNpmUpdateResult({
         pluginId: "openclaw-qqbot",
         targetDir: "/tmp/openclaw-qqbot",
-        version: "2.0.1",
+        version: "2.0.3",
         npmResolution: {
           name: "@tencent-connect/openclaw-qqbot",
-          version: "2.0.1",
-          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+          version: "2.0.3",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
         },
       }),
     );
@@ -4930,7 +4930,7 @@ describe("updateNpmInstalledPlugins", () => {
     );
 
     expectNpmUpdateCall({
-      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.3",
       expectedPluginId: "qqbot",
     });
     expect(npmInstallCall()?.expectedReplacementPluginId).toBe("openclaw-qqbot");
@@ -4938,9 +4938,9 @@ describe("updateNpmInstalledPlugins", () => {
     expect(result.config.plugins?.installs?.qqbot).toBeUndefined();
     expectRecordFields(result.config.plugins?.installs?.["openclaw-qqbot"], {
       source: "npm",
-      spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      spec: "@tencent-connect/openclaw-qqbot@2.0.3",
       installPath: "/tmp/openclaw-qqbot",
-      version: "2.0.1",
+      version: "2.0.3",
     });
   });
 

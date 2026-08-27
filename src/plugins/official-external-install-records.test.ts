@@ -94,7 +94,7 @@ describe("trusted official npm install records", () => {
         record,
       }),
     ).toEqual({
-      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
       pluginId: "openclaw-qqbot",
       replaceNpmPackage: true,
     });
@@ -104,7 +104,7 @@ describe("trusted official npm install records", () => {
         record,
       }),
     ).toEqual({
-      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
       pluginId: "openclaw-qqbot",
       replacementPluginId: "openclaw-qqbot",
       replaceNpmPackage: true,
