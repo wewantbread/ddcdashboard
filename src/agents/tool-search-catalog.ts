@@ -137,6 +137,7 @@ function restoreToolSearchCatalog(params: {
     searchCount: 0,
     describeCount: 0,
     callCount: 0,
+    directCoreToolNames: [],
   };
   params.catalogRef.current = next;
   catalogFingerprints.set(next, params.fingerprint);
@@ -241,7 +242,17 @@ function toCatalogEntry(
 }
 
 function shouldCatalogTool(tool: AnyAgentTool): boolean {
-  return !TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) && tool.catalogMode !== "direct-only";
+  return !(TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) || tool.catalogMode === "direct-only");
+}
+
+/** Trusted core file/shell tools. Structured Tool Search keeps these native; Code Mode still catalogs them. */
+export function isTrustedCoreCodingSurfaceTool(tool: AnyAgentTool): boolean {
+  const classified = classifyTool(tool);
+  return (
+    classified.source === "openclaw" &&
+    classified.sourceName === "core" &&
+    isCoreCodingSurfaceToolName(tool.name)
+  );
 }
 
 /**
@@ -250,16 +261,31 @@ function shouldCatalogTool(tool: AnyAgentTool): boolean {
  * resolve to trusted OpenClaw tools: an MCP lookalike must never become a
  * direct delivery or core-coding tool.
  */
+function collectDirectCoreCodingToolNames(tools: readonly { name: string }[]): string[] {
+  const present = new Set(
+    tools.map((tool) => tool.name).filter((name) => isCoreCodingSurfaceToolName(name)),
+  );
+  return ["read", "write", "edit", "apply_patch", "exec", "process"].filter((name) =>
+    present.has(name),
+  );
+}
+
 export function isDirectVisibleCatalogTool(
   tool: AnyAgentTool,
   directToolNames: ReadonlySet<string>,
+  options: { includeTrustedCore?: boolean } = {},
 ): boolean {
   const classified = classifyTool(tool);
-  return (
-    classified.source === "openclaw" &&
-    (directToolNames.has(tool.name) ||
-      (isCoreCodingSurfaceToolName(tool.name) && classified.sourceName === "core"))
-  );
+  if (classified.source !== "openclaw") {
+    return false;
+  }
+  if (directToolNames.has(tool.name)) {
+    return true;
+  }
+  if (options.includeTrustedCore === false) {
+    return false;
+  }
+  return isCoreCodingSurfaceToolName(tool.name) && classified.sourceName === "core";
 }
 
 export function registerHeadlessToolSearchCatalog(params: {
@@ -313,6 +339,7 @@ function registerToolSearchCatalog(params: {
     searchCount: prior?.searchCount ?? 0,
     describeCount: prior?.describeCount ?? 0,
     callCount: prior?.callCount ?? 0,
+    directCoreToolNames: prior?.directCoreToolNames ?? [],
   };
   // The supplied fingerprint describes the input entries. Duplicate IDs are
   // last-write-wins, so recompute when registration changed the entry set.
@@ -468,6 +495,7 @@ export function applyToolCatalogCompaction(
     }
     visible.push(tool);
   }
+  const directCoreToolNames = collectDirectCoreCodingToolNames(visible);
   // Hook-wrapped entries carry run context and have fresh executable identities, so
   // their snapshots cannot be reused and would only retain the completed run.
   const hasHookBoundEntry = catalog.some((entry) =>
@@ -478,6 +506,7 @@ export function applyToolCatalogCompaction(
   const incomingFingerprint =
     existingCatalog || reusableKey ? catalogEntriesFingerprint(catalog) : undefined;
   if (existingCatalog && catalogFingerprints.get(existingCatalog) === incomingFingerprint) {
+    existingCatalog.directCoreToolNames = directCoreToolNames;
     return {
       tools: visible,
       compacted: catalog.length > 0,
@@ -498,6 +527,10 @@ export function applyToolCatalogCompaction(
       reusableCatalogSnapshots.delete(reusableKey);
       reusableCatalogSnapshots.set(reusableKey, reusableSnapshot);
     }
+    const restored = catalogRef.current;
+    if (restored) {
+      restored.directCoreToolNames = directCoreToolNames;
+    }
     return {
       tools: visible,
       compacted: catalog.length > 0,
@@ -512,6 +545,7 @@ export function applyToolCatalogCompaction(
     entries: catalog,
     fingerprint: incomingFingerprint,
   });
+  registered.directCoreToolNames = directCoreToolNames;
   rememberReusableCatalog(reusableKey, registered);
   return {
     tools: visible,
