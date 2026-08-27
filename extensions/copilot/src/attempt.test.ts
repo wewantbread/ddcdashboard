@@ -740,7 +740,7 @@ describe("runCopilotAttempt", () => {
       return createStubToolBridge();
     });
 
-    await runCopilotAttempt(makeParams(), {
+    await runCopilotAttempt(makeParams({ agentAccountId: "account-a" }), {
       createToolBridge,
       pool: makeFakePool(sdk),
     });
@@ -748,7 +748,7 @@ describe("runCopilotAttempt", () => {
 
     expect(beforePromptBuild).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: "hello" }),
-      expect.objectContaining({ runId: "run-1", sessionId: "session-1" }),
+      expect.objectContaining({ accountId: "account-a", runId: "run-1", sessionId: "session-1" }),
     );
     const cfg = sdk.createSession.mock.calls[0]?.[0] as {
       systemMessage?: { content?: string };
@@ -815,7 +815,7 @@ describe("runCopilotAttempt", () => {
       });
     });
 
-    const attempt = runCopilotAttempt(makeParams(), {
+    const attempt = runCopilotAttempt(makeParams({ agentAccountId: "account-a" }), {
       createToolBridge,
       pool: makeFakePool(sdk),
     });
@@ -843,7 +843,7 @@ describe("runCopilotAttempt", () => {
         messageCount: -1,
         sessionFile: "session.json",
       }),
-      expect.objectContaining({ runId: "run-1", sessionId: "session-1" }),
+      expect.objectContaining({ accountId: "account-a", runId: "run-1", sessionId: "session-1" }),
     );
     expect(afterCompaction).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -851,7 +851,7 @@ describe("runCopilotAttempt", () => {
         messageCount: -1,
         sessionFile: "session.json",
       }),
-      expect.objectContaining({ runId: "run-1", sessionId: "session-1" }),
+      expect.objectContaining({ accountId: "account-a", runId: "run-1", sessionId: "session-1" }),
     );
     expect(beforeCompaction.mock.calls[0]?.[0]).not.toHaveProperty("messages");
   });
