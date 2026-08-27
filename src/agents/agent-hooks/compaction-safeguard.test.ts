@@ -2180,7 +2180,7 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeNull();
   });
 
-  it("fails closed when audit-required tail sections cannot fit the artifact cap", async () => {
+  it("degrades when audit-required tail sections cannot fit the artifact cap", async () => {
     mockSummarizeInStages.mockReset();
     const latestAsk = "preserve the pending deployment status";
     const identifier = `https://example.com/${"a".repeat(MAX_COMPACTION_SUMMARY_CHARS)}`;
@@ -2216,11 +2216,16 @@ describe("compaction-safeguard recent-turn preservation", () => {
 
     const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
 
-    expect(result).toEqual({ cancel: true });
+    // This path used to cancel before the audit ran at all, so the transcript
+    // never shrank and every later turn failed the same preflight. It now takes
+    // the same degraded route as an exhausted audit.
+    expect(result).not.toEqual({ cancel: true });
+    expect(expectCompactionResult(result).summary).toBeTruthy();
     expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
-    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBe(
-      "Compaction safeguard required facts exceed the finalized summary budget.",
-    );
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
+    const retentionWarnings = compactionLogger.warn.mock.calls.flat().join("\n");
+    expect(retentionWarnings).toContain("reasonCode=quality_guard_degraded_fallback");
+    expect(retentionWarnings).toContain("required quality facts exceed finalized artifact budget");
   });
 
   it("reserves split-turn ask evidence and identifiers before optional split context", async () => {
@@ -2505,6 +2510,68 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(terminalWarnings).toContain("reasonCount=2");
     expect(terminalWarnings).not.toContain(identifier);
     expect(terminalWarnings).not.toContain(sourceText);
+  });
+
+  it("retains the generated split-turn section in the degraded fallback", async () => {
+    mockSummarizeInStages.mockReset();
+    const splitAsk = "report the split-turn deployment status";
+    const splitIdentifier = "/tmp/split-turn-degraded.log";
+    const splitMarker = "split-turn-prefix-marker-9f3a";
+    const historySummary = [
+      "## Decisions",
+      "Keep current flow.",
+      "## Open TODOs",
+      "None.",
+      "## Constraints/Rules",
+      "Preserve exact context.",
+      "## Pending user asks",
+      "Continue the active work.",
+      "## Exact identifiers",
+      "None.",
+    ].join("\n");
+    mockSummarizeInStages
+      .mockResolvedValueOnce(summaryResult(historySummary))
+      .mockResolvedValueOnce(summaryResult(`${splitMarker} ${splitAsk} ${splitIdentifier}`));
+    // Force the terminal audit failure directly. This test is about what the
+    // degraded artifact carries, not about how the audit reaches its verdict.
+    mockAuditSummaryQuality.mockReturnValue({
+      ok: false,
+      reasons: [`missing_identifiers:${splitIdentifier}`],
+    });
+
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 0,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "summarize earlier work", timestamp: 1 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [
+          { role: "user", content: `${splitAsk} ${splitIdentifier}`, timestamp: 2 },
+        ] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: true,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+
+    // Normal finalization passes generatedSplitTurnSection; the degraded path
+    // must too, or the separately summarized turn prefix - the active request -
+    // is silently dropped on this terminal path only.
+    expect(result).not.toEqual({ cancel: true });
+    expect(expectCompactionResult(result).summary).toContain(splitMarker);
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toBeFalsy();
   });
 
   it("retries when generated summary misses headings even if preserved turns contain them", async () => {
