@@ -3,8 +3,8 @@ import path from "node:path";
 // timer-safe millisecond values.
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
-import { buildShellCommandInvocation } from "../../shell-utils.js";
 import { createWindowsOutputDecoder } from "../../../infra/windows-encoding.js";
+import { buildShellCommandInvocation } from "../../shell-utils.js";
 import type { BashOperations } from "./bash-operations.js";
 import { createBashTool, createLocalBashOperations } from "./bash.js";
 import { resolveBashTimeoutMs } from "./bash.test-support.js";
@@ -59,8 +59,8 @@ describe("bash tool timeout helpers", () => {
 describe("bash tool output lifecycle", () => {
   it("uses the decoder carried by wrapped local operations", async () => {
     const cp936 = Buffer.from([
-      199, 253, 182, 175, 198, 247, 32, 67, 32, 214, 208, 181, 196, 190, 237, 202, 199, 32, 65,
-      99, 101, 114,
+      199, 253, 182, 175, 198, 247, 32, 67, 32, 214, 208, 181, 196, 190, 237, 202, 199, 32, 65, 99,
+      101, 114,
     ]);
     const operations: BashOperations = {
       ...createLocalBashOperations(),
@@ -75,7 +75,10 @@ describe("bash tool output lifecycle", () => {
 
     const result = await tool.execute("call-wrapped-local", { command: "ignored" });
 
-    expect(result.content[0]).toEqual({ type: "text", text: "\u9a71\u52a8\u5668 C \u4e2d\u7684\u5377\u662f Acer" });
+    expect(result.content[0]).toEqual({
+      type: "text",
+      text: "\u9a71\u52a8\u5668 C \u4e2d\u7684\u5377\u662f Acer",
+    });
   });
   it.runIf(process.platform !== "win32")("surfaces a configured shell launch error", async () => {
     const operations = createLocalBashOperations({
