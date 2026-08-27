@@ -6,6 +6,8 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeResolvedSecretInputString } from "../../config/types.secrets.js";
+import { readResponseTextPrefix } from "../../infra/http-body.js";
+import { redactToolPayloadText } from "../../logging/redact.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import {
@@ -13,7 +15,6 @@ import {
   DEFAULT_TIMEOUT_SECONDS,
   normalizeCacheKey,
   readCache,
-  readResponseText,
   resolveCacheTtlMs,
   resolveTimeoutSeconds,
   writeCache,
@@ -129,6 +130,33 @@ export async function withSelfHostedWebSearchEndpoint<T>(
   );
 }
 
+/**
+ * Collects exact outbound credential strings (plus scheme-stripped
+ * Authorization variants) longest-first so error bodies reflecting them can be
+ * masked before the message reaches agent-visible surfaces or logs.
+ */
+function collectCredentialVariants(headers: Record<string, string>): string[] {
+  return Object.entries(headers)
+    .filter(([name]) => name.toLowerCase() !== "content-type")
+    .flatMap(([name, header]) => {
+      const normalized = header.trim();
+      if (!normalized) {
+        return [];
+      }
+      return name.toLowerCase() === "authorization"
+        ? [normalized, normalized.replace(/^\S+\s+/u, "")]
+        : [normalized];
+    })
+    .toSorted((left, right) => right.length - left.length);
+}
+
+function redactReflectedErrorDetail(value: string, headers: Record<string, string>): string {
+  const credentials = collectCredentialVariants(headers);
+  return redactToolPayloadText(
+    credentials.reduce((redacted, credential) => redacted.replaceAll(credential, "***"), value),
+  );
+}
+
 export async function postTrustedWebToolsJson<T>(
   params: {
     url: string;
@@ -143,6 +171,12 @@ export async function postTrustedWebToolsJson<T>(
   parseResponse: (response: Response) => Promise<T>,
 ): Promise<T> {
   const withTrustedWebToolsEndpoint = await loadTrustedWebToolsEndpoint();
+  const requestHeaders: Record<string, string> = {
+    ...params.extraHeaders,
+    Accept: "application/json",
+    Authorization: `Bearer ${params.apiKey}`,
+    "Content-Type": "application/json",
+  };
   return withTrustedWebToolsEndpoint(
     {
       url: params.url,
@@ -150,33 +184,38 @@ export async function postTrustedWebToolsJson<T>(
       signal: params.signal,
       init: {
         method: "POST",
-        headers: {
-          ...params.extraHeaders,
-          Accept: "application/json",
-          Authorization: `Bearer ${params.apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: requestHeaders,
         body: JSON.stringify(params.body),
       },
     },
     async ({ response }) => {
       if (!response.ok) {
-        const detail = await readResponseText(response, {
-          maxBytes: params.maxErrorBytes ?? 64_000,
+        const bodyRead = await readResponseTextPrefix(response, params.maxErrorBytes ?? 64_000, {
+          chunkTimeoutMs: 10_000,
         });
-        throw new Error(
-          `${params.errorLabel} API error (${response.status}): ${detail.text || response.statusText}`,
-        );
+        // A truncated credential cannot be identified safely; drop the entire diagnostic.
+        const detail = bodyRead.truncated
+          ? ""
+          : redactReflectedErrorDetail(bodyRead.text || response.statusText, requestHeaders);
+        throw new Error(`${params.errorLabel} API error (${response.status}): ${detail}`);
       }
       return await parseResponse(response);
     },
   );
 }
 
-export async function throwWebSearchApiError(res: Response, providerLabel: string): Promise<never> {
-  const detailResult = await readResponseText(res, { maxBytes: 64_000 });
-  const detail = detailResult.text;
-  throw new Error(`${providerLabel} API error (${res.status}): ${detail || res.statusText}`);
+export async function throwWebSearchApiError(
+  res: Response,
+  providerLabel: string,
+  requestHeaders?: Record<string, string>,
+): Promise<never> {
+  const headers = requestHeaders ?? {};
+  const bodyRead = await readResponseTextPrefix(res, 64_000, { chunkTimeoutMs: 10_000 });
+  // A truncated credential cannot be identified safely; drop the entire diagnostic.
+  const detail = bodyRead.truncated
+    ? ""
+    : redactReflectedErrorDetail(bodyRead.text || res.statusText, headers);
+  throw new Error(`${providerLabel} API error (${res.status}): ${detail}`);
 }
 
 export function resolveSiteName(url: string | undefined): string | undefined {
