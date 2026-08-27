@@ -12,6 +12,7 @@ export type LlamaServerAsset = {
   arch: string;
   backend: "metal" | "cpu";
   archive: "tar.gz" | "zip";
+  archiveRoot: string;
   name: string;
   sha256: string;
   executable: string;
@@ -50,6 +51,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "arm64",
     backend: "metal",
     archive: "tar.gz",
+    archiveRoot: `llama-${LLAMA_SERVER_RELEASE}`,
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-macos-arm64.tar.gz`,
     sha256: "ada90bbc4787caac49fbb95ed2487a03fb4bbb456057a31e316878e1a895827a",
     executable: "llama-server",
@@ -60,6 +62,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "x64",
     backend: "cpu",
     archive: "tar.gz",
+    archiveRoot: `llama-${LLAMA_SERVER_RELEASE}`,
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-macos-x64.tar.gz`,
     sha256: "80567f47511d5e11872835614b99cd678fa276b05553563e8aab3f2cb6b90abd",
     executable: "llama-server",
@@ -70,6 +73,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "arm64",
     backend: "cpu",
     archive: "tar.gz",
+    archiveRoot: `llama-${LLAMA_SERVER_RELEASE}`,
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-ubuntu-arm64.tar.gz`,
     sha256: "e977e13e9d72b8ee0068336bb9196f4f8158e8b53b8d502dc8bdb55eaea1222f",
     executable: "llama-server",
@@ -80,6 +84,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "x64",
     backend: "cpu",
     archive: "tar.gz",
+    archiveRoot: `llama-${LLAMA_SERVER_RELEASE}`,
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-ubuntu-x64.tar.gz`,
     sha256: "5a7073371d5a9b8e39978b35f49b2ff244f7a064edb92f0326d94e12b52261dd",
     executable: "llama-server",
@@ -90,6 +95,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "arm64",
     backend: "cpu",
     archive: "zip",
+    archiveRoot: ".",
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-win-cpu-arm64.zip`,
     sha256: "97a883831728862568a0e7e38380e7a179b6bcb292167f648a5598586dd65635",
     executable: "llama-server.exe",
@@ -100,6 +106,7 @@ const LLAMA_SERVER_ASSETS: LlamaServerAsset[] = [
     arch: "x64",
     backend: "cpu",
     archive: "zip",
+    archiveRoot: ".",
     name: `llama-${LLAMA_SERVER_RELEASE}-bin-win-cpu-x64.zip`,
     sha256: "6c938f6d79aac96cb90fda673aade20cff9b1b6c1e97de04f4d5d60bca107082",
     executable: "llama-server.exe",
