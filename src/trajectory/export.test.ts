@@ -1149,6 +1149,101 @@ describe("exportTrajectoryBundle", () => {
     ).rejects.toThrow(/session file is too large/u);
   });
 
+  it("rejects combined SQLite sources before parsing or creating output", async () => {
+    const tmpDir = makeTempDir();
+    const storePath = path.join(tmpDir, "sessions.json");
+    const outputDir = path.join(tmpDir, "bundle");
+    const sessionId = "session-combined-budget";
+    const sessionKey = "agent:main:session-combined-budget";
+    // Each source is individually below its 50 MiB per-source budget, but their
+    // combined serialized bytes exceed the export-owned envelope. The preflight
+    // must reject before either reader parses rows or the output directory is
+    // created.
+    await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, [
+      {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-04-01T05:46:39.000Z",
+        cwd: tmpDir,
+      },
+      {
+        type: "message",
+        id: "entry-combined-transcript",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:40.000Z",
+        message: userMessage("transcript-source-bytes"),
+      },
+    ]);
+    appendSqliteTrajectoryRuntimeEvents({ agentId: "main", sessionId, storePath }, [
+      {
+        traceSchema: "openclaw-trajectory",
+        schemaVersion: 1,
+        traceId: sessionId,
+        source: "runtime",
+        type: "sqlite-runtime",
+        ts: "2026-04-01T05:46:41.000Z",
+        seq: 1,
+        sourceSeq: 1,
+        sessionId,
+        data: { payload: "runtime-source-bytes" },
+      },
+    ]);
+
+    await expect(
+      exportTrajectoryBundle({
+        outputDir,
+        sessionFile: formatSqliteSessionFileMarker({ agentId: "main", sessionId, storePath }),
+        sessionId,
+        sessionKey,
+        workspaceDir: tmpDir,
+        maxCombinedSourceBytes: 1,
+      }),
+    ).rejects.toThrow(/combined SQLite sources are too large to export/u);
+    expect(fs.existsSync(outputDir)).toBe(false);
+  });
+
+  it("rejects oversized SQLite transcript store before parsing or creating output", async () => {
+    const tmpDir = makeTempDir();
+    const storePath = path.join(tmpDir, "sessions.json");
+    const outputDir = path.join(tmpDir, "bundle");
+    const sessionId = "session-byte-budget";
+    const sessionKey = "agent:main:session-byte-budget";
+    const oversizedContent = "x".repeat(TRAJECTORY_RUNTIME_FILE_MAX_BYTES + 1);
+
+    await replaceTranscriptEvents({ agentId: "main", sessionId, sessionKey, storePath }, [
+      {
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-04-01T05:46:39.000Z",
+        cwd: tmpDir,
+      },
+      {
+        type: "message",
+        id: "entry-user",
+        parentId: null,
+        timestamp: "2026-04-01T05:46:40.000Z",
+        message: userMessage(oversizedContent),
+      },
+    ]);
+
+    await expect(
+      exportTrajectoryBundle({
+        outputDir,
+        sessionFile: formatSqliteSessionFileMarker({
+          agentId: "main",
+          sessionId,
+          storePath,
+        }),
+        sessionId,
+        sessionKey,
+        workspaceDir: tmpDir,
+      }),
+    ).rejects.toThrow(/transcript store is too large to export/u);
+    expect(fs.existsSync(outputDir)).toBe(false);
+  });
+
   it("skips malformed-but-valid runtime json rows before sorting", async () => {
     const tmpDir = makeTempDir();
     const sessionFile = path.join(tmpDir, "session.jsonl");

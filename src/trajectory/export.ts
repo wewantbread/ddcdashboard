@@ -42,7 +42,10 @@ import { resolvePreferredSessionKeyForSessionIdMatches } from "../sessions/sessi
 import { safeJsonStringify } from "../utils/safe-json.js";
 import { TRAJECTORY_RUNTIME_FILE_MAX_BYTES, safeTrajectorySessionFileName } from "./paths.js";
 import { isRegularNonSymlinkFile, resolveTrajectoryRuntimeFile } from "./runtime-file.js";
-import { loadSqliteTrajectoryRuntimeEvents } from "./runtime-store.sqlite.js";
+import {
+  loadSqliteTrajectoryRuntimeEvents,
+  preflightCombinedSqliteSourceBytesSync,
+} from "./runtime-store.sqlite.js";
 import type {
   TrajectoryBundleManifest,
   TrajectoryBundleWarning,
@@ -64,6 +67,7 @@ type BuildTrajectoryBundleParams = {
   systemPrompt?: string;
   tools?: TrajectoryToolDefinition[];
   maxTotalEvents?: number;
+  maxCombinedSourceBytes?: number;
 };
 
 type RuntimeTrajectoryContext = {
@@ -88,6 +92,7 @@ type SessionEntryCandidateRow = {
 const MAX_TRAJECTORY_RUNTIME_EVENTS = 200_000;
 const MAX_TRAJECTORY_TOTAL_EVENTS = 250_000;
 const MAX_TRAJECTORY_SESSION_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_TRAJECTORY_COMBINED_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_TRAJECTORY_WARNING_ROWS = 20;
 
 function normalizeCompleteSessionTarget(
@@ -238,6 +243,7 @@ async function readSessionEntries(params: {
       sessionId: completeTarget.sessionId,
       sessionKey: completeTarget.sessionKey,
       storePath: completeTarget.storePath,
+      maxEventBytes: MAX_TRAJECTORY_SESSION_FILE_BYTES,
     });
     return collectSessionEntries(events.map((value, index) => ({ row: index + 1, value })));
   }
@@ -319,6 +325,7 @@ async function readSessionEntries(params: {
         sessionId: marker.sessionId,
         ...(markerSessionKey ? { sessionKey: markerSessionKey } : {}),
         storePath: marker.storePath,
+        maxEventBytes: MAX_TRAJECTORY_SESSION_FILE_BYTES,
       })
     ).map((value, index) => ({ row: index + 1, value })),
   );
@@ -491,12 +498,9 @@ async function readRuntimeTrajectoryEvents(params: {
       agentId: marker.agentId,
       sessionId: marker.sessionId,
       storePath: marker.storePath,
+      maxEventBytes: TRAJECTORY_RUNTIME_FILE_MAX_BYTES,
+      maxEventCount: MAX_TRAJECTORY_RUNTIME_EVENTS,
     });
-    if (events.length > MAX_TRAJECTORY_RUNTIME_EVENTS) {
-      throw new Error(
-        `Trajectory runtime store has too many events to export (limit ${MAX_TRAJECTORY_RUNTIME_EVENTS})`,
-      );
-    }
     return { events, warnings: [] };
   }
 
@@ -1244,6 +1248,15 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
         `Trajectory session file is too large to export (${sessionStat.size} bytes; limit ${MAX_TRAJECTORY_SESSION_FILE_BYTES})`,
       );
     }
+  }
+  const combinedSourceMarker = sessionTarget ?? parseSqliteSessionFileMarker(params.sessionFile);
+  if (combinedSourceMarker) {
+    preflightCombinedSqliteSourceBytesSync({
+      agentId: combinedSourceMarker.agentId,
+      sessionId: combinedSourceMarker.sessionId,
+      storePath: combinedSourceMarker.storePath,
+      maxCombinedBytes: params.maxCombinedSourceBytes ?? MAX_TRAJECTORY_COMBINED_SOURCE_BYTES,
+    });
   }
   const {
     header,
