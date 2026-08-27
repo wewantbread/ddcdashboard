@@ -1948,6 +1948,12 @@ describe("persisted CLI aggregate suppression", () => {
         runId: "run-1",
       }),
     ];
+    const claimedTurn = importedMultiBlockTurn({ offsetMs: 61_000, idPrefix: "later-" }).map(
+      (message) => {
+        delete readRecord(readRecord(message)["__openclaw"]).externalId;
+        return message;
+      },
+    );
     const importedMessages = [
       importedTurnMessage({
         content: "second prompt",
@@ -1955,7 +1961,7 @@ describe("persisted CLI aggregate suppression", () => {
         externalId: "user-2",
         role: "user",
       }),
-      ...importedMultiBlockTurn({ offsetMs: 61_000, idPrefix: "later-" }),
+      ...claimedTurn,
     ];
 
     const merged = mergeImportedChatHistoryMessages({ localMessages, importedMessages });
@@ -1970,7 +1976,10 @@ describe("persisted CLI aggregate suppression", () => {
         return Array.isArray(content)
           ? content
               .filter((block) => readRecord(block).type === "text")
-              .map((block) => readRecord(block).text as string)
+              .flatMap((block) => {
+                const text = readRecord(block).text;
+                return typeof text === "string" ? [text] : [];
+              })
           : [];
       });
     expect(assistantTexts).toContain("part two");

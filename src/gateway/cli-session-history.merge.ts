@@ -432,7 +432,8 @@ export function mergeImportedChatHistoryMessages(params: {
       ? exactExternalIdentityIndex.has(imported.externalIdentityKey) ||
         (imported.claimedAggregate !== true &&
           hasRoleTextCandidate(identitylessRoleTextIndex, imported))
-      : hasRoleTextCandidate(allMessageRoleTextIndex, imported);
+      : imported.claimedAggregate !== true &&
+        hasRoleTextCandidate(allMessageRoleTextIndex, imported);
     if (duplicate) {
       continue;
     }
