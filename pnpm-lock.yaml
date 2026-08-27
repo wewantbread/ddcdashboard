@@ -42,6 +42,9 @@ overrides:
 
 packageExtensionsChecksum: sha256-zZ8fyodhMTumshonC7kktCqTPsiHL3UAyS9vltFAlMo=
 
+patchedDependencies:
+  '@openclaw/fs-safe@0.5.6': 9ed5e57f443e496ab0d95c7dcf1c90637bac2792248caad9923abb04528d126b
+
 importers:
 
   .:
@@ -93,7 +96,7 @@ importers:
         version: link:packages/ai
       '@openclaw/fs-safe':
         specifier: 0.5.6
-        version: 0.5.6
+        version: 0.5.6(patch_hash=9ed5e57f443e496ab0d95c7dcf1c90637bac2792248caad9923abb04528d126b)
       '@openclaw/proxyline':
         specifier: 0.3.7
         version: 0.3.7(undici@8.10.0)
@@ -1188,13 +1191,6 @@ importers:
         version: link:../../packages/plugin-sdk
 
   extensions/llama-cpp:
-    dependencies:
-      jszip:
-        specifier: 3.10.1
-        version: 3.10.1
-      tar:
-        specifier: 7.5.22
-        version: 7.5.22
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
@@ -1542,7 +1538,7 @@ importers:
     dependencies:
       '@openclaw/fs-safe':
         specifier: 0.5.6
-        version: 0.5.6
+        version: 0.5.6(patch_hash=9ed5e57f443e496ab0d95c7dcf1c90637bac2792248caad9923abb04528d126b)
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
@@ -11968,7 +11964,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@openclaw/fs-safe@0.5.6':
+  '@openclaw/fs-safe@0.5.6(patch_hash=9ed5e57f443e496ab0d95c7dcf1c90637bac2792248caad9923abb04528d126b)':
     optionalDependencies:
       jszip: 3.10.1
       tar: 7.5.22
