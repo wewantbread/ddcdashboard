@@ -185,7 +185,9 @@ export async function updateNpmInstalledPlugins(params: {
         }
         recordSkippedOutcome(
           pluginId,
-          `Removed duplicate "${pluginId}" install record; "${replacementPluginId}" is the canonical plugin id.`,
+          params.dryRun
+            ? `Would remove duplicate "${pluginId}" install record; "${replacementPluginId}" is the canonical plugin id.`
+            : `Removed duplicate "${pluginId}" install record; "${replacementPluginId}" is the canonical plugin id.`,
         );
         if (!targets.includes(replacementPluginId) && !params.skipIds?.has(replacementPluginId)) {
           targets.push(replacementPluginId);

@@ -5004,6 +5004,58 @@ describe("updateNpmInstalledPlugins", () => {
     });
   });
 
+  it("reports the duplicate qqbot install as removable without mutating on dry-run", async () => {
+    installPluginFromNpmSpecMock.mockResolvedValue(
+      createSuccessfulNpmUpdateResult({
+        pluginId: "openclaw-qqbot",
+        targetDir: "/tmp/openclaw-qqbot-canonical",
+        version: "2.0.3",
+        npmResolution: {
+          name: "@tencent-connect/openclaw-qqbot",
+          version: "2.0.3",
+          resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
+        },
+      }),
+    );
+
+    const config = {
+      plugins: {
+        installs: {
+          qqbot: {
+            source: "npm",
+            spec: "@openclaw/qqbot@1.9.0",
+            resolvedName: "@openclaw/qqbot",
+            resolvedSpec: "@openclaw/qqbot@1.9.0",
+            installPath: "/tmp/openclaw-qqbot-legacy",
+          },
+          "openclaw-qqbot": {
+            source: "npm",
+            spec: "@tencent-connect/openclaw-qqbot@2.0.1",
+            resolvedName: "@tencent-connect/openclaw-qqbot",
+            resolvedSpec: "@tencent-connect/openclaw-qqbot@2.0.1",
+            installPath: "/tmp/openclaw-qqbot-canonical",
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const result = await updatePlugin(config, "qqbot", { dryRun: true });
+
+    expect(result.outcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pluginId: "qqbot",
+          status: "skipped",
+          message:
+            'Would remove duplicate "qqbot" install record; "openclaw-qqbot" is the canonical plugin id.',
+        }),
+      ]),
+    );
+    expect(result.changed).toBe(false);
+    expect(result.config.plugins?.installs).toEqual(config.plugins.installs);
+    expect(resolvePluginInstallOwnerMigrations(result)).toBeUndefined();
+  });
+
   it("rejects a catalog lookup alias when the canonical install is a third-party package", async () => {
     const config = {
       plugins: {
