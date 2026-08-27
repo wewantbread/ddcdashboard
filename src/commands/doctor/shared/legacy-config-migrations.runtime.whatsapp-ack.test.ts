@@ -252,7 +252,7 @@ describe("WhatsApp legacy ackReaction migration", () => {
     // Historically (pre-consolidation), the legacy per-channel resolver returned
     // ack.emoji.trim() whenever the key was present at all, so an exact "" emoji
     // suppressed the ack outright with no identity fallback (git history:
-    // extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts, PR #111527,
+    // the WhatsApp ack-emoji monitor's own resolver, PR #111527,
     // "keeps an explicit empty emoji disabled"). But messages.ackReaction is
     // shared by every channel's resolveAckReaction, which returns it trimmed
     // with no further fallback — writing "" there would silently mute acks on

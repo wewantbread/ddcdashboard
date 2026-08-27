@@ -125,7 +125,7 @@ export function migrateWhatsAppAckSettings(raw: Record<string, unknown>, changes
       // Before the messages.* consolidation, the legacy resolver returned
       // ack.emoji.trim() whenever the key was present at all, so an exact ""
       // emoji suppressed the ack outright — no identity fallback (git history:
-      // extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts, PR #111527,
+      // the WhatsApp ack-emoji monitor's own resolver, PR #111527,
       // "keeps an explicit empty emoji disabled"). messages.ackReaction can't
       // reproduce a WhatsApp-only disable: every other channel's
       // resolveAckReaction returns it trimmed with no further fallback, so
