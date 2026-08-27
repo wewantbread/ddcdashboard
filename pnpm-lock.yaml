@@ -635,6 +635,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
+  extensions/claude:
+    dependencies:
+      '@zeroaltitude/openclaw-claude-bridge':
+        specifier: 0.7.6
+        version: 0.7.6(@anthropic-ai/sdk@0.118.0(zod@4.4.3))(supports-color@10.2.2)(zod@4.4.3)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+
   extensions/clawrouter:
     devDependencies:
       '@openclaw/plugin-sdk':
@@ -1006,6 +1019,12 @@ importers:
         version: link:../../packages/plugin-sdk
 
   extensions/github-copilot:
+    devDependencies:
+      '@openclaw/plugin-sdk':
+        specifier: workspace:*
+        version: link:../../packages/plugin-sdk
+
+  extensions/glm-bridge:
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: workspace:*
@@ -6113,6 +6132,11 @@ packages:
 
   '@yuku-toolchain/types@0.8.7':
     resolution: {integrity: sha512-2Z53dNxAJL6UvFoIrDZvYf3zlO8s4VJK4O2hhaB4mXVwwpX/7ajtss3cmfqKvamlNLWyt9FSWs4eoYdlbxpnHA==}
+
+  '@zeroaltitude/openclaw-claude-bridge@0.7.6':
+    resolution: {integrity: sha512-/xUQ7EfEpTXtHB+PQ3H71SDHXo2Rmh7iIl5OjXUT/JSWwDP0vk5acywsMM2bGESF1Mj34V1d7o0hvHnNU+aJMA==}
+    engines: {node: '>=22.0.0'}
+    hasBin: true
 
   '@zone-eu/mailsplit@5.4.15':
     resolution: {integrity: sha512-c7ZpxauvF4AEkDJlKDYO7iMUtMuqJMBnDWNff1cyx+d7zaBVR3iFEmXhNHOVoMmVyVF3pTZLsLIJsEFKDldOAA==}
@@ -13717,6 +13741,17 @@ snapshots:
     optional: true
 
   '@yuku-toolchain/types@0.8.7': {}
+
+  '@zeroaltitude/openclaw-claude-bridge@0.7.6(@anthropic-ai/sdk@0.118.0(zod@4.4.3))(supports-color@10.2.2)(zod@4.4.3)':
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk': 0.3.235(@anthropic-ai/sdk@0.118.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.4.3)
+      ajv: 8.20.0
+    transitivePeerDependencies:
+      - '@anthropic-ai/sdk'
+      - '@cfworker/json-schema'
+      - supports-color
+      - zod
 
   '@zone-eu/mailsplit@5.4.15':
     dependencies:

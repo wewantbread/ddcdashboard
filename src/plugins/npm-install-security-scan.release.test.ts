@@ -27,6 +27,14 @@ const execFileAsync = promisify(execFile);
 const REQUIRED_REVIEWED_PUBLISHABLE_CRITICAL_FINDING_COUNTS = new Map<string, number>([
   ["@openclaw/acpx:dangerous-exec:src/codex-auth-bridge.ts", 1],
   ["@openclaw/acpx:dangerous-exec:src/runtime-internals/mcp-proxy.mjs", 1],
+  // Two reviewed hits in this file, both expected:
+  //  1. a false positive — the dangerous-exec regex matches the literal text
+  //     "spawn()" inside a doc comment explaining why Windows .cmd shims are
+  //     routed through resolveWindowsSpawnProgram rather than spawned directly;
+  //  2. the real, intentional spawn of the claude-bridge binary, whose command is
+  //     put through that same shim resolver before it reaches child_process.
+  // Neither is an unreviewed exec path.
+  ["@openclaw/claude:dangerous-exec:src/app-server/client.ts", 2],
   ["@openclaw/codex:dangerous-exec:src/app-server/transport-stdio.ts", 1],
   ["@openclaw/codex:dangerous-exec:src/doctor.ts", 1],
   ["@openclaw/daytona-sandbox:dangerous-exec:src/upload.ts", 1],

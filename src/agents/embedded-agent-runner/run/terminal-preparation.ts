@@ -126,6 +126,12 @@ export function prepareEmbeddedRunTerminal(input: {
         ? input.contextRecoveryState.autoCompactionCount
         : undefined,
     compactionTokensAfter: input.contextRecoveryState.lastCompactionTokensAfter,
+    // App-server harness runners (claude-bridge / codex-app-server) may
+    // surface a provider-owned session binding whose durable resumable
+    // thread lives in the harness sidecar, not the gateway store. Carry
+    // it up so the persistence path can mark the session provider-owned
+    // (openclaw-pg9).
+    ...(attempt.cliSessionBinding ? { cliSessionBinding: attempt.cliSessionBinding } : {}),
     // Absent attempt engagement (plugin harness routes) intentionally reads as
     // false so config-enabled-but-unengaged code mode is visible to consumers.
     codeModeEngaged: attempt.codeModeEngaged === true,
@@ -222,6 +228,7 @@ export function prepareEmbeddedRunTerminal(input: {
         attempt.codexAppServerFailure?.kind === "turn_completion_idle_timeout"),
     didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
     heartbeatToolResponse: attempt.heartbeatToolResponse,
+    preserveDraftPreviewOnFinalReply: attempt.preserveDraftPreviewOnFinalReply,
   });
   const payloadsWithToolMedia = mergeAttemptToolMediaPayloads({
     payloads,

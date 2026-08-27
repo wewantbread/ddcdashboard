@@ -84,10 +84,6 @@
       "types": "./dist/src/plugin-sdk/heartbeat-runtime.d.ts",
       "default": "./src/heartbeat-runtime.ts"
     },
-    "./infra-runtime": {
-      "types": "./dist/src/plugin-sdk/infra-runtime.d.ts",
-      "default": "./src/infra-runtime.ts"
-    },
     "./model-session-runtime": {
       "types": "./dist/src/plugin-sdk/model-session-runtime.d.ts",
       "default": "./src/model-session-runtime.ts"
@@ -183,6 +179,14 @@
     "./secret-input": {
       "types": "./dist/src/plugin-sdk/secret-input.d.ts",
       "default": "./src/secret-input.ts"
+    },
+    "./host-env-security": {
+      "types": "./dist/src/plugin-sdk/host-env-security.d.ts",
+      "default": "./src/host-env-security.ts"
+    },
+    "./infra-runtime": {
+      "types": "./dist/src/plugin-sdk/infra-runtime.d.ts",
+      "default": "./src/infra-runtime.ts"
     },
     "./secret-ref-runtime": {
       "types": "./dist/src/plugin-sdk/secret-ref-runtime.d.ts",
