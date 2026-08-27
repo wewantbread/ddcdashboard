@@ -101,9 +101,7 @@ async function runHostModeStagingCleanupProof(): Promise<void> {
     await fs.writeFile(sampleFilePath, mediaContent);
 
     // Setup local mock HTTP model server
-    let serverReceivedRequests = 0;
     providerServer = createServer((_req, res) => {
-      serverReceivedRequests++;
       writeAssistantSseResponse(res, "I analyzed the inbound media attachment.");
     });
 
@@ -150,22 +148,19 @@ async function runHostModeStagingCleanupProof(): Promise<void> {
     console.log("\n[2/5] Dispatching chat.send turn with inbound media attachment...");
     const sessionKey = "agent:main:proof-session-host-staging";
 
-    const started = await gateway.client.request<{ runId?: string; status?: string }>(
-      "chat.send",
-      {
-        sessionKey,
-        message: "Please inspect this attached image",
-        attachments: [
-          {
-            mimeType: "image/jpeg",
-            fileName: sampleFileName,
-            content: mediaContent.toString("base64"),
-          },
-        ],
-        deliver: false,
-        idempotencyKey: "proof-turn-1",
-      },
-    );
+    const started = await gateway.client.request<{ runId?: string; status?: string }>("chat.send", {
+      sessionKey,
+      message: "Please inspect this attached image",
+      attachments: [
+        {
+          mimeType: "image/jpeg",
+          fileName: sampleFileName,
+          content: mediaContent.toString("base64"),
+        },
+      ],
+      deliver: false,
+      idempotencyKey: "proof-turn-1",
+    });
 
     assert.equal(started.status, "started", "Turn must start successfully");
     assert.ok(started.runId, "Turn must return runId");
@@ -203,10 +198,9 @@ async function runHostModeStagingCleanupProof(): Promise<void> {
 
     // Scenario 2: Verify chat.history reflects the completed turn
     console.log("\n[5/5] Verifying chat.history reflects the settled turn...");
-    const history = await gateway.client.request<{ messages?: Array<{ role?: string; content?: unknown }> }>(
-      "chat.history",
-      { sessionKey },
-    );
+    const history = await gateway.client.request<{
+      messages?: Array<{ role?: string; content?: unknown }>;
+    }>("chat.history", { sessionKey });
     const messages = history.messages ?? [];
     assert.ok(messages.length >= 2, "History must contain user and assistant messages");
     console.log(`  -> chat.history contains ${messages.length} messages. Verified OK.`);
