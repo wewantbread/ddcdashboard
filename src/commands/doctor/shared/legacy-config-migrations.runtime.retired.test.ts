@@ -817,6 +817,46 @@ describe("retired runtime config migrations", () => {
     );
   });
 
+  it("preserves blank on write when the default identity is blank but a routed agent has its own emoji (#119501)", () => {
+    // codex review: the legacy object omits emoji entirely (not even whitespace),
+    // the DEFAULT agent has no identity emoji, but "routed" has "🚀". Writing the
+    // universal-looking "👀" here would bake it into messages.ackReaction and
+    // silently override "routed"'s own configured fallback at send time — only a
+    // value every agent already shares (or a raw passthrough) is safe to write.
+    const result = applyAll({
+      messages: { ackReactionScope: "group-mentions" },
+      agents: {
+        list: [
+          { id: "routed", identity: { emoji: "🚀" } },
+          { default: true, id: "main" },
+        ],
+      },
+      channels: {
+        whatsapp: { ackReaction: { direct: true, group: "never" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied a route-dependent legacy emoji (varies by agent identity, e.g. "👀") to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
+    );
+
+    // Oracle mirrors resolveWhatsAppAckEmoji: the written blank value still lets
+    // "routed" resolve to its OWN identity instead of a baked-in "👀".
+    const resolveForAgent = (agentId: string): string => {
+      const configured = getPath(result.raw, "messages.ackReaction");
+      const trimmed = typeof configured === "string" ? configured.trim() : "";
+      if (trimmed) {
+        return trimmed;
+      }
+      const agentList = getPath(result.raw, "agents.list") as Array<Record<string, unknown>>;
+      const agent = agentList.find((candidate) => candidate.id === agentId);
+      return (getPath(agent, "identity.emoji") as string | undefined)?.trim() || "👀";
+    };
+    expect(resolveForAgent("routed")).toBe("🚀");
+    expect(resolveForAgent("main")).toBe("👀");
+  });
+
   it("reads identity emojis from a canonical keyed agent roster, not just the legacy array (#119501)", () => {
     // codex review: a config already migrated to agents.entries (keyed roster) is
     // a valid current shape, not just a pre-migration one — the receipt must read

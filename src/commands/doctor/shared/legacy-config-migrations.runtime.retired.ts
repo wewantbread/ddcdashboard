@@ -358,36 +358,43 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     visitAgentEntries(raw, (entry) => {
       agentEntries.push(entry);
     });
-    const defaultAgent =
-      agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
-    const identityEmoji = getRecord(getRecord(defaultAgent)?.identity)?.emoji;
     // WhatsApp trims the reaction emoji at send time, so a whitespace-only
-    // legacy value is not effective there — it falls back to per-agent identity
-    // or the default. That normalization is for the receipt text ONLY: the
-    // written value must stay the raw legacy string (including blank/
-    // whitespace) so the same runtime trim-and-fallback still resolves through
-    // each routed agent's own identity. Normalizing the write would bake one
-    // agent's emoji into the global config and break every other agent's
-    // fallback in a multi-agent WhatsApp setup.
+    // legacy value is not effective there — it falls back to per-agent identity,
+    // then "👀". That fallback is per ROUTED agent, not the default agent, so a
+    // blank legacy value only has one universal effective value when every
+    // agent resolves to the same one; otherwise no single written value is safe.
     const effectiveEmoji = (value: unknown): string | undefined => {
       const trimmed = typeof value === "string" ? value.trim() : "";
       return trimmed.length > 0 ? trimmed : undefined;
     };
     const rawEmoji = typeof ack.emoji === "string" ? ack.emoji : undefined;
     const rawEffectiveEmoji = effectiveEmoji(rawEmoji);
-    const defaultIdentityEmoji = effectiveEmoji(identityEmoji);
-    // A blank legacy value falls through to whichever agent handles a given chat, so
-    // the effective emoji is only a single deterministic value when every agent
-    // shares it (or there is one agent). When identities diverge, naming the default
-    // agent's emoji as "the" effective value misdescribes every other agent's route.
-    const distinctIdentityEmojis = new Set(
-      agentEntries
-        .map((value) => effectiveEmoji(getRecord(getRecord(value)?.identity)?.emoji))
-        .filter((value): value is string => value !== undefined),
-    );
-    const routeDependent = rawEffectiveEmoji === undefined && distinctIdentityEmojis.size > 1;
-    const writtenEmoji = rawEmoji ?? defaultIdentityEmoji ?? "👀";
-    const receiptEmoji = rawEffectiveEmoji ?? defaultIdentityEmoji ?? "👀";
+    // Every agent's own resolved fallback (its identity emoji, else "👀" — never
+    // the default agent's identity, which is only one specific agent's route).
+    // No agents at all resolves the same way as one agent with no identity: "👀".
+    const perAgentFallback =
+      agentEntries.length === 0
+        ? new Set(["👀"])
+        : new Set(
+            agentEntries.map(
+              (value) => effectiveEmoji(getRecord(getRecord(value)?.identity)?.emoji) ?? "👀",
+            ),
+          );
+    const universalFallback = perAgentFallback.size === 1 ? [...perAgentFallback][0] : undefined;
+    const routeDependent = rawEffectiveEmoji === undefined && universalFallback === undefined;
+    // A concrete value is only safe to WRITE when it applies to every possible
+    // route: the raw legacy value itself (verbatim, so per-agent trim-and-fallback
+    // still runs at send time), or the one fallback every agent already shares.
+    // Baking in any other single value — even the default agent's own identity —
+    // would silently override every other agent's configured fallback.
+    const writtenEmoji = rawEmoji ?? universalFallback ?? "";
+    // For display only when route-dependent: the default agent's own resolved
+    // fallback is one illustrative example, never the value actually written.
+    const defaultAgent =
+      agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
+    const defaultAgentFallback =
+      effectiveEmoji(getRecord(getRecord(defaultAgent)?.identity)?.emoji) ?? "👀";
+    const receiptEmoji = rawEffectiveEmoji ?? universalFallback ?? defaultAgentFallback;
     const describeEffectiveEmoji = routeDependent
       ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${receiptEmoji}")`
       : `effective legacy emoji "${receiptEmoji}"`;
@@ -408,7 +415,7 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
       // through the same per-agent lookup for any given route).
       const behaviorallyEquivalent = routeDependent
         ? existingEffective === undefined
-        : receiptEmoji === (existingEffective ?? defaultIdentityEmoji ?? "👀");
+        : receiptEmoji === (existingEffective ?? universalFallback ?? "👀");
       if (!behaviorallyEquivalent) {
         kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
       }
