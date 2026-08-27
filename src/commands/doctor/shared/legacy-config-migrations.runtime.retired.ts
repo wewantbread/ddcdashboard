@@ -370,13 +370,28 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
       return trimmed.length > 0 ? trimmed : undefined;
     };
     const rawEmoji = typeof ack.emoji === "string" ? ack.emoji : undefined;
-    const writtenEmoji = rawEmoji ?? effectiveEmoji(identityEmoji) ?? "👀";
-    const receiptEmoji = effectiveEmoji(rawEmoji) ?? effectiveEmoji(identityEmoji) ?? "👀";
+    const rawEffectiveEmoji = effectiveEmoji(rawEmoji);
+    const defaultIdentityEmoji = effectiveEmoji(identityEmoji);
+    // A blank legacy value falls through to whichever agent handles a given chat, so
+    // the effective emoji is only a single deterministic value when every agent
+    // shares it (or there is one agent). When identities diverge, naming the default
+    // agent's emoji as "the" effective value misdescribes every other agent's route.
+    const distinctIdentityEmojis = new Set(
+      agentEntries
+        .map((value) => effectiveEmoji(getRecord(getRecord(value)?.identity)?.emoji))
+        .filter((value): value is string => value !== undefined),
+    );
+    const routeDependent = rawEffectiveEmoji === undefined && distinctIdentityEmojis.size > 1;
+    const writtenEmoji = rawEmoji ?? defaultIdentityEmoji ?? "👀";
+    const receiptEmoji = rawEffectiveEmoji ?? defaultIdentityEmoji ?? "👀";
+    const describeEffectiveEmoji = routeDependent
+      ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${receiptEmoji}")`
+      : `effective legacy emoji "${receiptEmoji}"`;
     if (messages.ackReaction === undefined) {
       messages.ackReaction = writtenEmoji;
-      applied.push(`applied effective legacy emoji "${receiptEmoji}" to messages.ackReaction`);
-    } else if (receiptEmoji !== messages.ackReaction) {
-      kept.push(`kept existing messages.ackReaction over effective legacy emoji "${receiptEmoji}"`);
+      applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);
+    } else if (routeDependent || receiptEmoji !== messages.ackReaction) {
+      kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
     }
     const direct = ack.direct !== false;
     const group = ack.group ?? "mentions";

@@ -765,11 +765,13 @@ describe("retired runtime config migrations", () => {
     // falls through to the *routed* agent's own identity emoji — not the
     // default agent's. Baking a concrete emoji into the write here (the
     // pre-fix regression) would short-circuit that per-agent fallback for
-    // every non-default agent in a multi-agent WhatsApp setup. Normalization
-    // still names the effective "🤖" in the receipt text for readability.
+    // every non-default agent in a multi-agent WhatsApp setup. Since "routed"
+    // and "main" resolve to different identity emojis, the receipt text must
+    // describe the effective value as route-dependent rather than naming the
+    // default agent's "🤖" as though it applied to every agent.
     expect(result.raw).toHaveProperty("messages.ackReaction", " ");
     expect(result.changes).toContain(
-      'Removed channels.whatsapp.ackReaction; applied effective legacy emoji "🤖" to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
+      'Removed channels.whatsapp.ackReaction; applied a route-dependent legacy emoji (varies by agent identity, e.g. "🤖") to messages.ackReaction; kept existing messages.ackReactionScope over legacy scope "direct".',
     );
 
     // Mirrors the trim-then-identity-fallback contract of resolveWhatsAppAckEmoji
@@ -788,6 +790,31 @@ describe("retired runtime config migrations", () => {
     };
     expect(resolveForAgent("routed")).toBe("🚀");
     expect(resolveForAgent("main")).toBe("🤖");
+  });
+
+  it("reports a kept blank legacy emoji as route-dependent in multi-agent WhatsApp (#119501)", () => {
+    // ClawSweeper's exact reproduction: an existing messages.ackReaction survives,
+    // so this hits the "kept" branch rather than "applied" above. Before the fix,
+    // the receipt claimed the default agent's "🤖" was the displaced value even
+    // though "routed" would actually have fallen back to "🚀" — misdescribing a
+    // route-dependent legacy value as a single universal one.
+    const result = applyAll({
+      messages: { ackReaction: "🔥" },
+      agents: {
+        list: [
+          { id: "routed", identity: { emoji: "🚀" } },
+          { default: true, id: "main", identity: { emoji: "🤖" } },
+        ],
+      },
+      channels: {
+        whatsapp: { ackReaction: { emoji: " ", direct: false, group: "always" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🔥");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied legacy scope "group-all" to messages.ackReactionScope; kept existing messages.ackReaction over a route-dependent legacy emoji (varies by agent identity, e.g. "🤖").',
+    );
   });
 
   it("reports the default fallback emoji when no legacy emoji or identity exists", () => {
