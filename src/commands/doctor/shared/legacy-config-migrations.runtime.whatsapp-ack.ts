@@ -82,6 +82,14 @@ export function migrateWhatsAppAckSettings(raw: Record<string, unknown>, changes
     // Every agent's own resolved fallback (its identity emoji, else "👀" — never
     // the default agent's identity, which is only one specific agent's route).
     // No agents at all resolves the same way as one agent with no identity: "👀".
+    // Known gap: a binding can route WhatsApp to an implicit "main" agent that
+    // has no matching agents.entries/list row (main is only implicitly valid
+    // when the config predates a keyed roster). That phantom route is not
+    // modeled here, so a single explicit entry can be misreported as universal
+    // when main would actually fall back to "👀". Resolving this needs reading
+    // every agent's bindings and correlating match.channel/accountId against
+    // this exact WhatsApp entry — real work, but a distinct capability from a
+    // migration-receipt fix; left as a known limitation rather than grown here.
     const perAgentFallback =
       agentEntries.length === 0
         ? new Set(["👀"])
@@ -111,24 +119,26 @@ export function migrateWhatsAppAckSettings(raw: Record<string, unknown>, changes
     const describeEffectiveEmoji = routeDependent
       ? `a route-dependent legacy emoji (varies by agent identity, e.g. "${writtenEmoji}")`
       : `effective legacy emoji "${writtenEmoji}"`;
-    // Before the messages.* consolidation, the legacy resolver returned
-    // ack.emoji.trim() whenever the key was present at all, so an exact "" (or
-    // whitespace) emoji suppressed the ack outright — no identity fallback
-    // (git history: extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts,
-    // PR #111527, "keeps an explicit empty emoji disabled"). messages.ackReaction
-    // can't reproduce a WhatsApp-only disable: every other channel's
-    // resolveAckReaction returns it trimmed with no further fallback, so writing
-    // "" here would silently mute acks on channels the user never touched. Apply
-    // the same concrete fallback as any other blank value, but call out the lost
-    // disable intent explicitly instead of resolving it silently.
-    if (rawEmoji === "") {
-      changes.push(
-        `Note: ${path}.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "${writtenEmoji}" was applied instead. channels.whatsapp.reactionLevel: "off" suppresses WhatsApp reactions again, but also disables agent-initiated reactions; there is no exact ack-only equivalent.`,
-      );
-    }
     if (messages.ackReaction === undefined) {
       messages.ackReaction = writtenEmoji;
       applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);
+      // Before the messages.* consolidation, the legacy resolver returned
+      // ack.emoji.trim() whenever the key was present at all, so an exact ""
+      // emoji suppressed the ack outright — no identity fallback (git history:
+      // extensions/whatsapp/src/auto-reply/monitor/ack-emoji.ts, PR #111527,
+      // "keeps an explicit empty emoji disabled"). messages.ackReaction can't
+      // reproduce a WhatsApp-only disable: every other channel's
+      // resolveAckReaction returns it trimmed with no further fallback, so
+      // writing "" here would silently mute acks on channels the user never
+      // touched. The fallback above is still applied, but this note calls out
+      // the lost disable intent explicitly instead of resolving it silently.
+      // Only emitted when the fallback was actually written — the "kept"
+      // branch below already discloses that the legacy value was dropped.
+      if (rawEmoji === "") {
+        changes.push(
+          `Note: ${path}.ackReaction.emoji was explicitly empty, disabling WhatsApp acknowledgments; messages.ackReaction has no per-channel disable, so fallback emoji "${writtenEmoji}" was applied instead. channels.whatsapp.reactionLevel: "off" suppresses WhatsApp reactions again, but also disables agent-initiated reactions; there is no exact ack-only equivalent.`,
+        );
+      }
     } else {
       const existingRaw = typeof messages.ackReaction === "string" ? messages.ackReaction : "";
       // An exact "" canonical value explicitly disables acks (resolveWhatsAppAckEmoji

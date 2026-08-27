@@ -275,6 +275,26 @@ describe("WhatsApp legacy ackReaction migration", () => {
     );
   });
 
+  it("never claims a fallback was applied when an existing canonical value was kept instead (#119501)", () => {
+    // codex review: the explicit-disable note used to fire whenever the legacy
+    // emoji was exactly "", even when messages.ackReaction already had a value
+    // and the "kept" branch below never wrote the fallback at all — a
+    // contradictory receipt claiming an application that did not happen.
+    const result = applyAll({
+      messages: { ackReaction: "🔥" },
+      agents: { list: [{ default: true, id: "main", identity: { emoji: "🤖" } }] },
+      channels: {
+        whatsapp: { ackReaction: { emoji: "", direct: true, group: "never" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "🔥");
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied legacy scope "direct" to messages.ackReactionScope; kept existing messages.ackReaction over effective legacy emoji "🤖".',
+    );
+    expect(result.changes.some((change) => change.includes("was explicitly empty"))).toBe(false);
+  });
+
   it("reports the default fallback emoji when no legacy emoji or identity exists", () => {
     const result = applyAll({
       messages: { ackReaction: "🔥" },
