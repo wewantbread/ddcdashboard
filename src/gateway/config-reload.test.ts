@@ -847,7 +847,7 @@ function createReloaderHarness(
       ownership: GatewayConfigReloadTransactionOwnership,
       sourceConfig: OpenClawConfig,
       acceptance: {
-        runtimeApplied: boolean;
+        application: "applied" | "restart-pending" | "skipped";
         publishSource?: () => Promise<() => Promise<void>>;
       },
     ) => void | (() => Promise<void>) | Promise<void | (() => Promise<void>)>;
@@ -1036,7 +1036,7 @@ describe("startGatewayConfigReloader include files", () => {
     await symlink(includePath, includeLinkPath);
     const configIo = createConfigIO({
       configPath,
-      env: {},
+      env: { OPENCLAW_STATE_DIR: rootDir },
       homedir: () => rootDir,
       observe: false,
       pluginValidation: "skip",
@@ -1100,7 +1100,7 @@ describe("startGatewayConfigReloader include files", () => {
     await symlink(outsideIncludePath, includeLinkPath);
     const configIo = createConfigIO({
       configPath,
-      env: {},
+      env: { OPENCLAW_STATE_DIR: rootDir },
       homedir: () => rootDir,
       observe: false,
       pluginValidation: "skip",
@@ -2000,6 +2000,48 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.onRestart).not.toHaveBeenCalled();
     await harness.reloader.stop();
   });
+
+  it.each([false, true])(
+    "replans a deferred config revert against active plugin installs (index changed: %s)",
+    async (pluginIndexChanged) => {
+      const initialConfig = makeGatewayPortConfig(18789);
+      let config = makeGatewayPortConfig(18790);
+      let hash = "deferred-config";
+      const installRecords: Record<string, PluginInstallRecord> = pluginIndexChanged
+        ? { example: { source: "npm", spec: "example-plugin@2.0.0" } }
+        : {};
+      const harness = createReloaderHarness(async () => makeSnapshot({ config, hash }), {
+        initialConfig,
+        readPluginInstallRecords: async () => installRecords,
+      });
+      try {
+        await flushWatcherChange(harness);
+        expect(harness.onRestart).toHaveBeenCalledOnce();
+
+        config = initialConfig;
+        hash = "runtime-baseline-revert";
+        await flushWatcherChange(harness);
+
+        expect(harness.onHotReload).not.toHaveBeenCalled();
+        expect(harness.onNoopConfigCommit).not.toHaveBeenCalled();
+        expect(harness.onConfigAccepted).toHaveBeenCalledTimes(2);
+        if (pluginIndexChanged) {
+          expect(harness.onRestart).toHaveBeenCalledTimes(2);
+          expect(harness.onRestart.mock.calls[1]?.[0].restartReasons).toEqual([
+            "plugins.installs.example",
+          ]);
+          expect(harness.onConfigRevisionApplied).not.toHaveBeenCalled();
+        } else {
+          expect(harness.onRestart).toHaveBeenCalledOnce();
+          expect(harness.onConfigRevisionApplied).toHaveBeenCalledWith(
+            hashRuntimeConfigValue(initialConfig),
+          );
+        }
+      } finally {
+        await harness.reloader.stop();
+      }
+    },
+  );
 
   it("reaccepts a same-hash watcher echo after synchronously pausing lifecycle work", async () => {
     const initialConfig = {
@@ -3545,7 +3587,7 @@ describe("startGatewayConfigReloader", () => {
       expected: "candidate",
     },
   ] as const)(
-    "publishes config env only for a runtime-applied $label transaction",
+    "publishes config env only for an applied or restart-admitted $label transaction",
     async (testCase) => {
       const envKey = "OPENCLAW_TEST_RELOAD_TRANSACTION_ENV";
       const targetEnv: NodeJS.ProcessEnv = { [envKey]: "old" };
@@ -3915,7 +3957,7 @@ describe("startGatewayConfigReloader", () => {
       freshConfig,
       expect.any(Object),
       freshConfig,
-      { runtimeApplied: true },
+      { application: "applied" },
     );
     expect(harness.log.info).not.toHaveBeenCalledWith(
       "config reload skipped by writer intent (stale resolved intent)",
@@ -3969,7 +4011,7 @@ describe("startGatewayConfigReloader", () => {
       runtimeConfig,
       expect.any(Object),
       sourceConfig,
-      { runtimeApplied: false },
+      { application: "skipped" },
     );
     expect(harness.onRestart).not.toHaveBeenCalled();
     expect(harness.onHotReload).not.toHaveBeenCalled();
@@ -4179,8 +4221,8 @@ describe("startGatewayConfigReloader", () => {
     await flushWatcherChange(harness);
 
     expect(harness.onConfigAccepted.mock.calls.map((call) => call[3])).toEqual([
-      { runtimeApplied: false },
-      { runtimeApplied: false },
+      { application: "skipped" },
+      { application: "skipped" },
     ]);
     expect(originalOwnership?.isCurrent()).toBe(false);
     const reboundOwnership = harness.onConfigAccepted.mock.calls[1]?.[1];
@@ -4777,53 +4819,63 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("forces a plugin reload when signaled metadata leaves config and install records identical", async () => {
-    const activeConfig: OpenClawConfig = {
-      gateway: { reload: {} },
-    };
-    const installRecords = {
-      brave: {
-        source: "npm",
-        spec: "@openclaw/brave",
-        installPath: "/tmp/openclaw/plugins/brave",
-      },
-    } satisfies Record<string, PluginInstallRecord>;
-    const readSnapshot = vi.fn(async () =>
-      makeSnapshot({
-        sourceConfig: activeConfig,
-        runtimeConfig: activeConfig,
-        config: activeConfig,
-        hash: "unchanged-config",
-      }),
-    );
-    const readPluginInstallRecords = vi.fn(async () => ({ ...installRecords }));
-    const harness = createReloaderHarness(readSnapshot, {
-      initialConfig: activeConfig,
-      initialCompareConfig: activeConfig,
-      initialPluginInstallRecords: installRecords,
-      readPluginInstallRecords,
-    });
+  it.each([false, true])(
+    "applies signaled plugin metadata with identical runtime config (deferred revert: %s)",
+    async (deferredRevert) => {
+      const activeConfig: OpenClawConfig = {
+        gateway: { reload: {} },
+      };
+      let candidateConfig = deferredRevert ? makeGatewayPortConfig(18790) : activeConfig;
+      const installRecords = {
+        brave: {
+          source: "npm",
+          spec: "@openclaw/brave",
+          installPath: "/tmp/openclaw/plugins/brave",
+        },
+      } satisfies Record<string, PluginInstallRecord>;
+      const readSnapshot = vi.fn(async () =>
+        makeSnapshot({
+          sourceConfig: candidateConfig,
+          runtimeConfig: candidateConfig,
+          config: candidateConfig,
+          hash: "unchanged-config",
+        }),
+      );
+      const readPluginInstallRecords = vi.fn(async () => ({ ...installRecords }));
+      const harness = createReloaderHarness(readSnapshot, {
+        initialConfig: activeConfig,
+        initialCompareConfig: activeConfig,
+        initialPluginInstallRecords: installRecords,
+        readPluginInstallRecords,
+      });
 
-    harness.reloader.notifyPluginMetadataChanged();
-    await vi.runOnlyPendingTimersAsync();
+      harness.reloader.notifyPluginMetadataChanged();
+      await vi.runOnlyPendingTimersAsync();
+      if (deferredRevert) {
+        expect(harness.onRestart).toHaveBeenCalledOnce();
+        candidateConfig = activeConfig;
+        harness.watcher.emit("change");
+        await vi.runOnlyPendingTimersAsync();
+      }
 
-    expect(harness.onRestart).not.toHaveBeenCalled();
-    const [plan, nextConfig] = getOnlyHotReloadCall(harness);
-    expect(plan.changedPaths).toEqual([]);
-    expect(plan.restartGateway).toBe(false);
-    expect(plan.reloadPlugins).toBe(true);
-    expect(plan.disposeMcpRuntimes).toBe(true);
-    expect(nextConfig).toBe(activeConfig);
+      expect(harness.onRestart).toHaveBeenCalledTimes(deferredRevert ? 1 : 0);
+      const [plan, nextConfig] = getOnlyHotReloadCall(harness);
+      expect(plan.changedPaths).toEqual([]);
+      expect(plan.restartGateway).toBe(false);
+      expect(plan.reloadPlugins).toBe(true);
+      expect(plan.disposeMcpRuntimes).toBe(true);
+      expect(nextConfig).toBe(activeConfig);
 
-    // The refresh is consumed by the committed reload: a later watcher echo of
-    // identical bytes must not replace the plugin runtime generation again.
-    harness.watcher.emit("change");
-    await vi.runOnlyPendingTimersAsync();
-    expect(harness.onHotReload).toHaveBeenCalledTimes(1);
-    expect(harness.onRestart).not.toHaveBeenCalled();
+      // The refresh is consumed by the committed reload: a later watcher echo of
+      // identical bytes must not replace the plugin runtime generation again.
+      harness.watcher.emit("change");
+      await vi.runOnlyPendingTimersAsync();
+      expect(harness.onHotReload).toHaveBeenCalledTimes(1);
+      expect(harness.onRestart).toHaveBeenCalledTimes(deferredRevert ? 1 : 0);
 
-    await harness.reloader.stop();
-  });
+      await harness.reloader.stop();
+    },
+  );
 
   it("keeps external plugin policy-only writes on the hot reload path", async () => {
     const previousConfig: OpenClawConfig = {
