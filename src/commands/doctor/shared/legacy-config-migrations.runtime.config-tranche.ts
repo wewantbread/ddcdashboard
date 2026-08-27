@@ -3,7 +3,8 @@ import { ensureRecord, getRecord } from "../../../config/legacy.shared.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../../../routing/account-id.js";
 import { deleteRetiredPath } from "./legacy-config-record-shared.js";
 
-function visitAgentEntries(
+/** Visits every configured agent entry across both the keyed and legacy-array rosters. */
+export function visitAgentEntries(
   raw: Record<string, unknown>,
   visitor: (entry: Record<string, unknown>, path: string) => void,
 ): void {

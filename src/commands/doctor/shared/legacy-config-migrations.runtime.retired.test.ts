@@ -817,6 +817,64 @@ describe("retired runtime config migrations", () => {
     );
   });
 
+  it("reads identity emojis from a canonical keyed agent roster, not just the legacy array (#119501)", () => {
+    // codex review: a config already migrated to agents.entries (keyed roster) is
+    // a valid current shape, not just a pre-migration one — the receipt must read
+    // it too, or it silently reports the universal "👀" fallback for every real,
+    // routable agent identity.
+    const result = applyAll({
+      messages: { ackReaction: "🔥" },
+      agents: {
+        entries: {
+          routed: { identity: { emoji: "🚀" } },
+          main: { default: true, identity: { emoji: "🤖" } },
+        },
+      },
+      channels: {
+        whatsapp: { ackReaction: { emoji: " ", direct: false, group: "always" } },
+      },
+    });
+
+    expect(result.changes).toContain(
+      'Removed channels.whatsapp.ackReaction; applied legacy scope "group-all" to messages.ackReactionScope; kept existing messages.ackReaction over a route-dependent legacy emoji (varies by agent identity, e.g. "🤖").',
+    );
+  });
+
+  it("treats a trimmed-equivalent canonical value as a clean move, not a shadowed conflict (#119501)", () => {
+    // codex review: comparing raw strings instead of effective (trimmed) values
+    // misreported "✅" vs " ✅ " — and blank-vs-blank in a multi-agent setup — as
+    // the canonical value shadowing legacy intent, when they behave identically.
+    const result = applyAll({
+      messages: { ackReaction: " ✅ " },
+      channels: { whatsapp: { ackReaction: { emoji: "✅", direct: false, group: "always" } } },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", " ✅ ");
+    expect(result.changes).toContain(
+      "Moved translatable channels.whatsapp.ackReaction settings to messages ack settings.",
+    );
+  });
+
+  it("treats blank-vs-blank as equivalent even when identities diverge by route (#119501)", () => {
+    const result = applyAll({
+      messages: { ackReaction: "   " },
+      agents: {
+        list: [
+          { id: "routed", identity: { emoji: "🚀" } },
+          { default: true, id: "main", identity: { emoji: "🤖" } },
+        ],
+      },
+      channels: {
+        whatsapp: { ackReaction: { emoji: " ", direct: false, group: "always" } },
+      },
+    });
+
+    expect(result.raw).toHaveProperty("messages.ackReaction", "   ");
+    expect(result.changes).toContain(
+      "Moved translatable channels.whatsapp.ackReaction settings to messages ack settings.",
+    );
+  });
+
   it("reports the default fallback emoji when no legacy emoji or identity exists", () => {
     const result = applyAll({
       messages: { ackReaction: "🔥" },

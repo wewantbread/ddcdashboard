@@ -10,6 +10,7 @@ import {
 import {
   hasConfigTrancheLegacyKeys,
   migrateConfigTranche,
+  visitAgentEntries,
 } from "./legacy-config-migrations.runtime.config-tranche.js";
 import {
   consolidateMediaCapabilityConfig,
@@ -350,10 +351,13 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     // Resolve both legacy halves before deciding, so the receipt compares the
     // same effective values the assignment would have written — an omitted
     // emoji still resolves through agent identity or the default.
-    const legacyAgents = getRecord(raw.agents)?.list;
-    const agentEntries = Array.isArray(legacyAgents)
-      ? legacyAgents.filter((value): value is Record<string, unknown> => Boolean(getRecord(value)))
-      : [];
+    // Covers both the canonical keyed roster (agents.entries) and the legacy
+    // array (agents.list) — a config already migrated to keyed entries must
+    // still be read for this receipt, not just the pre-migration array shape.
+    const agentEntries: Record<string, unknown>[] = [];
+    visitAgentEntries(raw, (entry) => {
+      agentEntries.push(entry);
+    });
     const defaultAgent =
       agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
     const identityEmoji = getRecord(getRecord(defaultAgent)?.identity)?.emoji;
@@ -390,8 +394,24 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     if (messages.ackReaction === undefined) {
       messages.ackReaction = writtenEmoji;
       applied.push(`applied ${describeEffectiveEmoji} to messages.ackReaction`);
-    } else if (routeDependent || receiptEmoji !== messages.ackReaction) {
-      kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
+    } else {
+      // Compare effective (trimmed) behavior, not raw strings: a canonical value
+      // that trims to the same emoji as the legacy one — including both being
+      // blank, which always falls back through the same per-agent identity
+      // regardless of route — is not a real conflict, even when route-dependent.
+      const existingEffective = effectiveEmoji(
+        typeof messages.ackReaction === "string" ? messages.ackReaction : undefined,
+      );
+      // The canonical value resolves through the identical fallback chain at
+      // runtime, so mirror it here: a blank canonical value is exactly as
+      // route-dependent as a blank legacy one (both blank means both resolve
+      // through the same per-agent lookup for any given route).
+      const behaviorallyEquivalent = routeDependent
+        ? existingEffective === undefined
+        : receiptEmoji === (existingEffective ?? defaultIdentityEmoji ?? "👀");
+      if (!behaviorallyEquivalent) {
+        kept.push(`kept existing messages.ackReaction over ${describeEffectiveEmoji}`);
+      }
     }
     const direct = ack.direct !== false;
     const group = ack.group ?? "mentions";
