@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { clearConfigCache, clearRuntimeConfigSnapshot } from "../src/config/config.js";
+import {
+  clearConfigCache,
+  clearRuntimeConfigSnapshot,
+  type OpenClawConfig,
+} from "../src/config/config.js";
 import {
   disconnectGatewayClient,
   startGatewayWithClient,
