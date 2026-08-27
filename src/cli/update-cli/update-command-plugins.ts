@@ -289,6 +289,20 @@ export async function updatePluginsAfterCoreUpdate(params: {
     warnings.push(createPostUpdatePluginWarning({ reason: error }));
   }
   let pluginConfig = syncResult.config;
+  const successfullySynchronizedPluginIds = new Set([
+    ...syncResult.summary.switchedToClawHub,
+    ...syncResult.summary.switchedToNpm,
+  ]);
+  const recordSuccessfulSynchronizations = (
+    outcomes: readonly PluginUpdateOutcome[],
+    includeUnchanged = false,
+  ) => {
+    for (const outcome of outcomes) {
+      if (outcome.status === "updated" || (includeUnchanged && outcome.status === "unchanged")) {
+        successfullySynchronizedPluginIds.add(outcome.pluginId);
+      }
+    }
+  };
   const integrityDrifts: PostCorePluginUpdateResult["integrityDrifts"] = [];
   const pluginUpdateOutcomes: PluginUpdateOutcome[] = [];
   let pluginsChanged = syncResult.changed || params.configChanged === true;
@@ -321,12 +335,14 @@ export async function updatePluginsAfterCoreUpdate(params: {
   const collectMissingPayloadWarnings = async (
     records: Record<string, PluginInstallRecord>,
   ): Promise<readonly string[]> => {
-    const missing = await collectMissingPluginInstallPayloads({
-      records,
-      config: pluginConfig,
-      skipDisabledPlugins: true,
-      syncOfficialPluginInstalls: true,
-    });
+    const missing = (
+      await collectMissingPluginInstallPayloads({
+        records,
+        config: pluginConfig,
+        skipDisabledPlugins: true,
+        syncOfficialPluginInstalls: true,
+      })
+    ).filter((entry) => !successfullySynchronizedPluginIds.has(entry.pluginId));
     if (missing.length === 0) {
       return [];
     }
@@ -362,6 +378,8 @@ export async function updatePluginsAfterCoreUpdate(params: {
     pluginConfig = repairResult.config;
     pluginsChanged ||= repairResult.changed;
     npmPluginsChanged ||= repairResult.changed;
+    // Missing-payload repair can reinstall the same version and report "unchanged".
+    recordSuccessfulSynchronizations(repairResult.outcomes, true);
     pluginUpdateOutcomes.push(...repairResult.outcomes);
     return missingIds;
   };
@@ -388,6 +406,7 @@ export async function updatePluginsAfterCoreUpdate(params: {
   pluginConfig = npmResult.config;
   pluginsChanged ||= npmResult.changed;
   npmPluginsChanged ||= npmResult.changed;
+  recordSuccessfulSynchronizations(npmResult.outcomes);
   for (const rawOutcome of npmResult.outcomes) {
     const includeWarningInReason =
       params.opts.json || !rawOutcome.warning || !hasLoggedPluginWarning(rawOutcome.warning);
@@ -437,6 +456,7 @@ export async function updatePluginsAfterCoreUpdate(params: {
     cfg: pluginConfig,
     env: process.env,
     baselineInstallRecords: convergenceBaselineRecords,
+    successfullySynchronizedPluginIds,
     ...clawHubRiskAcknowledgementOptions,
   });
   for (const change of convergence.changes) {

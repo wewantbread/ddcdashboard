@@ -580,6 +580,7 @@ describe("runPostCorePluginConvergence", () => {
         plugins: { entries: { brave: { enabled: true } } },
       } as unknown as OpenClawConfig,
       env: {},
+      successfullySynchronizedPluginIds: new Set(["brave"]),
     });
     expect(result.errored).toBe(true);
     expect(result.warnings).toStrictEqual([

@@ -161,6 +161,8 @@ export async function runPostCorePluginConvergence(params: {
    * map is what gets persisted and returned via `installRecords`.
    */
   baselineInstallRecords?: Record<string, PluginInstallRecord>;
+  /** Skip duplicate install repair only; peer-link and payload checks still run. */
+  successfullySynchronizedPluginIds?: ReadonlySet<string>;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
 }): Promise<PostCoreConvergenceResult> {
@@ -192,6 +194,9 @@ export async function runPostCorePluginConvergence(params: {
     cfg: params.cfg,
     env,
     ...(prunedBaseline ? { baselineRecords: prunedBaseline.records } : {}),
+    ...(params.successfullySynchronizedPluginIds?.size
+      ? { skipPluginIds: params.successfullySynchronizedPluginIds }
+      : {}),
     ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
     ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
   });

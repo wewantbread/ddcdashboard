@@ -70,6 +70,8 @@ export async function repairMissingConfiguredPluginInstalls(params: {
   env?: NodeJS.ProcessEnv;
   acknowledgeClawHubRisk?: boolean;
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
+  /** Plugin installs already completed by the current update operation. */
+  skipPluginIds?: ReadonlySet<string>;
   /**
    * Optional pre-seeded records. When provided, this map is used instead of
    * the disk-loaded install-record snapshot. Pass the in-memory records
@@ -85,6 +87,7 @@ export async function repairMissingConfiguredPluginInstalls(params: {
     pluginIds: collectConfiguredPluginIds(params.cfg, params.env),
     channelIds: collectConfiguredChannelIds(params.cfg, params.env),
     blockedPluginIds: collectBlockedPluginIds(params.cfg),
+    skipPluginIds: params.skipPluginIds,
     ...(params.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
     ...(params.onClawHubRisk ? { onClawHubRisk: params.onClawHubRisk } : {}),
     ...(params.baselineRecords ? { baselineRecords: params.baselineRecords } : {}),
@@ -129,6 +132,7 @@ async function repairMissingPluginInstalls(params: {
   pluginIds: ReadonlySet<string>;
   channelIds: ReadonlySet<string>;
   blockedPluginIds?: ReadonlySet<string>;
+  skipPluginIds?: ReadonlySet<string>;
   env?: NodeJS.ProcessEnv;
   baselineRecords?: Record<string, PluginInstallRecord>;
   acknowledgeClawHubRisk?: boolean;
@@ -160,7 +164,7 @@ async function repairMissingPluginInstalls(params: {
   const deferredRepairDetails: string[] = [];
   const failedPluginIds = new Set<string>();
   const repairedPluginIds = new Set<string>();
-  const deferredPluginIds = new Set<string>();
+  const repairExcludedPluginIds = new Set(params.skipPluginIds);
   const preferNpmInstalls = isLegacyPackageUpdateDoctorPass(env);
   let nextRecords = records;
 
@@ -186,7 +190,7 @@ async function repairMissingPluginInstalls(params: {
       blockedPluginIds: params.blockedPluginIds,
     });
     for (const pluginId of updateDeferredPluginIds) {
-      deferredPluginIds.add(pluginId);
+      repairExcludedPluginIds.add(pluginId);
       const record = nextRecords[pluginId];
       if (!record || !isInstalledRecordMissingOnDisk(record, env)) {
         continue;
@@ -199,7 +203,7 @@ async function repairMissingPluginInstalls(params: {
 
   const missingRecordedPluginIds = Object.keys(records).filter(
     (pluginId) =>
-      !deferredPluginIds.has(pluginId) &&
+      !repairExcludedPluginIds.has(pluginId) &&
       !officialReplacementPluginIds.has(pluginId) &&
       Object.hasOwn(nextRecords, pluginId) &&
       !bundledPluginsById.has(pluginId) &&
@@ -276,7 +280,7 @@ async function repairMissingPluginInstalls(params: {
 
   const missingPluginIds = new Set(
     [...params.pluginIds].filter((pluginId) => {
-      if (deferredPluginIds.has(pluginId)) {
+      if (repairExcludedPluginIds.has(pluginId)) {
         return false;
       }
       const hasRecord = Object.hasOwn(nextRecords, pluginId);
@@ -297,8 +301,8 @@ async function repairMissingPluginInstalls(params: {
     configuredChannelIds: params.channelIds,
     configuredChannelOwnerPluginIds,
     blockedPluginIds:
-      deferredPluginIds.size > 0
-        ? new Set([...(params.blockedPluginIds ?? []), ...deferredPluginIds])
+      repairExcludedPluginIds.size > 0
+        ? new Set([...(params.blockedPluginIds ?? []), ...repairExcludedPluginIds])
         : params.blockedPluginIds,
   })) {
     if (bundledPluginsById.has(candidate.pluginId)) {
