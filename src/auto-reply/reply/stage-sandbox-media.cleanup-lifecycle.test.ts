@@ -326,9 +326,7 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
         agentCfg: (cfg as { agents?: { defaults?: unknown } }).agents?.defaults ?? {},
         sessionCfg: undefined,
         commandAuthorized: true,
-        command: { commandBodyNormalized: "" } as unknown as Parameters<
-          typeof runPreparedReply
-        >[0]["command"],
+        command: { commandBodyNormalized: "" },
         allowTextCommands: true,
         directives: {
           hasThinkDirective: false,
@@ -341,15 +339,15 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
           hasQueueDirective: false,
           hasTraceDirective: false,
           hasStatusDirective: false,
-        } as unknown as Parameters<typeof runPreparedReply>[0]["directives"],
+        },
         defaultActivation: "always",
         resolvedThinkLevel: "off",
         typing: {
           cleanup: () => {},
           onReplyStart: async () => {},
-        } as unknown as Parameters<typeof runPreparedReply>[0]["typing"],
+        },
         opts: runOpts,
-      });
+      } as unknown as Parameters<typeof runPreparedReply>[0]);
 
       expect(emptyReply).toBeDefined();
       const removed = await waitForDirectoryRemoval(stagingDir);
