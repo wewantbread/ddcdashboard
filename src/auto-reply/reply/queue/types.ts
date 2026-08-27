@@ -20,6 +20,7 @@ import type { SessionEntry, SessionToolOverrides } from "../../../config/session
 import type { ReplyToMode } from "../../../config/types.base.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../../../config/types.tools.js";
+import { logVerbose } from "../../../globals.js";
 import type { MediaFact } from "../../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import type { PluginHookChannelContext } from "../../../plugins/hook-types.js";
@@ -338,7 +339,11 @@ export function cleanHostWorkspaceStaging(run: Pick<FollowupRun, "hostWorkspaceS
   const hostWorkspaceStagingDir = run.hostWorkspaceStagingDir;
   if (hostWorkspaceStagingDir) {
     delete run.hostWorkspaceStagingDir;
-    void fs.rm(hostWorkspaceStagingDir, { recursive: true, force: true }).catch(() => {});
+    void fs.rm(hostWorkspaceStagingDir, { recursive: true, force: true }).catch((err: unknown) => {
+      logVerbose(
+        `Failed to clean host workspace staging directory: ${hostWorkspaceStagingDir} (${err instanceof Error ? err.message : String(err)})`,
+      );
+    });
   }
 }
 
