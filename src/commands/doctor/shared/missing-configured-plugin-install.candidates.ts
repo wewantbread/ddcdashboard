@@ -1,3 +1,4 @@
+import path from "node:path";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { listRawChannelPluginCatalogEntries } from "../../../channels/plugins/catalog.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -23,8 +24,10 @@ import {
   resolveOfficialExternalPluginInstall,
   resolveOfficialExternalPluginLabel,
 } from "../../../plugins/official-external-plugin-catalog.js";
+import { safeRealpathSync } from "../../../plugins/path-safety.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
 import { resolveProviderInstallCatalogEntries } from "../../../plugins/provider-install-catalog.js";
+import { buildPluginDependencyStatus } from "../../../plugins/status-dependencies-core.js";
 import { resolveUserPath } from "../../../utils.js";
 import { VERSION } from "../../../version.js";
 import {
@@ -107,15 +110,30 @@ export async function resolveConfiguredPluginInstallContext(params: {
       configuredPluginIds: params.configuredPluginIds,
       updateChannel,
     });
+  const installedPluginIdsWithMissingRequiredDependencies =
+    collectInstalledPluginMissingRequiredDependencies({
+      snapshot,
+      installRecords: records,
+      env: params.env,
+    });
   const installedPluginIdsWithRepairablePackages = new Set([
     ...installedPluginIdsWithRepairablePackageDiagnostics,
+    ...installedPluginIdsWithMissingRequiredDependencies.keys(),
     ...installedPluginIdsWithStaleVersionBoundRuntimePackages,
   ]);
+  // Missing-dependency plugins repair through the persisted-record updater (it
+  // retains the active tree so the installer materializes a fresh generation);
+  // keep them out of the official-replacement route so a mismatched official
+  // candidate cannot suppress that repair.
   const officialReplacementPluginIds = new Set(
     collectOfficialReplacementInstallCandidates({
       cfg: params.cfg,
       env: params.env,
-      repairablePluginIds: installedPluginIdsWithRepairablePackages,
+      repairablePluginIds: new Set(
+        [...installedPluginIdsWithRepairablePackages].filter(
+          (pluginId) => !installedPluginIdsWithMissingRequiredDependencies.has(pluginId),
+        ),
+      ),
       configuredPluginIds: params.configuredPluginIds,
       configuredChannelIds: params.configuredChannelIds,
       configuredChannelOwnerPluginIds,
@@ -129,6 +147,7 @@ export async function resolveConfiguredPluginInstallContext(params: {
     configuredPluginIdsWithStaleDescriptors,
     records,
     updateChannel,
+    installedPluginIdsWithMissingRequiredDependencies,
     installedPluginIdsWithRepairablePackageDiagnostics,
     installedPluginIdsWithStaleVersionBoundRuntimePackages,
     installedPluginIdsWithRepairablePackages,
@@ -451,6 +470,61 @@ function collectInstalledPluginIdsWithRepairablePackageDiagnostics(params: {
     }
   }
   return pluginIds;
+}
+
+function activePluginMatchesRepairableInstallRecord(params: {
+  rootDir: string;
+  record: PluginInstallRecord | undefined;
+  env: NodeJS.ProcessEnv;
+}): boolean {
+  if (params.record?.source !== "npm") {
+    return false;
+  }
+  const recordInstallPath = params.record.installPath?.trim();
+  if (!recordInstallPath) {
+    return false;
+  }
+  // Canonical-identity match: only repair the tree the persisted record owns,
+  // never a same-id plugin loaded from an unrelated path.
+  const installPath = resolveUserPath(recordInstallPath, params.env);
+  const pluginRoot = resolveUserPath(params.rootDir, params.env);
+  const canonicalPluginRoot = safeRealpathSync(pluginRoot) ?? path.resolve(pluginRoot);
+  const canonicalInstallPath = safeRealpathSync(installPath) ?? path.resolve(installPath);
+  return canonicalPluginRoot === canonicalInstallPath;
+}
+
+/**
+ * Managed installs can end up with a package payload whose declared required
+ * dependencies are absent from the dependency tree (for example an interrupted
+ * npm install); the plugin then loads at startup but dies at import time.
+ * Maps each active, record-backed installed plugin to its missing required packages.
+ */
+function collectInstalledPluginMissingRequiredDependencies(params: {
+  snapshot: PluginMetadataSnapshot;
+  installRecords: Record<string, PluginInstallRecord>;
+  env: NodeJS.ProcessEnv;
+}): Map<string, string[]> {
+  const missingByPluginId = new Map<string, string[]>();
+  for (const plugin of params.snapshot.plugins) {
+    if (
+      !activePluginMatchesRepairableInstallRecord({
+        rootDir: plugin.rootDir,
+        record: params.installRecords[plugin.id],
+        env: params.env,
+      })
+    ) {
+      continue;
+    }
+    const dependencyStatus = buildPluginDependencyStatus({
+      rootDir: plugin.rootDir,
+      dependencies: plugin.packageDependencies,
+      optionalDependencies: plugin.packageOptionalDependencies,
+    });
+    if (dependencyStatus.hasDependencies && !dependencyStatus.requiredInstalled) {
+      missingByPluginId.set(plugin.id, dependencyStatus.missing);
+    }
+  }
+  return missingByPluginId;
 }
 
 function resolveInstalledRuntimePackageVersion(params: {
