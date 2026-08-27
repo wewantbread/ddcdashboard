@@ -135,6 +135,7 @@ let getLeasedSharedCodexAppServerClient: typeof import("./shared-client.js").get
 let isCodexAppServerStartSelectionChangedError: typeof import("./shared-client.js").isCodexAppServerStartSelectionChangedError;
 let retainSharedCodexAppServerClientIfCurrent: typeof import("./shared-client.js").retainSharedCodexAppServerClientIfCurrent;
 let retainSharedCodexAppServerClientByInstanceId: typeof import("./shared-client.js").retainSharedCodexAppServerClientByInstanceId;
+let retainBoundCodexAppServerClient: typeof import("./shared-client.js").retainBoundCodexAppServerClient;
 let releaseLeasedSharedCodexAppServerClient: typeof import("./shared-client.js").releaseLeasedSharedCodexAppServerClient;
 let releaseCodexAppServerClientLease: typeof import("./shared-client.js").releaseCodexAppServerClientLease;
 let resolveCodexNativeConfigFenceKey: typeof import("./shared-client.js").resolveCodexNativeConfigFenceKey;
@@ -258,6 +259,7 @@ describe("shared Codex app-server client", () => {
       isCodexAppServerStartSelectionChangedError,
       retainSharedCodexAppServerClientIfCurrent,
       retainSharedCodexAppServerClientByInstanceId,
+      retainBoundCodexAppServerClient,
       releaseLeasedSharedCodexAppServerClient,
       releaseCodexAppServerClientLease,
       resolveCodexNativeConfigFenceKey,
@@ -588,6 +590,91 @@ describe("shared Codex app-server client", () => {
     expect(harness.stdinDestroyed).toBe(false);
     expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
     expect(harness.stdinDestroyed).toBe(true);
+  });
+
+  it("retains a gracefully-detached but still-live bound owner through the live-client registry", async () => {
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValue(harness.client);
+    const acquire = getLeasedSharedCodexAppServerClient({ timeoutMs: 1_000 });
+    await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
+    const client = await acquire;
+    const instanceId = client.getInstanceId();
+
+    // Graceful retirement detaches the entry from the acquisition map while the
+    // held lease keeps the physical process alive and still owning its thread.
+    expect(retireSharedCodexAppServerClientIfCurrent(client)).toEqual({
+      activeLeases: 1,
+      closed: false,
+    });
+    // The keyed-by-id lookup no longer sees the detached owner...
+    expect(retainSharedCodexAppServerClientByInstanceId(instanceId)).toBeUndefined();
+    // ...but the bound-owner retain reaches it through the live-client registry,
+    // so automatic compaction still runs on the process that owns the thread.
+    const bound = retainBoundCodexAppServerClient(instanceId);
+    expect(bound?.client).toBe(client);
+    expect(harness.process.stdin.destroyed).toBe(false);
+
+    // Every retain is paired with its release: the intermediate release keeps
+    // the still-leased process open, and only the final release drains it, so no
+    // residue remains for a later bound lookup.
+    bound?.release();
+    expect(harness.process.stdin.destroyed).toBe(false);
+    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
+    expect(harness.process.stdin.destroyed).toBe(true);
+    expect(retainBoundCodexAppServerClient(instanceId)).toBeUndefined();
+  });
+
+  it("never retains a mismatched id or a dying bound owner", async () => {
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValue(harness.client);
+    const acquire = getLeasedSharedCodexAppServerClient({ timeoutMs: 1_000 });
+    await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
+    const client = await acquire;
+    const instanceId = client.getInstanceId();
+
+    // Identity gate: a non-matching or blank id resolves no owner even while a
+    // live client exists.
+    expect(retainBoundCodexAppServerClient(`${instanceId}-mismatch`)).toBeUndefined();
+    expect(retainBoundCodexAppServerClient("   ")).toBeUndefined();
+
+    // A suspect retirement marks the entry dying (closeError); a dying owner is
+    // rejected rather than leased into a doomed compaction request.
+    retireSharedCodexAppServerClientIfCurrent(client, { failActiveLeases: true });
+    expect(retainBoundCodexAppServerClient(instanceId)).toBeUndefined();
+    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
+  });
+
+  it("takes the bound-owner lease synchronously so an unclaimed clear cannot evict it mid-acquire", async () => {
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValue(harness.client);
+    const acquire = getLeasedSharedCodexAppServerClient({ timeoutMs: 1_000 });
+    await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
+    const client = await acquire;
+    const instanceId = client.getInstanceId();
+    // Drop the acquisition lease so the entry is idle and eligible for an
+    // unclaimed clear — the state a racing cleanup would try to reclaim.
+    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
+
+    // KNOWN BOUNDARY: the bound-owner retain takes the entry lease in the same
+    // synchronous tick as its liveness check, so a cleanup racing the acquire
+    // cannot evict the owner between the two.
+    const bound = retainBoundCodexAppServerClient(instanceId);
+    expect(bound?.client).toBe(client);
+    expect(clearSharedCodexAppServerClientIfCurrentAndUnclaimed(client)).toEqual({
+      found: true,
+      closed: false,
+      activeLeases: 1,
+      pendingAcquires: 0,
+    });
+    expect(harness.process.stdin.destroyed).toBe(false);
+
+    bound?.release();
+    expect(clearSharedCodexAppServerClientIfCurrentAndUnclaimed(client)).toMatchObject({
+      found: true,
+      closed: true,
+      activeLeases: 0,
+    });
+    expect(harness.process.stdin.destroyed).toBe(true);
   });
 
   it.each(["fails", "succeeds"])(

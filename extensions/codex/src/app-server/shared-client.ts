@@ -1374,6 +1374,43 @@ export function captureExclusiveSharedCodexAppServerClient(
 }
 
 /**
+ * Retains the exact physical client that owns a bound thread so a privileged
+ * same-thread request (automatic compaction) runs on the process that created
+ * the thread. codex-rs keeps threads in a per-process in-memory map, so sending
+ * `thread/compact/start` to a generic pooled client yields "thread not found"
+ * and drops the turn (#127148/#119977). Falls back to the live-client registry
+ * because a gracefully-retired owner is detached from the acquisition map while
+ * it is still live and still owns its thread. The entry lease is taken
+ * synchronously; a dying (`closeError`) entry is never retained.
+ */
+export function retainBoundCodexAppServerClient(
+  clientId: string | undefined,
+): { client: CodexAppServerClient; release: () => void } | undefined {
+  const keyedOwner = retainSharedCodexAppServerClientByInstanceId(clientId);
+  if (keyedOwner) {
+    return keyedOwner;
+  }
+  const normalizedClientId = clientId?.trim();
+  if (!normalizedClientId) {
+    return undefined;
+  }
+  const state = getSharedCodexAppServerClientState();
+  for (const client of state.liveClients) {
+    if (client.getInstanceId() !== normalizedClientId) {
+      continue;
+    }
+    const entry = state.entriesByClient.get(client);
+    // Only the current owning entry may be retained, and never a dying one; a
+    // detached entry keeps `closeWhenIdle` set, so that flag cannot gate here.
+    if (!entry || entry.client !== client || entry.closeError) {
+      continue;
+    }
+    return { client, release: retainSharedClientEntry(entry) };
+  }
+  return undefined;
+}
+
+/**
  * Retires a matching shared client. Default is graceful: detach from the map
  * (future acquisitions get a fresh client) and close once leases drain.
  * `failActiveLeases` is for suspect clients only (timed-out turns): it closes

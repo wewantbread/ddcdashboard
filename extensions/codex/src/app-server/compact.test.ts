@@ -783,6 +783,97 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
+  it("runs guarded compaction on the retained bound owner without acquiring a generic client", async () => {
+    // Regression proof for #127148/#119977: automatic compaction must reuse the
+    // exact physical client that owns the bound thread, never a generic pooled
+    // client that would hit "thread not found" and drop the preflight turn.
+    const sharedClientRuntime = await import("./shared-client.js");
+    const bound = createFakeCodexClient();
+    const release = vi.fn();
+    const retainSpy = vi
+      .spyOn(sharedClientRuntime, "retainBoundCodexAppServerClient")
+      .mockReturnValue({ client: bound.client, release });
+    const genericFactory = vi.fn<CodexAppServerClientFactory>(async () => {
+      throw new Error("generic acquisition must not run while the bound owner is live");
+    });
+    const sessionFile = await writeTestBinding({ clientId: "bound-owner-client" });
+    try {
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession(
+          {
+            sessionId: "session-1",
+            sessionKey: "agent:main:session-1",
+            sessionFile,
+            workspaceDir: tempDir,
+            trigger: "budget",
+            preflightRequired: true,
+            currentTokenCount: 456,
+          },
+          { clientFactory: genericFactory, nativeCompactionRequest: "required_preflight" },
+        ),
+      );
+
+      expect(retainSpy).toHaveBeenCalledWith("bound-owner-client");
+      expect(genericFactory).not.toHaveBeenCalled();
+      expect(bound.request).toHaveBeenCalledWith(
+        "thread/compact/start",
+        { threadId: "thread-1" },
+        { timeoutMs: 60_000 },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.compacted).toBe(true);
+      // The bound lease is released exactly once when compaction finishes.
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      retainSpy.mockRestore();
+    }
+  });
+
+  it("falls back to generic acquisition when the bound owner is dead, leaving no stale binding", async () => {
+    const sharedClientRuntime = await import("./shared-client.js");
+    const retainSpy = vi
+      .spyOn(sharedClientRuntime, "retainBoundCodexAppServerClient")
+      .mockReturnValue(undefined);
+    const fake = createFakeCodexClient();
+    const genericFactory = vi.fn<CodexAppServerClientFactory>(async () => fake.client);
+    const sessionFile = await writeTestBinding({ clientId: "dead-owner-client" });
+    try {
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession(
+          {
+            sessionId: "session-1",
+            sessionKey: "agent:main:session-1",
+            sessionFile,
+            workspaceDir: tempDir,
+            trigger: "budget",
+            preflightRequired: true,
+            currentTokenCount: 456,
+          },
+          { clientFactory: genericFactory, nativeCompactionRequest: "required_preflight" },
+        ),
+      );
+
+      expect(retainSpy).toHaveBeenCalledWith("dead-owner-client");
+      // No live owner remained, so acquisition falls through to the generic path
+      // exactly once and compaction still completes on that client.
+      expect(genericFactory).toHaveBeenCalledTimes(1);
+      expect(fake.request).toHaveBeenCalledWith(
+        "thread/compact/start",
+        { threadId: "thread-1" },
+        { timeoutMs: 60_000 },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.compacted).toBe(true);
+      // A clean fallback leaves the live binding intact — no stale detach.
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+        threadId: "thread-1",
+        clientId: "dead-owner-client",
+      });
+    } finally {
+      retainSpy.mockRestore();
+    }
+  });
+
   it("preserves projection when aborted before guarded native compaction", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);

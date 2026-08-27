@@ -50,6 +50,7 @@ import {
 import {
   getLeasedSharedCodexAppServerClient,
   releaseLeasedSharedCodexAppServerClient,
+  retainBoundCodexAppServerClient,
   type CodexAppServerClientFactory,
 } from "./shared-client.js";
 import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
@@ -519,7 +520,7 @@ async function compactCodexNativeThread(
     // with another profile risks operating on a different Codex account.
     return { ok: false, compacted: false, reason: "auth profile mismatch for session binding" };
   }
-  const shouldReleaseDefaultLease = !options.clientFactory;
+  const usesDefaultAcquisition = !options.clientFactory;
   const clientFactory = options.clientFactory ?? getLeasedSharedCodexAppServerClient;
   const runtimeAuthPlan = params.runtimeAuthPlan ?? params.runtimePlan?.auth;
   // A user-home app-server keeps its native Codex account; injecting a prepared key
@@ -541,14 +542,35 @@ async function compactCodexNativeThread(
       binding.threadId,
       params.abortSignal,
       async () => {
-        const client = await clientFactory({
-          startOptions: appServer.start,
-          ...(preparedApiKey
-            ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
-            : { authProfileId: connection.clientAuthProfileId }),
-          agentDir: params.agentDir,
-          config: params.config,
-        });
+        // Guarded (automatic/preflight) compaction must run on the exact
+        // physical client that owns the bound thread; a generic pooled client
+        // hits "thread not found" and drops the turn (#127148/#119977). Retain
+        // the bound owner first, falling back to generic acquisition only when
+        // none is live. KNOWN BOUNDARY: retainBoundCodexAppServerClient takes the
+        // entry lease synchronously, so nothing evicts the owner between the
+        // liveness check and the retain; a binding that changes before the
+        // guarded lease re-read below is still caught by isSameNativeCompactionBinding.
+        const boundClientLease = guardedNativeRequest
+          ? retainBoundCodexAppServerClient(binding.clientId)
+          : undefined;
+        let releaseClient: (() => void) | undefined;
+        let client: CodexAppServerClient;
+        if (boundClientLease) {
+          client = boundClientLease.client;
+          releaseClient = boundClientLease.release;
+        } else {
+          client = await clientFactory({
+            startOptions: appServer.start,
+            ...(preparedApiKey
+              ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
+              : { authProfileId: connection.clientAuthProfileId }),
+            agentDir: params.agentDir,
+            config: params.config,
+          });
+          if (usesDefaultAcquisition) {
+            releaseClient = () => releaseLeasedSharedCodexAppServerClient(client);
+          }
+        }
         let releaseThreadSubscription: (() => Promise<void>) | undefined;
         let retainedThreadOwnership: CodexAppServerLiveThreadOwnership | undefined;
         let compactionSucceeded = false;
@@ -844,9 +866,7 @@ async function compactCodexNativeThread(
               await releaseThreadSubscription?.();
             }
           } finally {
-            if (shouldReleaseDefaultLease) {
-              releaseLeasedSharedCodexAppServerClient(client);
-            }
+            releaseClient?.();
           }
         }
         const details: JsonObject = {
