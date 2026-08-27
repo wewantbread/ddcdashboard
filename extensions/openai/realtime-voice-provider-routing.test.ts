@@ -39,6 +39,8 @@ vi.mock("openclaw/plugin-sdk/provider-auth", async (importOriginal) => {
 });
 import { createOpenAIRealtimeTestSupport } from "./realtime-voice-test-support.js";
 
+const OPAQUE_REALTIME_MODEL = "gpt-live-test-canary";
+
 const {
   requireRecord,
   requireFetchJsonBody,
@@ -82,6 +84,47 @@ describe("OpenAI realtime voice provider routing", () => {
       supportsToolCalls: true,
       supportsVideoFrames: true,
     });
+  });
+
+  it("admits opaque realtime models without publishing them", () => {
+    const { broker } = createQuicksilverBrowserBrokerFixture();
+    const provider = buildOpenAIRealtimeVoiceProvider({
+      quicksilverBrowserSessionBroker: broker,
+    });
+    const internalApi = readInternalRealtimeVoiceProviderApi(provider);
+    const providerConfig = {
+      apiKey: "test-api-key-platform",
+      model: OPAQUE_REALTIME_MODEL,
+    };
+
+    expect(provider.models?.some((model) => model.startsWith("gpt-live"))).toBe(false);
+    expect(
+      internalApi.isGatewayRelayConfigured({
+        providerConfig,
+        agentId: "main",
+      }),
+    ).toBe(true);
+    expect(
+      internalApi.resolveGatewayRelayCapabilities({
+        providerConfig,
+        model: OPAQUE_REALTIME_MODEL,
+      }),
+    ).toMatchObject({
+      handlesAgentConsult: true,
+      supportsToolCalls: false,
+    });
+    expect(
+      internalApi.projectPublicConfig({
+        providerConfig,
+        config: { model: OPAQUE_REALTIME_MODEL },
+      }),
+    ).toEqual({});
+    expect(
+      internalApi.projectPublicConfig({
+        providerConfig: { model: "gpt-realtime-2.1" },
+        config: { model: "gpt-realtime-2.1" },
+      }),
+    ).toEqual({ model: "gpt-realtime-2.1" });
   });
 
   it("advertises continuing realtime tool results", () => {
@@ -130,15 +173,15 @@ describe("OpenAI realtime voice provider routing", () => {
     expect(
       resolveCapabilities({
         providerConfig: { model: "gpt-realtime-2.1" },
-        model: "gpt-live-1-codex",
+        model: OPAQUE_REALTIME_MODEL,
       }),
     ).toMatchObject(expected);
     expect(
       resolveCapabilities({
         providerConfig: { model: "gpt-realtime-2.1" },
-        model: "gpt-live-1-mini",
+        model: "gpt-live-test-canary-alt",
       }),
-    ).not.toHaveProperty("handlesAgentConsult");
+    ).toMatchObject(expected);
   });
 
   it("omits unsupported OpenAI tool names from browser sessions", async () => {
@@ -235,37 +278,21 @@ describe("OpenAI realtime voice provider routing", () => {
 
   it.each([
     {
-      $name: "provider | gpt-live-1-mini | ChatGPT OAuth | standard endpoint | not ready",
+      $name: "provider | opaque model | ChatGPT OAuth | standard endpoint | Platform-only",
       surface: "provider" as const,
-      providerConfig: { model: "gpt-live-1-mini" },
+      providerConfig: { model: OPAQUE_REALTIME_MODEL },
       agentId: "main",
       expected: false,
       expectAgentDir: false,
     },
     {
-      $name: "gateway-relay | gpt-live-1-mini | ChatGPT OAuth | standard endpoint | not ready",
-      surface: "gateway-relay" as const,
-      providerConfig: { model: "gpt-live-1-mini" },
-      agentId: "main",
-      expected: false,
-      expectAgentDir: false,
-    },
-    {
-      $name: "gateway-relay | gpt-live-1-mini | ChatGPT OAuth | Azure endpoint | not ready",
+      $name: "gateway-relay | opaque model | ChatGPT OAuth | Azure endpoint | not ready",
       surface: "gateway-relay" as const,
       providerConfig: {
-        model: "gpt-live-1-mini",
+        model: OPAQUE_REALTIME_MODEL,
         azureEndpoint: "https://example.openai.azure.com",
         azureDeployment: "gpt-live",
       },
-      agentId: "main",
-      expected: false,
-      expectAgentDir: false,
-    },
-    {
-      $name: "browser | gpt-live-1-mini | ChatGPT OAuth | standard endpoint | not ready",
-      surface: "browser" as const,
-      providerConfig: { model: "gpt-live-1-mini" },
       agentId: "main",
       expected: false,
       expectAgentDir: false,
@@ -293,11 +320,10 @@ describe("OpenAI realtime voice provider routing", () => {
       expectAgentDir: false,
     },
     {
-      $name:
-        "gateway-relay | gpt-live-1-codex | Platform API key + OAuth | Azure endpoint | not ready",
+      $name: "gateway-relay | opaque model | Platform API key + OAuth | Azure endpoint | not ready",
       surface: "gateway-relay" as const,
       providerConfig: {
-        model: "gpt-live-1-codex",
+        model: OPAQUE_REALTIME_MODEL,
         apiKey: "test-api-key-platform",
         azureEndpoint: "https://example.openai.azure.com",
       },
@@ -306,43 +332,41 @@ describe("OpenAI realtime voice provider routing", () => {
       expectAgentDir: false,
     },
     {
-      $name:
-        "gateway-relay | gpt-live-1-mini | Platform API key + OAuth | standard endpoint | not ready",
+      $name: "gateway-relay | opaque model | Platform API key + OAuth | standard endpoint | ready",
       surface: "gateway-relay" as const,
-      providerConfig: { model: "gpt-live-1-mini", apiKey: "test-api-key-platform" },
-      agentId: "main",
-      expected: false,
-      expectAgentDir: false,
-    },
-    {
-      $name: "browser | gpt-live-1-mini | Platform API key + OAuth | standard endpoint | not ready",
-      surface: "browser" as const,
-      providerConfig: { model: "gpt-live-1-mini", apiKey: "test-api-key-platform" },
-      agentId: "main",
-      expected: false,
-      expectAgentDir: false,
-    },
-    {
-      $name: "gateway-relay | gpt-live-1-codex | ChatGPT OAuth | standard endpoint | ready",
-      surface: "gateway-relay" as const,
-      providerConfig: { model: "gpt-live-1-codex" },
+      providerConfig: { model: OPAQUE_REALTIME_MODEL, apiKey: "test-api-key-platform" },
       agentId: "main",
       expected: true,
       expectAgentDir: false,
     },
     {
-      $name:
-        "gateway-relay | gpt-live-1-codex | voice-agent ChatGPT OAuth | standard endpoint | ready",
+      $name: "browser | opaque model | Platform API key + OAuth | standard endpoint | ready",
+      surface: "browser" as const,
+      providerConfig: { model: OPAQUE_REALTIME_MODEL, apiKey: "test-api-key-platform" },
+      agentId: "main",
+      expected: true,
+      expectAgentDir: false,
+    },
+    {
+      $name: "gateway-relay | opaque model | ChatGPT OAuth | standard endpoint | ready",
       surface: "gateway-relay" as const,
-      providerConfig: { model: "gpt-live-1-codex" },
+      providerConfig: { model: OPAQUE_REALTIME_MODEL },
+      agentId: "main",
+      expected: true,
+      expectAgentDir: false,
+    },
+    {
+      $name: "gateway-relay | opaque model | voice-agent ChatGPT OAuth | standard endpoint | ready",
+      surface: "gateway-relay" as const,
+      providerConfig: { model: OPAQUE_REALTIME_MODEL },
       agentId: "voice-agent",
       expected: true,
       expectAgentDir: true,
     },
     {
-      $name: "browser | gpt-live-1-codex | ChatGPT OAuth | standard endpoint | ready",
+      $name: "browser | opaque model | ChatGPT OAuth | standard endpoint | ready",
       surface: "browser" as const,
-      providerConfig: { model: "gpt-live-1-codex" },
+      providerConfig: { model: OPAQUE_REALTIME_MODEL },
       agentId: "main",
       expected: true,
       expectAgentDir: false,
@@ -447,7 +471,7 @@ describe("OpenAI realtime voice provider routing", () => {
 
     await provider.createBrowserSession?.({
       providerConfig: { apiKey: "test-api-key-platform" },
-      model: "gpt-live-1-codex",
+      model: OPAQUE_REALTIME_MODEL,
       agentId: "main",
       workspaceDir: "/tmp/openclaw-agent-workspace",
       initialItems: [],

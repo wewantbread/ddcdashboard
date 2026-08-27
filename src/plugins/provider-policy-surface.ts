@@ -35,6 +35,11 @@ type ProviderProjectConfiguredModelRowContext = {
   model: ProviderRuntimeModel;
 };
 
+type ProviderProjectRealtimeVoicePublicConfigContext = {
+  providerConfig: Record<string, unknown>;
+  config: Record<string, unknown>;
+};
+
 type EmbeddingProviderSetupInspection = {
   provider: string;
   reason: string;
@@ -77,6 +82,9 @@ export type BundledProviderPolicySurface = ProviderPolicySurface & {
   projectConfiguredModelRow?: (
     ctx: ProviderProjectConfiguredModelRowContext,
   ) => ProviderRuntimeModel | null | undefined;
+  projectRealtimeVoicePublicConfig?: (
+    ctx: ProviderProjectRealtimeVoicePublicConfigContext,
+  ) => Record<string, unknown> | null | undefined;
 };
 
 const bundledProviderPolicySurfaceByPluginId = new Map<
@@ -126,6 +134,11 @@ function extractBundledProviderPolicySurface(
   if (typeof mod.projectConfiguredModelRow === "function") {
     surface.projectConfiguredModelRow =
       mod.projectConfiguredModelRow as BundledProviderPolicySurface["projectConfiguredModelRow"];
+  }
+  if (typeof mod.projectRealtimeVoicePublicConfig === "function") {
+    Object.assign(surface, {
+      projectRealtimeVoicePublicConfig: mod.projectRealtimeVoicePublicConfig,
+    });
   }
   return Object.keys(surface).length > 0 ? surface : null;
 }

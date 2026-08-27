@@ -13,7 +13,7 @@ function createBridge(params: {
   let socket: FakeSocket | undefined;
   const bridge = new OpenAIQuicksilverGatewayBridge({
     providerConfig: {},
-    model: "gpt-live-1-boulder-alpha",
+    model: "gpt-live-test-canary-alt",
     voice: "marin",
     audioFormat: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
     onAudio: vi.fn(),

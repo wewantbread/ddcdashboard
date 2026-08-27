@@ -935,7 +935,6 @@ extensions/openai/realtime-quicksilver-bridge.ts	1
 extensions/openai/realtime-quicksilver-delegation-controller.ts	1
 extensions/openai/realtime-quicksilver-gateway-bridge.ts	1
 extensions/openai/realtime-quicksilver-wire.ts	6
-extensions/openai/realtime-quicksilver.ts	1
 extensions/openai/realtime-voice-bridge.ts	3
 extensions/openai/realtime-voice-provider.ts	1
 extensions/openai/realtime-voice-session-policy.ts	4

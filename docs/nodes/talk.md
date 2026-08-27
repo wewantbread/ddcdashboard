@@ -186,20 +186,22 @@ Supported keys: `voice` / `voice_id` / `voiceId`, `model` / `model_id` / `modelI
 ```
 
 OpenAI browser WebRTC and Gateway-relay Talk support native GPT-Live through
-`https://api.openai.com/v1/live`. Set `talk.realtime.model` to
-`gpt-live-1-codex` (recommended) or `gpt-live-1-boulder-alpha`; `gpt-live-1`
-and `gpt-live-1-mini` are not valid on this route. Browser and Gateway-relay
-WebRTC prefer a ChatGPT OAuth subscription profile and fall back to Platform
-API-key auth. Other backend bridges connect directly over the Frameless Bidi
-WebSocket and require Platform API-key auth, whose `/v1/live` access is currently
+`https://api.openai.com/v1/live`. Set `talk.realtime.model` to the opaque
+GPT-Live model identifier issued for your account. OpenClaw intentionally does
+not publish these account-scoped identifiers in its catalog or model picker.
+Browser and Gateway-relay WebRTC prefer a ChatGPT OAuth subscription profile
+and fall back to Platform API-key auth. Other backend bridges connect directly
+over the Frameless Bidi WebSocket and require Platform API-key auth, whose
+`/v1/live` access is currently
 [waitlist-gated](https://openai.com/form/gpt-live-1-in-the-api/).
 
-The quickest setup is the Control UI: **Settings → Talk**, pick **OpenAI** and
-a `gpt-live-*` model. The OAuth prerequisite is an OpenClaw auth profile
-created with `openclaw models auth login --provider openai` — an existing
-Codex CLI sign-in is not read. GPT-Live also requires the bundled `openai`
-plugin registered in full mode; a restrictive `plugins.allow` list fails
-session creation with "OpenAI GPT-Live browser session broker is unavailable".
+Select **OpenAI** under **Settings → Talk**, then set the account-issued model
+identifier in `talk.realtime.model`. The OAuth prerequisite is an OpenClaw auth
+profile created with `openclaw models auth login --provider openai` — an
+existing Codex CLI sign-in is not read. GPT-Live also requires the bundled
+`openai` plugin registered in full mode; a restrictive `plugins.allow` list
+fails session creation with "OpenAI GPT-Live browser session broker is
+unavailable".
 Runtime bounds: 8 concurrent sessions per Gateway and a 30-minute session TTL.
 Browser sessions also use 60-second single-use offer tokens.
 

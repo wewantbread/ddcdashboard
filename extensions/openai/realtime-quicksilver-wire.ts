@@ -399,7 +399,7 @@ function decodeOpenAIQuicksilverCallId(params: {
 function describeOpenAIQuicksilverCallError(status: number, detail: string): string {
   const normalized = detail.toLowerCase();
   if (status === 403) {
-    return "GPT-Live rejected the session (403). This overloaded response most often means the voice or model is invalid for /v1/live. Accepted voices: alloy, ash, ballad, cedar, coral, echo, marin, sage, shimmer, verse. Accepted models: gpt-live-1-codex, gpt-live-1-boulder-alpha. Account access may also be unavailable; verify the selected ChatGPT OAuth profile and chatgpt-account-id.";
+    return "GPT-Live rejected the session (403). The voice, model, or account access may be unavailable; verify the configured voice and selected ChatGPT OAuth profile.";
   }
   if (
     status === 400 &&
@@ -413,7 +413,7 @@ function describeOpenAIQuicksilverCallError(status: number, detail: string): str
     normalized.includes("session.model") &&
     normalized.includes("not allowed")
   ) {
-    return "The GPT-Live model value is not permitted on /v1/live. Accepted values are gpt-live-1-codex and gpt-live-1-boulder-alpha.";
+    return "The configured GPT-Live model is not permitted for this account.";
   }
   return `GPT-Live call creation failed (${status})${detail ? `: ${detail}` : ""}`;
 }

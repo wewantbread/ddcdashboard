@@ -1524,6 +1524,20 @@ describe("talk realtime gateway relay", () => {
         bridgeRequest = req;
         return bridge;
       },
+      [Symbol.for("openclaw.internal.realtime-voice-provider.v1")]: {
+        isBrowserSessionConfigured: () => true,
+        projectPublicConfig: ({
+          config,
+        }: {
+          config: Record<string, unknown>;
+        }): Record<string, unknown> => {
+          if (config.model !== "gpt-live-test-canary") {
+            return config;
+          }
+          const { model: _model, ...publicConfig } = config;
+          return publicConfig;
+        },
+      },
     };
     const events: Array<{
       event: string;
@@ -1578,7 +1592,6 @@ describe("talk realtime gateway relay", () => {
       autoRespondToAudio: true,
       interruptResponseOnInputAudio: true,
     });
-
     const readyPayload = findEventPayload(events, (payload) => payload.type === "ready");
     expectRecordFields(readyPayload, {
       relaySessionId: session.relaySessionId,
@@ -1816,6 +1829,17 @@ describe("talk realtime gateway relay", () => {
     });
     expectRecordFields(closePayload.talkEvent, { type: "session.closed", final: true });
     expectDelivery(closePayload, false);
+
+    const opaqueSession = createTalkRealtimeRelaySession({
+      context,
+      connId: "conn-1",
+      provider,
+      providerConfig: { model: "gpt-live-test-canary" },
+      instructions: "be brief",
+      tools: [],
+      model: "gpt-live-test-canary",
+    });
+    expect(opaqueSession).not.toHaveProperty("model");
   });
 
   it("emits generic issue details when relay connect fails", async () => {

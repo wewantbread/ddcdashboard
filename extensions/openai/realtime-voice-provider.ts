@@ -10,6 +10,7 @@ import type {
 } from "openclaw/plugin-sdk/realtime-voice";
 import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "openclaw/plugin-sdk/realtime-voice";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { projectRealtimeVoicePublicConfig } from "./provider-policy-api.js";
 import {
   createOpenAIRealtimeClientSecret,
   resolveOpenAIProviderConfigRecord,
@@ -22,7 +23,7 @@ import {
   OPENAI_QUICKSILVER_CAPABILITIES,
   resolveOpenAIChatGptSubscriptionAuth,
 } from "./realtime-quicksilver-session.js";
-import { isOpenAIGptLiveModel, isSupportedOpenAIGptLiveModel } from "./realtime-quicksilver.js";
+import { isOpenAIGptLiveModel } from "./realtime-quicksilver.js";
 import { OpenAIRealtimeBridge } from "./realtime-voice-bridge.js";
 import {
   OPENAI_REALTIME_CAPABILITIES,
@@ -106,6 +107,10 @@ type OpenAIInternalRealtimeVoiceProviderApi = {
     providerConfig: RealtimeVoiceProviderConfig;
     model?: string;
   }) => OpenAIInternalRealtimeVoiceCapabilities;
+  projectPublicConfig?: (ctx: {
+    providerConfig: RealtimeVoiceProviderConfig;
+    config: RealtimeVoiceProviderConfig;
+  }) => RealtimeVoiceProviderConfig;
   validateGatewayRelayLaunch?: (ctx: {
     cfg?: RealtimeVoiceBrowserSessionCreateRequest["cfg"];
     providerConfig: RealtimeVoiceProviderConfig;
@@ -435,9 +440,6 @@ export function buildOpenAIRealtimeVoiceProvider(options?: {
       }
       const model = config.model ?? OPENAI_REALTIME_DEFAULT_MODEL;
       if (isOpenAIGptLiveModel(model)) {
-        if (!isSupportedOpenAIGptLiveModel(model)) {
-          return false;
-        }
         return (
           options?.quicksilverBrowserSessionBroker !== undefined &&
           (hasOpenAIRealtimePlatformAuthInput({
@@ -460,7 +462,7 @@ export function buildOpenAIRealtimeVoiceProvider(options?: {
     },
     resolveBrowserSessionCapabilities: ({ cfg, providerConfig, agentId, model }) => {
       const config = normalizeProviderConfig(providerConfig);
-      if (isSupportedOpenAIGptLiveModel(model ?? config.model)) {
+      if (isOpenAIGptLiveModel(model ?? config.model)) {
         return {
           ...OPENAI_REALTIME_CAPABILITIES,
           ...OPENAI_QUICKSILVER_CAPABILITIES,
@@ -483,18 +485,16 @@ export function buildOpenAIRealtimeVoiceProvider(options?: {
         return false;
       }
       return (
-        isSupportedOpenAIGptLiveModel(config.model) &&
-        (hasOpenAIRealtimePlatformAuthInput({
+        hasOpenAIRealtimePlatformAuthInput({
           configuredApiKey: config.apiKey,
           cfg,
           agentId,
-        }) ||
-          hasOpenAIChatGptSubscriptionAuthInput({ cfg, agentId }))
+        }) || hasOpenAIChatGptSubscriptionAuthInput({ cfg, agentId })
       );
     },
     resolveGatewayRelayCapabilities: ({ providerConfig, model }) => {
       const config = normalizeProviderConfig(providerConfig);
-      if (isSupportedOpenAIGptLiveModel(model ?? config.model)) {
+      if (isOpenAIGptLiveModel(model ?? config.model)) {
         return {
           ...OPENAI_REALTIME_CAPABILITIES,
           ...OPENAI_QUICKSILVER_CAPABILITIES,
@@ -502,6 +502,7 @@ export function buildOpenAIRealtimeVoiceProvider(options?: {
       }
       return OPENAI_REALTIME_CAPABILITIES;
     },
+    projectPublicConfig: projectRealtimeVoicePublicConfig,
     validateGatewayRelayLaunch: ({ providerConfig, model, autoRespondToAudio }) => {
       const config = normalizeProviderConfig(providerConfig);
       if (autoRespondToAudio === false && isOpenAIGptLiveModel(model ?? config.model)) {

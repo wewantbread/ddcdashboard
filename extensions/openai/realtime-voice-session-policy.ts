@@ -34,7 +34,6 @@ import {
   resolveOpenAIProviderConfigRecord,
 } from "./realtime-provider-shared.js";
 import { resolveOpenAIChatGptSubscriptionAuth } from "./realtime-quicksilver-session.js";
-import { OPENAI_GPT_LIVE_MODELS } from "./realtime-quicksilver.js";
 
 export type OpenAIRealtimeVoice =
   | "alloy"
@@ -94,7 +93,6 @@ export const OPENAI_REALTIME_MODELS = [
   "gpt-realtime-2.1",
   "gpt-realtime-2.1-mini",
   "gpt-realtime-2",
-  ...OPENAI_GPT_LIVE_MODELS,
 ] as const;
 export const OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 export const OPENAI_REALTIME_CAPABILITIES: RealtimeVoiceProviderCapabilities = {

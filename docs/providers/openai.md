@@ -1037,10 +1037,10 @@ value into `plugins.entries.openai.config.personality` when that key is unset.
     and Voice Call use the Frameless Bidi
     `wss://api.openai.com/v1/live?model=...` endpoint with Platform API-key auth.
 
-    Use `gpt-live-1-codex` (recommended) or
-    `gpt-live-1-boulder-alpha`. The values `gpt-live-1` and
-    `gpt-live-1-mini` are not valid on this route. Opt in explicitly with
-    `talk.realtime.model`; `gpt-realtime-2.1` remains the GA default.
+    Use the opaque GPT-Live model identifier issued for your account. OpenClaw
+    intentionally omits account-scoped identifiers from its public catalog and
+    model picker. Opt in explicitly with `talk.realtime.model`;
+    `gpt-realtime-2.1` remains the GA default.
 
     GPT-Live accepts these voices: `alloy`, `ash`, `ballad`, `cedar`, `coral`,
     `echo`, `marin`, `sage`, `shimmer`, and `verse`. OpenClaw defaults to
@@ -1052,8 +1052,7 @@ value into `plugins.entries.openai.config.personality` when that key is unset.
        An existing Codex CLI (`~/.codex`) sign-in is **not** read; the profile
        must exist in OpenClaw. A Platform API key with `/v1/live` access works
        instead, but that access is waitlist-gated.
-    2. `talk.realtime.model` set to a `gpt-live-*` value — via **Settings →
-       Talk** in the Control UI or the config below.
+    2. `talk.realtime.model` set to the account-issued opaque value in config.
     3. The bundled `openai` plugin registered in full mode. A restrictive
        `plugins.allow` list fails with "OpenAI GPT-Live browser session broker
        is unavailable".
@@ -1068,7 +1067,7 @@ value into `plugins.entries.openai.config.personality` when that key is unset.
       talk: {
         realtime: {
           provider: "openai",
-          model: "gpt-live-1-codex",
+          model: "<account-issued-model>",
           transport: "webrtc",
         },
       },
@@ -1085,7 +1084,7 @@ value into `plugins.entries.openai.config.personality` when that key is unset.
       talk: {
         realtime: {
           provider: "openai",
-          model: "gpt-live-1-codex",
+          model: "<account-issued-model>",
           transport: "gateway-relay",
         },
       },

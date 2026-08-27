@@ -2144,13 +2144,7 @@ async function createChatPickerScenario(
               configured: true,
               defaultModel: "gpt-realtime-2.1",
               transports: ["webrtc", "gateway-relay"],
-              models: [
-                "gpt-realtime-2.1",
-                "gpt-realtime-2.1-mini",
-                "gpt-realtime-2",
-                "gpt-live-1-codex",
-                "gpt-live-1-boulder-alpha",
-              ],
+              models: ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2"],
               voices: [
                 "alloy",
                 "ash",
