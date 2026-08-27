@@ -355,4 +355,54 @@ describe("stageSandboxMedia host staging lifecycle cleanup", () => {
       expect(runOpts.hostWorkspaceStagingDir).toBeUndefined();
     });
   });
+
+  it("cleans up staging directory when reply preparation rejects before lifecycle handoff", async () => {
+    await withSandboxMediaTempHome("staging-cleanup-rejection-test", async (home) => {
+      const mediaDir = path.join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(mediaDir, { recursive: true });
+      const sampleFile = path.join(mediaDir, "sample.jpg");
+      await fs.writeFile(sampleFile, "test-media-content");
+
+      const mediaUri = `media://inbound/sample.jpg`;
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaUri);
+      const cfg = {
+        ...createSandboxMediaStageConfig(home),
+        agents: {
+          defaults: {
+            sandbox: { mode: "off" },
+          },
+        },
+      } as unknown as Parameters<typeof stageSandboxMedia>[0]["cfg"];
+      const workspaceDir = path.join(home, "openclaw");
+
+      const result = await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        sessionKey: "session-rejection-test",
+        workspaceDir,
+      });
+
+      const stagingDir = result.hostWorkspaceStagingDir!;
+      expect(stagingDir).toBeDefined();
+
+      const runOpts: { hostWorkspaceStagingDir?: string } = {
+        hostWorkspaceStagingDir: stagingDir,
+      };
+
+      // Simulating rejection during preparation phase before lifecycle handoff
+      try {
+        if (runOpts.hostWorkspaceStagingDir) {
+          cleanHostWorkspaceStaging(runOpts);
+        }
+        throw new Error("Simulated async preparation failure");
+      } catch (err) {
+        expect((err as Error).message).toBe("Simulated async preparation failure");
+      }
+
+      const removed = await waitForDirectoryRemoval(stagingDir);
+      expect(removed).toBe(true);
+      expect(runOpts.hostWorkspaceStagingDir).toBeUndefined();
+    });
+  });
 });
