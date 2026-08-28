@@ -1,4 +1,4 @@
-import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
@@ -27,12 +27,13 @@ import {
   mergeCodexThreadConfigs,
   type CodexPluginThreadConfig,
 } from "./plugin-thread-config.js";
+import { captureCodexNativeProjectInstructions } from "./project-doc-thread-config.js";
 import {
   assertCodexThreadAcceptsDirectInput,
   assertCodexThreadStartResponse,
   CodexThreadDirectInputError,
 } from "./protocol-validators.js";
-import type { CodexThread, JsonObject } from "./protocol.js";
+import type { JsonObject } from "./protocol.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import {
   fingerprintCodexThreadConfig,
@@ -44,7 +45,11 @@ import {
   CodexThreadBindingConflictError,
   CodexThreadStartRequestError,
 } from "./thread-lifecycle-errors.js";
-import { buildStartedCodexThreadBinding } from "./thread-lifecycle-result.js";
+import {
+  buildStartedCodexThreadBinding,
+  captureAgentInstructions,
+  resolveCodexThreadRolloutPath,
+} from "./thread-lifecycle-result.js";
 import type {
   CodexAppServerThreadLifecycleBinding,
   CodexStartOrResumeThreadParams,
@@ -88,19 +93,6 @@ export function resolveCodexThreadAgentDir(params: CodexStartOrResumeThreadParam
     params.params.agentDir ??
     resolveAgentDir(params.params.config ?? {}, agentId)
   );
-}
-
-function resolveCodexThreadRolloutPath(thread: CodexThread): string | undefined {
-  const rolloutPath = thread.path?.trim();
-  if (
-    !rolloutPath ||
-    !path.isAbsolute(rolloutPath) ||
-    path.extname(rolloutPath) !== ".jsonl" ||
-    !path.basename(rolloutPath).includes(thread.id)
-  ) {
-    return undefined;
-  }
-  return rolloutPath;
 }
 
 export async function resumeExistingCodexThread(
@@ -149,8 +141,7 @@ export async function resumeExistingCodexThread(
         configPatch: params.finalConfigPatch,
         nativeHookRelayGeneration: params.nativeHookRelayGeneration,
       };
-    // Codex rebuilds effective config on thread/resume, so replay the app
-    // allowlist persisted at thread/start or plugin tools disappear after one turn.
+    // Replay the persisted app allowlist because Codex rebuilds config on thread/resume.
     const pluginAppsConfigPatch =
       context.prebuiltPluginThreadConfig?.configPatch ??
       (params.pluginThreadConfig?.enabled && resumeBinding.pluginAppPolicyContext
@@ -162,6 +153,7 @@ export async function resumeExistingCodexThread(
         userMcpServersConfigPatch,
         pluginAppsConfigPatch,
         finalConfigPatch.configPatch,
+        params.nativeProjectDocsDisabledOnResume ? { project_doc_max_bytes: 0 } : undefined,
       ),
       nativeSkillIsolation,
     );
@@ -175,7 +167,7 @@ export async function resumeExistingCodexThread(
         preserveNativeModel: resumeBinding.preserveNativeModel === true,
         appServer: params.appServer,
         dynamicTools: params.dynamicTools,
-        developerInstructions: params.developerInstructions,
+        developerInstructions: params.coldDeveloperInstructions ?? params.developerInstructions,
         config: resumeConfig,
         nativeCodeModeEnabled: params.nativeCodeModeEnabled,
         nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -191,8 +183,7 @@ export async function resumeExistingCodexThread(
       typeof resumeParams.modelProvider === "string" && resumeParams.modelProvider.trim()
         ? resumeParams.modelProvider
         : undefined;
-    // Keep ownership accounting atomic with the resume request: a
-    // pre-aborted request retains no subscription, so it must not reserve.
+    // A pre-aborted resume retains no subscription, so it must not reserve ownership.
     throwIfAborted();
     resumeReservation = params.reserveResumeThread?.(resumeBinding.threadId);
     const response = await lifecycleTiming.measure("thread-resume-request", () =>
@@ -236,18 +227,25 @@ export async function resumeExistingCodexThread(
     }
     throwIfAborted();
     const boundAuthProfileId = authProfileId;
+    // A resume reports paths from the thread's cached native authority, not its loaded bytes.
+    // Only an original thread/start can safely establish a new local snapshot.
+    const resumedAgentInstructions =
+      resumeBinding.agentWorkspaceDeveloperInstructions !== undefined ||
+      params.agentWorkspaceDeveloperInstructions !== undefined
+        ? captureAgentInstructions(params, resumeBinding.agentWorkspaceDeveloperInstructions)
+        : {};
     const nextMcpServersFingerprint =
       params.mcpServersFingerprintEvaluated === true
         ? params.mcpServersFingerprint
         : resumeBinding.mcpServersFingerprint;
     const resumePatch = {
-      // Resume moves native subscription ownership to this physical client.
-      // Keeping its previous client id disables warm reuse after every restart.
+      // Resume transfers native subscription ownership to this physical client.
       clientId: resolveCodexAppServerClientInstanceId(params.client),
       pendingResumeConfiguration: undefined,
       cwd: params.cwd,
       rolloutPath: resolveCodexThreadRolloutPath(response.thread) ?? resumeBinding.rolloutPath,
       authProfileId: boundAuthProfileId,
+      ...resumedAgentInstructions,
       model: response.model ?? resumeParams.model ?? params.params.modelId,
       preserveNativeModel: resumeBinding.preserveNativeModel === true ? true : undefined,
       modelProvider: normalizeBindingModelProvider(
@@ -447,6 +445,7 @@ export async function startFreshCodexThread(
         userMcpServersConfigPatch,
         pluginThreadConfig?.configPatch,
         finalConfigPatch.configPatch,
+        params.nativeProjectDocsDisabledOnResume ? { project_doc_max_bytes: 0 } : undefined,
       ),
       nativeSkillIsolation,
     ),
@@ -456,7 +455,7 @@ export async function startFreshCodexThread(
       cwd: params.cwd,
       dynamicTools: params.dynamicTools,
       appServer: params.appServer,
-      developerInstructions: params.developerInstructions,
+      developerInstructions: params.coldDeveloperInstructions ?? params.developerInstructions,
       config,
       nativeCodeModeEnabled: params.nativeCodeModeEnabled,
       nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -475,6 +474,11 @@ export async function startFreshCodexThread(
     typeof startParams.modelProvider === "string" && startParams.modelProvider.trim()
       ? startParams.modelProvider
       : undefined;
+  const shouldCaptureNativeProjectInstructions =
+    params.captureNativeProjectInstructions === true && !preserveExistingBinding;
+  const instructionCaptureNotModifiedSinceMs = shouldCaptureNativeProjectInstructions
+    ? performance.timeOrigin + performance.now()
+    : undefined;
   const threadStartResponse = await lifecycleTiming.measure("thread-start-request", async () => {
     try {
       return await params.client.request("thread/start", startParams, { signal: params.signal });
@@ -486,6 +490,21 @@ export async function startFreshCodexThread(
     }
   });
   const response = assertCodexThreadStartResponse(threadStartResponse);
+  const cleanupUnboundStartedThread = async (message: string, cause?: unknown) => {
+    const cleanupConfirmed = await discardUnattestedCodexPluginThread({
+      client: params.client,
+      threadId: response.thread.id,
+      ephemeral: startParams.ephemeral === true,
+    });
+    if (cleanupConfirmed) {
+      return;
+    }
+    await (params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)))();
+    throw new CodexAppServerUnsafeSubscriptionError(
+      message,
+      cause === undefined ? undefined : { cause },
+    );
+  };
   const provisionalAppIds = pluginThreadConfig?.provisionalAppIds;
   // A deny-by-default app becomes callable only under this exact thread's
   // allowlist. Never persist or run the thread before Codex confirms it.
@@ -500,18 +519,7 @@ export async function startFreshCodexThread(
         }),
       );
     } catch (error) {
-      const cleanupConfirmed = await discardUnattestedCodexPluginThread({
-        client: params.client,
-        threadId: response.thread.id,
-        ephemeral: startParams.ephemeral === true,
-      });
-      if (!cleanupConfirmed) {
-        await (params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)))();
-        throw new CodexAppServerUnsafeSubscriptionError(
-          "Codex plugin app attestation cleanup failed",
-          { cause: error },
-        );
-      }
+      await cleanupUnboundStartedThread("Codex plugin app attestation cleanup failed", error);
       throw error;
     }
   }
@@ -535,20 +543,29 @@ export async function startFreshCodexThread(
     throwIfAborted();
   } catch (error) {
     if (replacementPredecessor) {
-      const cleanupConfirmed = await discardUnattestedCodexPluginThread({
-        client: params.client,
-        threadId: response.thread.id,
-        ephemeral: startParams.ephemeral === true,
-      });
-      if (!cleanupConfirmed) {
-        await (params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)))();
-        throw new CodexAppServerUnsafeSubscriptionError(
-          "Codex successor cleanup failed after an aborted binding replacement",
-          { cause: error },
-        );
-      }
+      await cleanupUnboundStartedThread(
+        "Codex successor cleanup failed after an aborted binding replacement",
+        error,
+      );
     }
     throw error;
+  }
+  let capturedAgentWorkspaceDeveloperInstructions: string | null | undefined;
+  if (shouldCaptureNativeProjectInstructions) {
+    try {
+      capturedAgentWorkspaceDeveloperInstructions =
+        (await lifecycleTiming.measure("project-instructions-capture", () =>
+          captureCodexNativeProjectInstructions({
+            cwd: params.cwd,
+            instructionSources: response.instructionSources,
+            config: startParams.config,
+            notModifiedSinceMs: instructionCaptureNotModifiedSinceMs,
+          }),
+        )) ?? null;
+    } catch (error) {
+      await cleanupUnboundStartedThread("Codex project-instruction capture cleanup failed", error);
+      throw error;
+    }
   }
   const modelProvider = resolveCodexAppServerModelProvider({
     provider: params.params.provider,
@@ -570,7 +587,7 @@ export async function startFreshCodexThread(
       cwd: params.cwd,
       ...(rolloutPath ? { rolloutPath } : {}),
       authProfileId: params.params.authProfileId,
-      agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
+      ...captureAgentInstructions(params, capturedAgentWorkspaceDeveloperInstructions),
       model: response.model ?? startParams.model ?? params.params.modelId,
       modelProvider: bindingModelProvider,
       dynamicToolsFingerprint,
@@ -593,20 +610,11 @@ export async function startFreshCodexThread(
       contextEngine: contextEngineBinding,
       environmentSelectionFingerprint,
     };
-    const cleanupUncommittedSuccessor = async (cause?: unknown) => {
-      const cleanupConfirmed = await discardUnattestedCodexPluginThread({
-        client: params.client,
-        threadId: response.thread.id,
-        ephemeral: startParams.ephemeral === true,
-      });
-      if (!cleanupConfirmed) {
-        await (params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)))();
-        throw new CodexAppServerUnsafeSubscriptionError(
-          "Codex successor cleanup failed after a binding replacement conflict",
-          cause === undefined ? undefined : { cause },
-        );
-      }
-    };
+    const cleanupUncommittedSuccessor = async (cause?: unknown) =>
+      cleanupUnboundStartedThread(
+        "Codex successor cleanup failed after a binding replacement conflict",
+        cause,
+      );
     const managedSourceHomeId = codexCatalogHomeId(
       resolveCodexAppServerLocalHomeDir(params.appServer.start, resolveCodexThreadAgentDir(params)),
     );
@@ -679,5 +687,6 @@ export async function startFreshCodexThread(
     startModelProvider: requestModelProvider ?? startModelProvider,
     startParams,
     modelProvider,
+    capturedAgentWorkspaceDeveloperInstructions,
   });
 }

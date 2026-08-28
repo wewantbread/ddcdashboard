@@ -17,6 +17,8 @@ import {
   CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
   CodexAppServerUnsafeSubscriptionError,
   closeCodexStartupClientBestEffort,
+  shouldClearSharedClientAfterStartupFailure,
+  shouldClearSharedClientAfterStartupRace,
   unsubscribeCodexThreadBestEffort,
 } from "./attempt-client-cleanup.js";
 import { buildCodexPluginThreadConfigEligibilityLogData } from "./attempt-diagnostics.js";
@@ -27,13 +29,7 @@ import {
   withCodexStartupTimeout,
 } from "./attempt-timeouts.js";
 import { ensureCodexAppServerClientRuntime } from "./client-runtime.js";
-import {
-  isCodexAppServerBrokenPipeError,
-  isCodexAppServerConnectionClosedError,
-  isCodexAppServerOverloadError,
-  isCodexAppServerRequestTimeoutError,
-  type CodexAppServerClient,
-} from "./client.js";
+import { isCodexAppServerConnectionClosedError, type CodexAppServerClient } from "./client.js";
 import { startCodexComputerUseHealthMonitor } from "./computer-use-health.js";
 import { ensureCodexComputerUse } from "./computer-use.js";
 import {
@@ -162,7 +158,12 @@ export async function startCodexAttemptThread(params: {
   persistentWebSearchAllowed?: boolean;
   webSearchAllowed: boolean;
   developerInstructions: string | undefined;
+  /** Developer instructions used only when a physical start or cold resume needs frozen replay. */
+  coldDeveloperInstructions: string | undefined;
   agentWorkspaceDeveloperInstructions?: string;
+  agentWorkspaceDeveloperInstructionsAllowed: boolean;
+  captureNativeProjectInstructions?: boolean;
+  nativeProjectDocsDisabledOnResume?: boolean;
   finalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["finalConfigPatch"];
   buildFinalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["buildFinalConfigPatch"];
   nativeHookRelayGeneration?: string;
@@ -473,7 +474,12 @@ export async function startCodexAttemptThread(params: {
                 webSearchAllowed: params.webSearchAllowed,
                 appServer: pluginAppServer,
                 developerInstructions: params.developerInstructions,
+                coldDeveloperInstructions: params.coldDeveloperInstructions,
                 agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
+                agentWorkspaceDeveloperInstructionsAllowed:
+                  params.agentWorkspaceDeveloperInstructionsAllowed,
+                captureNativeProjectInstructions: params.captureNativeProjectInstructions,
+                nativeProjectDocsDisabledOnResume: params.nativeProjectDocsDisabledOnResume,
                 config: threadConfig,
                 shellEnvironment: params.shellEnvironment,
                 disableLoginShell: params.disableLoginShell,
@@ -712,18 +718,4 @@ export async function startCodexAttemptThread(params: {
   } finally {
     params.signal.removeEventListener("abort", abandonStartupAcquire);
   }
-}
-
-function shouldClearSharedClientAfterStartupRace(error: unknown): boolean {
-  return isCodexAppServerStartupError(error) || isCodexAppServerRequestTimeoutError(error);
-}
-
-function shouldClearSharedClientAfterStartupFailure(params: {
-  error: unknown;
-  spawnedBy: EmbeddedRunAttemptParams["spawnedBy"];
-}): boolean {
-  if (isCodexAppServerOverloadError(params.error)) {
-    return false;
-  }
-  return isCodexAppServerBrokenPipeError(params.error) || !params.spawnedBy;
 }

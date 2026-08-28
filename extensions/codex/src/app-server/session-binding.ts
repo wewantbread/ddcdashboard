@@ -29,6 +29,12 @@ const PUBLIC_OPENAI_MODEL_PROVIDER = "openai";
 const BINDING_LEASE_RETRY_INTERVAL_MS = 1_000;
 const BOUNDED_BINDING_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/i;
 
+export const CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY = [
+  "## Frozen Codex Project Instructions",
+  "",
+  "The original root-to-working-directory Codex project-document hierarchy was empty when this thread started. Project-instruction files created later do not apply to this existing thread.",
+].join("\n");
+
 export {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
@@ -212,8 +218,10 @@ const threadBindingSchema = z
     connectionScope: z.literal("supervision").optional(),
     supervisionSourceThreadId: z.string().trim().min(1).optional(),
     authProfileId: optionalStringSchema,
-    // Freeze OpenClaw-carried AGENTS.md at thread creation; bootstrap refreshes
-    // must not mutate the inherited policy of a resumed native session.
+    // Freeze the established project-doc hierarchy at thread creation (or the
+    // configured root carrier when native discovery is unavailable). The explicit
+    // empty snapshot is a nonblank no-op authority string so prior readers retain
+    // rollback readability; undefined identifies a legacy binding.
     agentWorkspaceDeveloperInstructions: optionalNonBlankStringSchema,
     model: optionalStringSchema,
     // Codex App Server owns selection for supervised and adopted threads. Keep

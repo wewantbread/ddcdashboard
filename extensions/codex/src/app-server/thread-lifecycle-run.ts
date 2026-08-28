@@ -42,6 +42,7 @@ import {
 import { CodexThreadBindingConflictError } from "./thread-lifecycle-errors.js";
 import { resumeExistingCodexThread, startFreshCodexThread } from "./thread-lifecycle-io.js";
 import { prepareCodexThreadLifecyclePreflight } from "./thread-lifecycle-preflight.js";
+import { captureAgentInstructions } from "./thread-lifecycle-result.js";
 import type {
   CodexAppServerThreadLifecycleBinding,
   CodexStartOrResumeThreadParams,
@@ -179,6 +180,7 @@ export async function startOrResumeThread(
             userMcpServersConfigPatch,
             pluginThreadConfig?.configPatch,
             finalConfigPatch.configPatch,
+            params.nativeProjectDocsDisabledOnResume ? { project_doc_max_bytes: 0 } : undefined,
           ),
           nativeSkillIsolation,
         ),
@@ -194,7 +196,7 @@ export async function startOrResumeThread(
         cwd: params.cwd,
         dynamicTools: params.dynamicTools,
         appServer: params.appServer,
-        developerInstructions: params.developerInstructions,
+        developerInstructions: params.coldDeveloperInstructions ?? params.developerInstructions,
         config,
         nativeCodeModeEnabled: params.nativeCodeModeEnabled,
         nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -217,7 +219,7 @@ export async function startOrResumeThread(
           // Supervised threads stay on the native user-home connection. Never
           // persist an outer OpenClaw auth profile onto that private ownership.
           authProfileId: undefined,
-          agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
+          ...captureAgentInstructions(params),
           preserveNativeModel: true,
           dynamicToolsFingerprint,
           dynamicToolsContainDeferred,

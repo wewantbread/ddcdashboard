@@ -406,9 +406,12 @@ export function turnStartResult(turnId = "turn-1", status = "inProgress") {
   return createTurnStartResult(turnId, status);
 }
 
-export function threadStartResult(threadId = "thread-1", options: { cwd?: string } = {}) {
+export function threadStartResult(
+  threadId = "thread-1",
+  options: { cwd?: string; instructionSources?: string[] } = {},
+) {
   const cwd = options.cwd ?? tempDir ?? "/tmp/openclaw-codex-test";
-  return createThreadStartResult(threadId, cwd);
+  return createThreadStartResult(threadId, cwd, options.instructionSources);
 }
 
 export function rateLimitsUpdated(resetsAt: number): CodexServerNotification {
@@ -632,7 +635,7 @@ export function createStartedThreadHarness(
   }, options);
 }
 
-export function createResumeHarness() {
+export function createResumeHarness(options: { instructionSources?: string[] } = {}) {
   return createAppServerHarness(async (method, params) => {
     if (method === "configRequirements/read") {
       return { requirements: null };
@@ -643,7 +646,9 @@ export function createResumeHarness() {
     if (method === "thread/resume") {
       // Resume must echo the requested thread; a different id is rejected as
       // an unsafe subscription.
-      return threadStartResult((params as { threadId?: string })?.threadId ?? "thread-existing");
+      return threadStartResult((params as { threadId?: string })?.threadId ?? "thread-existing", {
+        instructionSources: options.instructionSources,
+      });
     }
     if (method === "turn/start") {
       return turnStartResult();

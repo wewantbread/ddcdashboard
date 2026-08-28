@@ -191,6 +191,8 @@ function startThreadWithHarness(
     dynamicTools: [],
     webSearchAllowed: false,
     developerInstructions: undefined,
+    coldDeveloperInstructions: undefined,
+    agentWorkspaceDeveloperInstructionsAllowed: true,
     finalConfigPatch: undefined,
     bundleMcpThreadConfig,
     nativeToolSurfaceEnabled: true,
