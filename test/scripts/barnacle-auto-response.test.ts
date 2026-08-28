@@ -43,10 +43,11 @@ function prContextBody(evidence: string, overrides: Record<string, string> = {})
   ].join("\n");
 }
 
-function file(filename: string, status = "modified") {
+function file(filename: string, status = "modified", previousFilename?: string) {
   return {
     filename,
     status,
+    ...(previousFilename ? { previous_filename: previousFilename } : {}),
   };
 }
 
@@ -1058,6 +1059,137 @@ describe("barnacle-auto-response", () => {
     expect(calls.removeLabel).toEqual([]);
     expect(calls.addLabels).toEqual([]);
     expect(calls.update).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a core Skill Workshop runtime fix",
+      [
+        file("src/skills/workshop/experience-review.ts"),
+        file("src/skills/workshop/experience-review.test.ts"),
+      ],
+    ],
+    ["existing bundled skill maintenance", [file("skills/taskflow/SKILL.md")]],
+    ["existing custodian skill maintenance", [file("custodian-skills/diagnose-gateway/SKILL.md")]],
+    ["skill documentation", [file("docs/tools/skills.md")]],
+    ["a nested SKILL.md addition", [file("skills/example/references/SKILL.md", "added")]],
+    ["a renamed skill manifest", [file("skills/example/SKILL.md", "renamed")]],
+    ["a removed skill manifest", [file("skills/example/SKILL.md", "removed")]],
+    [
+      "a mixed standalone skill and core runtime change",
+      [file("skills/example/SKILL.md", "added"), file("src/skills/workshop/experience-review.ts")],
+    ],
+    [
+      "a core file renamed into a new standalone skill",
+      [
+        file("skills/example/SKILL.md", "added"),
+        file("skills/example/core.ts", "renamed", "src/core.ts"),
+      ],
+    ],
+  ])("removes automatic r: skill from %s", async (_name, files) => {
+    const { calls, github } = barnacleGithub(files);
+
+    await runBarnacleAutoResponse({
+      github,
+      context: barnacleContext({}, ["r: skill"], {
+        action: "labeled",
+        label: { name: "r: skill" },
+        sender: { login: "openclaw-barnacle[bot]", type: "Bot" },
+      }),
+      core: {
+        info: () => undefined,
+      },
+    });
+
+    expect(calls.removeLabel).toStrictEqual([expectedRemoveLabel(123, "r: skill")]);
+    expect(calls.createComment).toStrictEqual([]);
+    expect(calls.update).toStrictEqual([]);
+  });
+
+  it.each([
+    [
+      "bundled",
+      [
+        file("skills/example/SKILL.md", "added"),
+        file("skills/example/references/usage.md", "added"),
+      ],
+    ],
+    [
+      "custodian",
+      [
+        file("custodian-skills/example/SKILL.md", "added"),
+        file("custodian-skills/example/scripts/check.mjs", "added"),
+      ],
+    ],
+  ])("routes a new %s standalone skill to ClawHub", async (_name, files) => {
+    const { calls, github } = barnacleGithub(files);
+
+    await runBarnacleAutoResponse({
+      github,
+      context: barnacleContext({}, ["r: skill"], {
+        action: "labeled",
+        label: { name: "r: skill" },
+        sender: { login: "openclaw-barnacle[bot]", type: "Bot" },
+      }),
+      core: {
+        info: () => undefined,
+      },
+    });
+
+    expect(calls.removeLabel).toStrictEqual([]);
+    expect(calls.createComment).toHaveLength(1);
+    expect(calls.createComment[0]?.body).toContain("ClawHub");
+    expect(calls.update).toStrictEqual([expectedIssueUpdate(123, "closed")]);
+  });
+
+  it("preserves explicit maintainer r: skill routing", async () => {
+    const { calls, github } = barnacleGithub([file("docs/tools/skills.md")], {
+      maintainerLogins: ["maintainer"],
+    });
+
+    await runBarnacleAutoResponse({
+      github,
+      context: barnacleContext({}, ["r: skill"], {
+        action: "labeled",
+        label: { name: "r: skill" },
+        sender: { login: "maintainer", type: "User" },
+      }),
+      core: {
+        info: () => undefined,
+      },
+    });
+
+    expect(calls.removeLabel).toStrictEqual([]);
+    expect(calls.createComment).toHaveLength(1);
+    expect(calls.createComment[0]?.body).toContain("ClawHub");
+    expect(calls.update).toStrictEqual([expectedIssueUpdate(123, "closed")]);
+  });
+
+  it("preserves trigger-response skill routing", async () => {
+    const { calls, github } = barnacleGithub([file("src/skills/workshop/experience-review.ts")]);
+
+    await runBarnacleAutoResponse({
+      github,
+      context: barnacleContext(
+        {
+          body: prContextBody("pnpm test passed."),
+        },
+        ["r: skill", "trigger-response"],
+        {
+          action: "labeled",
+          label: { name: "trigger-response" },
+          sender: { login: "maintainer", type: "User" },
+        },
+      ),
+      core: {
+        info: () => undefined,
+      },
+    });
+
+    expect(calls.removeLabel).toStrictEqual([expectedRemoveLabel(123, "trigger-response")]);
+    expect(calls.createComment).toHaveLength(1);
+    expect(calls.createComment[0]?.body).toContain("ClawHub");
+    expect(calls.update).toStrictEqual([expectedIssueUpdate(123, "closed")]);
   });
 
   it("actions manually applied candidate labels", async () => {
