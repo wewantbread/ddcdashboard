@@ -528,6 +528,28 @@ type WebFetchRuntimeParams = {
   resolveProviderFallback: () => Promise<WebFetchProviderFallback>;
 };
 
+function createWebFetchCacheKey(params: {
+  parsedUrl: URL;
+  runtime: WebFetchRuntimeParams;
+  ssrfPolicy?: SsrFPolicy;
+  providerCacheKey?: string;
+}): string {
+  const headersCacheKey = resolveFetchHeadersCacheKey(params.runtime.headers);
+  const cacheDiscriminators = [
+    `user-agent:${sha256Hex(params.runtime.userAgent)}`,
+    params.providerCacheKey ? `provider:${params.providerCacheKey}` : "",
+    params.ssrfPolicy ? `ssrf-policy:${sha256Hex(JSON.stringify(params.ssrfPolicy))}` : "",
+    params.runtime.useTrustedEnvProxy ? "trusted-env-proxy" : "",
+    headersCacheKey ? `headers:${headersCacheKey}` : "",
+  ].filter(Boolean);
+  return normalizeCacheKey(
+    [
+      `fetch:${params.parsedUrl.href}:${params.runtime.extractMode}:${params.runtime.maxChars}`,
+      ...cacheDiscriminators,
+    ].join(":"),
+  );
+}
+
 function normalizeProviderFinalUrl(value: unknown): string | undefined {
   const trimmed = normalizeOptionalString(value);
   if (!trimmed) {
@@ -698,12 +720,23 @@ async function maybeFetchProviderWebFetchPayload(
   params: WebFetchRuntimeParams & {
     urlToFetch: string;
     cacheKey: string;
+    createCacheKeyForProvider: (providerCacheKey?: string) => string;
     tookMs: number;
   },
 ): Promise<Record<string, unknown> | null> {
   const providerFallback = await params.resolveProviderFallback();
   if (!providerFallback) {
     return null;
+  }
+  // Provider discovery stays lazy, so repair the cache identity only after the
+  // actual fallback is known. Otherwise stale runtime metadata can alias results.
+  const providerCacheKey = normalizeOptionalLowercaseString(providerFallback.provider.id);
+  const cacheKey = params.createCacheKeyForProvider(providerCacheKey);
+  if (cacheKey !== params.cacheKey) {
+    const cached = readCache(FETCH_CACHE, cacheKey);
+    if (cached) {
+      return { ...cached.value, cached: true };
+    }
   }
   const rawPayload = await providerFallback.definition.execute({
     url: params.urlToFetch,
@@ -718,7 +751,7 @@ async function maybeFetchProviderWebFetchPayload(
     maxChars: params.maxChars,
     tookMs: params.tookMs,
   });
-  writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
+  writeCache(FETCH_CACHE, cacheKey, payload, params.cacheTtlMs);
   return payload;
 }
 
@@ -734,22 +767,14 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
   if (!["http:", "https:"].includes(parsedUrl.protocol)) {
     throw new Error("Invalid URL: must be http or https");
   }
-  const headersCacheKey = resolveFetchHeadersCacheKey(params.headers);
-  // Append the operator header set after the existing cache discriminators so
-  // requests without custom headers keep their current cache key.
-  const cacheDiscriminators = [
-    `user-agent:${sha256Hex(params.userAgent)}`,
-    params.providerCacheKey ? `provider:${params.providerCacheKey}` : "",
-    ssrfPolicy ? `ssrf-policy:${sha256Hex(JSON.stringify(ssrfPolicy))}` : "",
-    useTrustedEnvProxy ? "trusted-env-proxy" : "",
-    headersCacheKey ? `headers:${headersCacheKey}` : "",
-  ].filter(Boolean);
-  const cacheKey = normalizeCacheKey(
-    [
-      `fetch:${parsedUrl.href}:${params.extractMode}:${params.maxChars}`,
-      ...cacheDiscriminators,
-    ].join(":"),
-  );
+  const createCacheKeyForProvider = (providerCacheKey?: string) =>
+    createWebFetchCacheKey({
+      parsedUrl,
+      runtime: params,
+      ssrfPolicy,
+      providerCacheKey,
+    });
+  const cacheKey = createCacheKeyForProvider(params.providerCacheKey);
   const cached = readCache(FETCH_CACHE, cacheKey);
   if (cached) {
     return { ...cached.value, cached: true };
@@ -801,6 +826,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       ...params,
       urlToFetch: finalUrl,
       cacheKey,
+      createCacheKeyForProvider,
       tookMs: Date.now() - start,
     });
     if (payload) {
@@ -818,6 +844,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
         ...params,
         urlToFetch: params.url,
         cacheKey,
+        createCacheKeyForProvider,
         tookMs: Date.now() - start,
       });
       if (payload) {
@@ -872,6 +899,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
               ...params,
               urlToFetch: finalUrl,
               cacheKey,
+              createCacheKeyForProvider,
               tookMs: Date.now() - start,
             });
           } catch {
@@ -901,6 +929,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
           ...params,
           urlToFetch: finalUrl,
           cacheKey,
+          createCacheKeyForProvider,
           tookMs: Date.now() - start,
         });
         if (payload) {
