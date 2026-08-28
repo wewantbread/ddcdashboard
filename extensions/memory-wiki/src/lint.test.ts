@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
+import { walkMemoryWikiDirectory } from "./bounded-walk.js";
 import { lintMemoryWikiVault } from "./lint.js";
 import {
   renderWikiMarkdown,
@@ -18,6 +19,14 @@ vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
   return {
     ...actual,
     replaceFileAtomic: vi.fn(actual.replaceFileAtomic),
+  };
+});
+
+vi.mock("./bounded-walk.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bounded-walk.js")>();
+  return {
+    ...actual,
+    walkMemoryWikiDirectory: vi.fn(actual.walkMemoryWikiDirectory),
   };
 });
 
@@ -506,7 +515,9 @@ describe("lintMemoryWikiVault", () => {
       ),
     ]);
 
+    const walkCallOffset = vi.mocked(walkMemoryWikiDirectory).mock.calls.length;
     const result = await lintMemoryWikiVault(config);
+    const lintWalkCalls = vi.mocked(walkMemoryWikiDirectory).mock.calls.slice(walkCallOffset);
     const brokenTargets = result.issues
       .filter((issue) => issue.code === "broken-wikilink")
       .map((issue) => issue.message);
@@ -516,6 +527,7 @@ describe("lintMemoryWikiVault", () => {
       "Broken wikilink target `node_modules/example/private`.",
       "Broken wikilink target `missing-page`.",
     ]);
+    expect(lintWalkCalls.some(([, relativePath]) => relativePath === "")).toBe(false);
   });
 
   it("keeps path target matching case-sensitive", async () => {

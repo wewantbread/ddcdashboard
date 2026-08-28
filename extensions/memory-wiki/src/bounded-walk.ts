@@ -1,4 +1,3 @@
-import path from "node:path";
 import {
   walkRootDirectory,
   type RootWalkEntry,
@@ -16,11 +15,14 @@ type MemoryWikiWalkLimits = {
   onDirectoryError?: RootWalkOptions["onDirectoryError"];
 };
 
+export function isMemoryWikiRepositoryOrDependencyPath(relativePath: string): boolean {
+  return relativePath
+    .split(/[\\/]/)
+    .some((segment) => MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(segment));
+}
+
 export function isMemoryWikiRepositoryOrDependencyDirectory(entry: RootWalkEntry): boolean {
-  return (
-    entry.kind === "directory" &&
-    MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(path.basename(entry.relativePath))
-  );
+  return entry.kind === "directory" && isMemoryWikiRepositoryOrDependencyPath(entry.relativePath);
 }
 
 export async function walkMemoryWikiDirectory(

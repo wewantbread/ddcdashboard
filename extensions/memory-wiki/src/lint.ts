@@ -1,16 +1,14 @@
 // Memory Wiki plugin module implements lint behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { root as createFsSafeRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   replaceManagedMarkdownBlock,
   withTrailingNewline,
 } from "openclaw/plugin-sdk/memory-host-markdown";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import {
-  isMemoryWikiRepositoryOrDependencyDirectory,
-  walkMemoryWikiDirectory,
-} from "./bounded-walk.js";
+import { isMemoryWikiRepositoryOrDependencyPath } from "./bounded-walk.js";
 import {
   assessPageFreshness,
   buildClaimContradictionClusters,
@@ -159,10 +157,7 @@ function addPathSuffixTargets(index: WikiLinkTargetIndex, raw: string | undefine
   }
 }
 
-async function buildWikiLinkTargetIndex(
-  rootDir: string,
-  pages: WikiPageSummary[],
-): Promise<WikiLinkTargetIndex> {
+function buildWikiLinkTargetIndex(pages: WikiPageSummary[]): WikiLinkTargetIndex {
   const index: WikiLinkTargetIndex = {
     pathTargets: new Set(),
     aliasTargets: new Set(),
@@ -173,21 +168,6 @@ async function buildWikiLinkTargetIndex(
     addPathSuffixTargets(index, page.sourcePath);
     addPathSuffixTargets(index, page.bridgeRelativePath);
     addPathSuffixTargets(index, page.unsafeLocalRelativePath);
-  }
-  const entries = await walkMemoryWikiDirectory(rootDir, "", {
-    entryFilter: (entry) =>
-      isMemoryWikiRepositoryOrDependencyDirectory(entry) ||
-      (entry.kind === "directory" &&
-        [".openclaw-wiki", "_attachments"].includes(path.basename(entry.relativePath)))
-        ? "skip-subtree"
-        : "include",
-  });
-  for (const entry of entries) {
-    if (entry.kind !== "file" || !entry.relativePath.endsWith(".md")) {
-      continue;
-    }
-    const relativePath = entry.relativePath.split(path.sep).join("/");
-    addPathTarget(index, relativePath);
   }
   return index;
 }
@@ -212,16 +192,77 @@ function hasValidWikiLinkTarget(index: WikiLinkTargetIndex, rawTarget: string): 
   );
 }
 
+const MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES = new Set([".openclaw-wiki", "_attachments"]);
+const NON_TARGET_PATH_ERROR_CODES = new Set([
+  "device-path",
+  "invalid-path",
+  "not-file",
+  "not-found",
+  "outside-workspace",
+  "path-mismatch",
+  "symlink",
+]);
+
+async function hasVaultMarkdownPathTarget(
+  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
+  rawTarget: string,
+): Promise<boolean> {
+  if (!isLintPathStyleTarget(rawTarget)) {
+    return false;
+  }
+  const normalized = normalizeLintPathTarget(rawTarget);
+  const segments = normalized.split("/").filter(Boolean);
+  if (
+    !normalized ||
+    /^[a-zA-Z]:($|\/)/.test(normalized) ||
+    segments.includes("..") ||
+    isMemoryWikiRepositoryOrDependencyPath(normalized) ||
+    segments.some((segment) => MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES.has(segment))
+  ) {
+    return false;
+  }
+  try {
+    const opened = await vaultRoot.open(`${normalized}.md`, {
+      hardlinks: "allow",
+      symlinks: "reject",
+    });
+    await opened.handle.close();
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code && NON_TARGET_PATH_ERROR_CODES.has(code)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function collectBrokenLinkIssues(
   rootDir: string,
   pages: WikiPageSummary[],
 ): Promise<MemoryWikiLintIssue[]> {
-  const validTargets = await buildWikiLinkTargetIndex(rootDir, pages);
+  const validTargets = buildWikiLinkTargetIndex(pages);
+  const vaultRoot = await createFsSafeRoot(rootDir, {
+    hardlinks: "allow",
+    mkdir: false,
+    symlinks: "reject",
+  });
+  const directPathTargets = new Map<string, Promise<boolean>>();
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
     for (const linkTarget of page.linkTargets) {
-      if (!hasValidWikiLinkTarget(validTargets, linkTarget)) {
+      let valid = hasValidWikiLinkTarget(validTargets, linkTarget);
+      if (!valid && isLintPathStyleTarget(linkTarget)) {
+        const cacheKey = normalizeLintPathTarget(linkTarget);
+        let pending = directPathTargets.get(cacheKey);
+        if (!pending) {
+          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget);
+          directPathTargets.set(cacheKey, pending);
+        }
+        valid = await pending;
+      }
+      if (!valid) {
         issues.push({
           severity: "warning",
           category: "links",
