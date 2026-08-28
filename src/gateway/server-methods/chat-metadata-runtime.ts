@@ -1,15 +1,19 @@
+import type { PreparedAgentCredentialModes } from "../../agents/agent-auth-credential-modes.js";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import {
   getPreparedRuntimeAuthProfileStoreSnapshot,
   getRuntimeAuthProfileStoreSnapshotRevision,
   type AuthProfileStore,
 } from "../../agents/auth-profiles.js";
-import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
   type GetPublishedPreparedModelCatalogOwnerParams,
 } from "../../agents/prepared-model-catalog.js";
-import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
+import {
+  getPreparedModelFullCatalogAuth,
+  getPreparedModelRuntimeAuthMaterializations,
+} from "../../agents/prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
@@ -35,7 +39,9 @@ type PreparedAgentFacts = {
   agentId: string;
   owner: PreparedModelRuntimeSnapshot;
   authStore: AuthProfileStore;
+  authModes: PreparedAgentCredentialModes;
   authStoreRevision: string;
+  modelCatalog: ModelCatalogSnapshot;
   skillsVersion: number;
 };
 
@@ -56,12 +62,16 @@ type PreparedAgentProjection = {
   modelCatalog: ModelCatalogEntry[];
 };
 
+type AgentProjectionEntry =
+  | { state: "pending"; promise: Promise<PreparedAgentProjection> }
+  | { state: "ready"; projection: PreparedAgentProjection };
+
 type PreparedMetadataGeneration = {
   epoch: number;
   facts: PreparedGenerationFacts;
   agentsById: Map<string, PreparedAgentMetadata>;
-  neutralProjectionByAgentId: Map<string, Promise<PreparedAgentProjection>>;
-  sessionProjectionByKey: Map<string, Promise<PreparedAgentProjection>>;
+  neutralProjectionByAgentId: Map<string, AgentProjectionEntry>;
+  sessionProjectionByKey: Map<string, AgentProjectionEntry>;
 };
 
 type MetadataReplacement = {
@@ -130,14 +140,24 @@ function captureGenerationFacts(deps: ChatMetadataRuntimeDeps): PreparedGenerati
       );
     }
     const workspaceDir = owner.workspaceDir ?? resolveAgentWorkspaceDir(config, agentId);
+    const fullModelCatalog = owner.readFullModelCatalog?.();
+    const fullCatalogAuth = fullModelCatalog
+      ? getPreparedModelFullCatalogAuth(fullModelCatalog)
+      : undefined;
+    if (fullModelCatalog && !fullCatalogAuth) {
+      throw new Error("prepared full model catalog omitted its auth generation");
+    }
     return {
       agentId,
       owner,
-      authStore: deps.getPreparedAuthStore(owner.agentDir, owner.inheritedAuthDir) ?? {
-        version: 1,
-        profiles: {},
-      },
+      authStore: fullCatalogAuth?.authStore ??
+        deps.getPreparedAuthStore(owner.agentDir, owner.inheritedAuthDir) ?? {
+          version: 1,
+          profiles: {},
+        },
+      authModes: fullCatalogAuth?.authModes ?? owner.authModes,
       authStoreRevision: `${deps.getAuthStoreRevision(owner.agentDir)}:${deps.getAuthStoreRevision(owner.inheritedAuthDir)}`,
+      modelCatalog: fullModelCatalog ?? owner.modelCatalog,
       skillsVersion: deps.getSkillsVersion(workspaceDir),
     };
   });
@@ -166,6 +186,7 @@ function generationFactsMatch(
       candidate?.agentId === agent.agentId &&
       candidate.owner === agent.owner &&
       candidate.authStoreRevision === agent.authStoreRevision &&
+      candidate.modelCatalog === agent.modelCatalog &&
       candidate.skillsVersion === agent.skillsVersion
     );
   });
@@ -220,7 +241,7 @@ async function defaultBuildProjection(params: {
     await import("./models-list-result.js");
   // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
   // models.list control-plane reads so a slow provider cannot delay chat startup.
-  const snapshot = params.facts.owner.modelCatalog;
+  const snapshot = params.facts.modelCatalog;
   const projector = createGatewayAgentModelCatalogProjector({
     cfg: params.facts.owner.config,
     agentId: params.facts.agentId,
@@ -228,7 +249,7 @@ async function defaultBuildProjection(params: {
     metadataSnapshot: params.facts.owner.metadataSnapshot,
     preparedAuthStore: params.facts.authStore,
     // The owner records usable auth at discovery; metadata must share that exact generation fact.
-    preparedRuntimeAuthModes: params.facts.owner.authModes,
+    preparedRuntimeAuthModes: params.facts.authModes,
     preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(
       params.facts.owner,
     ),
@@ -309,7 +330,7 @@ export function createGatewayChatMetadataRuntime(params: {
     const key = neutral ? agent.agentId : sessionProjectionKey(agent.agentId, profiles);
     const existing = projections.get(key);
     if (existing) {
-      return existing;
+      return existing.state === "ready" ? Promise.resolve(existing.projection) : existing.promise;
     }
     const projection = deps
       .buildProjection({
@@ -317,19 +338,30 @@ export function createGatewayChatMetadataRuntime(params: {
         facts: agent,
         ...profiles,
       })
-      .then(({ modelCatalog, ...models }) => ({
-        modelCatalog,
-        metadata: {
-          ...models,
-          ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
-          swarmEnabled: agent.swarmEnabled,
-        },
-      }))
+      .then(({ modelCatalog, ...models }) => {
+        const prepared = {
+          modelCatalog,
+          metadata: {
+            ...models,
+            ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
+            swarmEnabled: agent.swarmEnabled,
+          },
+        };
+        // Only this pending entry may publish its settlement; eviction or invalidation
+        // must not let an obsolete completion replace a newer profile projection.
+        if (generation.epoch === invalidationEpoch && projections.get(key) === entry) {
+          projections.set(key, { state: "ready", projection: prepared });
+        }
+        return prepared;
+      })
       .catch((error: unknown) => {
-        projections.delete(key);
+        if (projections.get(key) === entry) {
+          projections.delete(key);
+        }
         throw error;
       });
-    projections.set(key, projection);
+    const entry: AgentProjectionEntry = { state: "pending", promise: projection };
+    projections.set(key, entry);
     if (!neutral) {
       // Neutral projections belong to the published generation. Only request-derived profile
       // variants are bounded; evicting neutral entries puts catalog work back on startup reads.
@@ -536,6 +568,14 @@ export function createGatewayChatMetadataRuntime(params: {
   const readStartup = async (
     readParams: ChatStartupProjectionReadParams,
   ): Promise<ChatStartupProjectionResult | undefined> => {
+    const assemble = (
+      neutral: PreparedAgentProjection,
+      session: PreparedAgentProjection,
+    ): ChatStartupProjectionResult => ({
+      metadata: session.metadata,
+      sessionModelCatalog: session.modelCatalog,
+      defaultModelCatalog: neutral.modelCatalog,
+    });
     const projectStartup = async (
       generation: PreparedMetadataGeneration,
     ): Promise<ChatStartupProjectionResult> => {
@@ -548,26 +588,34 @@ export function createGatewayChatMetadataRuntime(params: {
       }
       const neutralProjection = await projectAgent(generation, agent);
       const sessionProjection = await projectAgent(generation, agent, readParams.sessionEntry);
-      return {
-        metadata: sessionProjection.metadata,
-        sessionModelCatalog: sessionProjection.modelCatalog,
-        defaultModelCatalog: neutralProjection.modelCatalog,
-      };
+      return assemble(neutralProjection, sessionProjection);
     };
-    if (resolveSessionProfiles(readParams.sessionEntry).preferredProfileId) {
+    const profiles = resolveSessionProfiles(readParams.sessionEntry);
+    if (readParams.readPolicy !== "ready" && profiles.preferredProfileId) {
       return readCurrent(projectStartup);
     }
     const generation = current;
-    // Neutral startup metadata is optional: never enter the lifecycle replacement gate.
+    // Optional reads consume only settled exact-profile facts. Never start preparation
+    // or wait for a lifecycle replacement just to decorate an available transcript.
     if (!generation || replacement || pending || generation.epoch !== invalidationEpoch) {
       return undefined;
     }
-    const projection = await projectStartup(generation);
-    return current === generation &&
-      generation.epoch === invalidationEpoch &&
-      !replacement &&
-      !pending
-      ? projection
+    if (params.refreshOnRead) {
+      try {
+        if (!generationFactsMatch(generation.facts, captureGenerationFacts(deps))) {
+          return undefined;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    const agentId = normalizeAgentId(readParams.agentId);
+    const neutral = generation.neutralProjectionByAgentId.get(agentId);
+    const session = profiles.preferredProfileId
+      ? generation.sessionProjectionByKey.get(sessionProjectionKey(agentId, profiles))
+      : neutral;
+    return neutral?.state === "ready" && session?.state === "ready"
+      ? assemble(neutral.projection, session.projection)
       : undefined;
   };
 

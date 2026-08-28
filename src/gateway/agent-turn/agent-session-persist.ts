@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import { transitionMainSessionRecovery } from "../../agents/main-session-recovery/main-session-recovery-state.js";
+import {
+  getMainSessionRecoveryRetryCount,
+  transitionMainSessionRecovery,
+} from "../../agents/main-session-recovery/main-session-recovery-state.js";
 import type { MainSessionRecoveryOwnerLease } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { MAX_RECOVERY_RETRIES } from "../../agents/main-session-recovery/main-session-restart-recovery-shared.js";
 import {
@@ -24,12 +27,11 @@ import {
 } from "../../cron/scheduled-tool-policy.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
-import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { recordSessionCreated } from "../../sessions/session-state-events.js";
 import { getGeneratedMediaTaskIdsForSessionKey } from "../../tasks/task-status-access.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
 import { errorShapeFromError } from "../error-shape.js";
-import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
+import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import {
   assertExpectedExistingSession,
   ExpectedExistingSessionChangedError,
@@ -210,7 +212,7 @@ export async function persistAgentSessionPhase(params: {
               (internalFreshEntry.mainRestartRecovery?.tombstone ||
                 (internalFreshEntry.status === "running" &&
                   internalFreshEntry.abortedLastRun === true &&
-                  (internalFreshEntry.mainRestartRecovery?.chargedAttempts ?? 0) >=
+                  getMainSessionRecoveryRetryCount(internalFreshEntry.mainRestartRecovery) >=
                     MAX_RECOVERY_RETRIES))
             ) {
               restartRecoveryReservationConflict =
@@ -304,11 +306,29 @@ export async function persistAgentSessionPhase(params: {
               previousSessionId && nextSessionId && previousSessionId !== nextSessionId
                 ? { previousSessionId }
                 : {};
+            const operatorRoleActor = params.operatorRoleActor;
+            // Host-owned synthetic runs retain their verified operator only in the
+            // private role actor; recover it solely for a newly required sandbox.
+            const delegatedCreation =
+              !freshEntry &&
+              !params.creation.actor &&
+              params.cfg.gateway?.roles &&
+              operatorRoleActor?.kind === "operator"
+                ? {
+                    ...params.creation,
+                    actor: { type: "human" as const, id: operatorRoleActor.profileId },
+                  }
+                : params.creation;
+            const sandbox = freshEntry
+              ? undefined
+              : resolveCreatorSandbox(params.cfg, delegatedCreation);
             const effectivePatch = freshEntry
               ? { ...lifecyclePatch, ...rotationLineage }
               : {
                   ...lifecyclePatch,
-                  ...buildSessionCreationStamp(params.creation),
+                  ...buildSessionCreationStamp(
+                    sandbox ? { ...delegatedCreation, sandbox } : params.creation,
+                  ),
                 };
             createdNewEntry = freshEntry === undefined;
             const merged = withSqliteSessionFileMarker({
@@ -484,15 +504,6 @@ export async function persistAgentSessionPhase(params: {
       sessionKey: params.canonicalSessionKey,
       agentId: params.sessionAgentId,
       entry: sessionEntry,
-    });
-  }
-  if (params.creation.actor?.type === "human" && params.creation.actor.id) {
-    recordSessionParticipantBestEffort({
-      actor: { type: "human", id: params.creation.actor.id },
-      agentId: params.sessionAgentId,
-      sessionKey: params.canonicalSessionKey,
-      source: "profile",
-      storePath: params.storePath,
     });
   }
   if (isNewSession && params.entry?.sessionId && resolvedSessionId !== params.entry.sessionId) {
