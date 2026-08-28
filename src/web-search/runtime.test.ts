@@ -938,6 +938,39 @@ describe("web search runtime", () => {
     });
   });
 
+  it("falls back when an auto-selected provider reports a missing base URL", async () => {
+    resolveRuntimeWebSearchProvidersMock.mockReturnValue([
+      createGoogleSearchProvider({
+        createTool: () => ({
+          description: "google",
+          parameters: {},
+          execute: async () => ({
+            error: "missing_google_base_url",
+            message: "google base url missing",
+          }),
+        }),
+      }),
+      createWebSearchTestProvider({
+        pluginId: "backup-search",
+        id: "backup",
+        credentialPath: "tools.web.search.backup.apiKey",
+        autoDetectOrder: 2,
+        getConfiguredCredentialValue: () => "backup-configured",
+        getCredentialValue: () => "backup-configured",
+      }),
+    ]);
+
+    await expect(
+      runWebSearch({
+        config: {},
+        args: { query: "fallback-missing-base-url" },
+      }),
+    ).resolves.toEqual({
+      provider: "backup",
+      result: { query: "fallback-missing-base-url", provider: "backup" },
+    });
+  });
+
   it("does not fall back when an auto-selected provider returns a validation error payload", async () => {
     resolveRuntimeWebSearchProvidersMock.mockReturnValue([
       createGoogleSearchProvider({
