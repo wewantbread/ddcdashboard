@@ -593,6 +593,7 @@ export async function prepareAgentRunDispatch(params: {
     sessionKey: params.resolvedSessionKey,
     agentId: params.activeSessionAgentId,
     status: "accepted" as const,
+    admitted: true as const,
     acceptedAt: Date.now(),
     ...(taskTrackingMode === "plugin_subagent" ? { runtime: resolvedRuntime } : {}),
   };
