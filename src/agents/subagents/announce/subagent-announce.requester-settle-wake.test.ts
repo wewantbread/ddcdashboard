@@ -4,6 +4,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
+import {
+  createRequesterSettleWakeBatchHarness,
+  makeSettledChild,
+  REQUESTER,
+  requesterSettleKey,
+} from "./subagent-announce.requester-settle-wake.test-support.js";
 
 const deliverSpy = vi.fn(
   async (_params: Record<string, unknown>): Promise<SubagentAnnounceDeliveryResult> => ({
@@ -62,83 +68,14 @@ vi.mock("../spawn/subagent-depth.js", () => ({
     sessionKey.split(":subagent:").length - 1,
 }));
 
-import {
-  maybeWakeRequesterAfterAllChildrenSettled,
-  type RequesterSettleWakeBatchState,
-} from "./subagent-announce.requester-settle-wake.js";
-
-const REQUESTER = "agent:main:main";
-const requesterSettleKey = (suffix: string) =>
-  `announce:requester-settle:main:${REQUESTER}:${suffix}`;
-
-type SettledChildOverrides = Omit<Partial<SubagentRunRecord>, "execution"> & {
-  startedAt?: number;
-  endedAt?: number;
-  outcome?: SubagentRunRecord["execution"]["outcome"];
-  execution?: SubagentRunRecord["execution"];
-};
-
-function makeSettledChild(overrides: SettledChildOverrides): SubagentRunRecord {
-  const runId = overrides.runId ?? "run-child";
-  const { startedAt = 2_000, endedAt = 3_000, outcome, execution, ...recordOverrides } = overrides;
-  return {
-    runId,
-    childSessionKey: overrides.childSessionKey ?? `agent:main:subagent:${runId}`,
-    requesterSessionKey: REQUESTER,
-    requesterDisplayKey: "main",
-    task: "investigate",
-    cleanup: "keep",
-    createdAt: 1_000,
-    execution: execution ?? { status: "terminal", startedAt, endedAt, outcome },
-    expectsCompletionMessage: true,
-    delivery: { status: "delivered" },
-    requesterSettleWake: { status: "pending", attemptCount: 0 },
-    ...recordOverrides,
-  };
-}
-
-const transitionBatchSpy = vi.fn();
-const completeBatchSpy = vi.fn();
+import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
 
 function listedRequesterRuns(): SubagentRunRecord[] {
   return registryRuntimeMock.listSubagentRunsForRequester(REQUESTER) as SubagentRunRecord[];
 }
 
-function transitionBatch(runIds: readonly string[], state: RequesterSettleWakeBatchState): void {
-  transitionBatchSpy(runIds, state);
-  const selected = new Set(runIds);
-  for (const entry of listedRequesterRuns()) {
-    if (selected.has(entry.runId) && entry.requesterSettleWake) {
-      entry.requesterSettleWake = {
-        ...state,
-        ...(entry.requesterSettleWake.retireAfterSettle ? { retireAfterSettle: true } : {}),
-      };
-    }
-  }
-}
-
-function completeBatch(
-  runIds: readonly string[],
-  rearmGeneration?: number,
-  outcome?: SubagentAnnounceDeliveryResult,
-): void {
-  if (outcome) {
-    completeBatchSpy(runIds, rearmGeneration, outcome);
-  } else if (rearmGeneration === undefined) {
-    completeBatchSpy(runIds);
-  } else {
-    completeBatchSpy(runIds, rearmGeneration);
-  }
-  const selected = new Set(runIds);
-  for (const entry of listedRequesterRuns()) {
-    if (
-      selected.has(entry.runId) &&
-      entry.requesterSettleWake?.rearmGeneration === rearmGeneration
-    ) {
-      entry.requesterSettleWake = undefined;
-    }
-  }
-}
+const { transitionBatchSpy, completeBatchSpy, transitionBatch, completeBatch } =
+  createRequesterSettleWakeBatchHarness(listedRequesterRuns);
 
 function wakeParams(
   overrides?: Partial<Parameters<typeof maybeWakeRequesterAfterAllChildrenSettled>[0]>,

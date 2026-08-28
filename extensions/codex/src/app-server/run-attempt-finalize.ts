@@ -497,12 +497,11 @@ export async function finalizeCodexAttempt(
           }),
         },
   );
-  const canRetainRuntimeContinuation = Boolean(
+  const canRetainRuntimeContinuation =
     resourceState.runtimeContinuationStarted &&
     turnSucceeded &&
     toolState.yieldDetected &&
-    !runAbortController.signal.aborted,
-  );
+    !runAbortController.signal.aborted;
   const liveRelayRetained = canRetainRuntimeContinuation
     ? (resourceState.nativeHookRelay?.authorizeRetentionAfterSuccessfulYield() ?? false)
     : false;

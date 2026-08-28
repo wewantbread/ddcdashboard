@@ -175,6 +175,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     const agentMediatedCompletion =
       params.expectsCompletionMessage && isAgentMediatedCompletionSourceTool(sourceToolId);
     const completionRouteRequiresMessageToolDelivery =
+      !params.requesterIsSubagent &&
       params.expectsCompletionMessage &&
       completionRequiresMessageToolDelivery({
         cfg,
@@ -234,7 +235,10 @@ export async function sendSubagentAnnounceDirectly(params: {
       });
     // Synthetic requester-settle turns must not inherit a tool-only mode that suppresses the final.
     const sessionOnlySubagentCompletion =
-      params.expectsCompletionMessage && isSubagentCompletion && !deliveryTarget.deliver;
+      params.expectsCompletionMessage &&
+      isSubagentCompletion &&
+      !params.requesterIsSubagent &&
+      !deliveryTarget.deliver;
     const completionSourceReplyDeliveryMode =
       requiresMessageToolDelivery || sessionOnlySubagentCompletion
         ? "message_tool_only"

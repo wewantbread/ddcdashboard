@@ -476,6 +476,7 @@ async function deliverSlackChannelAnnouncement(params: {
   isActive?: boolean;
   sessionId?: string;
   expectsCompletionMessage?: boolean;
+  requireVisibleReply?: boolean;
   directIdempotencyKey: string;
   requesterSessionKey?: string;
   requesterOrigin?: {
@@ -538,6 +539,7 @@ async function deliverSlackChannelAnnouncement(params: {
     directOrigin: params.requesterOrigin ?? origin,
     requesterIsSubagent: false,
     expectsCompletionMessage: params.expectsCompletionMessage !== false,
+    requireVisibleReply: params.requireVisibleReply,
     bestEffortDeliver: true,
     directIdempotencyKey: params.directIdempotencyKey,
     internalEvents: params.internalEvents,
@@ -3356,6 +3358,48 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sessionDeliveryQueueMocks.scheduleSessionDelivery).toHaveBeenCalledWith(
       "session-delivery-media",
     );
+  });
+
+  it("keeps nested subagent completion handoffs on automatic internal delivery", async () => {
+    const callGateway = createPayloadGatewayMock({ text: "nested child completion" });
+    testing.setDepsForTest({
+      callGateway,
+      getRequesterSessionActivity: () => ({
+        sessionId: "nested-requester-session",
+        isActive: false,
+      }),
+      getRuntimeConfig: () =>
+        ({ messages: { groupChat: { visibleReplies: "message_tool" } } }) as never,
+      loadRequesterSessionEntry: (sessionKey) => ({
+        cfg: {},
+        entry: {
+          sessionId: "nested-requester-session",
+          updatedAt: 1,
+          chatType: "channel",
+        },
+        canonicalKey: sessionKey,
+      }),
+    });
+
+    const result = await deliverSubagentAnnouncement({
+      requesterSessionKey: "agent:worker:subagent:nested-parent",
+      targetRequesterSessionKey: "agent:worker:subagent:nested-parent",
+      triggerMessage: "nested child done",
+      steerMessage: "nested child done",
+      requesterIsSubagent: true,
+      expectsCompletionMessage: true,
+      bestEffortDeliver: true,
+      directIdempotencyKey: "announce-nested-subagent-completion",
+      sourceSessionKey: "agent:worker:subagent:nested-child",
+    });
+
+    expectDeliveryPath(result, "direct");
+    expectGatewayAgentParams(callGateway, {
+      deliver: false,
+      channel: undefined,
+      to: undefined,
+      sourceReplyDeliveryMode: undefined,
+    });
   });
 
   it("keeps generated media queued after requester handoff fails", async () => {
