@@ -16,6 +16,14 @@ const runDoctorSessionSqlite = vi.hoisted(() => vi.fn());
 const withDoctorSqliteMaintenanceLock = vi.hoisted(() => vi.fn());
 const runPostSessionPluginDoctorStateRepairs = vi.hoisted(() => vi.fn());
 
+vi.mock("../infra/replace-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/replace-file.js")>();
+  return {
+    ...actual,
+    replaceFileAtomic: vi.fn(actual.replaceFileAtomic),
+  };
+});
+
 vi.mock("../../packages/terminal-core/src/note.js", () => ({
   note,
 }));
@@ -54,6 +62,7 @@ vi.mock("./doctor-sqlite-maintenance-lock.js", async (importOriginal) => {
 });
 
 import { GatewayLockError } from "../infra/gateway-lock.js";
+import { replaceFileAtomic } from "../infra/replace-file.js";
 import {
   detectSessionTranscriptHealthIssues,
   noteSessionTranscriptHealth,
@@ -121,6 +130,7 @@ describe("doctor session transcript repair", () => {
 
   beforeEach(async () => {
     note.mockClear();
+    vi.mocked(replaceFileAtomic).mockClear();
     repairReservedIncognitoSessionKeys.mockReset().mockReturnValue({ found: 0, repaired: 0 });
     repairCanonicalSessionDeliveryStates
       .mockReset()
@@ -233,6 +243,195 @@ describe("doctor session transcript repair", () => {
         .filter((entry) => entry.type !== "session")
         .map((entry) => entry.id),
     ).toEqual(["parent", "plain-user", "plain-assistant"]);
+  });
+
+  it("keeps the original transcript when a branch repair staged write fails", async () => {
+    const filePath = await writeTranscript([
+      { type: "session", version: 3, id: "session-1", timestamp: "2026-04-25T00:00:00Z" },
+      {
+        type: "message",
+        id: "parent",
+        parentId: null,
+        message: { role: "assistant", content: "previous" },
+      },
+      {
+        type: "message",
+        id: "runtime-user",
+        parentId: "parent",
+        message: {
+          role: "user",
+          content: [
+            "visible ask",
+            "",
+            "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
+            "secret",
+            "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+          ].join("\n"),
+        },
+      },
+      {
+        type: "message",
+        id: "runtime-assistant",
+        parentId: "runtime-user",
+        message: { role: "assistant", content: "stale" },
+      },
+      {
+        type: "message",
+        id: "plain-user",
+        parentId: "parent",
+        message: { role: "user", content: "visible ask" },
+      },
+      {
+        type: "message",
+        id: "plain-assistant",
+        parentId: "plain-user",
+        message: { role: "assistant", content: "answer" },
+      },
+    ]);
+    await fs.chmod(filePath, 0o640);
+    const originalRaw = await fs.readFile(filePath, "utf-8");
+    const actualReplaceFile = await vi.importActual<typeof import("../infra/replace-file.js")>(
+      "../infra/replace-file.js",
+    );
+    const publicationError = Object.assign(new Error("ENOSPC: simulated mid-write failure"), {
+      code: "ENOSPC",
+    });
+    vi.mocked(replaceFileAtomic).mockImplementationOnce((options) =>
+      actualReplaceFile.replaceFileAtomic({
+        ...options,
+        beforeRename: async ({ tempPath }) => {
+          await fs.writeFile(tempPath, '{"partial":', "utf8");
+          throw publicationError;
+        },
+      }),
+    );
+
+    await noteSessionTranscriptHealth({
+      sessionDirs: [path.dirname(filePath)],
+      shouldRepair: true,
+    });
+
+    expect(await fs.readFile(filePath, "utf-8")).toBe(originalRaw);
+    expect(vi.mocked(replaceFileAtomic)).toHaveBeenCalled();
+    if (process.platform !== "win32") {
+      expect((await fs.stat(filePath)).mode & 0o777).toBe(0o640);
+    }
+    const siblings = await fs.readdir(path.dirname(filePath));
+    expect(siblings.filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining("repair failed"),
+      "Session transcripts",
+    );
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining("error=ENOSPC: simulated mid-write failure"),
+      "Session transcripts",
+    );
+  });
+
+  it("keeps the original transcript when a metadata repair staged write fails", async () => {
+    const filePath = await writeTranscript([
+      { type: "session", version: 3, id: "session-1", timestamp: "2026-04-25T00:00:00Z" },
+      {
+        type: "message",
+        id: "legacy-assistant",
+        parentId: null,
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          api: "openai-codex-responses",
+          content: [{ type: "text", text: "hello" }],
+        },
+      },
+    ]);
+    await fs.chmod(filePath, 0o640);
+    const originalRaw = await fs.readFile(filePath, "utf-8");
+    const actualReplaceFile = await vi.importActual<typeof import("../infra/replace-file.js")>(
+      "../infra/replace-file.js",
+    );
+    const publicationError = Object.assign(new Error("ENOSPC: simulated mid-write failure"), {
+      code: "ENOSPC",
+    });
+    vi.mocked(replaceFileAtomic).mockImplementationOnce((options) =>
+      actualReplaceFile.replaceFileAtomic({
+        ...options,
+        beforeRename: async ({ tempPath }) => {
+          await fs.writeFile(tempPath, '{"partial":', "utf8");
+          throw publicationError;
+        },
+      }),
+    );
+
+    await noteSessionTranscriptHealth({
+      sessionDirs: [path.dirname(filePath)],
+      shouldRepair: true,
+    });
+
+    expect(await fs.readFile(filePath, "utf-8")).toBe(originalRaw);
+    expect(vi.mocked(replaceFileAtomic)).toHaveBeenCalled();
+    if (process.platform !== "win32") {
+      expect((await fs.stat(filePath)).mode & 0o777).toBe(0o640);
+    }
+    const siblings = await fs.readdir(path.dirname(filePath));
+    expect(siblings.filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining("repair failed"),
+      "Session transcripts",
+    );
+    expect(note).toHaveBeenCalledWith(
+      expect.stringContaining("error=ENOSPC: simulated mid-write failure"),
+      "Session transcripts",
+    );
+  });
+
+  it("does not report successful metadata-only repairs as errors", async () => {
+    const filePath = await writeTranscript([
+      { type: "session", version: 3, id: "metadata-only" },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          api: "openai-codex-responses",
+          content: [{ type: "text", text: "legacy" }],
+        },
+      },
+    ]);
+
+    await noteSessionTranscriptHealth({
+      sessionDirs: [path.dirname(filePath)],
+      shouldRepair: true,
+    });
+
+    const [message, title] = requireFirstMockCall(note, "doctor note") as [string, string];
+    expect(title).toBe("Session transcripts");
+    expect(message).toContain("repaired");
+    expect(message).toContain("openai-codex=1");
+    expect(message).not.toContain("error=no active branch");
+  });
+
+  it("keeps the no-active-branch reason for unrepaired transcripts", async () => {
+    const filePath = await writeTranscript([
+      { type: "session", version: 3, id: "metadata-only" },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          api: "openai-codex-responses",
+          content: [{ type: "text", text: "legacy" }],
+        },
+      },
+    ]);
+
+    await noteSessionTranscriptHealth({
+      sessionDirs: [path.dirname(filePath)],
+      shouldRepair: false,
+    });
+
+    const [message, title] = requireFirstMockCall(note, "doctor note") as [string, string];
+    expect(title).toBe("Session transcripts");
+    expect(message).toContain("needs repair");
+    expect(message).toContain("error=no active branch");
   });
 
   it("reports affected transcripts without rewriting outside repair mode", async () => {
