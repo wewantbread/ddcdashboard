@@ -2476,49 +2476,35 @@ describe("memory plugin e2e", () => {
     }
   });
 
-  // Reproduces the real-world symptom: once the cursor's last-known message
-  // fingerprint is evicted from history (the tracked message itself gets
-  // compacted away) while an EARLIER, already-captured message survives
-  // unchanged, resolveAutoCaptureStartIndex's fingerprint-miss path falls
-  // back to a full rescan from index 0 instead of the tracked numeric
-  // nextIndex. That re-embeds the surviving old message on every subsequent
-  // turn -- observed live as months-old conversation content being
-  // re-submitted to the embedding endpoint continuously.
-  test("re-embeds an already-captured surviving message once its cursor fingerprint is evicted from history", async () => {
+  test("does not re-embed an early survivor after more than 20 later messages", async () => {
     const harness = await setupAutoCaptureCursorHarness();
+    const retainedMessages = Array.from({ length: 24 }, (_, index) => ({
+      role: "user",
+      content: `I prefer editor ${index} for editing code every day.`,
+    }));
+    const survivor = expectDefined(retainedMessages[0], "first retained message");
 
     try {
+      for (let messageCount = 3; messageCount <= retainedMessages.length; messageCount += 3) {
+        await harness.agentEnd?.(
+          { success: true, messages: retainedMessages.slice(0, messageCount) },
+          { agentId: "main", sessionKey: "session-evicted-fingerprint" },
+        );
+      }
+
+      const nextPreference = "I prefer Zed for editing code every day.";
       await harness.agentEnd?.(
         {
           success: true,
-          messages: [
-            { role: "user", content: "I prefer Helix for editing code every day." },
-            { role: "user", content: "I prefer Fish for shell commands every day." },
-          ],
+          messages: [survivor, { role: "user", content: nextPreference }],
         },
         { agentId: "main", sessionKey: "session-evicted-fingerprint" },
       );
 
-      // Turn 2: the cursor's tracked message ("...Fish...") was compacted
-      // away, but the earlier "...Helix..." message it already captured
-      // survives verbatim, ahead of one genuinely new message.
-      await harness.agentEnd?.(
-        {
-          success: true,
-          messages: [
-            { role: "user", content: "I prefer Helix for editing code every day." },
-            { role: "user", content: "I prefer Zed for editing code every day." },
-          ],
-        },
-        { agentId: "main", sessionKey: "session-evicted-fingerprint" },
-      );
-
-      // Correct behavior: only the one genuinely new message ("...Zed...")
-      // is captured in turn 2 -- 3 calls total, not a re-embed of "...Helix...".
-      expect(harness.embeddingsCreate).toHaveBeenCalledTimes(3);
-      expect(harness.embeddingsCreate).toHaveBeenNthCalledWith(3, {
+      expect(harness.embeddingsCreate).toHaveBeenCalledTimes(25);
+      expect(harness.embeddingsCreate).toHaveBeenNthCalledWith(25, {
         model: "text-embedding-3-small",
-        input: "I prefer Zed for editing code every day.",
+        input: nextPreference,
       });
     } finally {
       cleanupAutoCaptureCursorHarness();

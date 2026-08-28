@@ -34,7 +34,6 @@ import { MemoryDB, type MemoryEntry, type MemorySearchResult } from "./lancedb-s
 import { sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
 import {
-  type AutoCaptureCursor,
   cleanMemorySearchResults,
   detectCategory,
   extractUserTextContent,
@@ -43,9 +42,7 @@ import {
   looksLikePromptInjection,
   messageFingerprint,
   normalizeRecallQuery,
-  resolveAutoCaptureStartIndex,
   shouldCapture,
-  withCapturedFingerprint,
 } from "./memory-policy.js";
 
 const loadMemoryHostCoreModule = createLazyRuntimeModule(
@@ -115,7 +112,7 @@ export default definePluginEntry({
 
     const vectorDim = dimensions ?? vectorDimsForModel(model);
     const db = new MemoryDB(resolvedDbPath, vectorDim, cfg.storageOptions);
-    const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
+    const autoCaptureCursors = new Map<string, Set<string>>();
     const memoryRecallCooldowns = new Map<string, { until: number; error: string }>();
     const resolveRuntimeConfig = (): OpenClawConfig =>
       (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
@@ -573,80 +570,58 @@ export default definePluginEntry({
       try {
         const rawCursorKey = ctx.sessionKey ?? ctx.sessionId;
         const cursorKey = rawCursorKey ? `${agentId}:${rawCursorKey}` : undefined;
-        const cursor = cursorKey ? autoCaptureCursors.get(cursorKey) : undefined;
-        const startIndex = resolveAutoCaptureStartIndex(event.messages, cursor);
-        // Content-based guard against resolveAutoCaptureStartIndex falling
-        // back to a full rescan from 0 (its tracked message fell out of
-        // history, e.g. compacted away): an earlier, already-captured
-        // message commonly survives a compaction that only rewrote the
-        // *tracked* one, and re-embedding it every subsequent turn wastes
-        // the embedding endpoint indefinitely on unchanged old content.
-        let trackedFingerprints = cursor?.capturedFingerprints ?? [];
-        const alreadyCaptured = new Set(trackedFingerprints);
+        const currentFingerprints = new Set(event.messages.map(messageFingerprint));
+        // Retain fixed-size hashes only for messages that still survive in the
+        // current transcript; rescans then need no positional fallback or FIFO.
+        const processedFingerprints = new Set(
+          [...(cursorKey ? (autoCaptureCursors.get(cursorKey) ?? []) : [])].filter((fingerprint) =>
+            currentFingerprints.has(fingerprint),
+          ),
+        );
+        if (cursorKey) {
+          autoCaptureCursors.set(cursorKey, processedFingerprints);
+        }
         let stored = 0;
         let capturableSeen = 0;
-        for (let index = startIndex; index < event.messages.length; index++) {
-          const message = event.messages[index];
+        for (const message of event.messages) {
           const fingerprint = messageFingerprint(message);
-          let messageProcessed = false;
-          // Set once the embedding-consuming work for this message's captured
-          // text has run to a conclusion (stored new, or matched an existing
-          // duplicate) so it is never re-embedded on a later rescan — a
-          // duplicate match is still a completed, non-repeatable outcome.
-          let justProcessed = false;
-
-          try {
-            if (!alreadyCaptured.has(fingerprint)) {
-              for (const text of extractUserTextContent(message)) {
-                // Sanitize envelope metadata before checking and storing
-                const sanitized = sanitizeForMemoryCapture(text);
-                if (
-                  !sanitized ||
-                  !shouldCapture(sanitized, {
-                    customTriggers: currentCfg.customTriggers,
-                    maxChars: currentCfg.captureMaxChars,
-                  })
-                ) {
-                  continue;
-                }
-                capturableSeen++;
-                if (capturableSeen > 3) {
-                  continue;
-                }
-
-                const category = detectCategory(sanitized);
-                const vector = await embeddings.embed(agentId, sanitized, currentCfg.embedding);
-
-                const existing = await findCleanDuplicateMemory(db, agentId, vector);
-                if (existing) {
-                  justProcessed = true;
-                  continue;
-                }
-
-                await db.store(agentId, {
-                  text: sanitized,
-                  vector,
-                  importance: 0.7,
-                  category,
-                });
-                stored++;
-                justProcessed = true;
-              }
-            }
-            messageProcessed = true;
-          } finally {
-            if (justProcessed) {
-              trackedFingerprints = withCapturedFingerprint(trackedFingerprints, fingerprint);
-              alreadyCaptured.add(fingerprint);
-            }
-            if (messageProcessed && cursorKey) {
-              autoCaptureCursors.set(cursorKey, {
-                nextIndex: index + 1,
-                lastMessageFingerprint: fingerprint,
-                capturedFingerprints: trackedFingerprints,
-              });
-            }
+          if (processedFingerprints.has(fingerprint)) {
+            continue;
           }
+          for (const text of extractUserTextContent(message)) {
+            // Sanitize envelope metadata before checking and storing
+            const sanitized = sanitizeForMemoryCapture(text);
+            if (
+              !sanitized ||
+              !shouldCapture(sanitized, {
+                customTriggers: currentCfg.customTriggers,
+                maxChars: currentCfg.captureMaxChars,
+              })
+            ) {
+              continue;
+            }
+            capturableSeen++;
+            if (capturableSeen > 3) {
+              continue;
+            }
+
+            const category = detectCategory(sanitized);
+            const vector = await embeddings.embed(agentId, sanitized, currentCfg.embedding);
+
+            const existing = await findCleanDuplicateMemory(db, agentId, vector);
+            if (existing) {
+              continue;
+            }
+
+            await db.store(agentId, {
+              text: sanitized,
+              vector,
+              importance: 0.7,
+              category,
+            });
+            stored++;
+          }
+          processedFingerprints.add(fingerprint);
         }
 
         if (stored > 0) {
