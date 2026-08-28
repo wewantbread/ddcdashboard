@@ -1487,6 +1487,125 @@ describe("cli session history", () => {
   });
 });
 
+describe("harness rows inside a CLI turn", () => {
+  const TURN_START = Date.parse("2026-03-26T16:29:55.000Z");
+  const NATIVE_SESSION_ID = "5b8b202c-f6bb-4046-9475-d2f15fd07530";
+  const at = (offsetMs: number) => new Date(TURN_START + offsetMs).toISOString();
+
+  // One CLI turn whose mid-turn user row is written by the harness. A skill
+  // instruction body is an isMeta row the importer drops entirely, so it cannot
+  // split the turn; a compaction summary stays visible and remains a boundary.
+  function turnLines(midTurnRow: Record<string, unknown>): string {
+    return [
+      { uuid: "u-1", timestamp: at(0), type: "user", message: { role: "user", content: "run it" } },
+      {
+        uuid: "a-1",
+        timestamp: at(1000),
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "part one" }] },
+      },
+      {
+        uuid: "a-2",
+        timestamp: at(2000),
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "demo" } }],
+        },
+      },
+      midTurnRow,
+      {
+        uuid: "a-3",
+        timestamp: at(4000),
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "part two" }] },
+      },
+    ]
+      .map((row) => JSON.stringify({ ...row, sessionId: NATIVE_SESSION_ID, cwd: "/demo" }))
+      .join("\n");
+  }
+
+  async function importTurn(lines: string): Promise<unknown[]> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-harness-turn-"));
+    const homeDir = path.join(root, "home");
+    const projectsDir = path.join(homeDir, ".claude", "projects", "demo-workspace");
+    await fs.mkdir(projectsDir, { recursive: true });
+    await fs.writeFile(path.join(projectsDir, `${NATIVE_SESSION_ID}.jsonl`), lines, "utf-8");
+    try {
+      return await withEnvAsync({ HOME: homeDir }, async () =>
+        readClaudeCliSessionMessages({ cliSessionId: NATIVE_SESSION_ID, homeDir }),
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  function localAggregate(): Record<string, unknown>[] {
+    return [
+      {
+        role: "assistant",
+        api: "cli",
+        provider: "claude-cli",
+        model: "claude-opus-5",
+        stopReason: "stop",
+        idempotencyKey: "cli-assistant:run-1",
+        content: [{ type: "text", text: "part one\n\npart two" }],
+        timestamp: TURN_START + 5000,
+      },
+    ];
+  }
+
+  function countAggregates(messages: unknown[]): number {
+    return messages.filter((message) => readRecord(message).api === "cli").length;
+  }
+
+  it("keeps a skill instruction row inside the turn it belongs to", async () => {
+    const importedMessages = await importTurn(
+      turnLines({
+        uuid: "u-2",
+        timestamp: at(3000),
+        type: "user",
+        isMeta: true,
+        sourceToolUseID: "toolu_1",
+        message: { role: "user", content: [{ type: "text", text: "SKILL INSTRUCTIONS: demo" }] },
+      }),
+    );
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages: localAggregate(),
+      importedMessages,
+    });
+
+    // The isMeta row never reaches the projection, so the turn still covers
+    // `part one\n\npart two` and the flat aggregate goes.
+    expect(countAggregates(merged)).toBe(0);
+  });
+
+  it("keeps a compaction summary as a turn boundary", async () => {
+    const importedMessages = await importTurn(
+      turnLines({
+        uuid: "u-2",
+        timestamp: at(3000),
+        type: "user",
+        isCompactSummary: true,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "SUMMARY OF PRIOR CONVERSATION" }],
+        },
+      }),
+    );
+
+    const merged = mergeImportedChatHistoryMessages({
+      localMessages: localAggregate(),
+      importedMessages,
+    });
+
+    // A summary really does end the turn, so no turn covers the aggregate and
+    // it survives as the durable fallback.
+    expect(countAggregates(merged)).toBe(1);
+  });
+});
+
 describe("readClaudeCliFallbackSeed", () => {
   let tmpRoot: string;
   let homeDir: string;
