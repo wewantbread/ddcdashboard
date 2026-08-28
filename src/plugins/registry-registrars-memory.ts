@@ -26,9 +26,30 @@ export function createMemoryRegistrars(state: PluginRegistryState) {
     record: PluginRecord,
     capability: Parameters<OpenClawPluginApi["registerMemoryCapability"]>[0],
   ) => {
-    if (requireMemorySlot(record, "capability")) {
-      registry.memoryCapabilities.push({ pluginId: record.id, capability });
+    if (!requireMemorySlot(record, "capability")) {
+      return;
     }
+    // A dreaming sidecar stays loadable so its consolidation lifecycle (prompt
+    // section, flush plan, public artifacts) survives beside the selected memory
+    // plugin, but the slot owner is the only indexing-runtime authority. Keeping a
+    // second runtime active re-embeds corpora that no registered tool ever reads —
+    // silent embedding-provider spend with no consumer.
+    if (!record.memorySlotSelected && capability.runtime) {
+      pushDiagnostic({
+        level: "warn",
+        pluginId: record.id,
+        source: record.source,
+        message:
+          "memory plugin not selected for the memory slot; skipping its indexing runtime registration (consolidation lifecycle preserved)",
+      });
+      const { runtime: _droppedRuntime, ...consolidationCapability } = capability;
+      registry.memoryCapabilities.push({
+        pluginId: record.id,
+        capability: consolidationCapability,
+      });
+      return;
+    }
+    registry.memoryCapabilities.push({ pluginId: record.id, capability });
   };
 
   const registerMemoryPromptSupplement = (

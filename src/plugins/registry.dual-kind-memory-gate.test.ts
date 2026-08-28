@@ -84,7 +84,7 @@ describe("dual-kind memory registration gate", () => {
     ).toHaveLength(0);
   });
 
-  it("allows memory runtime registration for single-kind memory plugins without memorySlotSelected", () => {
+  it("drops the indexing runtime of single-kind memory plugins not selected for the memory slot", () => {
     const { config, registry } = createPluginRegistryFixture();
 
     registerVirtualTestPlugin({
@@ -97,12 +97,14 @@ describe("dual-kind memory registration gate", () => {
         api.registerMemoryCapability({ runtime: createStubMemoryRuntime() });
       },
     });
+    expect(registry.registry.memoryCapabilities).toEqual([
+      { pluginId: "memory-only", capability: {} },
+    ]);
     expect(
-      requireMemoryRuntime(registry).resolveMemoryBackendConfig({
-        cfg: {} as never,
-        agentId: "main",
-      }),
-    ).toEqual({ backend: "builtin" });
+      registry.registry.diagnostics.filter(
+        (d) => d.pluginId === "memory-only" && d.level === "warn",
+      ),
+    ).toHaveLength(1);
   });
 
   it("allows selected dual-kind plugins to register the unified memory capability", () => {
@@ -151,6 +153,7 @@ describe("dual-kind memory registration gate", () => {
       id: "memory-core",
       name: "Memory Core",
       kind: "memory",
+      memorySlotSelected: true,
     });
     registerTestPlugin({
       registry,
@@ -194,7 +197,12 @@ describe("dual-kind memory registration gate", () => {
     const { config, registry } = createPluginRegistryFixture();
     const runtime = createStubMemoryRuntime();
     const flushPlanResolver = () => null;
-    const record = createPluginRecord({ id: "memory-core", name: "Memory Core", kind: "memory" });
+    const record = createPluginRecord({
+      id: "memory-core",
+      name: "Memory Core",
+      kind: "memory",
+      memorySlotSelected: true,
+    });
 
     registerTestPlugin({
       registry,
@@ -214,5 +222,68 @@ describe("dual-kind memory registration gate", () => {
         publicArtifacts: expect.any(Object),
       },
     });
+  });
+});
+
+describe("memory sidecar runtime gate", () => {
+  /** A dreaming sidecar keeps its consolidation lifecycle but never the indexing runtime. */
+  it("keeps the consolidation lifecycle while dropping the indexing runtime for a sidecar", () => {
+    const { config, registry } = createPluginRegistryFixture();
+    const promptBuilder = () => ["memory prompt"];
+    const flushPlanResolver = () => null;
+
+    registerVirtualTestPlugin({
+      registry,
+      config,
+      id: "memory-core",
+      name: "Memory Core",
+      kind: "memory",
+      register(api) {
+        api.registerMemoryCapability({
+          runtime: createStubMemoryRuntime(),
+          promptBuilder,
+          flushPlanResolver,
+        });
+      },
+    });
+
+    const selected = resolveMemoryCapabilityRegistration(registry.registry.memoryCapabilities);
+    expect(selected?.capability.runtime).toBeUndefined();
+    expect(selected?.capability.promptBuilder).toBe(promptBuilder);
+    expect(selected?.capability.flushPlanResolver).toBe(flushPlanResolver);
+    expect(
+      registry.registry.diagnostics.filter(
+        (d) => d.pluginId === "memory-core" && d.level === "warn",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("registers an artifact-only sidecar capability unchanged", () => {
+    const { config, registry } = createPluginRegistryFixture();
+
+    registerVirtualTestPlugin({
+      registry,
+      config,
+      id: "memory-bridge",
+      name: "Memory Bridge",
+      kind: "memory",
+      register(api) {
+        api.registerMemoryCapability({
+          publicArtifacts: { listArtifacts: async () => [] },
+        });
+      },
+    });
+
+    expect(registry.registry.memoryCapabilities).toEqual([
+      {
+        pluginId: "memory-bridge",
+        capability: { publicArtifacts: expect.any(Object) },
+      },
+    ]);
+    expect(
+      registry.registry.diagnostics.filter(
+        (d) => d.pluginId === "memory-bridge" && d.level === "warn",
+      ),
+    ).toHaveLength(0);
   });
 });
