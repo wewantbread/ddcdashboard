@@ -450,6 +450,74 @@ describe("lintMemoryWikiVault", () => {
     expect(result.issues.filter((issue) => issue.code === "broken-wikilink")).toEqual([]);
   });
 
+  it("resolves vault-wide path targets without accepting missing targets", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-lint-vault-wide-links-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await Promise.all(
+      ["sources", "syntheses", "people", ".git", "node_modules/example"].map((dir) =>
+        fs.mkdir(path.join(rootDir, dir), { recursive: true }),
+      ),
+    );
+
+    await fs.writeFile(
+      path.join(rootDir, "sources", "references.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.references",
+          title: "References",
+        },
+        body: [
+          "# References",
+          "",
+          "[[syntheses/summary]]",
+          "[[people/ada-lovelace]]",
+          "[[.git/private]]",
+          "[[node_modules/example/private]]",
+          "[[missing-page]]",
+        ].join("\n"),
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "syntheses", "summary.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "synthesis",
+          id: "synthesis.summary",
+          title: "Summary",
+          sourceIds: ["source.references"],
+        },
+        body: "# Summary\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
+    await Promise.all([
+      fs.writeFile(path.join(rootDir, ".git", "private.md"), "# Git metadata\n", "utf8"),
+      fs.writeFile(
+        path.join(rootDir, "node_modules", "example", "private.md"),
+        "# Dependency metadata\n",
+        "utf8",
+      ),
+    ]);
+
+    const result = await lintMemoryWikiVault(config);
+    const brokenTargets = result.issues
+      .filter((issue) => issue.code === "broken-wikilink")
+      .map((issue) => issue.message);
+
+    expect(brokenTargets).toEqual([
+      "Broken wikilink target `.git/private`.",
+      "Broken wikilink target `node_modules/example/private`.",
+      "Broken wikilink target `missing-page`.",
+    ]);
+  });
+
   it("keeps path target matching case-sensitive", async () => {
     const { rootDir, config } = await createVault({
       prefix: "memory-wiki-lint-path-case-",

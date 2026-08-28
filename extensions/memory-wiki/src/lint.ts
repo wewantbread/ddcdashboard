@@ -8,6 +8,10 @@ import {
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
+  isMemoryWikiRepositoryOrDependencyDirectory,
+  walkMemoryWikiDirectory,
+} from "./bounded-walk.js";
+import {
   assessPageFreshness,
   buildClaimContradictionClusters,
   collectWikiClaimHealth,
@@ -155,7 +159,10 @@ function addPathSuffixTargets(index: WikiLinkTargetIndex, raw: string | undefine
   }
 }
 
-function buildWikiLinkTargetIndex(pages: WikiPageSummary[]): WikiLinkTargetIndex {
+async function buildWikiLinkTargetIndex(
+  rootDir: string,
+  pages: WikiPageSummary[],
+): Promise<WikiLinkTargetIndex> {
   const index: WikiLinkTargetIndex = {
     pathTargets: new Set(),
     aliasTargets: new Set(),
@@ -166,6 +173,21 @@ function buildWikiLinkTargetIndex(pages: WikiPageSummary[]): WikiLinkTargetIndex
     addPathSuffixTargets(index, page.sourcePath);
     addPathSuffixTargets(index, page.bridgeRelativePath);
     addPathSuffixTargets(index, page.unsafeLocalRelativePath);
+  }
+  const entries = await walkMemoryWikiDirectory(rootDir, "", {
+    entryFilter: (entry) =>
+      isMemoryWikiRepositoryOrDependencyDirectory(entry) ||
+      (entry.kind === "directory" &&
+        [".openclaw-wiki", "_attachments"].includes(path.basename(entry.relativePath)))
+        ? "skip-subtree"
+        : "include",
+  });
+  for (const entry of entries) {
+    if (entry.kind !== "file" || !entry.relativePath.endsWith(".md")) {
+      continue;
+    }
+    const relativePath = entry.relativePath.split(path.sep).join("/");
+    addPathTarget(index, relativePath);
   }
   return index;
 }
@@ -190,8 +212,11 @@ function hasValidWikiLinkTarget(index: WikiLinkTargetIndex, rawTarget: string): 
   );
 }
 
-function collectBrokenLinkIssues(pages: WikiPageSummary[]): MemoryWikiLintIssue[] {
-  const validTargets = buildWikiLinkTargetIndex(pages);
+async function collectBrokenLinkIssues(
+  rootDir: string,
+  pages: WikiPageSummary[],
+): Promise<MemoryWikiLintIssue[]> {
+  const validTargets = await buildWikiLinkTargetIndex(rootDir, pages);
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
@@ -210,10 +235,11 @@ function collectBrokenLinkIssues(pages: WikiPageSummary[]): MemoryWikiLintIssue[
   return issues;
 }
 
-function collectPageIssues(
+async function collectPageIssues(
+  rootDir: string,
   pages: WikiPageSummary[],
   managedImportedSourcePagePaths: Set<string>,
-): MemoryWikiLintIssue[] {
+): Promise<MemoryWikiLintIssue[]> {
   const issues: MemoryWikiLintIssue[] = [];
   const pagesById = new Map<string, WikiPageSummary[]>();
   const claimHealth = collectWikiClaimHealth(pages);
@@ -410,7 +436,7 @@ function collectPageIssues(
     }
   }
 
-  issues.push(...collectBrokenLinkIssues(pages));
+  issues.push(...(await collectBrokenLinkIssues(rootDir, pages)));
   return issues.toSorted((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -533,7 +559,11 @@ export async function lintMemoryWikiVault(
         message: `Frontmatter failed to parse: ${error.message}`,
       }),
     ),
-    ...collectPageIssues(compileResult.pages, managedImportedSourcePagePaths),
+    ...(await collectPageIssues(
+      config.vault.path,
+      compileResult.pages,
+      managedImportedSourcePagePaths,
+    )),
   ].toSorted((left, right) => left.path.localeCompare(right.path));
   const issuesByCategory = buildIssuesByCategory(issues);
   const reportPath = await writeLintReport(config.vault.path, issues);

@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { walkMemoryWikiDirectory } from "./bounded-walk.js";
+import {
+  isMemoryWikiRepositoryOrDependencyDirectory,
+  walkMemoryWikiDirectory,
+} from "./bounded-walk.js";
 import { createMemoryWikiTestHarness } from "./test-helpers.js";
 
 const tempDirs = createMemoryWikiTestHarness();
@@ -27,21 +30,24 @@ describe("walkMemoryWikiDirectory", () => {
 
   it("prunes ignored subtrees before their descendants consume the budget", async () => {
     const root = await tempDirs.createTempDir("memory-wiki-walk-");
-    await fs.mkdir(path.join(root, "node_modules"));
+    await Promise.all([
+      fs.mkdir(path.join(root, ".git")),
+      fs.mkdir(path.join(root, "node_modules")),
+    ]);
     await Promise.all(
-      Array.from({ length: 10 }, (_, index) =>
-        fs.writeFile(path.join(root, "node_modules", `ignored-${index}.md`), "ignored"),
+      [".git", "node_modules"].flatMap((directory) =>
+        Array.from({ length: 10 }, (_, index) =>
+          fs.writeFile(path.join(root, directory, `ignored-${index}.md`), "ignored"),
+        ),
       ),
     );
     await fs.writeFile(path.join(root, "visible.md"), "visible");
 
     await expect(
       walkMemoryWikiDirectory(root, "", {
-        maxEntries: 2,
+        maxEntries: 3,
         entryFilter: (entry) =>
-          entry.kind === "directory" && path.basename(entry.relativePath) === "node_modules"
-            ? "skip-subtree"
-            : "include",
+          isMemoryWikiRepositoryOrDependencyDirectory(entry) ? "skip-subtree" : "include",
       }),
     ).resolves.toEqual([expect.objectContaining({ relativePath: "visible.md", kind: "file" })]);
   });

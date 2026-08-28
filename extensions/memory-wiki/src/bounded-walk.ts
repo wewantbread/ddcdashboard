@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   walkRootDirectory,
   type RootWalkEntry,
@@ -6,6 +7,7 @@ import {
 
 const MEMORY_WIKI_WALK_MAX_DEPTH = 128;
 const MEMORY_WIKI_WALK_MAX_ENTRIES = 20_000;
+const MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES = new Set([".git", "node_modules"]);
 
 type MemoryWikiWalkLimits = {
   maxDepth?: number;
@@ -13,6 +15,13 @@ type MemoryWikiWalkLimits = {
   entryFilter?: RootWalkOptions["entryFilter"];
   onDirectoryError?: RootWalkOptions["onDirectoryError"];
 };
+
+export function isMemoryWikiRepositoryOrDependencyDirectory(entry: RootWalkEntry): boolean {
+  return (
+    entry.kind === "directory" &&
+    MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(path.basename(entry.relativePath))
+  );
+}
 
 export async function walkMemoryWikiDirectory(
   rootDir: string,
