@@ -262,11 +262,16 @@ export function createInternalAgentTurnFacade(options: InternalAgentTurnFacadeOp
           dispatchOptions.signal,
           dispatchOptions.onSignalAbort,
         ));
-      const firstPayload = first.payload as { runId?: unknown; status?: unknown } | undefined;
+      const firstPayload = first.payload as
+        | { admitted?: unknown; runId?: unknown; status?: unknown }
+        | undefined;
       if (dispatchOptions.expectFinal !== true) {
         return first;
       }
       if (firstPayload?.status === "in_flight") {
+        if (firstPayload.admitted !== true) {
+          return first;
+        }
         dispatchOptions.onAccepted?.(first.payload);
         const runId = typeof firstPayload.runId === "string" ? firstPayload.runId.trim() : "";
         if (!runId) {

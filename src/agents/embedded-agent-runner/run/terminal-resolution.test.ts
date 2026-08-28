@@ -292,6 +292,36 @@ describe("terminal resolution", () => {
     }
   });
 
+  it("infers a runtime-owned yield when payloads contain only supplemental lanes", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      runtimeContinuationStarted: true,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        payloadsWithToolMedia: [
+          { text: "Private reasoning.", isReasoning: true },
+          { text: "Still working.", isCommentary: true },
+        ],
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action === "complete") {
+      expect(resolved.result.meta).toMatchObject({
+        livenessState: "paused",
+        stopReason: "end_turn",
+        yielded: true,
+      });
+    }
+  });
+
   it("retries an empty final turn after Anthropic server compaction", async () => {
     const assistant = emptyAssistant({
       providerReplay: {

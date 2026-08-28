@@ -8,6 +8,7 @@ import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome
 import type { AuthProfileFailureReason, AuthProfileStore } from "../../auth-profiles.js";
 import type { ResolvedProviderAuth } from "../../model-auth.js";
 import { log } from "../logger.js";
+import { hasVisibleAgentPayload } from "../message-visibility.js";
 import type { EmbeddedRunReplayState } from "../replay-state.js";
 import type {
   EmbeddedAgentMeta,
@@ -583,8 +584,15 @@ function completeEmbeddedRun(
   });
   input.runParams.onSuccessfulAuthProfile?.(input.authProfileId);
   const replayInvalid = input.resolveReplayInvalid(null);
+  const hasTerminalVisiblePayload = hasVisibleAgentPayload(
+    { payloads: input.payloadsForTerminalPath },
+    {
+      includeReasoningPayloads: false,
+      requireTerminalContent: true,
+    },
+  );
   const runtimeOwnedYield =
-    input.payloadCount === 0 && input.attempt.runtimeContinuationStarted === true;
+    !hasTerminalVisiblePayload && input.attempt.runtimeContinuationStarted === true;
   const yielded = input.attempt.yieldDetected === true || runtimeOwnedYield;
   const yieldHasContinuation = yielded && hasYieldContinuationEvidence(input.attempt);
   const livenessState = yielded

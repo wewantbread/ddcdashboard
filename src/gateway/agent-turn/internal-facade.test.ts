@@ -290,6 +290,30 @@ describe("createInternalAgentTurnFacade", () => {
     });
   });
 
+  it("returns a pre-admission in-flight collision without reattaching", async () => {
+    startTurn.mockImplementation(async ({ io }) => {
+      io.emitAcceptance([true, { runId: "run-chat-collision", status: "in_flight" }, undefined], {
+        cached: true,
+        runId: "run-chat-collision",
+      });
+    });
+    const onAccepted = vi.fn();
+
+    await expect(
+      createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "run-chat-collision" },
+        { expectFinal: true, onAccepted },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      payload: { runId: "run-chat-collision", status: "in_flight" },
+    });
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(waitForTurn).not.toHaveBeenCalled();
+    expect(waitForAgentTerminalDedupe).not.toHaveBeenCalled();
+    expect(startTurn).toHaveBeenCalledOnce();
+  });
+
   it("reattaches an in-flight replay and returns its full terminal dedupe result", async () => {
     const terminalResult = {
       payloads: [],
@@ -298,10 +322,13 @@ describe("createInternalAgentTurnFacade", () => {
     };
     startTurn
       .mockImplementationOnce(async ({ io }) => {
-        io.emitAcceptance([true, { runId: "run-replay", status: "in_flight" }, undefined], {
-          cached: true,
-          runId: "run-replay",
-        });
+        io.emitAcceptance(
+          [true, { admitted: true, runId: "run-replay", status: "in_flight" }, undefined],
+          {
+            cached: true,
+            runId: "run-replay",
+          },
+        );
       })
       .mockImplementationOnce(async ({ io }) => {
         io.emitAcceptance([
@@ -345,7 +372,11 @@ describe("createInternalAgentTurnFacade", () => {
     vi.useFakeTimers();
     startTurn
       .mockImplementationOnce(async ({ io }) => {
-        io.emitAcceptance([true, { runId: "run-replay", status: "in_flight" }, undefined]);
+        io.emitAcceptance([
+          true,
+          { admitted: true, runId: "run-replay", status: "in_flight" },
+          undefined,
+        ]);
       })
       .mockImplementationOnce(
         async ({ io }) =>
@@ -395,7 +426,11 @@ describe("createInternalAgentTurnFacade", () => {
   it("rejects when terminal dedupe readiness expires", async () => {
     vi.useFakeTimers();
     startTurn.mockImplementation(async ({ io }) => {
-      io.emitAcceptance([true, { runId: "run-readiness-timeout", status: "in_flight" }, undefined]);
+      io.emitAcceptance([
+        true,
+        { admitted: true, runId: "run-readiness-timeout", status: "in_flight" },
+        undefined,
+      ]);
     });
     waitForTurn.mockResolvedValue({ runId: "run-readiness-timeout", status: "ok" });
     waitForAgentTerminalDedupe.mockImplementationOnce(
@@ -431,10 +466,13 @@ describe("createInternalAgentTurnFacade", () => {
 
   it("keeps a cached replay in flight when the wait reaches a nonterminal timeout", async () => {
     startTurn.mockImplementation(async ({ io }) => {
-      io.emitAcceptance([true, { runId: "run-pending", status: "in_flight" }, undefined], {
-        cached: true,
-        runId: "run-pending",
-      });
+      io.emitAcceptance(
+        [true, { admitted: true, runId: "run-pending", status: "in_flight" }, undefined],
+        {
+          cached: true,
+          runId: "run-pending",
+        },
+      );
     });
     waitForTurn.mockResolvedValue({
       runId: "run-pending",
@@ -452,17 +490,24 @@ describe("createInternalAgentTurnFacade", () => {
       ok: true,
       payload: { runId: "run-pending", status: "in_flight" },
     });
-    expect(onAccepted).toHaveBeenCalledWith({ runId: "run-pending", status: "in_flight" });
+    expect(onAccepted).toHaveBeenCalledWith({
+      admitted: true,
+      runId: "run-pending",
+      status: "in_flight",
+    });
     expect(startTurn).toHaveBeenCalledOnce();
   });
 
   it("lets restart recovery abort the exact cached run before reattachment completes", async () => {
     vi.useFakeTimers();
     startTurn.mockImplementation(async ({ io }) => {
-      io.emitAcceptance([true, { runId: "recovery-cached", status: "in_flight" }, undefined], {
-        cached: true,
-        runId: "recovery-cached",
-      });
+      io.emitAcceptance(
+        [true, { admitted: true, runId: "recovery-cached", status: "in_flight" }, undefined],
+        {
+          cached: true,
+          runId: "recovery-cached",
+        },
+      );
     });
     waitForTurn.mockImplementation(async () => await new Promise<never>(() => {}));
     const facade = createFacade();
