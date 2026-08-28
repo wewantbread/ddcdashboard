@@ -263,7 +263,11 @@ describe("subagent registry persistence resume", () => {
       await vi.waitFor(
         () => {
           expect(announceSpy).toHaveBeenCalledOnce();
-          expect(loadSubagentRegistryFromSqlite().has(run.runId)).toBe(false);
+          // Delete cleanup removed the child session, but the finished row stays
+          // under its archive deadline until the sweeper expires it.
+          expect(loadSubagentRegistryFromSqlite().get(run.runId)?.cleanupCompletedAt).toBeTypeOf(
+            "number",
+          );
         },
         { timeout: 5_000, interval: 10 },
       );

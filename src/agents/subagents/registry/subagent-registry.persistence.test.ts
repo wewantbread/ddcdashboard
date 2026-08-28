@@ -737,13 +737,24 @@ describe("subagent registry persistence", () => {
     announceSpy.mockResolvedValueOnce("delivered");
     restartRegistry();
     await waitForRegistryWork(async () => {
-      const afterSecond = readPersistedRegistry();
-      return announceSpy.mock.calls.length === 2 && afterSecond.runs?.["run-4"] === undefined;
+      const afterSecond = await readPersistedRun<{ cleanupCompletedAt?: number }>(
+        registryPath,
+        "run-4",
+      );
+      return (
+        announceSpy.mock.calls.length === 2 && typeof afterSecond?.cleanupCompletedAt === "number"
+      );
     });
 
     expect(announceSpy).toHaveBeenCalledTimes(2);
-    const afterSecond = readPersistedRegistry();
-    expect(afterSecond.runs?.["run-4"]).toBeUndefined();
+    // Delivered delete cleanup keeps the finished row under its archive
+    // deadline; the sweeper retires it at expiry.
+    const afterSecond = await readPersistedRun<{
+      cleanupCompletedAt?: number;
+      archiveAtMs?: number;
+    }>(registryPath, "run-4");
+    expect(afterSecond?.cleanupCompletedAt).toBeTypeOf("number");
+    expect(afterSecond?.archiveAtMs).toBeTypeOf("number");
   });
 
   it("reconciles orphaned restored runs by pruning them from registry", async () => {
