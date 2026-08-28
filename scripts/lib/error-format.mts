@@ -27,15 +27,9 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
   }
   const error = new Error(fallbackMessage, { cause: value });
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    // Object.assign minus __proto__: mirrors the canonical loop in
-    // packages/normalization-core/src/error-coercion.ts (toErrorObject) and
-    // packages/retry/src/index.ts (toRetryError). This script helper is a
-    // no-workspace-dependency twin, so the loop is inlined rather than
-    // imported. [[Set]] preserves existing Error field descriptors, propagates
-    // throwing source accessors, and re-raises on a non-writable target
-    // (hardened prototype / frozen subclass) to keep Object.assign semantics;
-    // skipping __proto__ alone blocks the prototype-setter hijack from a parsed
-    // payload. Reflect.get avoids a type assertion — value is narrowed above.
+    // Twin of the canonical safe-copy loop in packages/normalization-core
+    // (error-coercion.ts) and packages/retry (index.ts): skipping own `__proto__`
+    // blocks the prototype-setter hijack; Reflect.set keeps Object.assign semantics.
     for (const key of Reflect.ownKeys(value)) {
       if (key === "__proto__") {
         continue;
