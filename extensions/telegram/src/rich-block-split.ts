@@ -13,7 +13,9 @@ import {
 } from "./rich-block-model.js";
 import { splitTelegramPlainTextChunks, surrogateSafeChunkEnd } from "./rich-plain-fallback.js";
 
-const TELEGRAM_RICH_MEDIA_LIMIT = 50;
+// Telegram's server silently drops the overflowing media block and its tail
+// above 20 rich-media items, despite the documented 50-item limit.
+export const TELEGRAM_RICH_MEDIA_LIMIT = 20;
 
 type RichBlockBudget = { chars: number; blocks: number; media: number };
 type RichBlockLimits = { textLimit: number; blockLimit: number };

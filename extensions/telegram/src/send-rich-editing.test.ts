@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   getTelegramSendTestMocks,
   importTelegramSendModule,
@@ -9,12 +9,19 @@ installTelegramSendTestHooks();
 
 const { botApi, botRawApi } = getTelegramSendTestMocks();
 const { editMessageTelegram } = await importTelegramSendModule();
+const { sendLogger } = await import("./send-context.js");
 const richConfig = { channels: { telegram: { richMessages: true } } };
 const editedMessage = { message_id: 321, chat: { id: 123, type: "private" } };
 const paragraphs = (count: number) =>
   Array.from({ length: count }, (_, index) => `P${String(index + 1).padStart(3, "0")}`);
 const listItems = (count: number) =>
   Array.from({ length: count }, (_, index) => `L${String(index + 1).padStart(3, "0")}`);
+const mediaMarkdown = (count: number) =>
+  Array.from(
+    { length: count },
+    (_, index) =>
+      `<figure><img src="https://example.com/${index + 1}.jpg"/><figcaption>photo-${index + 1}</figcaption></figure>`,
+  ).join("\n\n");
 
 describe("Telegram rich message edits", () => {
   it.each([
@@ -66,6 +73,38 @@ describe("Telegram rich message edits", () => {
     );
     expect(botApi.editMessageText).not.toHaveBeenCalled();
     expect(botApi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps exactly 20 media on the rich edit endpoint", async () => {
+    botRawApi.editMessageText.mockResolvedValueOnce(editedMessage);
+
+    await editMessageTelegram("123", 321, mediaMarkdown(20), {
+      cfg: richConfig,
+      token: "tok",
+    });
+
+    expect(botRawApi.editMessageText).toHaveBeenCalledOnce();
+    expect(botApi.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("degrades a 21-media rich edit to one complete visible plain replacement", async () => {
+    const warn = vi.spyOn(sendLogger, "warn").mockImplementation(() => {});
+    botApi.editMessageText.mockResolvedValueOnce(editedMessage);
+
+    await editMessageTelegram("123", 321, mediaMarkdown(21), {
+      cfg: richConfig,
+      token: "tok",
+    });
+
+    expect(botRawApi.editMessageText).not.toHaveBeenCalled();
+    expect(botApi.editMessageText).toHaveBeenCalledOnce();
+    const deliveredText = String(botApi.editMessageText.mock.calls[0]?.[2]);
+    expect(deliveredText.match(/https:\/\/example\.com\/\d+\.jpg/g)).toHaveLength(21);
+    expect(warn).toHaveBeenCalledWith(
+      "telegram editMessage degrade=plain-fallback:rich-media-too-many: 21 media exceeds rich edit limit of 20",
+    );
+    expect(botApi.sendMessage).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("keeps source text visible when rich rendering produces no blocks", async () => {
