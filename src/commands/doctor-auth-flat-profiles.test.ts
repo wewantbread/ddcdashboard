@@ -44,8 +44,20 @@ import {
   maybeMigrateAuthProfileJsonStoresToSqlite,
   maybeRepairOpenAICodexAuthConfig,
 } from "./doctor-auth-flat-profiles.js";
+import {
+  createAuthProfileMigrationSourceReceipt,
+  type AuthProfileMigrationSourceReceipt,
+} from "./doctor-auth-migration-receipts.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
 import { maybeRepairCodexSessionRoutes } from "./doctor/shared/codex-route-session-repair.js";
+
+type MigrationReceiptTestApi = {
+  recordAuthProfileMigrationImported: (receipt: AuthProfileMigrationSourceReceipt) => void;
+};
+
+const { recordAuthProfileMigrationImported } = (globalThis as Record<PropertyKey, unknown>)[
+  Symbol.for("openclaw.authProfileMigrationReceiptsTestApi")
+] as MigrationReceiptTestApi;
 
 const states: OpenClawTestState[] = [];
 
@@ -185,6 +197,80 @@ afterEach(async () => {
 });
 
 describe("maybeMigrateAuthProfileJsonStoresToSqlite", () => {
+  it("keeps JSON-era ownership through shared writes until Doctor imports the credential", async () => {
+    const state = await makeTestState();
+    const authPath = await writeLegacyAuthProfilesJson(state, {
+      version: 1,
+      profiles: {
+        "openai:json-era": {
+          type: "api_key",
+          provider: "openai",
+          key: "sk-json-era",
+        },
+      },
+    });
+    const legacyDatabasePath = path.join(state.agentDir(), "openclaw-agent.sqlite");
+    expect(fs.existsSync(legacyDatabasePath)).toBe(false);
+
+    const realExistsSync = fs.existsSync.bind(fs);
+    let legacyJsonProbes = 0;
+    const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((pathname) => {
+      if (path.resolve(String(pathname)) === path.resolve(authPath)) {
+        legacyJsonProbes += 1;
+      }
+      return realExistsSync(pathname);
+    });
+    try {
+      for (const key of ["sk-first-write", "sk-second-write"]) {
+        writePersistedAuthProfileStoreRaw({
+          version: 1,
+          profiles: {
+            "anthropic:written": {
+              type: "api_key",
+              provider: "anthropic",
+              key,
+            },
+          },
+        });
+      }
+      expect(legacyJsonProbes).toBe(1);
+    } finally {
+      existsSpy.mockRestore();
+    }
+
+    const beforeDoctor = openOpenClawStateDatabase({ env: state.env });
+    expect(
+      beforeDoctor.db
+        .prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?")
+        .get("auth.sharedStore"),
+    ).toBeUndefined();
+    expect(fs.existsSync(legacyDatabasePath)).toBe(true);
+
+    const result = await maybeMigrateAuthProfileJsonStoresToSqlite({
+      cfg: {},
+      prompter: makePrompter(true),
+      env: state.env,
+      now: () => 123,
+    });
+
+    expect(result.warnings).toStrictEqual([]);
+    expect(result.changes).toEqual([expect.stringContaining("Migrated auth profile JSON")]);
+    expect(loadPersistedAuthProfileStore(state.agentDir())?.profiles).toMatchObject({
+      "openai:json-era": {
+        type: "api_key",
+        provider: "openai",
+        key: "sk-json-era",
+      },
+      "anthropic:written": {
+        type: "api_key",
+        provider: "anthropic",
+        key: "sk-second-write",
+      },
+    });
+    expect(fs.existsSync(authPath)).toBe(false);
+    expectMigratedArchive(authPath);
+  });
+
   it("migrates the inherited auth owner after it leaves the explicit roster", async () => {
     const state = await makeTestState();
     const authPath = await writeLegacyAuthProfilesJson(
@@ -504,6 +590,38 @@ describe("maybeMigrateAuthProfileJsonStoresToSqlite", () => {
     expect(fs.existsSync(oauthPath)).toBe(true);
     expectNoMigratedArchive(oauthPath);
     expect(readPersistedAuthProfileStoreRaw(state.agentDir())).toEqual(unreadableStore);
+  });
+
+  it("surfaces the resume failure cause instead of a generic warning", async () => {
+    const state = await makeTestState();
+    const sourcePath = await state.writeText(
+      "credentials/oauth.json",
+      `${JSON.stringify({ openai: { access: "fake", refresh: "fake", expires: 42 } })}\n`,
+    );
+    const receipt = createAuthProfileMigrationSourceReceipt({
+      sourcePath,
+      sourceBytes: fs.readFileSync(sourcePath),
+      sourceRecordCount: 1,
+      targetDatabasePath: path.join(state.agentDir(), "openclaw-agent.sqlite"),
+      // An out-of-union target table makes resumePendingAuthProfileMigrationArchives throw
+      // "invalid pending auth profile migration receipt" — the cheapest way to reproduce one of
+      // its 5 distinct throw causes without corrupting on-disk state.
+      targetTable: "bogus_table" as AuthProfileMigrationSourceReceipt["targetTable"],
+      env: state.env,
+    });
+    recordAuthProfileMigrationImported(receipt);
+
+    const result = await maybeMigrateAuthProfileJsonStoresToSqlite({
+      cfg: {},
+      prompter: makePrompter(true),
+      env: state.env,
+    });
+
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(
+        /^Could not finalize an interrupted auth profile archive; legacy sources were left for recovery: .*invalid pending auth profile migration receipt.*/,
+      ),
+    );
   });
 
   it.each(["legacy-main", "state-db"] as const)(
@@ -2418,6 +2536,38 @@ describe("legacy OpenAI auth profiles through the canonical migration owner", ()
         },
       },
     });
+  });
+
+  it("does not read a canonical session database as JSON during route preview or repair", async () => {
+    const state = await makeTestState();
+    const storePath = path.join(state.agentDir(), "openclaw-agent.sqlite");
+    const sessionKey = "agent:main:main";
+    await replaceSessionEntry(
+      { storePath, sessionKey, env: state.env },
+      { sessionId: "canonical-route-session", updatedAt: Date.now() },
+    );
+    const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
+    try {
+      for (const shouldRepair of [false, true]) {
+        const result = await maybeRepairCodexSessionRoutes({
+          cfg: { session: { store: storePath } },
+          env: state.env,
+          shouldRepair,
+        });
+        expect(result).toMatchObject({
+          scannedStores: 1,
+          repairedSessions: 0,
+          warnings: [],
+          changes: [],
+        });
+      }
+      expect(readFileSyncSpy.mock.calls.map(([file]) => file)).not.toContain(storePath);
+    } finally {
+      readFileSyncSpy.mockRestore();
+    }
+    expect(loadSessionEntry({ storePath, sessionKey, env: state.env })?.sessionId).toBe(
+      "canonical-route-session",
+    );
   });
 
   it("previews noncanonical SQLite sessions without mutating or requiring canonical migration", async () => {

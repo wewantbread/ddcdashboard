@@ -18,6 +18,16 @@ import { buildLineMessageContext, buildLinePostbackContext } from "./bot-message
 import type { ResolvedLineAccount } from "./types.js";
 
 const logVerboseMock = vi.hoisted(() => vi.fn());
+const toInboundMediaFactsWithMetadataMock = vi.hoisted(() => vi.fn());
+
+vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/channel-inbound")>();
+  toInboundMediaFactsWithMetadataMock.mockImplementation(actual.toInboundMediaFactsWithMetadata);
+  return {
+    ...actual,
+    toInboundMediaFactsWithMetadata: toInboundMediaFactsWithMetadataMock,
+  };
+});
 
 vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
   const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/runtime-env")>(
@@ -89,6 +99,7 @@ describe("buildLineMessageContext", () => {
 
   beforeEach(async () => {
     logVerboseMock.mockClear();
+    toInboundMediaFactsWithMetadataMock.mockClear();
     setActivePluginRegistry(
       createTestRegistry([
         {
@@ -127,6 +138,21 @@ describe("buildLineMessageContext", () => {
 
     expect(context?.ctxPayload.OriginatingTo).toBe("line:group:group-1");
     expect(context?.ctxPayload.To).toBe("line:group:group-1");
+  });
+
+  it("skips media metadata projection for text-only messages", async () => {
+    const event = createMessageEvent({ type: "user", userId: "user-1" });
+
+    const context = await buildLineMessageContext({
+      event,
+      allMedia: [],
+      cfg,
+      account,
+      commandAuthorized: true,
+    });
+
+    expect(context?.ctxPayload.media).toEqual([]);
+    expect(toInboundMediaFactsWithMetadataMock).not.toHaveBeenCalled();
   });
 
   it("passes the caller-provided inbound history through to the context payload", async () => {
@@ -347,6 +373,57 @@ describe("buildLineMessageContext", () => {
 
     expect(context?.ctxPayload.CommandAuthorized).toBe(true);
   });
+
+  // Shapes observed on a live channel: a datetime picker tapped in LINE for macOS,
+  // and LINE's documented rich-menu switch payload.
+  const postbackSelectionCases: {
+    name: string;
+    postback: PostbackEvent["postback"];
+    expected: string;
+  }[] = [
+    {
+      name: "datetime picker",
+      postback: { data: "probe_deadline", params: { datetime: "2026-08-15T01:48" } },
+      expected: "probe_deadline datetime=2026-08-15T01:48",
+    },
+    {
+      name: "rich menu switch",
+      postback: {
+        data: "menu",
+        params: { status: "SUCCESS", newRichMenuAliasId: "richmenu-alias-b" },
+      },
+      expected: "menu newRichMenuAliasId=richmenu-alias-b status=SUCCESS",
+    },
+    {
+      name: "picker dismissed without a value",
+      postback: { data: "probe_deadline", params: { date: "   " } },
+      expected: "probe_deadline",
+    },
+    {
+      name: "device control",
+      postback: { data: "line.action=volume_up&line.device=Living%20Room" },
+      expected: "line action volume_up device Living Room",
+    },
+  ];
+
+  it.each(postbackSelectionCases)(
+    "gives the agent what the user picked in a $name postback",
+    async ({ postback, expected }) => {
+      const event = createPostbackEvent({ type: "user", userId: "user-pb" }, { postback });
+
+      const context = await buildLinePostbackContext({
+        event,
+        cfg,
+        account,
+        commandAuthorized: true,
+      });
+
+      expect(context?.ctxPayload.BodyForAgent).toBe(expected);
+      // The callback token stays verbatim so command gating keeps matching on it.
+      expect(context?.ctxPayload.RawBody).toBe(postback.data);
+      expect(context?.ctxPayload.CommandBody).toBe(postback.data);
+    },
+  );
 
   it("sets CommandAuthorized=false when not authorized", async () => {
     const event = createMessageEvent({ type: "user", userId: "user-noauth" });

@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 347023,
-  "reason": "GitHub device authorization Settings status and recovery copy",
-  "updatedAt": "2026-08-19"
+  "startupJsGzipBytes": 348449,
+  "reason": "Gateway credential re-scoping across login, startup, connection, and final client construction; rebased over the 347255 B main baseline using the exact-head CI-observed 1194 B delta",
+  "updatedAt": "2026-08-28"
 }

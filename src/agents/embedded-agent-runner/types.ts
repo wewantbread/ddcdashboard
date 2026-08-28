@@ -19,6 +19,7 @@ import type { McpConnectAction } from "../mcp-connect-action.js";
 import type { McpAppChannelView } from "../mcp-ui-resource.js";
 import type { FallbackAttempt } from "../model-fallback.types.js";
 import type { AgentRunTimeoutPhase } from "../run-timeout-attribution.js";
+import type { AgentRuntimeCredentialSource } from "../runtime-plan/types.js";
 import type { NormalizedUsage } from "../usage.js";
 
 export type BlockReplyFlushContext =
@@ -47,6 +48,8 @@ export type EmbeddedAgentMeta = {
   contextTokens?: number;
   contextTokensSource?: "runtime" | "runtime-configured" | "resolved";
   agentHarnessId?: string;
+  /** Redacted credential source selected for the terminal physical model attempt. */
+  credentialSource?: AgentRuntimeCredentialSource;
   fallbackAttempts?: FallbackAttempt[];
   cliSessionBinding?: CliSessionBinding;
   clearCliSessionBinding?: boolean;
@@ -172,6 +175,12 @@ export type EmbeddedRunFailureSignal = {
   fatalForCron: true;
 };
 
+export type EmbeddedRunTerminalToolFailure = {
+  source: "tool";
+  toolName: "exec" | "wait";
+  code: "UNKNOWN_TOOL_ID";
+};
+
 export type EmbeddedAgentRunMeta = {
   durationMs: number;
   agentMeta?: EmbeddedAgentMeta;
@@ -208,6 +217,8 @@ export type EmbeddedAgentRunMeta = {
     terminalPresentation?: boolean;
   };
   failureSignal?: EmbeddedRunFailureSignal;
+  /** Bounded, sanitized unresolved Code Mode failure for operator diagnostics. */
+  terminalToolFailure?: EmbeddedRunTerminalToolFailure;
   /** Stop reason for the agent run (e.g., "completed", "tool_calls"). */
   stopReason?: string;
   /** Pending tool calls when stopReason is "tool_calls". */

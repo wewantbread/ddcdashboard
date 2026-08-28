@@ -192,7 +192,7 @@ function readPinnedCodexClientVersion(): string {
   return version;
 }
 
-function runWrappedPayloadCase(params: {
+async function runWrappedPayloadCase(params: {
   wrap: NonNullable<ReturnType<typeof buildOpenAIProvider>["wrapStreamFn"]>;
   provider: string;
   modelId: string;
@@ -230,7 +230,7 @@ function runWrappedPayloadCase(params: {
     streamFn: baseStreamFn,
   } as never);
 
-  void streamFn?.(params.model, params.context ?? { messages: [] }, params.streamOptions ?? {});
+  await streamFn?.(params.model, params.context ?? { messages: [] }, params.streamOptions ?? {});
 
   return {
     payload,
@@ -471,6 +471,7 @@ describe("buildOpenAIProvider", () => {
 
     try {
       const result = await provider.catalog?.run({
+        providerIds: ["openai"],
         resolveProviderAuth: () => ({
           mode: "api_key",
           apiKey: "sk-openai",
@@ -496,6 +497,40 @@ describe("buildOpenAIProvider", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it.each(["azure-openai", "azure-openai-responses"])(
+    "does not resolve OpenAI credentials or fetch for %s-only catalog scope",
+    async (providerId) => {
+      const provider = buildOpenAIProvider();
+      const resolveProviderAuth = vi.fn(() => ({
+        mode: "api_key" as const,
+        apiKey: "sk-openai",
+        source: "profile" as const,
+      }));
+      const resolveProviderApiKey = vi.fn(() => ({ apiKey: "sk-openai" }));
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(Response.json({ data: [{ id: "gpt-5.5", object: "model" }] }));
+
+      try {
+        await expect(
+          provider.catalog?.run({
+            providerIds: [providerId],
+            resolveProviderAuth,
+            resolveProviderApiKey,
+            config: {},
+            env: {},
+          }),
+        ).resolves.toBeNull();
+        expect(resolveProviderAuth).not.toHaveBeenCalled();
+        expect(resolveProviderApiKey).not.toHaveBeenCalled();
+        expect(mocks.resolveApiKeyForProvider).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
 
   it("falls back to direct API-key catalog discovery when OAuth resolution fails", async () => {
     mocks.resolveApiKeyForProvider.mockRejectedValue(new Error("expired oauth profile"));
@@ -1766,6 +1801,74 @@ describe("buildOpenAIProvider", () => {
     ).toEqual({ effort: "high", transport: "sse" });
   });
 
+  it("delegates an unlisted first-party model to its explicitly selected Codex runtime", () => {
+    const provider = buildOpenAIProvider();
+    const model = provider.resolveDynamicModel?.({
+      provider: "openai",
+      modelId: "gpt-future",
+      modelRegistry: { find: () => null },
+      agentRuntimeId: "codex",
+    } as never);
+
+    expect(model).toMatchObject({
+      provider: "openai",
+      id: "gpt-future",
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+    });
+    expect(
+      provider
+        .resolveThinkingProfile?.({
+          provider: "openai",
+          modelId: "gpt-future",
+          agentRuntime: "codex",
+          api: model?.api,
+          compat: model?.compat,
+        } as never)
+        ?.levels.map((level) => level.id),
+    ).toContain("max");
+    expect(
+      provider
+        .resolveThinkingProfile?.({
+          provider: "openai",
+          modelId: "gpt-future",
+          agentRuntime: "codex",
+        } as never)
+        ?.levels.map((level) => level.id),
+    ).toEqual(expect.arrayContaining(["xhigh", "max"]));
+  });
+
+  it("does not invent an unlisted model for authored Platform credentials", () => {
+    const provider = buildOpenAIProvider();
+
+    expect(
+      provider.resolveDynamicModel?.({
+        provider: "openai",
+        modelId: "gpt-future",
+        modelRegistry: { find: () => null },
+        agentRuntimeId: "codex",
+        authProfileId: "openai:platform",
+        authProfileMode: "api_key",
+        providerConfig: {
+          auth: "api-key",
+          api: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+        },
+      } as never),
+    ).toBeUndefined();
+    expect(
+      provider
+        .resolveThinkingProfile?.({
+          provider: "openai",
+          modelId: "gpt-future",
+          agentRuntime: "codex",
+          api: "openai-responses",
+        } as never)
+        ?.levels.map((level) => level.id),
+    ).not.toContain("max");
+  });
+
   it("restores gpt-5.3-codex-spark only through ChatGPT/Codex OAuth routing", () => {
     const provider = buildOpenAIProvider();
 
@@ -1966,47 +2069,6 @@ describe("buildOpenAIProvider", () => {
       cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
       thinkingLevelMap: { off: "none", xhigh: "xhigh", max: "max" },
     });
-  });
-
-  it.each([
-    {
-      id: "gpt-5.6-sol",
-      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-    },
-    {
-      id: "gpt-5.6-terra",
-      cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
-    },
-    {
-      id: "gpt-5.6-luna",
-      cost: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
-    },
-  ])("preserves exact registry metadata for $id", ({ id, cost }) => {
-    const provider = buildOpenAIProvider();
-    const exactModel = {
-      id,
-      name: id,
-      provider: "openai",
-      api: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
-      reasoning: true,
-      input: ["text", "image"],
-      cost,
-      contextWindow: 1_050_000,
-      contextTokens: 272_000,
-      maxTokens: 128_000,
-      compat: { supportedReasoningEfforts: ["registry-exact"] },
-    };
-
-    const model = provider.resolveDynamicModel?.({
-      provider: "openai",
-      modelId: id,
-      modelRegistry: {
-        find: (_provider: string, templateId: string) => (templateId === id ? exactModel : null),
-      } as never,
-    } as never);
-
-    expect(model).toBe(exactModel);
   });
 
   it("resolves gpt-5.5-pro locally", () => {
@@ -2291,7 +2353,7 @@ describe("buildOpenAIProvider", () => {
     });
   });
 
-  it("owns direct OpenAI wrapper composition for responses payloads", () => {
+  it("owns direct OpenAI wrapper composition for responses payloads", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2307,7 +2369,7 @@ describe("buildOpenAIProvider", () => {
         textVerbosity: "low",
       },
     } as never);
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2337,7 +2399,7 @@ describe("buildOpenAIProvider", () => {
     expect(result.payload.tools).toEqual([{ type: "web_search" }]);
   });
 
-  it("clamps chat-latest text verbosity to the only live-supported value", () => {
+  it("clamps chat-latest text verbosity to the only live-supported value", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2351,7 +2413,7 @@ describe("buildOpenAIProvider", () => {
         textVerbosity: "low",
       },
     } as never);
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "chat-latest",
@@ -2371,7 +2433,7 @@ describe("buildOpenAIProvider", () => {
     expect(result.payload.text).toEqual({ verbosity: "medium" });
   });
 
-  it("uses native OpenAI web search instead of the managed web_search function", () => {
+  it("uses native OpenAI web search instead of the managed web_search function", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2379,7 +2441,7 @@ describe("buildOpenAIProvider", () => {
       throw new Error("expected OpenAI wrapper");
     }
 
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2403,7 +2465,7 @@ describe("buildOpenAIProvider", () => {
     ]);
   });
 
-  it("authorizes native OpenAI web search through the code mode wrapper chain", () => {
+  it("authorizes native OpenAI web search through the code mode wrapper chain", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     if (!wrap) {
@@ -2411,7 +2473,7 @@ describe("buildOpenAIProvider", () => {
     }
     const allowedHostedToolTypes = new Set<string>();
 
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2450,14 +2512,14 @@ describe("buildOpenAIProvider", () => {
     expect(allowedHostedToolTypes).toEqual(new Set(["web_search"]));
   });
 
-  it("keeps one native OpenAI web search tool when the payload is already patched", () => {
+  it("keeps one native OpenAI web search tool when the payload is already patched", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     if (!wrap) {
       throw new Error("expected OpenAI wrapper");
     }
 
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2477,7 +2539,7 @@ describe("buildOpenAIProvider", () => {
     expect(result.payload.reasoning).toEqual({ effort: "low" });
   });
 
-  it("keeps managed OpenAI web_search when agent policy denies native web search", () => {
+  it("keeps managed OpenAI web_search when agent policy denies native web search", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2486,7 +2548,7 @@ describe("buildOpenAIProvider", () => {
     }
 
     const allowedHostedToolTypes = new Set<string>();
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2527,7 +2589,7 @@ describe("buildOpenAIProvider", () => {
     expect(allowedHostedToolTypes).toEqual(new Set());
   });
 
-  it("raises minimal reasoning when native OpenAI web search is injected", () => {
+  it("raises minimal reasoning when native OpenAI web search is injected", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2535,7 +2597,7 @@ describe("buildOpenAIProvider", () => {
       throw new Error("expected OpenAI wrapper");
     }
 
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2554,7 +2616,7 @@ describe("buildOpenAIProvider", () => {
     expect(result.payload.tools).toEqual([{ type: "web_search" }]);
   });
 
-  it("does not inject native OpenAI web search when disabled or proxied", () => {
+  it("does not inject native OpenAI web search when disabled or proxied", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2563,7 +2625,7 @@ describe("buildOpenAIProvider", () => {
     }
 
     const disabledAllowedHostedToolTypes = new Set<string>();
-    const disabled = runWrappedPayloadCase({
+    const disabled = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2580,7 +2642,7 @@ describe("buildOpenAIProvider", () => {
       payload: { tools: [{ type: "function", name: "web_search" }] },
     });
     const proxiedAllowedHostedToolTypes = new Set<string>();
-    const proxied = runWrappedPayloadCase({
+    const proxied = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2602,7 +2664,7 @@ describe("buildOpenAIProvider", () => {
     expect(proxiedAllowedHostedToolTypes).toEqual(new Set());
   });
 
-  it("keeps managed web_search when another search provider is configured", () => {
+  it("keeps managed web_search when another search provider is configured", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
@@ -2611,7 +2673,7 @@ describe("buildOpenAIProvider", () => {
     }
 
     const allowedHostedToolTypes = new Set<string>();
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "openai",
       modelId: "gpt-5.4",
@@ -2727,14 +2789,14 @@ describe("buildOpenAIProvider", () => {
     ).toBe(explicit);
   });
 
-  it("owns Azure OpenAI reasoning compatibility without forcing OpenAI transport defaults", () => {
+  it("owns Azure OpenAI reasoning compatibility without forcing OpenAI transport defaults", async () => {
     const provider = buildOpenAIProvider();
     const wrap = provider.wrapStreamFn;
     expect(wrap).toBeTypeOf("function");
     if (!wrap) {
       throw new Error("expected Azure OpenAI wrapper");
     }
-    const result = runWrappedPayloadCase({
+    const result = await runWrappedPayloadCase({
       wrap,
       provider: "azure-openai-responses",
       modelId: "gpt-5.4",

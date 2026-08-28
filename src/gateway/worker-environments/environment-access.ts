@@ -144,6 +144,8 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
           throw serviceError("invalid_state", "Node worker tunnel runtime is unavailable");
         }
         startup = nodeTunnels.start({
+          executionMode:
+            record.profileSnapshot.executionMode === "remote-exec" ? "remote-exec" : "worker-turn",
           environmentId: record.environmentId,
           ownerEpoch: record.ownerEpoch,
           deviceId: nodeDeviceId,
@@ -180,7 +182,7 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     }
     const timeoutError = serviceError(
       "provider_failure",
-      "Worker tunnel did not connect within 3 minutes; check worker SSH reachability and retry",
+      "Worker tunnel did not connect within 3 minutes; check that the worker is online and reachable, then retry",
     );
     try {
       return await withTimeout(startup, TUNNEL_START_TIMEOUT_MS, {
@@ -404,14 +406,22 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     return { app: request.app, status: "ready" };
   };
 
+  const stopTunnelOwners = async (stops: Array<Promise<void> | undefined>): Promise<void> => {
+    const results = await Promise.allSettled(stops.filter((stop) => stop !== undefined));
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) {
+      throw failure.reason;
+    }
+  };
+
   const stopTunnel = async (environmentId: string, ownerEpoch?: number): Promise<void> => {
-    await withLock(environmentId, async () => {
-      await Promise.all([
+    await withLock(environmentId, async () =>
+      stopTunnelOwners([
         tunnels?.stop(environmentId, ownerEpoch),
         nodeTunnels?.stop(environmentId, ownerEpoch),
         nodeDesktop?.stop(environmentId, ownerEpoch),
-      ]);
-    });
+      ]),
+    );
   };
 
   return {
@@ -424,9 +434,8 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     observeDesktop,
     project,
     startTunnel,
-    stopAllTunnels: async () => {
-      await Promise.all([tunnels?.stopAll(), nodeTunnels?.stopAll(), nodeDesktop?.stopAll()]);
-    },
+    stopAllTunnels: () =>
+      stopTunnelOwners([tunnels?.stopAll(), nodeTunnels?.stopAll(), nodeDesktop?.stopAll()]),
     stopTunnel,
   };
 }

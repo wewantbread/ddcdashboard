@@ -613,6 +613,24 @@ export function resolveAgentSessionStoreTargetsSync(
   return dedupeTargetsByStorePath(targets);
 }
 
+/** Project configured session-store selection to the exact database migration owners. */
+export function resolveConfiguredAgentDatabaseTargets(
+  cfg: OpenClawConfig,
+  params: { env: NodeJS.ProcessEnv },
+): Array<{ agentId: string; path: string }> {
+  return resolveSessionStoreTargets(cfg, { allAgents: true }, params).map((target) => {
+    const resolved = resolveSqliteTargetFromSessionStorePath(target.storePath, {
+      agentId: target.agentId,
+      defaultAgentId: isPerAgentSessionStoreConfig(cfg.session?.store)
+        ? target.agentId
+        : resolveSessionStoreCompatibilityAgentId(cfg),
+      env: params.env,
+    });
+    // Shared stores partition logical agents inside one physical schema owner.
+    return { agentId: resolved.agentId ?? target.agentId, path: resolved.path };
+  });
+}
+
 /** Resolves session store targets from explicit CLI-style selection options. */
 export function resolveSessionStoreTargets(
   cfg: OpenClawConfig,
@@ -620,7 +638,11 @@ export function resolveSessionStoreTargets(
   params: { env?: NodeJS.ProcessEnv; diagnostics?: string[] } = {},
 ): SessionStoreTarget[] {
   const env = params.env ?? process.env;
-  const hasAgent = Boolean(opts.agent?.trim());
+  const requestedAgent = opts.agent?.trim();
+  if (opts.agent !== undefined && !requestedAgent) {
+    throw new Error("--agent must not be blank");
+  }
+  const hasAgent = requestedAgent !== undefined;
   const allAgents = opts.allAgents === true;
   if (hasAgent && allAgents) {
     throw new Error("--agent and --all-agents cannot be used together");
@@ -638,7 +660,7 @@ export function resolveSessionStoreTargets(
     if (persistedStoreOwner.kind === "retired") {
       throw new Error(`Session store owner is retired: ${persistedStoreOwner.agentId}`);
     }
-    const requestedAgentId = hasAgent ? normalizeAgentId(opts.agent ?? "") : undefined;
+    const requestedAgentId = requestedAgent ? normalizeAgentId(requestedAgent) : undefined;
     if (
       requestedAgentId &&
       persistedStoreOwner.kind === "configured" &&
@@ -687,7 +709,7 @@ export function resolveSessionStoreTargets(
   }
 
   if (hasAgent) {
-    const requested = normalizeAgentId(opts.agent ?? "");
+    const requested = normalizeAgentId(requestedAgent);
     resolveConfiguredAgentId(cfg, requested);
     return [
       {

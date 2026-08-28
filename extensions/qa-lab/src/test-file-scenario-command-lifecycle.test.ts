@@ -53,12 +53,16 @@ function createChild(pid = 42) {
   return child;
 }
 
-function runCommand(timeoutMs?: number) {
+function runCommand(
+  timeoutMs?: number,
+  onOutput?: (stream: "stderr" | "stdout", chunk: Buffer) => void,
+) {
   return runQaScenarioCommandLifecycle({
     command: "/usr/local/bin/scenario-command",
     args: ["--run"],
     cwd: "/tmp/qa",
     env: { OPENCLAW_QA_REF: "test" },
+    ...(onOutput ? { onOutput } : {}),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
 }
@@ -72,7 +76,6 @@ describe.skipIf(process.platform === "win32")("qa scenario command real POSIX li
   it("settles within a bound after the leader writes its final result with inherited stdio open", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "qa-command-settlement-"));
     const descendantPidPath = path.join(root, "descendant.pid");
-    let descendantPid: number | undefined;
     spawnMock.mockImplementation((...args: Parameters<NonNullable<typeof actualSpawn.value>>) => {
       if (!actualSpawn.value) {
         throw new Error("real spawn unavailable");
@@ -102,7 +105,7 @@ describe.skipIf(process.platform === "win32")("qa scenario command real POSIX li
         env: process.env,
         timeoutMs: 5_000,
       });
-      descendantPid = await waitForPidFile(descendantPidPath);
+      await waitForPidFile(descendantPidPath);
       const startedAt = Date.now();
       const deadline = new AbortController();
       const result = await Promise.race([
@@ -113,20 +116,15 @@ describe.skipIf(process.platform === "win32")("qa scenario command real POSIX li
       ]).finally(() => deadline.abort());
 
       expect(Date.now() - startedAt).toBeLessThan(1_500);
+      // The exact result proves cleanup succeeded. A later numeric PID probe can
+      // race PID reuse and inspect an unrelated process.
       expect(result).toEqual({
         exitCode: 7,
         signal: null,
         stdout: "Docker scheduling finished\ndelayed descendant output\n",
         stderr: "",
       });
-      if (descendantPid === undefined) {
-        throw new Error("scenario command descendant did not expose its pid");
-      }
-      await waitForDead(descendantPid);
     } finally {
-      if (descendantPid && isProcessAlive(descendantPid)) {
-        process.kill(descendantPid, "SIGKILL");
-      }
       await rm(root, { force: true, recursive: true });
     }
   });
@@ -288,12 +286,18 @@ describe.skipIf(process.platform === "win32")("qa scenario command lifecycle", (
 
   it("preserves the exact close result and removes parent handlers", async () => {
     const child = createChild();
-    const resultPromise = runCommand(5_000);
+    const output = vi.fn();
+    const resultPromise = runCommand(5_000, output);
 
     child.stdout?.emit("data", Buffer.from("out\n"));
     child.stderr?.emit("data", Buffer.from("err\n"));
     child.emit("exit", 3, null);
     child.emit("close", 3, null);
+
+    expect(output.mock.calls).toEqual([
+      ["stdout", Buffer.from("out\n")],
+      ["stderr", Buffer.from("err\n")],
+    ]);
 
     await expect(resultPromise).resolves.toEqual({
       exitCode: 3,
