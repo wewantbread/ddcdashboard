@@ -531,8 +531,7 @@ export async function spawnAcpDirect(
         runtimeMode,
         backendId,
         resumeSessionId: params.resumeSessionId,
-        runtimeOptions: runtimeOptionsResult.runtimeOptions,
-        modelExplicit: runtimeOptionsResult.modelExplicit,
+        runtimeSelection: runtimeOptionsResult,
         cwd: runtimeCwd,
       });
       initializedRuntime = initializedSession.runtimeCloseHandle;

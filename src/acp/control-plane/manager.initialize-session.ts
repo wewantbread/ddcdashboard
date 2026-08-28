@@ -56,6 +56,7 @@ export async function runManagerInitializeSession(params: {
         ...(requestedModel ? { model: requestedModel } : {}),
         ...(requestedModel && input.modelExplicit ? { modelExplicit: true } : {}),
         ...(requestedThinking ? { thinking: requestedThinking } : {}),
+        ...(requestedThinking && input.thinkingExplicit ? { thinkingExplicit: true } : {}),
         cwd: requestedCwd,
       }),
     fallbackCode: "ACP_SESSION_INIT_FAILED",
@@ -66,9 +67,14 @@ export async function runManagerInitializeSession(params: {
     requestedModel,
     appliedModel: handle.appliedModel,
   });
+  const effectiveThinking = resolveEffectiveSessionThinking({
+    requestedThinking,
+    appliedThinking: handle.appliedThinking,
+  });
   const effectiveRuntimeOptions = normalizeRuntimeOptions({
     ...initialRuntimeOptions,
     model: effectiveModel,
+    thinking: effectiveThinking,
     ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
   });
 
@@ -129,6 +135,17 @@ export async function runManagerInitializeSession(params: {
     handle,
     meta,
   };
+}
+
+function resolveEffectiveSessionThinking(params: {
+  requestedThinking: string | undefined;
+  appliedThinking: AcpRuntimeHandle["appliedThinking"];
+}): string | undefined {
+  const { appliedThinking } = params;
+  if (!appliedThinking) {
+    return params.requestedThinking;
+  }
+  return appliedThinking.kind === "applied" ? appliedThinking.thinking : undefined;
 }
 
 function resolveEffectiveSessionModel(params: {

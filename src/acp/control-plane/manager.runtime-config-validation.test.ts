@@ -110,6 +110,111 @@ describe("AcpSessionManager runtime config validation", () => {
     expect(runtimeState.runTurn).toHaveBeenCalledTimes(1);
   });
 
+  it("never persists or replays an inherited thinking default dropped at session init", async () => {
+    const sessionKey = "agent:codex:acp:session-dropped-thinking-default";
+    const runtimeState = createRuntime();
+    runtimeState.ensureSession.mockImplementation(async (input) => ({
+      sessionKey: input.sessionKey,
+      backend: "acpx",
+      runtimeSessionName: `${input.sessionKey}:runtime`,
+      appliedThinking: { kind: "dropped" as const },
+    }));
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+
+    let persistedMeta: SessionAcpMeta | undefined;
+    hoisted.upsertAcpSessionMetaMock.mockImplementation(
+      async (payload: {
+        mutate: (current: SessionAcpMeta | undefined) => SessionAcpMeta | null | undefined;
+      }) => {
+        persistedMeta = payload.mutate(undefined) ?? undefined;
+        return persistedMeta
+          ? { sessionKey, storeSessionKey: sessionKey, acp: persistedMeta }
+          : null;
+      },
+    );
+
+    const manager = new AcpSessionManager();
+    await manager.initializeSession({
+      cfg: baseCfg,
+      sessionKey,
+      agent: "codex",
+      mode: "persistent",
+      runtimeOptions: { thinking: "max" },
+      thinkingExplicit: false,
+    });
+
+    expect(persistedMeta?.runtimeOptions).toBeUndefined();
+    hoisted.readAcpSessionEntryMock.mockReturnValue({
+      sessionKey,
+      storeSessionKey: sessionKey,
+      acp: persistedMeta as SessionAcpMeta,
+    });
+
+    await manager.runTurn({
+      cfg: baseCfg,
+      sessionKey,
+      text: "do work",
+      mode: "prompt",
+      requestId: "run-dropped-thinking-default",
+      provenance: "system",
+    });
+
+    expectNoMockCallFields(runtimeState.setConfigOption, { key: "thinking" });
+    expect(runtimeState.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes an inherited thinking default dropped while rehydrating persisted metadata", async () => {
+    const sessionKey = "agent:codex:acp:session-rehydrated-dropped-thinking";
+    const runtimeState = createRuntime();
+    runtimeState.ensureSession.mockImplementation(async (input) => ({
+      sessionKey: input.sessionKey,
+      backend: "acpx",
+      runtimeSessionName: `${input.sessionKey}:runtime`,
+      appliedThinking: { kind: "dropped" as const },
+    }));
+    hoisted.requireAcpRuntimeBackendMock.mockReturnValue({
+      id: "acpx",
+      runtime: runtimeState.runtime,
+    });
+
+    let persistedMeta: SessionAcpMeta = {
+      ...readySessionMeta(),
+      runtimeOptions: { thinking: "max" },
+    };
+    hoisted.readAcpSessionEntryMock.mockImplementation(() => ({
+      sessionKey,
+      storeSessionKey: sessionKey,
+      acp: persistedMeta,
+    }));
+    hoisted.upsertAcpSessionMetaMock.mockImplementation(async (payloadUnknown: unknown) => {
+      const payload = payloadUnknown as {
+        mutate: (
+          current: SessionAcpMeta | undefined,
+          entry: { acp?: SessionAcpMeta } | undefined,
+        ) => SessionAcpMeta | null | undefined;
+      };
+      persistedMeta = payload.mutate(persistedMeta, { acp: persistedMeta }) ?? persistedMeta;
+      return { sessionKey, storeSessionKey: sessionKey, acp: persistedMeta };
+    });
+
+    const manager = new AcpSessionManager();
+    await manager.runTurn({
+      cfg: baseCfg,
+      sessionKey,
+      text: "do work",
+      mode: "prompt",
+      requestId: "run-rehydrated-dropped-thinking",
+      provenance: "system",
+    });
+
+    expect(persistedMeta.runtimeOptions).toBeUndefined();
+    expectNoMockCallFields(runtimeState.setConfigOption, { key: "thinking" });
+    expect(runtimeState.runTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("persists and replays a supported codex model the backend applied at session init", async () => {
     const sessionKey = "agent:codex:acp:session-applied-model";
     const runtimeState = createRuntime();

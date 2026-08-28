@@ -39,6 +39,11 @@ export type AcpRuntimeHandle = {
    * model before the first turn. Absent when the backend did not deviate from the request.
    */
   appliedModel?: { kind: "applied"; model: string } | { kind: "dropped" };
+  /**
+   * Effective thinking level applied during session creation when the backend can differ from the
+   * request. `dropped` prevents an unsupported inherited default from being persisted and replayed.
+   */
+  appliedThinking?: { kind: "applied"; thinking: string } | { kind: "dropped" };
 };
 
 export type AcpRuntimeEnsureInput = {
@@ -57,6 +62,8 @@ export type AcpRuntimeEnsureInput = {
   modelExplicit?: boolean;
   /** Optional runtime thinking/reasoning override that must be available during session creation. */
   thinking?: string;
+  /** Whether `thinking` came from explicit caller input instead of configuration inheritance. */
+  thinkingExplicit?: boolean;
   cwd?: string;
   env?: Record<string, string>;
 };

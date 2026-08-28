@@ -158,8 +158,20 @@ export async function ensureManagerRuntimeHandle(params: {
 
   const now = Date.now();
   const effectiveCwd = normalizeText(ensured.cwd) ?? cwd;
+  const effectiveModel = ensured.appliedModel
+    ? ensured.appliedModel.kind === "applied"
+      ? ensured.appliedModel.model
+      : undefined
+    : runtimeOptions.model;
+  const effectiveThinking = ensured.appliedThinking
+    ? ensured.appliedThinking.kind === "applied"
+      ? ensured.appliedThinking.thinking
+      : undefined
+    : runtimeOptions.thinking;
   const nextRuntimeOptions = normalizeRuntimeOptions({
     ...runtimeOptions,
+    model: effectiveModel,
+    thinking: effectiveThinking,
     ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
   });
   const nextIdentity =
