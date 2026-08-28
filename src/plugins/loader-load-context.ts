@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { collectAutoEnableConfiguredChannelIds } from "../config/channel-activation-candidates.js";
 import { resolveConfigEnvVars } from "../config/env-substitution.js";
 import { createConfigRuntimeEnv } from "../config/env-vars.js";
+import { resolveExternalCatalogPathsIdentity } from "../config/plugin-auto-enable.prefer-over.js";
+import { hasMaterialPluginEntryConfig } from "../config/plugin-replacement-eligibility.js";
+import { getGatewayAmbientEnvTriggerPolicy } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { resolveRealpathOrAbsolute } from "../infra/boundary-path.js";
@@ -135,7 +139,11 @@ function resolveBundledPackageCacheIdentity(
 function buildActivationMetadataHash(params: {
   activationSource: PluginActivationConfigSource;
   autoEnabledReasons: Readonly<Record<string, string[]>>;
+  configuredChannelIds: readonly string[];
 }): string {
+  const configuredChannels = [...new Set(params.configuredChannelIds)].toSorted((left, right) =>
+    left.localeCompare(right),
+  );
   const enabledSourceChannels = Object.entries(
     (params.activationSource.rootConfig?.channels as Record<string, unknown>) ?? {},
   )
@@ -152,6 +160,20 @@ function buildActivationMetadataHash(params: {
   const pluginEntryInputs = Object.entries(params.activationSource.plugins.entries)
     .map(([pluginId, { enabled, config }]) => [pluginId, { enabled, config }] as const)
     .toSorted(([left], [right]) => left.localeCompare(right));
+  // Explicit selection reads the AUTHORED entries (`isPluginExplicitlySelectedByAlias` counts a
+  // material entry through `hasMaterialPluginEntryConfig`), and normalization drops exactly the
+  // shapes that flip it — an empty `hooks`/`subagent`/`llm` object, an `apiKey`, an `env`. The
+  // entry pair above carries `enabled` and `config`, which covers those two arms of the predicate;
+  // the rest survive nowhere in the normalized entries, so a `{}` -> `{ hooks: {} }` edit that
+  // suppresses a replacement's `preferOver` edge would move the cede map baked into a cached
+  // registry without moving this hash. Hash material PRESENCE, not the entry bodies: hashing whole
+  // authored entries would rebuild the registry on edits that move no activation input.
+  const materialSourceEntryIds = Object.entries(
+    params.activationSource.rootConfig?.plugins?.entries ?? {},
+  )
+    .filter(([, entry]) => hasMaterialPluginEntryConfig(entry))
+    .map(([pluginId]) => pluginId)
+    .toSorted((left, right) => left.localeCompare(right));
   const autoEnableReasonEntries = Object.entries(params.autoEnabledReasons)
     .map(([pluginId, reasons]) => [pluginId, [...reasons]] as const)
     .toSorted(([left], [right]) => left.localeCompare(right));
@@ -164,7 +186,9 @@ function buildActivationMetadataHash(params: {
         deny: params.activationSource.plugins.deny,
         memorySlot: params.activationSource.plugins.slots.memory,
         entries: pluginEntryInputs,
+        materialSourceEntries: materialSourceEntryIds,
         enabledChannels: enabledSourceChannels,
+        configuredChannels,
         autoEnabledReasons: autoEnableReasonEntries,
       }),
     )
@@ -236,6 +260,14 @@ function buildCacheKey(params: {
       bundledPackage,
       devSourceRoot: params.devSourceRoot ?? "",
       discoveryFingerprint: fingerprintPluginDiscoveryContext(discoveryContext),
+      // External catalogs carry `preferOver` edges, so they decide who owns a contested channel
+      // and the cede map baked into a cached registry. `resolvePluginCacheInputs` only covers the
+      // source roots and load paths, so two loads in one process reading different catalog files
+      // -- `OPENCLAW_PLUGIN_CATALOG_PATHS` or `OPENCLAW_MPM_CATALOG_PATHS` differing between
+      // caller-supplied environments -- hashed identically, and the second reused the first's
+      // ownership while validation resolved the new one. Content rewritten at an unchanged path
+      // is handled separately, by the plugin metadata lifecycle clear.
+      externalCatalogPaths: resolveExternalCatalogPathsIdentity(params.env),
       ...params.plugins,
       installs,
       loadPaths,
@@ -374,6 +406,19 @@ export function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
     activationMetadataKey: buildActivationMetadataHash({
       activationSource,
       autoEnabledReasons: options.autoEnabledReasons ?? {},
+      // The cede map baked into a cached registry reads channel ownership, and ownership reads
+      // which channels are meaningfully configured — a wider set than the `enabled: true` entries
+      // hashed above. Making a contested channel meaningfully configured can move the runtime
+      // owner without touching plugin entries, auto-enable reasons, or any `enabled` flag, so the
+      // key must carry the same configured-channel set the ownership policy resolves
+      // (`createConfiguredChannelOwnershipPolicy` reads the activation source config with the
+      // Gateway's recorded ambient-env-trigger policy), or a hit returns the stale cede map.
+      configuredChannelIds: collectAutoEnableConfiguredChannelIds(
+        activationSourceConfig,
+        env,
+        undefined,
+        getGatewayAmbientEnvTriggerPolicy(),
+      ),
     }),
     installs: installRecords,
     env,

@@ -5,6 +5,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigMutationConflictError } from "../../config/mutation-conflict.js";
+import {
+  resetConfigRuntimeState,
+  setAppliedRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -26,6 +30,13 @@ vi.mock("../../config/io.js", async () => {
   };
 });
 
+// Hoisted like `configWriteMocks` so individual tests can steer validation results; the
+// identity defaults live in the top-level `beforeEach`.
+const configValidationMocks = vi.hoisted(() => ({
+  validateConfigObjectRawWithPlugins: vi.fn(),
+  validateConfigObjectWithPlugins: vi.fn(),
+}));
+
 // This suite owns config patch/merge behavior, while plugin validation is covered by
 // config.plugin-validation.test.ts and validation.channel-metadata.test.ts.
 vi.mock("../../config/validation.js", async () => {
@@ -34,16 +45,8 @@ vi.mock("../../config/validation.js", async () => {
   );
   return {
     ...actual,
-    validateConfigObjectRawWithPlugins: vi.fn((config: OpenClawConfig) => ({
-      ok: true,
-      config,
-      warnings: [],
-    })),
-    validateConfigObjectWithPlugins: vi.fn((config: OpenClawConfig) => ({
-      ok: true,
-      config,
-      warnings: [],
-    })),
+    validateConfigObjectRawWithPlugins: configValidationMocks.validateConfigObjectRawWithPlugins,
+    validateConfigObjectWithPlugins: configValidationMocks.validateConfigObjectWithPlugins,
   };
 });
 
@@ -69,11 +72,22 @@ vi.mock("./config-write-flow.js", async () => {
   };
 });
 
-const { execOpenPathMock, loadGatewayRuntimeConfigSchemaMock } = vi.hoisted(() => ({
+const {
+  execOpenPathMock,
+  loadGatewayRuntimeConfigSchemaMock,
+  buildRuntimeConfigSchemaForConfigMock,
+} = vi.hoisted(() => ({
   execOpenPathMock: vi.fn(),
   loadGatewayRuntimeConfigSchemaMock: vi.fn(() => ({
     schema: { type: "object" },
     uiHints: undefined as Record<string, { advanced?: boolean }> | undefined,
+    version: "test-schema",
+  })),
+  buildRuntimeConfigSchemaForConfigMock: vi.fn((_config?: unknown, _sourceConfig?: unknown) => ({
+    schema: { type: "object" },
+    uiHints: undefined as
+      | Record<string, { advanced?: boolean; sensitive?: boolean; tags?: string[] }>
+      | undefined,
     version: "test-schema",
   })),
 }));
@@ -85,6 +99,9 @@ vi.mock("./open-path.js", async () => {
 
 vi.mock("../../config/runtime-schema.js", () => ({
   loadGatewayRuntimeConfigSchema: loadGatewayRuntimeConfigSchemaMock,
+  // Write acknowledgements build redaction hints from the committed config, so the mock must
+  // answer for an exact config the same way it answers for the active one.
+  buildRuntimeConfigSchemaForConfig: buildRuntimeConfigSchemaForConfigMock,
 }));
 
 function mockOpenPathError(error: Error) {
@@ -160,6 +177,12 @@ beforeEach(() => {
   storedHash = "base-hash";
   nextHash = 1;
   modelNormalizationPluginMetadata = undefined;
+  configValidationMocks.validateConfigObjectRawWithPlugins.mockImplementation(
+    (config: OpenClawConfig) => ({ ok: true, config, warnings: [] }),
+  );
+  configValidationMocks.validateConfigObjectWithPlugins.mockImplementation(
+    (config: OpenClawConfig) => ({ ok: true, config, warnings: [] }),
+  );
   configWriteMocks.readConfigFileSnapshotForWrite.mockImplementation(async () =>
     currentWriteSnapshot(),
   );
@@ -396,6 +419,12 @@ describe("config.openFile", () => {
 });
 
 describe("config schema response cache", () => {
+  // Tests below publish and clear the process-wide runtime snapshot; drop that module state so
+  // later suites keep the unpublished default this file starts from.
+  afterEach(() => {
+    resetConfigRuntimeState();
+  });
+
   it("returns resolved tier metadata through config.schema", async () => {
     loadGatewayRuntimeConfigSchemaMock.mockReturnValueOnce({
       schema: { type: "object" },
@@ -414,10 +443,27 @@ describe("config schema response cache", () => {
   });
 
   it("reuses a recent schema build across burst config requests", async () => {
+    // A gateway serving RPCs always has a published runtime snapshot: startup publishes one before
+    // the request runtime exists, and a real schema build repins one through
+    // `loadPinnedRuntimeConfig` whenever it is missing. The cache proves a hit against that
+    // snapshot's identity, so the burst runs with one published, the way every live burst does.
+    setAppliedRuntimeConfigSnapshot(storedConfig, storedConfig);
     await invokeConfigSchema();
     await invokeConfigSchema();
 
     expect(loadGatewayRuntimeConfigSchemaMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebuilds every request while no runtime snapshot is published", async () => {
+    // No published snapshot means there is no identity to prove a hit against, so the cache must
+    // refuse to serve: a pre-clear entry could describe a config the next disk load replaces. In a
+    // live gateway the first build ends that window by repinning a snapshot; the mocked builder
+    // never repins, so both requests stay inside the window and each one must rebuild.
+    resetConfigRuntimeState();
+    await invokeConfigSchema();
+    await invokeConfigSchema();
+
+    expect(loadGatewayRuntimeConfigSchemaMock).toHaveBeenCalledTimes(2);
   });
 
   it("rebuilds after config writes change schema inputs", async () => {
@@ -563,6 +609,39 @@ describe("config.patch hash-free ui.prefs LWW", () => {
 
     expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ noop: true }), undefined);
     expect(configWriteMocks.commitGatewayConfigWrite).not.toHaveBeenCalled();
+  });
+
+  // The post-validation noop is the one response built while both halves are in hand and
+  // distinct: the patch changed a leaf (so the pre-validation noop cannot fire), and validation
+  // normalized that leaf away (so the post-validation path diff is empty). Its hint build must
+  // receive the AUTHORED candidate as the source half — handing it the validated config would
+  // read validation's runtime-materialized output, whose seeded entry configs masquerade as
+  // operator selection, the exact defect the sourceConfig threading closes.
+  it("builds post-validation noop hints from the authored candidate, not the validated config", async () => {
+    storedConfig = { ui: { prefs: { theme: "knot" } } };
+    const validatedEcho = structuredClone(storedConfig);
+    configValidationMocks.validateConfigObjectWithPlugins.mockImplementationOnce(() => ({
+      ok: true,
+      config: validatedEcho,
+      warnings: [],
+    }));
+
+    const { respond } = await invokeConfigPatch({
+      raw: { ui: { prefs: { theme: "zigzag" } } },
+      baseHash: "base-hash",
+    });
+
+    // Reached the POST-validation noop: no write, and validation ran exactly once.
+    expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ noop: true }), undefined);
+    expect(configWriteMocks.commitGatewayConfigWrite).not.toHaveBeenCalled();
+    expect(configValidationMocks.validateConfigObjectWithPlugins).toHaveBeenCalledTimes(1);
+    const authoredCandidate =
+      configValidationMocks.validateConfigObjectWithPlugins.mock.calls[0]?.[0];
+    const noopBuild = buildRuntimeConfigSchemaForConfigMock.mock.calls.at(-1);
+    expect(noopBuild?.[0]).toBe(validatedEcho);
+    // The source half is the exact authored object validation was handed, never its output.
+    expect(noopBuild?.[1]).toBe(authoredCandidate);
+    expect(noopBuild?.[1]).not.toBe(validatedEcho);
   });
 
   it("preserves stale-hash rejection for strict patches", async () => {

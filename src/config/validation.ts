@@ -16,10 +16,8 @@ import { resolveSecretRefProviderSourceMismatch } from "../secrets/ref-contract.
 import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 import { isRecord } from "../utils.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
-import {
-  collectChannelDmPolicyMetadata,
-  collectChannelSchemaMetadataWithOwnership,
-} from "./channel-config-metadata.js";
+import { collectChannelDmPolicyMetadata } from "./channel-config-metadata.js";
+import { configuredChannelSchemas } from "./channel-ownership-policy.js";
 import { resolveConfigWidePluginManifestRegistry } from "./io.plugin-metadata.js";
 import { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
 import {
@@ -347,7 +345,9 @@ function validateConfigObjectWithPluginsBase(
           (entry) => [entry.channelId, { schema: entry.schema }] as const,
         ),
       );
-      for (const entry of collectChannelSchemaMetadataWithOwnership(info.registry)) {
+      // Ownership must land on the plugin activation would run, or a valid config is checked
+      // against a schema the runtime never applies.
+      for (const entry of configuredChannelSchemas(info.registry, config, opts.env)) {
         const current = info.channelSchemas.get(entry.id);
         if (entry.configSchema) {
           info.channelSchemas.set(entry.id, {
