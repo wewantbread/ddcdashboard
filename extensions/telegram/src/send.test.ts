@@ -1574,9 +1574,8 @@ describe("sendMessageTelegram", () => {
       });
 
       expect(botRawApi.sendRichMessage, `${mediaCount} media`).toHaveBeenCalledTimes(expectedSends);
-      const richMessages = botRawApi.sendRichMessage.mock.calls.map(
-        (call) => call[0]?.rich_message,
-      );
+      const richMessages: Array<RichMessageTestPayload | undefined> =
+        botRawApi.sendRichMessage.mock.calls.map((call) => call[0]?.rich_message);
       expect(
         richMessages.map((message) =>
           (message?.blocks ?? []).reduce(
