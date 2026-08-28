@@ -1,10 +1,8 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { releaseChildProcessOutputAfterExit } from "../../../process/child-process.js";
-import { spawnCommand } from "../../../process/exec.js";
+import { runUtf8CommandWithTimeout, type SpawnResult } from "../../../process/exec.js";
 /**
  * Built-in find session tool.
  *
@@ -14,7 +12,7 @@ import { normalizeNativePathSeparators } from "../../../shared/ignore-rules.js";
 import type { AgentTool } from "../../runtime/index.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { appendBoundedTextTail, normalizePositiveLimit } from "./limits.js";
+import { normalizePositiveLimit, SESSION_TOOL_STDERR_TAIL_BYTES } from "./limits.js";
 import { resolveToCwd } from "./path-utils.js";
 import {
   appendSessionToolTruncationWarning,
@@ -48,6 +46,11 @@ const findSchema = Type.Object({
   limit: Type.Optional(Type.Integer({ description: "Max results; default 1000." })),
 });
 const DEFAULT_LIMIT = 1000;
+// fd can stall on a broken filesystem or network mount without exiting or
+// emitting output. Bound the silence, not the total runtime: any stdout line
+// or stderr chunk re-arms the timer, so a healthy long search keeps running
+// and only a silent child is killed.
+const FD_STALL_TIMEOUT_MS = 60_000;
 
 /**
  * Pluggable operations for the find tool.
@@ -174,18 +177,17 @@ export function createFindToolDefinition(
         }
 
         let settled = false;
-        let stopChild: (() => void) | undefined;
         const settle = (fn: () => void) => {
           if (settled) {
             return;
           }
           settled = true;
           signal?.removeEventListener("abort", onAbort);
-          stopChild = undefined;
           fn();
         };
+        // The runner owns killing the child once it is spawned (via this
+        // signal); settlement only needs to stop listening and reject.
         const onAbort = () => {
-          stopChild?.();
           settle(() => reject(new Error("Operation aborted")));
         };
         signal?.addEventListener("abort", onAbort, { once: true });
@@ -280,106 +282,105 @@ export function createFindToolDefinition(
             }
             args.push("--", effectivePattern, searchPath);
 
-            const child = spawnCommand([fdPath, ...args], {
-              buffer: false,
-              reject: false,
-              stdio: ["ignore", "pipe", "pipe"],
-            });
-            releaseChildProcessOutputAfterExit(child.nodeChildProcess);
-            const rl = createInterface({ input: child.stdout });
-            let stderr = "";
-            const lines: string[] = [];
-
-            stopChild = () => {
-              if (!child.nodeChildProcess.killed) {
-                child.kill();
+            let result: SpawnResult;
+            try {
+              // The runner owns the child lifecycle: noOutputTimeoutMs re-arms
+              // on every raw stdout/stderr chunk, so a healthy long search
+              // keeps running and only a silent fd is killed. fd output is
+              // bounded by --max-results, so buffering via the runner capture
+              // is safe.
+              result = await runUtf8CommandWithTimeout([fdPath, ...args], {
+                noOutputTimeoutMs: FD_STALL_TIMEOUT_MS,
+                signal,
+                // A failed output stream must kill fd immediately, matching
+                // the pre-refactor stopChild-on-error behavior; otherwise a
+                // wedged child could outlive the tool call.
+                terminateOnOutputError: true,
+                // Keep the pre-refactor stderr bound; the runner default tail
+                // is 16 MiB.
+                maxOutputBytes: { stderr: SESSION_TOOL_STDERR_TAIL_BYTES },
+              });
+            } catch (error) {
+              const outputErrorStream =
+                error instanceof Error && "outputErrorStream" in error
+                  ? error.outputErrorStream
+                  : undefined;
+              const message = error instanceof Error ? error.message : String(error);
+              if (outputErrorStream === "stdout" || outputErrorStream === "stderr") {
+                settle(() => reject(new Error(`fd ${outputErrorStream} error: ${message}`)));
+              } else {
+                settle(() => reject(new Error(`Failed to run fd: ${message}`)));
               }
-            };
-
-            const cleanup = () => {
-              rl.close();
-            };
-            const onStreamError = (stream: "stdout" | "stderr", error: Error) => {
-              if (settled) {
-                return;
-              }
-              stopChild?.();
-              cleanup();
-              settle(() => reject(new Error(`fd ${stream} error: ${error.message}`)));
-            };
-
-            // Decode stderr as UTF-8 at the stream so pipe chunk boundaries
-            // cannot split multibyte characters into U+FFFD replacement noise.
-            child.stderr?.setEncoding("utf8");
-            child.stderr?.on("data", (chunk: string) => {
-              stderr = appendBoundedTextTail(stderr, chunk);
-            });
-            // Readline re-emits input failures, while the stream listener also catches
-            // implementations that do not. settle() keeps the shared failure path one-shot.
-            rl.on("error", (error) => onStreamError("stdout", error));
-            child.stdout?.on("error", (error) => onStreamError("stdout", error));
-            child.stderr?.on("error", (error) => onStreamError("stderr", error));
-
-            rl.on("line", (line) => {
-              lines.push(line);
-            });
-
-            child.nodeChildProcess.on("error", (error) => {
-              cleanup();
-              settle(() => reject(new Error(`Failed to run fd: ${error.message}`)));
-            });
-
-            child.nodeChildProcess.on("close", (code) => {
-              cleanup();
-              if (signal?.aborted) {
-                settle(() => reject(new Error("Operation aborted")));
-                return;
-              }
-              const output = lines.join("\n");
-              if (code !== 0) {
-                const errorMsg = stderr.trim() || `fd exited with code ${code}`;
-                settle(() => reject(new Error(errorMsg)));
-                return;
-              }
-              if (!output) {
-                settle(() =>
-                  resolve({
-                    content: [{ type: "text", text: "No files found matching pattern" }],
-                    details: undefined,
-                  }),
-                );
-                return;
-              }
-
-              const relativized: string[] = [];
-              for (const rawLine of lines) {
-                const line = rawLine.replace(/\r$/, "").trim();
-                if (!line) {
-                  continue;
-                }
-                const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
-                let relativePath;
-                if (line.startsWith(searchPath)) {
-                  relativePath = line.slice(searchPath.length + 1);
-                } else {
-                  relativePath = path.relative(searchPath, line);
-                }
-                if (hadTrailingSlash && !relativePath.endsWith("/")) {
-                  relativePath += "/";
-                }
-                relativized.push(normalizeNativePathSeparators(relativePath));
-              }
-
+              return;
+            }
+            if (settled) {
+              return;
+            }
+            if (signal?.aborted) {
+              settle(() => reject(new Error("Operation aborted")));
+              return;
+            }
+            if (result.noOutputTimedOut) {
               settle(() =>
-                resolve(
-                  buildFindResult({
-                    relativized,
-                    effectiveLimit,
-                    limitNotice: `${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
-                  }),
+                reject(
+                  new Error(
+                    `fd timed out after ${FD_STALL_TIMEOUT_MS / 1000} seconds without output`,
+                  ),
                 ),
               );
-            });
+              return;
+            }
+            if (result.outputErrorStream) {
+              settle(() =>
+                reject(new Error(`fd ${result.outputErrorStream} error: output stream failed`)),
+              );
+              return;
+            }
+            const lines = result.stdout.split("\n");
+            const output = lines.join("\n");
+            if (result.code !== 0) {
+              const errorMsg = result.stderr.trim() || `fd exited with code ${result.code}`;
+              settle(() => reject(new Error(errorMsg)));
+              return;
+            }
+            if (!output) {
+              settle(() =>
+                resolve({
+                  content: [{ type: "text", text: "No files found matching pattern" }],
+                  details: undefined,
+                }),
+              );
+              return;
+            }
+
+            const relativized: string[] = [];
+            for (const rawLine of lines) {
+              const line = rawLine.replace(/\r$/, "").trim();
+              if (!line) {
+                continue;
+              }
+              const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
+              let relativePath;
+              if (line.startsWith(searchPath)) {
+                relativePath = line.slice(searchPath.length + 1);
+              } else {
+                relativePath = path.relative(searchPath, line);
+              }
+              if (hadTrailingSlash && !relativePath.endsWith("/")) {
+                relativePath += "/";
+              }
+              relativized.push(normalizeNativePathSeparators(relativePath));
+            }
+
+            settle(() =>
+              resolve(
+                buildFindResult({
+                  relativized,
+                  effectiveLimit,
+                  limitNotice: `${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+                }),
+              ),
+            );
           } catch (e) {
             if (signal?.aborted) {
               settle(() => reject(new Error("Operation aborted")));
