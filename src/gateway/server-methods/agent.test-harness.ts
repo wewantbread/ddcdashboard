@@ -100,6 +100,16 @@ function resolveAgentTestConfig(cfg: OpenClawConfig = mocks.loadConfigReturn): O
   return resolved;
 }
 
+function loadTestPublishedGatewayReplyDispatchRuntime({ agentId }: { agentId: string }) {
+  return Promise.resolve({
+    agentId,
+    agentDir: "/tmp/agent",
+    config: resolveAgentTestConfig(),
+    pluginGeneration: { pluginMetadataSnapshot: {} },
+    workspaceDir: "/tmp/workspace",
+  });
+}
+
 vi.mock("../session-utils.js", async () => {
   const actual = await vi.importActual<typeof import("../session-utils.js")>("../session-utils.js");
   return {
@@ -197,13 +207,7 @@ vi.mock("../../agents/prepared-model-runtime.js", () => ({
     release: vi.fn(),
     snapshot: {},
   })),
-  loadPublishedGatewayReplyDispatchRuntime: async ({ agentId }: { agentId: string }) => ({
-    agentId,
-    agentDir: "/tmp/agent",
-    config: resolveAgentTestConfig(),
-    pluginGeneration: { pluginMetadataSnapshot: {} },
-    workspaceDir: "/tmp/workspace",
-  }),
+  loadPublishedGatewayReplyDispatchRuntime: loadTestPublishedGatewayReplyDispatchRuntime,
 }));
 
 vi.mock("../../acp/runtime/session-meta.js", async () => {
@@ -399,6 +403,7 @@ export const makeContext = (): GatewayRequestContext =>
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => resolveAgentTestConfig(),
+    loadPublishedGatewayReplyDispatchRuntime: loadTestPublishedGatewayReplyDispatchRuntime,
   }) as unknown as GatewayRequestContext;
 
 type AgentHandler = NonNullable<typeof agentHandlers.agent>;
@@ -1014,12 +1019,20 @@ export async function invokeAgent(
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   }
   try {
+    const context = options?.context
+      ? options.context.loadPublishedGatewayReplyDispatchRuntime
+        ? options.context
+        : {
+            ...options.context,
+            loadPublishedGatewayReplyDispatchRuntime: loadTestPublishedGatewayReplyDispatchRuntime,
+          }
+      : makeContext();
     await expectDefined(agentHandlers.agent, "agentHandlers.agent test invariant").call(
       agentHandlers,
       {
         params,
         respond: respond as never,
-        context: options?.context ?? makeContext(),
+        context,
         req: { type: "req", id: options?.reqId ?? "agent-test-req", method: "agent" },
         client: options?.client ?? null,
         isWebchatConnect: options?.isWebchatConnect ?? (() => false),
