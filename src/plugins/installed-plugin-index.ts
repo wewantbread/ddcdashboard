@@ -87,6 +87,7 @@ function buildInstalledPluginIndex(
   const diagnostics = [...(registry.diagnostics ?? [])];
   const generatedAtMs = (params.now?.() ?? new Date()).getTime();
   const plugins = buildInstalledPluginIndexRecords({
+    env,
     candidates: discovery.candidates,
     registry,
     config: params.config,
@@ -101,7 +102,7 @@ function buildInstalledPluginIndex(
       hostContractVersion: resolveCompatibilityHostVersion(env),
       compatRegistryVersion: resolveCompatRegistryVersion(),
       migrationVersion: INSTALLED_PLUGIN_INDEX_MIGRATION_VERSION,
-      policyHash: resolveInstalledPluginIndexPolicyHash(params.config),
+      policyHash: resolveInstalledPluginIndexPolicyHash(params.config, env),
       generatedAtMs,
       ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
       ...(params.refreshReason ? { refreshReason: params.refreshReason } : {}),

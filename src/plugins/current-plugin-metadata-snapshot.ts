@@ -103,7 +103,9 @@ function publishCurrentPluginMetadataSnapshot(
 ): CurrentPluginMetadataSnapshotRevision {
   currentPluginMetadataConfigIdentityCache.clear();
   const compatiblePolicyHashes = snapshot
-    ? options.compatibleConfigs?.map((config) => resolveInstalledPluginIndexPolicyHash(config))
+    ? options.compatibleConfigs?.map((config) =>
+        resolveInstalledPluginIndexPolicyHash(config, options.env),
+      )
     : undefined;
   const compatibleConfigFingerprints = snapshot
     ? options.compatibleConfigs?.map((config, index) =>
@@ -151,7 +153,7 @@ function publishCurrentPluginMetadataSnapshot(
     return revision;
   }
   if (options.config) {
-    const policyHash = resolveInstalledPluginIndexPolicyHash(options.config);
+    const policyHash = resolveInstalledPluginIndexPolicyHash(options.config, options.env);
     if (
       policyHash === snapshot.policyHash ||
       Boolean(compatiblePolicyHashes?.includes(policyHash))
@@ -273,7 +275,7 @@ export function withPluginMetadataSnapshotScope<T>(
 ): T {
   const workspaceDir = options.workspaceDir ?? snapshot.workspaceDir;
   const compatiblePolicyHashes = options.compatibleConfigs?.map((config) =>
-    resolveInstalledPluginIndexPolicyHash(config),
+    resolveInstalledPluginIndexPolicyHash(config, options.env),
   );
   const compatibleConfigFingerprints = options.compatibleConfigs?.map((config, index) =>
     resolvePluginMetadataControlPlaneFingerprint(config, {
@@ -293,7 +295,7 @@ export function withPluginMetadataSnapshotScope<T>(
     : snapshot.configFingerprint;
   const configIdentities = new WeakSet<OpenClawConfig>();
   if (options.config) {
-    const policyHash = resolveInstalledPluginIndexPolicyHash(options.config);
+    const policyHash = resolveInstalledPluginIndexPolicyHash(options.config, options.env);
     if (
       options.trustConfigIdentity === true ||
       policyHash === snapshot.policyHash ||
@@ -373,7 +375,7 @@ function resolveCompatiblePluginMetadataSnapshot(
   }
   const requestedPolicyHash =
     params.config && !canReuseCachedConfig
-      ? resolveInstalledPluginIndexPolicyHash(params.config)
+      ? resolveInstalledPluginIndexPolicyHash(params.config, params.env)
       : undefined;
   if (requestedPolicyHash && snapshot.policyHash !== requestedPolicyHash) {
     if (!candidate.compatiblePolicyHashes?.includes(requestedPolicyHash)) {

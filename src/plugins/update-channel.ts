@@ -119,6 +119,7 @@ export async function syncPluginsForUpdateChannel(params: {
         !isExternalizedBundledPluginEnabled({
           config: next,
           bridge,
+          env,
         })
       ) {
         continue;
@@ -128,6 +129,7 @@ export async function syncPluginsForUpdateChannel(params: {
         !isExternalizedBundledPluginEnabled({
           config: next,
           bridge,
+          env,
         })
       ) {
         continue;

@@ -2,6 +2,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /** Normalizes plugin config and resolves effective enablement, slots, and activation sources. */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readRegisteredBundledDiscoveryMode } from "./bundled-discovery-mode.js";
 import {
   createEffectiveEnableStateResolver,
   createPluginEnableStateResolver,
@@ -207,6 +208,8 @@ export function resolvePluginActivationState(params: {
   enabledByDefault?: boolean;
   activationSource?: PluginActivationConfigSource;
   autoEnabledReason?: string;
+  /** Registry loads scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return toPluginActivationState(
     resolvePluginActivationDecisionShared({
@@ -218,6 +221,8 @@ export function resolvePluginActivationState(params: {
           plugins: params.config,
         }),
       allowBundledChannelExplicitBypassesAllowlist: true,
+      bundledDiscoveryMode:
+        params.origin === "bundled" ? readRegisteredBundledDiscoveryMode(params.env) : undefined,
       isBundledChannelEnabledByChannelConfig: isBundledChannelEnabledByChannelConfigShared,
     }),
   );
@@ -235,6 +240,7 @@ type EffectiveActivationParams = {
   rootConfig?: OpenClawConfig;
   enabledByDefault?: boolean;
   activationSource?: PluginActivationConfigSource;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const resolveEffectiveEnableState =
@@ -250,6 +256,7 @@ export function resolveEffectivePluginActivationState(params: {
   enabledByDefault?: EffectiveActivationParams["enabledByDefault"];
   activationSource?: EffectiveActivationParams["activationSource"];
   autoEnabledReason?: string;
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return resolvePluginActivationState(params);
 }

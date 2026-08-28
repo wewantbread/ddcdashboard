@@ -12,6 +12,9 @@ import {
   resolveMemoryDreamingConfig,
   resolveMemoryDreamingPluginConfig,
 } from "../memory-host-sdk/dreaming.js";
+// Loading plugins must observe machine-state compat: importing the SQLite
+// reader registers it into the kysely-free seam config-state resolves through.
+import "./bundled-discovery-state.js";
 import { recordPluginCandidateInstallOwner } from "./candidate-install-owner.js";
 import {
   resolveEffectiveEnableState,
@@ -92,6 +95,8 @@ export function resolveAuthorizedDreamingSidecar(params: {
   activationSource: PluginActivationConfigSource;
   manifestRegistry: PluginManifestRegistry;
   memorySlot: string | null | undefined;
+  /** Loads scoped to an explicit env authorize against that env's compat state. */
+  env?: NodeJS.ProcessEnv;
 }): AuthorizedDreamingSidecar | null {
   const engineId = resolveDreamingSidecarEngineId({
     cfg: params.cfg,
@@ -131,6 +136,7 @@ export function resolveAuthorizedDreamingSidecar(params: {
     rootConfig: params.cfg,
     enabledByDefault: isPluginEnabledByDefaultForPlatform(selectedMemoryPlugin),
     activationSource: params.activationSource,
+    env: params.env,
   });
   return selectedEnableState.enabled ? { engineId, selectedMemoryPluginId } : null;
 }

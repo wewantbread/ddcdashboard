@@ -137,6 +137,8 @@ export function resolvePluginActivationDecisionShared<TRootConfig>(params: {
   activationSource?: PluginActivationConfigSourceLike<TRootConfig>;
   autoEnabledReason?: string;
   allowBundledChannelExplicitBypassesAllowlist?: boolean;
+  /** "compat" exempts bundled plugins from the allowlist gate; they keep default enablement. */
+  bundledDiscoveryMode?: "compat" | "allowlist";
   isBundledChannelEnabledByChannelConfig: (
     rootConfig: TRootConfig | undefined,
     pluginId: string,
@@ -228,7 +230,12 @@ export function resolvePluginActivationDecisionShared<TRootConfig>(params: {
       cause: explicitSelection.cause,
     };
   }
-  if (params.config.allow.length > 0 && !explicitlyAllowed) {
+  // Under bundledDiscovery "compat" the allowlist governs non-bundled discovery
+  // only: bundled plugins fall through to their default enablement instead of
+  // being disabled wholesale (#123297). "allowlist" mode keeps the strict gate.
+  const bundledExemptFromAllowlist =
+    params.origin === "bundled" && params.bundledDiscoveryMode === "compat";
+  if (params.config.allow.length > 0 && !explicitlyAllowed && !bundledExemptFromAllowlist) {
     return {
       enabled: false,
       activated: false,

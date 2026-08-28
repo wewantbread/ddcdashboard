@@ -3,6 +3,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { isOpenClawOrgNpmSpec } from "../infra/npm-registry-spec.js";
 import { resolveUserPath } from "../utils.js";
+// Update-channel decisions must observe machine-state compat: importing the
+// SQLite reader registers it into the kysely-free seam config-state resolves
+// through, matching the loader graph.
+import "./bundled-discovery-state.js";
 import { CLAWHUB_INSTALL_ERROR_CODE } from "./clawhub-error-codes.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
 import {
@@ -212,6 +216,8 @@ function isBridgeChannelEnabledByConfig(params: {
 export function isExternalizedBundledPluginEnabled(params: {
   config: OpenClawConfig;
   bridge: ExternalizedBundledPluginBridge;
+  /** Update runs scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): boolean {
   const normalized = normalizePluginsConfig(params.config.plugins);
   if (!normalized.enabled) {
@@ -235,6 +241,7 @@ export function isExternalizedBundledPluginEnabled(params: {
         config: normalized,
         rootConfig: params.config,
         enabledByDefault: params.bridge.enabledByDefault,
+        env: params.env,
       }).enabled
     ) {
       return true;

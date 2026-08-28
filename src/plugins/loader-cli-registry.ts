@@ -81,6 +81,7 @@ export async function loadOpenClawPluginCliRegistry(
     activationSource: context.activationSource,
     manifestRegistry,
     memorySlot,
+    env: context.env,
   });
 
   for (const candidate of orderedCandidates) {
@@ -118,6 +119,7 @@ export async function loadOpenClawPluginCliRegistry(
           rootConfig: context.cfg,
           enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
           activationSource: context.activationSource,
+          env: context.env,
           autoEnabledReason: formatAutoEnabledActivationReason(
             context.autoEnabledReasons[pluginId],
           ),
@@ -145,6 +147,7 @@ export async function loadOpenClawPluginCliRegistry(
           rootConfig: context.cfg,
           enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
           activationSource: context.activationSource,
+          env: context.env,
         });
     const entry = context.normalized.entries[policyId];
     const record = createManifestPluginRecord({

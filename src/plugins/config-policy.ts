@@ -1,5 +1,6 @@
 // Evaluates plugin config policy without activating plugin runtime code.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readBundledDiscoveryModeMemoized } from "./bundled-discovery-state.js";
 import {
   resolvePluginActivationDecisionShared,
   toPluginActivationState,
@@ -34,6 +35,8 @@ function resolvePluginActivationState(params: {
   sourceConfig?: NormalizedPluginsConfig;
   sourceRootConfig?: OpenClawConfig;
   autoEnabledReason?: string;
+  /** Callers scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): PluginActivationState {
   return toPluginActivationState(
     resolvePluginActivationDecisionShared({
@@ -42,6 +45,10 @@ function resolvePluginActivationState(params: {
         plugins: params.sourceConfig ?? params.config,
         rootConfig: params.sourceRootConfig ?? params.rootConfig,
       },
+      // Keep control-plane policy decisions aligned with the runtime gate:
+      // compat exempts bundled plugins from the allowlist on both surfaces.
+      bundledDiscoveryMode:
+        params.origin === "bundled" ? readBundledDiscoveryModeMemoized(params.env) : undefined,
       isBundledChannelEnabledByChannelConfig,
     }),
   );
@@ -58,6 +65,7 @@ type PolicyEffectiveActivationParams = {
   sourceConfig?: NormalizedPluginsConfig;
   sourceRootConfig?: OpenClawConfig;
   autoEnabledReason?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export function resolvePolicyPluginActivationState(

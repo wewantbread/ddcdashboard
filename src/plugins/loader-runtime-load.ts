@@ -192,6 +192,7 @@ function loadOpenClawPluginsInternal(
         rootConfig: context.cfg,
         enabledByDefault: isPluginEnabledByDefaultForPlatform(record),
         activationSource: context.activationSource,
+        env: context.env,
       });
       const runtimes = normalizeAgentToolResultMiddlewareRuntimeIds(
         record.contracts?.agentToolResultMiddleware,
@@ -220,6 +221,7 @@ function loadOpenClawPluginsInternal(
       activationSource: context.activationSource,
       manifestRegistry,
       memorySlot,
+      env: context.env,
     });
     const pluginLoadStartMs = performance.now();
     for (const candidate of orderedCandidates) {

@@ -120,6 +120,7 @@ export function loadRuntimePluginCandidate(params: {
         rootConfig: context.cfg,
         enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
         activationSource: context.activationSource,
+        env: context.env,
         autoEnabledReason: formatAutoEnabledActivationReason(context.autoEnabledReasons[pluginId]),
       });
   const existingOrigin = state.seenIds.get(pluginId);
@@ -146,6 +147,7 @@ export function loadRuntimePluginCandidate(params: {
         rootConfig: context.cfg,
         enabledByDefault: isPluginEnabledByDefaultForPlatform(manifestRecord),
         activationSource: context.activationSource,
+        env: context.env,
       });
   const entry = context.normalized.entries[policyId];
   const record = createManifestPluginRecord({

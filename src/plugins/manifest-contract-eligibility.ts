@@ -5,24 +5,17 @@ import {
   resolveChannelConfigRecord,
 } from "../config/channel-configured-shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { readBundledDiscoveryMode } from "./bundled-discovery-state.js";
+import { readBundledDiscoveryModeMemoized } from "./bundled-discovery-state.js";
 import { normalizePluginsConfig } from "./config-state.js";
 import { isInstalledPluginEnabled } from "./installed-plugin-index.js";
 import { resolveManifestOwnerBasePolicyBlock } from "./manifest-owner-policy.js";
 import type { PluginManifestContractListKey, PluginManifestRecord } from "./manifest-registry.js";
-import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 import { resolvePluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
 import type {
   PluginMetadataManifestView,
   PluginMetadataRegistryView,
   PluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.types.js";
-
-let bundledDiscoveryMode: { value: ReturnType<typeof readBundledDiscoveryMode> } | undefined;
-
-registerPluginMetadataProcessMemoLifecycleClear(() => {
-  bundledDiscoveryMode = undefined;
-});
 
 /** Enforces owner-specific policy while preserving bundled speech/global compatibility. */
 export function isManifestPluginOwnerAllowedByControlPlanePolicy(params: {
@@ -31,6 +24,8 @@ export function isManifestPluginOwnerAllowedByControlPlanePolicy(params: {
   };
   config?: OpenClawConfig;
   allowRestrictiveAllowlistBypass?: boolean;
+  /** Callers scoped to an explicit env read compat from that env's state root. */
+  env?: NodeJS.ProcessEnv;
 }): boolean {
   if (!params.config?.plugins) {
     return true;
@@ -60,8 +55,7 @@ export function isManifestPluginOwnerAllowedByControlPlanePolicy(params: {
   ) {
     return true;
   }
-  bundledDiscoveryMode ??= { value: readBundledDiscoveryMode() };
-  return bundledDiscoveryMode.value === "compat";
+  return readBundledDiscoveryModeMemoized(params.env) === "compat";
 }
 
 export function isManifestPluginAvailableForControlPlane(params: {
@@ -72,6 +66,7 @@ export function isManifestPluginAvailableForControlPlane(params: {
   > & { channels?: readonly string[] };
   config?: OpenClawConfig;
   allowRestrictiveAllowlistBypass?: boolean;
+  env?: NodeJS.ProcessEnv;
 }): boolean {
   if (!isManifestPluginOwnerAllowedByControlPlanePolicy(params)) {
     return false;
@@ -96,6 +91,7 @@ export function listAvailableManifestContractPlugins(params: {
   contract: PluginManifestContractListKey;
   value?: string;
   config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
 }): PluginManifestRecord[] {
   return params.snapshot.plugins.filter(
     (plugin) =>
@@ -108,6 +104,7 @@ export function listAvailableManifestContractPlugins(params: {
         snapshot: params.snapshot,
         plugin,
         config: params.config,
+        env: params.env,
       }),
   );
 }
@@ -116,6 +113,7 @@ export function listAvailableManifestContractValues(params: {
   snapshot: Pick<PluginMetadataSnapshot, "index" | "plugins">;
   contract: PluginManifestContractListKey;
   config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
 }): string[] {
   const values = new Set<string>();
   for (const plugin of listAvailableManifestContractPlugins(params)) {
