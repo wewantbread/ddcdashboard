@@ -229,7 +229,13 @@ async function hasVaultMarkdownPathTarget(
     await opened.handle.close();
     return true;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+        ? error.code
+        : undefined;
     if (code && NON_TARGET_PATH_ERROR_CODES.has(code)) {
       return false;
     }
