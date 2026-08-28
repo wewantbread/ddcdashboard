@@ -426,7 +426,7 @@ export async function sendSubagentAnnounceDirectly(params: {
           path: "direct",
           reason: "completion_handoff_pending",
           error: "requester agent admission is still pending",
-          disposition: "ambiguous",
+          disposition: "retryable",
         };
       }
       // An admitted ordinary completion handoff already owns the prompt;

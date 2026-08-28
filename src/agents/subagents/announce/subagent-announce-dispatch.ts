@@ -157,7 +157,8 @@ export async function runSubagentAnnounceDispatch(params: {
     primaryDirect.disposition === "session_queued" ||
     primaryDirect.disposition === "intentional_non_delivery" ||
     primaryDirect.disposition === "ambiguous" ||
-    primaryDirect.disposition === "permanent_failure"
+    primaryDirect.disposition === "permanent_failure" ||
+    primaryDirect.reason === "completion_handoff_pending"
   ) {
     return withPhases(primaryDirect);
   }

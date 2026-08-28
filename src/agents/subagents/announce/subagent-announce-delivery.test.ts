@@ -3534,7 +3534,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       delivered: false,
       path: "direct",
       reason: "completion_handoff_pending",
-      disposition: "ambiguous",
+      disposition: "retryable",
       phases: [
         {
           phase: "direct-primary",
