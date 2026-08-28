@@ -299,6 +299,8 @@ export type EmbeddedRunAttemptResult = {
   acceptedSessionSpawns?: AcceptedSessionSpawn[];
   /** This attempt accepted work whose future output has a runtime-owned delivery path. */
   runtimeContinuationStarted?: boolean;
+  /** The runtime retained the accepted native continuation after a successful yield. */
+  runtimeContinuationRetained?: boolean;
   lastAssistant: AssistantMessage | undefined;
   /**
    * Omission preserves the legacy `lastAssistant` fallback; explicit `undefined`

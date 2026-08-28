@@ -23,6 +23,10 @@ import {
   setupRunAttemptTestHooks,
   tempDir,
 } from "./run-attempt-test-harness.js";
+import {
+  childCompletedNotification,
+  childStartedNotification,
+} from "./run-attempt.native-hook-relay-retention.test-support.js";
 
 setupRunAttemptTestHooks();
 
@@ -32,6 +36,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       name: "Codex multi-agent V1",
       bindBeforeClaim: false,
       hasDeliveryScope: true,
+      settleBeforeParentFinalize: false,
       childThreadId: "child-v1",
       childClaim: {
         type: "collabAgentToolCall",
@@ -45,6 +50,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       name: "Codex multi-agent V2",
       bindBeforeClaim: true,
       hasDeliveryScope: true,
+      settleBeforeParentFinalize: false,
       childThreadId: "child-v2",
       childClaim: {
         type: "subAgentActivity",
@@ -57,6 +63,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       name: "Codex multi-agent V2 without delivery scope",
       bindBeforeClaim: true,
       hasDeliveryScope: false,
+      settleBeforeParentFinalize: false,
       childThreadId: "child-v2-no-delivery",
       childClaim: {
         type: "subAgentActivity",
@@ -65,9 +72,28 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
         agentPath: "/root/child-v2-no-delivery",
       },
     },
+    {
+      name: "Codex child completion before parent finalization",
+      bindBeforeClaim: true,
+      hasDeliveryScope: true,
+      settleBeforeParentFinalize: true,
+      childThreadId: "child-completed-before-parent-finalize",
+      childClaim: {
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "child-completed-before-parent-finalize",
+        agentPath: "/root/child-completed-before-parent-finalize",
+      },
+    },
   ] as const)(
     "retains and fences a live child through sessions_yield ($name)",
-    async ({ bindBeforeClaim, hasDeliveryScope, childThreadId, childClaim }) => {
+    async ({
+      bindBeforeClaim,
+      hasDeliveryScope,
+      settleBeforeParentFinalize,
+      childThreadId,
+      childClaim,
+    }) => {
       const sessionFile = path.join(tempDir, `${childThreadId}-yield-session.jsonl`);
       const workspaceDir = path.join(tempDir, `${childThreadId}-yield-workspace`);
       let resolveTurnStart: ((value: undefined) => void) | undefined;
@@ -147,51 +173,10 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
           event: "pre_tool_use",
           rawPayload: { ...preDiscoveryPayload, agent_id: terminalChildThreadId },
         });
-        await harness.notify({
-          method: "thread/started",
-          params: {
-            thread: {
-              id: terminalChildThreadId,
-              parentThreadId: "thread-1",
-              source: {
-                subAgent: {
-                  thread_spawn: { parent_thread_id: "thread-1", depth: 1 },
-                },
-              },
-            },
-          },
-        } as CodexServerNotification);
-        await harness.notify({
-          method: "turn/completed",
-          params: {
-            threadId: terminalChildThreadId,
-            turn: {
-              id: `${terminalChildThreadId}-turn`,
-              status: "completed",
-              items: [],
-              itemsView: "full",
-              error: null,
-              startedAt: null,
-              completedAt: null,
-              durationMs: null,
-            },
-          },
-        } as CodexServerNotification);
+        await harness.notify(childStartedNotification(terminalChildThreadId));
+        await harness.notify(childCompletedNotification(terminalChildThreadId));
         await expect(terminalPending).rejects.toThrow("Codex child turn completed");
-        await harness.notify({
-          method: "thread/started",
-          params: {
-            thread: {
-              id: childThreadId,
-              parentThreadId: "thread-1",
-              source: {
-                subAgent: {
-                  thread_spawn: { parent_thread_id: "thread-1", depth: 1 },
-                },
-              },
-            },
-          },
-        } as CodexServerNotification);
+        await harness.notify(childStartedNotification(childThreadId));
         if (childClaim.type === "collabAgentToolCall") {
           await harness.notify({
             method: "item/completed",
@@ -255,10 +240,19 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
         });
+        if (settleBeforeParentFinalize) {
+          await harness.notify(
+            childCompletedNotification(
+              childThreadId,
+              "Child completed before parent finalization.",
+            ),
+          );
+        }
         await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
         const result = await run;
         expect(readAttemptTerminal(result)).toMatchObject({ aborted: false, promptError: null });
         expect(result.runtimeContinuationStarted).toBe(hasDeliveryScope ? true : undefined);
+        expect(result.runtimeContinuationRetained).toBe(hasDeliveryScope ? true : undefined);
         const terminalLifecycleEvents = (params.onAgentEvent as ReturnType<typeof vi.fn>).mock.calls
           .map(([event]) => event as { stream?: string; data?: Record<string, unknown> })
           .filter(
@@ -273,9 +267,30 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
           livenessState: "paused",
           stopReason: "end_turn",
         });
-        expect(
-          nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayId),
-        ).toBeDefined();
+        const retainedRelay =
+          nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayId);
+        if (settleBeforeParentFinalize) {
+          expect(result.runtimeContinuationRetained).toBe(true);
+          expect(retainedRelay).toBeUndefined();
+          return;
+        }
+        if (!hasDeliveryScope) {
+          expect(retainedRelay).toBeUndefined();
+          await expect(
+            invokeNativeHookRelay({
+              provider: "codex",
+              relayId,
+              event: "pre_tool_use",
+              rawPayload: {
+                agent_id: childThreadId,
+                tool_name: "Bash",
+                tool_input: { command: "allow-child" },
+              },
+            }),
+          ).rejects.toThrow(/not found|inactive/);
+          return;
+        }
+        expect(retainedRelay).toBeDefined();
         fixture.closeHost();
         fixture.closeAdmission();
         await expect(
@@ -321,23 +336,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
           ).rejects.toThrow(/not found|inactive|retained invocation/);
         }
 
-        const childTerminal = {
-          method: "turn/completed",
-          params: {
-            threadId: childThreadId,
-            turn: {
-              id: `${childThreadId}-turn`,
-              status: "completed",
-              items: [],
-              itemsView: "full",
-              error: null,
-              startedAt: null,
-              completedAt: null,
-              durationMs: null,
-            },
-          },
-        } as CodexServerNotification;
-        await harness.notify(childTerminal);
+        await harness.notify(childCompletedNotification(childThreadId));
         nativeHookRelayUnregisterQueue.flush();
         expect(
           nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayId),
@@ -372,6 +371,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
     setCodexTestModelSupportsTools(params, true);
     const fixture = await createAdmittedHostCapabilityTestFixture(params);
     params.hostCapabilities = fixture.hostCapabilities;
+    params.agentHarnessTaskRuntimeScope = fixture.agentHarnessTaskRuntimeScope;
 
     const beforeToolCall = vi.fn(async () => undefined);
     initializeGlobalHookRunner(
@@ -385,18 +385,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       await harness.waitForMethod("turn/start");
       const startRequest = harness.requests.find((request) => request.method === "thread/start");
       const relayId = extractRelayIdFromThreadRequest(startRequest?.params);
-      await harness.notify({
-        method: "thread/started",
-        params: {
-          thread: {
-            id: childThreadId,
-            parentThreadId: "thread-1",
-            source: {
-              subAgent: { thread_spawn: { parent_thread_id: "thread-1", depth: 1 } },
-            },
-          },
-        },
-      } as CodexServerNotification);
+      await harness.notify(childStartedNotification(childThreadId));
       await harness.notify({
         method: "item/completed",
         params: {
@@ -458,6 +447,8 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
 
       const result = await run;
       expect(readAttemptTerminal(result).promptError).toContain("parent failed after yielding");
+      expect(result.runtimeContinuationStarted).toBe(true);
+      expect(result.runtimeContinuationRetained).toBeUndefined();
       expect(
         nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayId),
       ).toBeUndefined();

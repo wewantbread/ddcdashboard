@@ -349,7 +349,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
     hasAsyncActivity(attempt.toolMetas) ||
     hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
     attempt.clientToolCalls ||
-    attempt.yieldDetected ||
+    (attempt.yieldDetected && attempt.runtimeContinuationRetained === true) ||
     attempt.didSendDeterministicApprovalPrompt
   ) {
     return null;

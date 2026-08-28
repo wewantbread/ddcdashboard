@@ -108,9 +108,10 @@ export function resolveSettledTurnFinalizationRequest(input: {
   if (!input.settledTurnFinalizationAvailable) {
     return null;
   }
-  if (input.attempt.runtimeContinuationStarted === true) {
-    // A native child accepted by the runtime owns the next visible turn. Do not
-    // synthesize a final answer for the requester wake that started that child.
+  if (input.attempt.runtimeContinuationRetained === true && input.attempt.yieldDetected === true) {
+    // The native child owns the next visible turn only after sessions_yield
+    // successfully retained its delivery relay. Acceptance alone is replay
+    // evidence and must not suppress required-reply recovery.
     return null;
   }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
@@ -728,5 +729,6 @@ export function copyAttemptDeliveryState(attempt: EmbeddedRunAttemptResult) {
     successfulCronAdds: attempt.successfulCronAdds,
     acceptedSessionSpawns: attempt.acceptedSessionSpawns,
     runtimeContinuationStarted: attempt.runtimeContinuationStarted,
+    runtimeContinuationRetained: attempt.runtimeContinuationRetained,
   };
 }

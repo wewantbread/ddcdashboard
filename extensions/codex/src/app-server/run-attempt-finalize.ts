@@ -497,6 +497,19 @@ export async function finalizeCodexAttempt(
           }),
         },
   );
+  const canRetainRuntimeContinuation = Boolean(
+    resourceState.runtimeContinuationStarted &&
+    turnSucceeded &&
+    toolState.yieldDetected &&
+    !runAbortController.signal.aborted,
+  );
+  const liveRelayRetained = canRetainRuntimeContinuation
+    ? (resourceState.nativeHookRelay?.authorizeRetentionAfterSuccessfulYield() ?? false)
+    : false;
+  const runtimeContinuationRetained = Boolean(
+    canRetainRuntimeContinuation &&
+    (liveRelayRetained || resourceState.nativeSubagentMonitor?.hasPendingCompletionHandoff()),
+  );
   const finalizedResult: EmbeddedRunAttemptResult = {
     ...result,
     ...(toolState.yieldAcknowledgment
@@ -516,13 +529,11 @@ export async function finalizeCodexAttempt(
     ...(settledTurnFinalizationContext ? { settledTurnFinalizationContext } : {}),
     ...(resourceState.runtimeArtifact ? { runtimeArtifact: resourceState.runtimeArtifact } : {}),
     ...(resourceState.runtimeContinuationStarted ? { runtimeContinuationStarted: true } : {}),
+    ...(runtimeContinuationRetained ? { runtimeContinuationRetained: true } : {}),
     ...(!finalAborted && !effectiveTimedOut && !finalPromptError && preparedAuthBinding
       ? { authBindingFingerprint: preparedAuthBinding.fingerprint }
       : {}),
     systemPromptReport,
   };
-  if (turnSucceeded && toolState.yieldDetected && !runAbortController.signal.aborted) {
-    resourceState.nativeHookRelay?.authorizeRetentionAfterSuccessfulYield();
-  }
   return finalizedResult;
 }

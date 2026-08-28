@@ -114,6 +114,7 @@ type AgentCommandDeliveryResult = {
   didSendDeterministicApprovalPrompt?: true;
   acceptedSessionSpawns?: NonNullable<RunResult["acceptedSessionSpawns"]>;
   runtimeContinuationStarted?: true;
+  runtimeContinuationRetained?: true;
   successfulCronAdds?: number;
   deliverySucceeded?: boolean;
   deliveryStatus?: AgentCommandDeliveryStatus;
@@ -239,6 +240,9 @@ function buildDeliveryResult(params: {
       : {}),
     ...(params.result.runtimeContinuationStarted === true
       ? { runtimeContinuationStarted: true }
+      : {}),
+    ...(params.result.runtimeContinuationRetained === true
+      ? { runtimeContinuationRetained: true }
       : {}),
     ...(hasSuccessfulCronAdds ? { successfulCronAdds } : {}),
     ...(params.deliverySucceeded !== undefined

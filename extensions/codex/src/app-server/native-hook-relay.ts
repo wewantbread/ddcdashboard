@@ -63,7 +63,7 @@ export type CodexNativePreToolUseFailure = {
 };
 
 export type CodexNativeHookRelay = NativeHookRelayRegistrationHandle & {
-  authorizeRetentionAfterSuccessfulYield: () => void;
+  authorizeRetentionAfterSuccessfulYield: () => boolean;
   hasClaimedDirectChild: () => boolean;
   claimDirectChild: (threadId: string) => () => void;
   rejectPendingDirectChild: (threadId: string, reason: string) => void;
@@ -316,6 +316,7 @@ export function createCodexNativeHookRelay(params: {
     unregister,
     authorizeRetentionAfterSuccessfulYield: () => {
       successfulYieldRetentionAuthorized = true;
+      return directChildClaims.size > 0;
     },
     hasClaimedDirectChild: () => directChildClaims.size > 0,
     rejectPendingDirectChild: (threadIdInput, reason) => {

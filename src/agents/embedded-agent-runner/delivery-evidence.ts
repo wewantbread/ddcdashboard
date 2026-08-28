@@ -35,6 +35,7 @@ export type AgentDeliveryEvidence = {
   messagingToolSentTargetsTruncated?: unknown;
   acceptedSessionSpawns?: unknown;
   runtimeContinuationStarted?: unknown;
+  runtimeContinuationRetained?: unknown;
   successfulCronAdds?: unknown;
   meta?: {
     yielded?: unknown;
@@ -399,6 +400,7 @@ function hasAgentDeliveryEvidenceShape(value: object): boolean {
     "messagingToolSentTargets" in value ||
     "acceptedSessionSpawns" in value ||
     "runtimeContinuationStarted" in value ||
+    "runtimeContinuationRetained" in value ||
     "successfulCronAdds" in value ||
     "meta" in value
   );

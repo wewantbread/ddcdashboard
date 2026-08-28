@@ -815,14 +815,18 @@ describe("deliverAgentCommandResult payload normalization", () => {
       omitReplyTarget: true,
       opts: { deliver: false },
       payloads: [],
-      result: { runtimeContinuationStarted: true },
+      result: { runtimeContinuationStarted: true, runtimeContinuationRetained: true },
       onDeliveryResult,
     });
 
     expect(delivered.runtimeContinuationStarted).toBe(true);
+    expect(delivered.runtimeContinuationRetained).toBe(true);
     expect(onDeliveryResult).toHaveBeenCalledOnce();
     expect(onDeliveryResult).toHaveBeenCalledWith(
-      expect.objectContaining({ runtimeContinuationStarted: true }),
+      expect.objectContaining({
+        runtimeContinuationStarted: true,
+        runtimeContinuationRetained: true,
+      }),
     );
   });
 

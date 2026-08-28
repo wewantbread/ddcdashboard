@@ -63,6 +63,12 @@ type ParentOwner = {
   onDirectChildAccepted?: () => void;
 };
 
+type NativeSubagentMonitorRegistration = {
+  bindTurn: (turnId: string) => void;
+  hasPendingCompletionHandoff: () => boolean;
+  unregister: () => void;
+};
+
 type ParentState = {
   parentThreadId: string;
   // Overlapping runs share this parent; the last owner releases it only after
@@ -205,7 +211,7 @@ function registerMonitor(params: {
   claimDirectChild?: (threadId: string) => (() => void) | undefined;
   rejectPendingDirectChild?: (threadId: string, reason: string) => void;
   onDirectChildAccepted?: () => void;
-}): { bindTurn: (turnId: string) => void; unregister: () => void } {
+}): NativeSubagentMonitorRegistration {
   let monitor = monitors.get(params.client);
   if (!monitor) {
     // Native start/completion can race; serialize each child so only its
@@ -376,7 +382,7 @@ class Monitor {
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => void } {
+  }): NativeSubagentMonitorRegistration {
     const parentThreadId = params.parentThreadId.trim();
     if (!parentThreadId) {
       throw new Error("Codex native subagent monitor requires a parent thread id");
@@ -446,6 +452,12 @@ class Monitor {
         this.drainPendingDirectSpawnEvidence(registeredState, current, turnId);
         this.clearUnconsumablePendingDirectSpawnEvidence();
       },
+      hasPendingCompletionHandoff: () =>
+        this.parentStates.get(parentThreadId) === registeredState &&
+        [...this.childStates.values()].some(
+          (childState) =>
+            childState.parentThreadId === parentThreadId && Boolean(childState.pendingCompletion),
+        ),
       unregister: () => {
         if (!registered) {
           return;

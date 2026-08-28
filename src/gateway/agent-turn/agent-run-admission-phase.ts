@@ -394,7 +394,9 @@ export async function prepareAgentRunDispatch(params: {
     if (!publishedRuntime) {
       throw new Error(`published reply runtime missing for ${params.activeSessionAgentId}`);
     }
-    const pluginGeneration = publishedRuntime.pluginGeneration;
+    const pluginGeneration =
+      // SAFETY: the live Gateway publishes this exact prepared generation type.
+      publishedRuntime.pluginGeneration as PreparedReplyDispatchRuntime["pluginGeneration"];
     replyDispatchRuntime = { config: publishedRuntime.config, pluginGeneration };
     preparedModelRuntimeLease = await acquireAgentRunPreparedModelRuntime(
       {

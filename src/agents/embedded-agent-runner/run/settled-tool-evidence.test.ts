@@ -513,8 +513,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       attemptOverrides: { clientToolCalls: [{ name: "pending", params: {} }] },
     },
     {
-      label: "the turn yielded",
-      attemptOverrides: { yieldDetected: true },
+      label: "the turn yielded to a retained native continuation",
+      attemptOverrides: { yieldDetected: true, runtimeContinuationRetained: true },
     },
     {
       label: "an approval prompt was already delivered",

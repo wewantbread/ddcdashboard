@@ -446,6 +446,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         reason: "completion_handoff_pending",
         error: "requester agent run is still in flight",
         disposition: "retryable",
+        ...(directAnnounceResponse.admitted === true ? { handoffAdmitted: true } : {}),
       };
     }
 
@@ -457,7 +458,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     const hasYieldedContinuation = Boolean(
       directAnnounceResult &&
       directAnnounceResult.meta?.yielded === true &&
-      (directAnnounceResult.runtimeContinuationStarted === true ||
+      (directAnnounceResult.runtimeContinuationRetained === true ||
         hasAcceptedSessionSpawnEvidence(directAnnounceResult.acceptedSessionSpawns)),
     );
     if (hasYieldedContinuation) {
@@ -519,6 +520,24 @@ export async function sendSubagentAnnounceDirectly(params: {
         return textDelivery;
       }
       if (hasRequiredSubagentNoOutputCompletion && !hasCompletionSideEffect) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "visible_reply_missing",
+          error: "completion agent did not produce a visible reply",
+        };
+      }
+    }
+    if (sessionOnlySubagentCompletion && !hasMessagingToolDelivery) {
+      if (hasVisibleNonSilentGatewayPayload) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "message_tool_delivery_missing",
+          error: "completion agent did not use the message tool for message-tool-only delivery",
+        };
+      }
+      if (!hasCompletionSideEffect) {
         return {
           delivered: false,
           path: "direct",

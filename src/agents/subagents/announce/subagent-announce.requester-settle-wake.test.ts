@@ -987,6 +987,47 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       }
     });
 
+    it("keeps an admitted handoff pending beyond the local descendant deferral cap", async () => {
+      const child = makeSettledChild({
+        runId: "run-admitted",
+        delivery: { status: "pending" },
+        requesterSettleWake: {
+          status: "dispatching",
+          attemptCount: 1,
+          batchRunIds: ["run-admitted"],
+          requesterYieldBatch: true,
+          rearmGeneration: 1,
+          deferralCount: 9,
+        },
+      });
+      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
+      deliverSpy.mockResolvedValueOnce({
+        delivered: false,
+        path: "direct",
+        reason: "completion_handoff_pending",
+        error: "requester agent run is still in flight",
+        disposition: "retryable",
+        handoffAdmitted: true,
+      });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        await expect(
+          maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
+        ).resolves.toBe(false);
+        expect(completeBatchSpy).not.toHaveBeenCalled();
+        expect(child.requesterSettleWake).toMatchObject({
+          status: "dispatching",
+          attemptCount: 1,
+          deferralCount: 9,
+          nextAttemptAt: 30_000,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("coalesces concurrent row restores for one persisted batch", async () => {
       const state = {
         status: "dispatching" as const,

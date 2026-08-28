@@ -88,7 +88,6 @@ export function resolveIncompleteTurnPayloadText(params: {
     params.timedOut ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
-    params.attempt.runtimeContinuationStarted ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     params.hasIntentionalTerminalCompletion
@@ -214,6 +213,7 @@ interface YieldContinuationAttempt {
   successfulCronAdds?: number;
   acceptedSessionSpawns?: readonly { runId: string; childSessionKey: string }[];
   runtimeContinuationStarted?: boolean;
+  runtimeContinuationRetained?: boolean;
   messagingToolSentTexts?: readonly string[];
   messagingToolSentMediaUrls?: readonly string[];
   messagingToolSentTargets?: readonly MessagingToolSend[];
@@ -233,7 +233,7 @@ export function hasYieldContinuationEvidence(attempt: YieldContinuationAttempt):
       messagingToolSentTargets: attempt.messagingToolSentTargets ?? [],
     }) ||
     hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
-    attempt.runtimeContinuationStarted === true ||
+    attempt.runtimeContinuationRetained === true ||
     hasAsyncActivity(attempt.toolMetas) ||
     (attempt.successfulCronAdds ?? 0) > 0
   );

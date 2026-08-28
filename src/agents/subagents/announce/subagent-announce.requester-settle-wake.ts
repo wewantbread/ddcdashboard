@@ -162,9 +162,13 @@ function deferRequesterSettleWakeBatch(params: {
     rearmGeneration?: number,
     delivery?: SubagentAnnounceDeliveryResult,
   ): void;
+  /** Admitted Gateway runs terminate under their own deadline, not this local deferral cap. */
+  unbounded?: boolean;
 }): void {
-  const deferralCount = (params.state.deferralCount ?? 0) + 1;
-  if (deferralCount >= REQUESTER_SETTLE_WAKE_MAX_DEFERRALS) {
+  const deferralCount = params.unbounded
+    ? params.state.deferralCount
+    : (params.state.deferralCount ?? 0) + 1;
+  if (!params.unbounded && (deferralCount ?? 0) >= REQUESTER_SETTLE_WAKE_MAX_DEFERRALS) {
     completeRequesterSettleWakeBatch({
       runIds: params.batchRunIds,
       state: params.state,
@@ -193,7 +197,7 @@ function deferRequesterSettleWakeBatch(params: {
       ? { rearmGeneration: params.state.rearmGeneration }
       : {}),
     ...(params.state.lastError !== undefined ? { lastError: params.state.lastError } : {}),
-    deferralCount,
+    ...(deferralCount !== undefined ? { deferralCount } : {}),
   });
 }
 
@@ -553,6 +557,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         state,
         transitionBatch: params.transitionBatch,
         completeBatch,
+        unbounded: delivery.handoffAdmitted === true,
       });
       logWarn(
         `requester settle wake is still in flight; replaying the same idempotency key in ${Math.round(REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0] / 1000)}s: ${lastError}`,
