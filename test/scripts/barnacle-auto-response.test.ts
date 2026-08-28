@@ -43,10 +43,11 @@ function prContextBody(evidence: string, overrides: Record<string, string> = {})
   ].join("\n");
 }
 
-function file(filename: string, status = "modified") {
+function file(filename: string, status = "modified", previousFilename?: string) {
   return {
     filename,
     status,
+    ...(previousFilename ? { previous_filename: previousFilename } : {}),
   };
 }
 
@@ -1074,6 +1075,17 @@ describe("barnacle-auto-response", () => {
     ["a nested SKILL.md addition", [file("skills/example/references/SKILL.md", "added")]],
     ["a renamed skill manifest", [file("skills/example/SKILL.md", "renamed")]],
     ["a removed skill manifest", [file("skills/example/SKILL.md", "removed")]],
+    [
+      "a mixed standalone skill and core runtime change",
+      [file("skills/example/SKILL.md", "added"), file("src/skills/workshop/experience-review.ts")],
+    ],
+    [
+      "a core file renamed into a new standalone skill",
+      [
+        file("skills/example/SKILL.md", "added"),
+        file("skills/example/core.ts", "renamed", "src/core.ts"),
+      ],
+    ],
   ])("removes automatic r: skill from %s", async (_name, files) => {
     const { calls, github } = barnacleGithub(files);
 
@@ -1095,10 +1107,22 @@ describe("barnacle-auto-response", () => {
   });
 
   it.each([
-    ["bundled", "skills/example/SKILL.md"],
-    ["custodian", "custodian-skills/example/SKILL.md"],
-  ])("routes a new %s standalone skill to ClawHub", async (_name, filename) => {
-    const { calls, github } = barnacleGithub([file(filename, "added")]);
+    [
+      "bundled",
+      [
+        file("skills/example/SKILL.md", "added"),
+        file("skills/example/references/usage.md", "added"),
+      ],
+    ],
+    [
+      "custodian",
+      [
+        file("custodian-skills/example/SKILL.md", "added"),
+        file("custodian-skills/example/scripts/check.mjs", "added"),
+      ],
+    ],
+  ])("routes a new %s standalone skill to ClawHub", async (_name, files) => {
+    const { calls, github } = barnacleGithub(files);
 
     await runBarnacleAutoResponse({
       github,

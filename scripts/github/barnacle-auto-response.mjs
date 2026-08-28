@@ -13,6 +13,24 @@ const activePrLimit = 20;
 const skillRoutingLabel = "r: skill";
 const standaloneSkillManifestPattern = /^(?:custodian-skills|skills)\/[^/]+\/SKILL\.md$/u;
 
+function isStandaloneSkillSubmission(files) {
+  const addedSkillRoots = files
+    .filter((file) => file.status === "added" && standaloneSkillManifestPattern.test(file.filename))
+    .map((file) => file.filename.slice(0, -"SKILL.md".length));
+  const isInAddedSkillRoot = (filename) =>
+    addedSkillRoots.some((root) => filename.startsWith(root));
+  return (
+    addedSkillRoots.length > 0 &&
+    files.every(
+      (file) =>
+        isInAddedSkillRoot(file.filename) &&
+        (file.status !== "renamed" ||
+          (typeof file.previous_filename === "string" &&
+            isInAddedSkillRoot(file.previous_filename))),
+    )
+  );
+}
+
 const thirdPartyExtensionMessage =
   "Please publish this as a third-party plugin on [ClawHub](https://clawhub.ai) instead of adding it to the core repo. Docs: https://docs.openclaw.ai/plugin and https://docs.openclaw.ai/clawhub";
 
@@ -1107,13 +1125,11 @@ export async function runBarnacleAutoResponse({ github, context, core = console 
     if (
       labelSet.has(skillRoutingLabel) &&
       !explicitSkillRouting &&
-      !files.some(
-        (file) => file.status === "added" && standaloneSkillManifestPattern.test(file.filename),
-      )
+      !isStandaloneSkillSubmission(files)
     ) {
       await removeLabels(github, context, pullRequest.number, [skillRoutingLabel], labelSet);
       core.info(
-        `Removed ${skillRoutingLabel} from #${pullRequest.number}: no standalone skill manifest was added.`,
+        `Removed ${skillRoutingLabel} from #${pullRequest.number}: changes are not confined to newly added standalone skill roots.`,
       );
     }
 
