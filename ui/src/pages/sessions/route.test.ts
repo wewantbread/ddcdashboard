@@ -1,13 +1,20 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import type { RouteLoaderOptions } from "@openclaw/uirouter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionListOptions, SessionListSnapshot } from "../../lib/sessions/index.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { loadSessionsPagePreferences, saveSessionsPagePreferences } from "./page-state.ts";
 import { page, type SessionsRouteData } from "./route.ts";
+import {
+  createContext,
+  createGateway,
+  createRenderedPage,
+  createSessions,
+} from "./sessions-page.test-support.ts";
 
 const result: SessionsListResult = {
   ts: 1,
@@ -170,6 +177,67 @@ describe("sessions route", () => {
         includeLastMessage: false,
         archivedFilter: "all",
       },
+    });
+  });
+
+  it("keeps unrelated saved preferences when controls change in a direct-session view", async () => {
+    const savedPreferences = {
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15",
+      limit: "100",
+      includeGlobal: false,
+      includeUnknown: false,
+      statusFilter: "archived" as const,
+      searchQuery: "saved",
+      sortColumn: "updated" as const,
+      sortDir: "desc" as const,
+      groupBy: "category" as const,
+      pageSize: 25,
+    };
+    saveSessionsPagePreferences(savedPreferences);
+
+    const key = "agent:main:linked";
+    const context = createContext(
+      createGateway({} as GatewayBrowserClient).gateway,
+      createSessions(),
+    );
+    const linkedResult: SessionsListResult = {
+      ...result,
+      count: 1,
+      sessions: [{ key, kind: "direct" }],
+    };
+    const sessionsPage = await createRenderedPage(context, linkedResult, "active", key);
+
+    const limitInput = sessionsPage.querySelector<HTMLInputElement>(
+      "input.session-filter-input--limit",
+    );
+    const keySortButton = sessionsPage.querySelector<HTMLButtonElement>(
+      "th[data-sortable] .data-table-sort-button",
+    );
+    const pageSize = sessionsPage.querySelector<HTMLSelectElement>(
+      "select.data-table-pagination__size",
+    );
+    const searchInput = sessionsPage.querySelector<HTMLInputElement>(
+      ".sessions-toolbar__search input",
+    );
+    if (!limitInput || !keySortButton || !pageSize || !searchInput) {
+      throw new Error("Expected direct-session preference controls");
+    }
+
+    limitInput.value = "25";
+    limitInput.dispatchEvent(new Event("input", { bubbles: true }));
+    keySortButton.click();
+    pageSize.value = "50";
+    pageSize.dispatchEvent(new Event("change", { bubbles: true }));
+    searchInput.value = "linked";
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(loadSessionsPagePreferences()).toEqual({
+      ...savedPreferences,
+      limit: "25",
+      searchQuery: "linked",
+      sortColumn: "key",
+      pageSize: 50,
     });
   });
 });
