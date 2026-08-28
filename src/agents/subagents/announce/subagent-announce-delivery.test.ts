@@ -4142,8 +4142,24 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     path: "direct",
     reason: "visible_reply_missing",
   } as const;
+  const pendingRequesterFinal = {
+    delivered: false,
+    path: "direct",
+    disposition: "agent_run_pending",
+  } as const;
 
-  it.each([
+  type RequesterSettleDeliveryCase = {
+    name: string;
+    response: Record<string, unknown>;
+    requireVisibleReply: boolean;
+    requireContinuationProgress?: boolean;
+    expected:
+      | typeof deliveredRequesterFinal
+      | typeof missingRequesterFinal
+      | typeof pendingRequesterFinal;
+  };
+
+  it.each<RequesterSettleDeliveryCase>([
     {
       name: "preserves an ordinary non-yielded direct settle turn",
       response: {},
@@ -4290,6 +4306,39 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expected: missingRequesterFinal,
     },
     {
+      name: "accepts a follow-on subagent spawn when the settle turn may continue",
+      response: {
+        result: {
+          payloads: [],
+          acceptedSessionSpawns: [{ runId: "run-next", childSessionKey: "agent:main:next" }],
+        },
+      },
+      requireVisibleReply: false,
+      requireContinuationProgress: true,
+      expected: deliveredRequesterFinal,
+    },
+    ...(["accepted", "started", "in_flight"] as const).map((status) => ({
+      name: `keeps a ${status} continuation turn pending`,
+      response: { status },
+      requireVisibleReply: false,
+      requireContinuationProgress: true,
+      expected: pendingRequesterFinal,
+    })),
+    {
+      name: "rejects an empty continuation turn",
+      response: {},
+      requireVisibleReply: false,
+      requireContinuationProgress: true,
+      expected: missingRequesterFinal,
+    },
+    {
+      name: "rejects a silent continuation turn",
+      response: { result: { payloads: [{ text: "NO_REPLY" }] } },
+      requireVisibleReply: false,
+      requireContinuationProgress: true,
+      expected: missingRequesterFinal,
+    },
+    {
       name: "rejects a cron side effect without a final reply",
       response: { result: { payloads: [], successfulCronAdds: 1 } },
       requireVisibleReply: true,
@@ -4388,7 +4437,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       requireVisibleReply: true,
       expected: deliveredRequesterFinal,
     },
-  ])("$name", async ({ response, requireVisibleReply, expected }) => {
+  ])("$name", async ({ response, requireVisibleReply, requireContinuationProgress, expected }) => {
     const callGateway = createGatewayMock(response);
     const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(true);
     const origin = {
@@ -4417,6 +4466,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       requesterIsSubagent: false,
       expectsCompletionMessage: false,
       requireDirectDelivery: true,
+      ...(requireContinuationProgress ? { requireContinuationProgress: true } : {}),
       ...(requireVisibleReply ? { requireVisibleReply: true } : {}),
       directIdempotencyKey: "announce-requester-settle-direct",
       sourceTool: "subagent_announce",
@@ -4430,7 +4480,38 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       accountId: "acct-1",
       to: "dm:U123",
     });
-    expect(agentParams.sourceReplyDeliveryMode).toBe(requireVisibleReply ? "automatic" : undefined);
+    expect(agentParams.sourceReplyDeliveryMode).toBe(
+      requireVisibleReply || requireContinuationProgress ? "automatic" : undefined,
+    );
+  });
+
+  it("accepts an internal continuation turn with a visible final", async () => {
+    const callGateway = createGatewayMock({
+      result: { payloads: [{ text: "The consolidated answer." }] },
+    });
+    testing.setDepsForTest({
+      callGateway,
+      getRequesterSessionActivity: () => ({
+        sessionId: "requester-session-internal",
+        isActive: true,
+      }),
+      getRuntimeConfig: () => ({}) as never,
+    });
+
+    await expect(
+      deliverSubagentAnnouncement({
+        requesterSessionKey: "agent:main:main",
+        targetRequesterSessionKey: "agent:main:main",
+        triggerMessage: "all spawned subagents settled",
+        steerMessage: "all spawned subagents settled",
+        requesterIsSubagent: false,
+        expectsCompletionMessage: false,
+        requireDirectDelivery: true,
+        requireContinuationProgress: true,
+        directIdempotencyKey: "announce-requester-settle-internal",
+        sourceTool: "subagent_announce",
+      }),
+    ).resolves.toMatchObject(deliveredRequesterFinal);
   });
 
   it.each([

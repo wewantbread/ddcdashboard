@@ -50,15 +50,15 @@ const activeRequesterSettleWakeBatches = new Set<string>();
 
 function buildRequesterSettleWakeMessage(params: {
   findings?: string;
-  requireVisibleReply: boolean;
+  allowContinuation: boolean;
 }): string {
   return [
     "[Subagent Context] Every subagent spawned from this session has now settled — none are still running or awaiting completion delivery.",
     "[Subagent Context] Do not keep waiting or call sessions_yield again for this batch; no further completion events will arrive.",
-    "[Subagent Context] Review the completion results and send your consolidated final answer to the user now.",
-    params.requireVisibleReply
-      ? "[Subagent Context] Child completion delivery is internal; the original user request still requires your visible final answer."
-      : `[Subagent Context] Reply ONLY: ${SILENT_REPLY_TOKEN} only if you already delivered the consolidated final answer for this batch.`,
+    params.allowContinuation
+      ? "[Subagent Context] Review the completion results before deciding whether the original task is done. If additional action is required, continue the task; otherwise send a truthful user-facing update."
+      : "[Subagent Context] Review the completion results and send your consolidated final answer to the user now.",
+    `[Subagent Context] Reply ONLY: ${SILENT_REPLY_TOKEN} only if you already delivered the consolidated final answer for this batch.`,
     "",
     params.findings ??
       "(each child result was announced individually in earlier completion events)",
@@ -381,7 +381,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
   );
   const wakeMessage = buildRequesterSettleWakeMessage({
     findings,
-    requireVisibleReply: requesterYieldedAfterDelivery,
+    allowContinuation: requesterYieldedAfterDelivery,
   });
   const requesterSessionOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const directOrigin = resolveAnnounceOrigin(requesterEntry, requesterSessionOrigin);
@@ -472,7 +472,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         requesterIsSubagent: false,
         expectsCompletionMessage: false,
         requireDirectDelivery: true,
-        ...(requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
+        ...(requesterYieldedAfterDelivery ? { requireContinuationProgress: true } : {}),
         directIdempotencyKey: buildAnnounceIdempotencyKey(
           attemptIndex === 0 ? wakeKeyBase : `${wakeKeyBase}:retry-${attemptIndex}`,
         ),
@@ -523,6 +523,28 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         delivery,
       });
       return true;
+    }
+    if (delivery.disposition === "agent_run_pending") {
+      const retryDelayMs = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0];
+      const lastError = delivery.error ?? "requester settle turn is still running";
+      // The admitted turn may later resolve through Gateway dedupe. Keep this
+      // batch dispatching and preserve the transport-failure replay budget.
+      state = {
+        status: "dispatching",
+        attemptCount: state.attemptCount,
+        ...(state.replayCount !== undefined ? { replayCount: state.replayCount } : {}),
+        nextAttemptAt: Date.now() + retryDelayMs,
+        batchRunIds,
+        ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
+        ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+        ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
+        lastError,
+      };
+      params.transitionBatch(batchRunIds, state);
+      logWarn(
+        `requester settle wake turn still running; same-key poll scheduled in ${Math.round(retryDelayMs / 1000)}s`,
+      );
+      return false;
     }
     if (
       delivery.disposition === "ambiguous" ||

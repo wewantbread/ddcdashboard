@@ -19,6 +19,7 @@ import {
 import {
   getAgentCommandDeliveryFailure,
   getGatewayAgentResult,
+  hasAcceptedSessionSpawnEvidence,
   hasCommittedOutboundDeliveryEvidence,
   hasPayloadOutcomeSendEvidence,
 } from "../../embedded-agent-runner/delivery-evidence.js";
@@ -94,6 +95,7 @@ export async function sendSubagentAnnounceDirectly(params: {
   triggerMessage: string;
   internalEvents?: AgentInternalEvent[];
   expectsCompletionMessage: boolean;
+  requireContinuationProgress?: boolean;
   requireVisibleReply?: boolean;
   bestEffortDeliver?: boolean;
   directIdempotencyKey: string;
@@ -232,9 +234,11 @@ export async function sendSubagentAnnounceDirectly(params: {
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
     // Synthetic requester-settle turns must not inherit a tool-only mode that suppresses the final.
+    const requireVisibleTurnOutcome =
+      params.requireVisibleReply || params.requireContinuationProgress;
     const completionSourceReplyDeliveryMode = requiresMessageToolDelivery
       ? "message_tool_only"
-      : params.requireVisibleReply && deliveryTarget.deliver
+      : requireVisibleTurnOutcome && deliveryTarget.deliver
         ? "automatic"
         : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
@@ -409,6 +413,14 @@ export async function sendSubagentAnnounceDirectly(params: {
 
     const directAnnounceStillPending = isGatewayAgentRunPending(directAnnounceResponse);
     if (directAnnounceStillPending) {
+      if (requireVisibleTurnOutcome) {
+        return {
+          delivered: false,
+          path: "direct",
+          disposition: "agent_run_pending",
+          error: "required requester turn is still running",
+        };
+      }
       return {
         delivered: true,
         path: "direct",
@@ -533,6 +545,27 @@ export async function sendSubagentAnnounceDirectly(params: {
           hasVisibleNonSilentGatewayPayload &&
           directAnnounceResult.deliveryStatus?.status !== "suppressed")),
     );
+    const acceptedContinuationSpawn = Boolean(
+      directAnnounceResult &&
+      hasAcceptedSessionSpawnEvidence(directAnnounceResult.acceptedSessionSpawns),
+    );
+    const deliveredContinuationFinal =
+      requesterVisibleFinalDelivered ||
+      (!shouldDeliverAgentFinal &&
+        !requiresMessageToolDelivery &&
+        hasVisibleNonSilentGatewayPayload);
+    if (
+      params.requireContinuationProgress &&
+      !deliveredContinuationFinal &&
+      !acceptedContinuationSpawn
+    ) {
+      return {
+        delivered: false,
+        path: "direct",
+        reason: "visible_reply_missing",
+        error: "continuation turn did not start another subagent or deliver a visible final",
+      };
+    }
     const hasVisibleCompletionReply =
       requesterVisibleFinalDelivered ||
       (!params.requireVisibleReply &&
