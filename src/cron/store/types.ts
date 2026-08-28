@@ -22,6 +22,21 @@ export type CronConfigJobRuntimeEntry = {
   state?: Record<string, unknown>;
 };
 
+/**
+ * Runtime snapshot captured when scheduler-disabled CRUD reloads the shared
+ * store, used to detect and preserve foreign runtime commits (#131401).
+ */
+export type CronRuntimeBaseline = {
+  state: Record<string, unknown>;
+  runtimeUpdatedAtMs: number | undefined;
+  scheduleIdentity: string | undefined;
+  /** Trigger and payload script definitions whose state is definition-owned. */
+  triggerScript: string | null;
+  payloadScript: string | null;
+  /** The upcoming write explicitly owns this row's runtime state. */
+  localRuntimeOwner?: boolean;
+};
+
 /** Combined cron store load result with canonical jobs and config-backed metadata. */
 export type LoadedCronStore = {
   store: CronStoreFile;

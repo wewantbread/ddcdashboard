@@ -31,6 +31,7 @@ import {
 import type { CronStoreTransactionHooks } from "./store/transaction-hooks.types.js";
 import type {
   CronQuarantinedJob,
+  CronRuntimeBaseline,
   LoadedCronStore,
   QuarantinedCronConfigJob,
 } from "./store/types.js";
@@ -38,6 +39,7 @@ import type { CronStoreFile } from "./types.js";
 export type {
   CronConfigJobRuntimeEntry,
   CronQuarantinedJob,
+  CronRuntimeBaseline,
   LoadedCronStore,
   QuarantinedCronConfigJob,
 } from "./store/types.js";
@@ -242,6 +244,11 @@ type SaveCronJobsStoreOptions = SaveCronStoreOptions & {
     entries: readonly (QuarantinedCronConfigJob | CronQuarantinedJob)[];
     nowMs: number;
   };
+  /**
+   * Load-time runtime snapshot per job (see #131401). Rows whose persisted
+   * runtime is newer than their baseline keep that runtime during the write.
+   */
+  runtimeBaseline?: ReadonlyMap<string, CronRuntimeBaseline>;
 };
 
 type SaveCronJobsStoreInternalOptions = SaveCronJobsStoreOptions & {
@@ -282,7 +289,9 @@ export async function saveCronJobsStore(
       opts?.transactionHooks?.afterWrite?.(database.db);
       return;
     }
-    const normalizedJobs = replaceCronRows(database.db, storeKey, store);
+    const normalizedJobs = replaceCronRows(database.db, storeKey, store, {
+      runtimeBaseline: opts?.runtimeBaseline,
+    });
     replaceCronRuntimeAuthorityRows({ db: database.db, storeKey, jobs: normalizedJobs });
     opts?.transactionHooks?.afterWrite?.(database.db);
   });

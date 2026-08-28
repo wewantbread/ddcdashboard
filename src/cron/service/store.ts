@@ -3,13 +3,14 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeCronJobIdentityFields } from "../normalize-job-identity.js";
 import { normalizeCronJobInput } from "../normalize.js";
 import { getInvalidPersistedCronJobReason } from "../persisted-shape.js";
-import { cronSchedulingInputsEqual } from "../schedule-identity.js";
+import { cronSchedulingInputsEqual, tryCronScheduleIdentity } from "../schedule-identity.js";
 import { deleteCronJobScratch } from "../scratch-store.js";
 import { isInvalidCronSessionTargetIdError } from "../session-target.js";
 import {
   getCronJobsStoreRevision,
   loadCronJobsStoreWithConfigJobs,
   saveCronJobsStore,
+  type CronRuntimeBaseline,
   type QuarantinedCronConfigJob,
 } from "../store.js";
 import {
@@ -37,6 +38,7 @@ type PersistOptions = {
 export type CronRollbackSnapshot = {
   store: CronStoreFile | null;
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
+  mutationRuntimeBaseline: Map<string, CronRuntimeBaseline>;
 };
 
 function durableNextRunsFromJobs(jobs: readonly CronJob[]) {
@@ -287,6 +289,63 @@ export async function ensureLoaded(
   }
 }
 
+/**
+ * Loads the store before a CRUD mutation applies its changes.
+ *
+ * A scheduler-disabled gateway never advances runtime state itself, so its
+ * snapshot can only be stale relative to a separate scheduler gateway that
+ * shares the same SQLite store. Reload before CRUD so the mutation applies to
+ * current rows, and capture each row's runtime as a baseline so the eventual
+ * write can detect foreign runtime commits landing between the reload and the
+ * write transaction (#131401). The ordinary single-gateway path keeps its
+ * revision-cached load.
+ */
+export async function ensureLoadedForMutation(
+  state: CronServiceState,
+  opts?: { runtimeOwnerId?: string },
+) {
+  const reloadRequired = !state.deps.cronEnabled;
+  await ensureLoaded(state, {
+    forceReload: reloadRequired,
+    skipRecompute: true,
+  });
+  if (!reloadRequired) {
+    return;
+  }
+  state.mutationRuntimeBaseline = new Map(
+    (state.store?.jobs ?? []).map(
+      (job) =>
+        [
+          job.id,
+          {
+            state: structuredClone(job.state ?? {}),
+            runtimeUpdatedAtMs: job.updatedAtMs,
+            scheduleIdentity: tryCronScheduleIdentity(job) ?? undefined,
+            triggerScript: job.trigger?.script ?? null,
+            payloadScript: job.payload.kind === "script" ? job.payload.script : null,
+          },
+        ] as const,
+    ),
+  );
+  if (opts?.runtimeOwnerId) {
+    // An explicit runtime-state patch owns that row's runtime regardless of
+    // foreign timestamps; the write must not replace caller-requested fields.
+    const entry = state.mutationRuntimeBaseline.get(opts.runtimeOwnerId);
+    if (entry) {
+      entry.localRuntimeOwner = true;
+    } else {
+      state.mutationRuntimeBaseline.set(opts.runtimeOwnerId, {
+        state: {},
+        runtimeUpdatedAtMs: undefined,
+        scheduleIdentity: undefined,
+        triggerScript: null,
+        payloadScript: null,
+        localRuntimeOwner: true,
+      });
+    }
+  }
+}
+
 /** Emits the cron-disabled warning once per service state. */
 export function warnIfDisabled(state: CronServiceState, action: string) {
   if (state.deps.cronEnabled) {
@@ -313,8 +372,15 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
       ? { entries: state.pendingQuarantineConfigJobs, nowMs: state.deps.nowMs() }
       : undefined;
   const stateOnly = !quarantine && opts?.stateOnly === true;
+  const runtimeBaseline = quarantine ? undefined : state.mutationRuntimeBaseline;
+  const saveOptions = quarantine
+    ? { quarantine }
+    : stateOnly
+      ? ({ stateOnly: true } as const)
+      : runtimeBaseline && runtimeBaseline.size > 0
+        ? { runtimeBaseline }
+        : undefined;
   try {
-    const saveOptions = quarantine ? { quarantine } : stateOnly ? { stateOnly: true } : undefined;
     if (opts?.transactionHooks) {
       await saveCronJobsStoreWithTransactionHooks(
         state.deps.storePath,
@@ -348,6 +414,10 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
   if (quarantine) {
     state.pendingQuarantineConfigJobs = [];
     state.lastQuarantineFailureWarnKey = null;
+  } else if (runtimeBaseline) {
+    // The baseline covered exactly this mutation's reload-to-write window;
+    // subsequent writes re-capture it at their own mutation-time reload.
+    state.mutationRuntimeBaseline.clear();
   }
   publishDurableNextRunChanges({
     state,
@@ -403,7 +473,18 @@ export function snapshotStoreForRollback(state: CronServiceState): CronRollbackS
   return {
     store: state.store ? structuredClone(state.store) : null,
     durableNextRunAtMsByJobId: new Map(state.durableNextRunAtMsByJobId),
+    mutationRuntimeBaseline: new Map(state.mutationRuntimeBaseline),
   };
+}
+
+/** Restores a rollback snapshot, including the foreign-runtime guard baseline. */
+export function restoreCronStoreSnapshotForRollback(
+  state: CronServiceState,
+  snapshot: CronRollbackSnapshot,
+) {
+  state.store = snapshot.store;
+  state.durableNextRunAtMsByJobId = snapshot.durableNextRunAtMsByJobId;
+  state.mutationRuntimeBaseline = new Map(snapshot.mutationRuntimeBaseline);
 }
 
 // A failed durable write must not leave readers observing speculative job
@@ -421,8 +502,7 @@ export async function persistOrRestore(
       throw new Error("cron: durable store write did not complete");
     }
   } catch (err) {
-    state.store = snapshot.store;
-    state.durableNextRunAtMsByJobId = snapshot.durableNextRunAtMsByJobId;
+    restoreCronStoreSnapshotForRollback(state, snapshot);
     throw err;
   }
 }
