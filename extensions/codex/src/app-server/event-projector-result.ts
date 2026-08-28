@@ -43,6 +43,7 @@ type CodexAttemptResultInput = {
   synthesizedMissingToolResultError: string | null;
   recordSynthesizedMissingToolResultError: (error: string) => void;
   aborted: boolean;
+  terminalReleaseInterruptClosed?: boolean;
   tokenUsage: EmbeddedRunAttemptResult["attemptUsage"];
   contextTokens: number | undefined;
   contextTokensSource: EmbeddedRunAttemptResult["contextTokensSource"];
@@ -109,11 +110,11 @@ export function buildCodexAttemptResult(
   const synthesizedMissingToolResultError =
     input.toolTranscriptProjection.synthesizeMissingToolResults({
       synthesize: legacyFailClosed,
-      // Preserve audit synthesis on every path, but completed answers must not
-      // promote bookkeeping gaps into user-visible terminal failure evidence.
+      // Preserve audit synthesis without promoting bookkeeping gaps from a
+      // terminal-release interrupt into user-visible terminal failure evidence.
       terminalDisposition: input.aborted
         ? "tool_error"
-        : hasDeliverableAssistantOnCompletedTurn
+        : hasDeliverableAssistantOnCompletedTurn || input.terminalReleaseInterruptClosed
           ? "diagnostic_only"
           : "prompt_error",
     });

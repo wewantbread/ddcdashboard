@@ -9,14 +9,18 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { CodexSteeringQueueOptions } from "./attempt-steering.js";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
+import { dynamicToolBuildState } from "./dynamic-tool-build-state.js";
 import type { CodexServerNotification } from "./protocol.js";
 import {
   createParams,
+  createCodexRuntimePlanFixture,
+  createRuntimeDynamicTool,
   createStartedThreadHarness,
   fastWait,
   mockClientRuntimeMethods,
   queueActiveRunMessageForTest,
   runCodexAppServerAttempt,
+  setCodexTestModelSupportsTools,
   setCodexAppServerClientFactoryForTest,
   setupRunAttemptTestHooks,
   tempDir,
@@ -117,6 +121,73 @@ async function waitAndQueueActiveRunMessage(
 }
 
 describe("runCodexAppServerAttempt steering", () => {
+  it("interrupts a final-message grace window only for real inbound user messages", async () => {
+    const messageTool = createRuntimeDynamicTool("message");
+    messageTool.execute = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "delivered" }],
+      details: { ok: true, messageId: "message-1", sourceReplyRoute: "current-source" },
+    }));
+    dynamicToolBuildState.openClawCodingToolsFactory = () => [messageTool];
+    const harness = createStartedThreadHarness();
+    const params = createSteeringParams();
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    setCodexTestModelSupportsTools(params, true);
+    params.sourceReplyDeliveryMode = "message_tool_only";
+    const run = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+
+    let handle:
+      | {
+          queueMessage: (
+            text: string,
+            options?: Parameters<typeof queueActiveRunMessageForTest>[2],
+          ) => Promise<unknown>;
+        }
+      | undefined;
+    await vi.waitFor(() => {
+      handle = activeRunRegistrationMocks.setActiveEmbeddedRun.mock.calls.findLast(
+        (call) => call[0] === params.sessionId,
+      )?.[1] as typeof handle;
+      expect(handle).toBeDefined();
+    }, fastWait);
+
+    const response = await harness.handleServerRequest({
+      id: "request-final-message",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-final-message",
+        namespace: null,
+        tool: "message",
+        arguments: { action: "send", message: "done", final: true },
+      },
+    });
+    expect(response).toMatchObject({ success: true });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(harness.requests.some((entry) => entry.method === "turn/interrupt")).toBe(false);
+
+    // Internal steering shares queueMessage but is not operator ingress. It
+    // must not recreate the false interrupt marker during the grace window.
+    void handle!.queueMessage("internal progress", { debounceMs: 0 }).catch(() => undefined);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(harness.requests.some((entry) => entry.method === "turn/interrupt")).toBe(false);
+
+    // A genuine next user turn owns the early fallback so it never waits out
+    // the 10-second deadline.
+    void handle!
+      .queueMessage("next user turn", { debounceMs: 0, isInboundUserMessage: true })
+      .catch(() => undefined);
+    await harness.waitForMethod("turn/interrupt");
+    await run;
+    expect(harness.requests.filter((entry) => entry.method === "turn/interrupt")).toHaveLength(1);
+  });
+
   it("marks the active run aborted before asynchronous cleanup releases its handle", async () => {
     const { requests, waitForMethod } = createStartedThreadHarness();
     const params = createSteeringParams();

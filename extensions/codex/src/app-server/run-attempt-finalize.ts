@@ -276,11 +276,20 @@ export async function finalizeCodexAttempt(
     (state.localCompletionRequested || !state.terminalTurnNotificationQueued) &&
     !state.timedOut &&
     clientClosedPromptErrorForFinal === undefined;
+  // A terminal-release deadline interrupt is an OpenClaw-initiated clean close
+  // of an already-delivered reply; the resulting "interrupted" status must not
+  // demote the turn to a failure.
+  const terminalReleaseInterruptClosed =
+    state.terminalReleaseAwaitingTurnCompletion?.interruptRequested === true &&
+    completedTurnStatus === "interrupted";
   const turnSucceeded =
     !finalAborted &&
     !effectiveTimedOut &&
     (finalPromptError === null || finalPromptError === undefined) &&
-    (completedTurnStatus === "completed" || recoveredTurnWatchTimeout || locallyCompletedTurn);
+    (completedTurnStatus === "completed" ||
+      recoveredTurnWatchTimeout ||
+      locallyCompletedTurn ||
+      terminalReleaseInterruptClosed);
   const completedSourceReply = toolBridge.telemetry.messagingToolSentTargets.some(
     (target) => target.sourceReplyFinal === true,
   );

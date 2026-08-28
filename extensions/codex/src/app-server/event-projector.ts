@@ -85,6 +85,7 @@ export class CodexAppServerEventProjector {
   private promptErrorSource: AttemptFailureSource | null = null;
   private synthesizedMissingToolResultError: string | null = null;
   private aborted = false;
+  terminalReleaseInterruptClosed = false;
   private tokenUsage: ReturnType<typeof normalizeCodexThreadTokenUsage>;
   private contextTokens: number | undefined;
   private contextTokensSource: "runtime" | "runtime-configured" | "resolved" | undefined;
@@ -406,6 +407,7 @@ export class CodexAppServerEventProjector {
         this.promptErrorSource = this.promptErrorSource ?? "prompt";
       },
       aborted: this.aborted,
+      terminalReleaseInterruptClosed: this.terminalReleaseInterruptClosed,
       tokenUsage: this.tokenUsage,
       contextTokens: this.contextTokens,
       contextTokensSource: this.contextTokensSource,

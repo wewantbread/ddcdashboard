@@ -199,9 +199,23 @@ export function createCodexAttemptNotificationController(
       if (notificationState.isTurnTerminal) {
         const completedTurn = readCodexTurnCompletedNotification(notification.params)?.turn;
         // App-server collapses abort reasons; interrupted plus this marker is the
-        // only user-interrupt discriminator until Codex exposes abortReason.
-        if (completedTurn?.status === "interrupted" && state.sawCodexInterruptMarker) {
+        // only user-interrupt discriminator until Codex exposes abortReason. An
+        // interrupt OpenClaw itself issued for a terminal-release deadline is a
+        // clean close, not a user abort.
+        if (
+          completedTurn?.status === "interrupted" &&
+          state.sawCodexInterruptMarker &&
+          state.terminalReleaseAwaitingTurnCompletion?.interruptRequested !== true
+        ) {
           projector.markAborted();
+        }
+        if (
+          completedTurn?.status === "interrupted" &&
+          state.terminalReleaseAwaitingTurnCompletion?.interruptRequested === true
+        ) {
+          // The reply was already delivered; tool calls the deadline interrupt
+          // killed in flight must not become a prompt error on the attempt.
+          projector.terminalReleaseInterruptClosed = true;
         }
         completeTurn();
       }

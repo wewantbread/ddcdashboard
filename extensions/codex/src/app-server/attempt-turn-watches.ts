@@ -6,7 +6,7 @@ import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 
 type Timer = ReturnType<typeof setTimeout>;
-type WatchTimerKind = "completion" | "assistant" | "attempt" | "terminal";
+type WatchTimerKind = "completion" | "assistant" | "attempt" | "terminal" | "terminalRelease";
 
 /** Timeout bucket reported by the turn watch controller. */
 export type CodexAttemptTurnWatchTimeoutKind = "progress" | "completion" | "terminal";
@@ -92,6 +92,7 @@ export function createCodexAttemptTurnWatchController(params: {
     }
   };
   const clearCompletionIdleTimer = () => clearTimer("completion");
+  const clearTerminalReleaseDeadline = () => clearTimer("terminalRelease");
   const clearAllTimers = () => {
     for (const kind of Object.keys(timers) as WatchTimerKind[]) {
       clearTimer(kind);
@@ -459,6 +460,21 @@ export function createCodexAttemptTurnWatchController(params: {
       attemptIdleTimeoutOverrideMs = resolveWatchTimeoutMs(timeoutMs);
       scheduleAttemptIdleWatch();
     },
+    armTerminalReleaseDeadline: (input: { deadlineMs: number; onDeadline: () => void }) => {
+      // Absolute deadline: unlike the idle watches it is never rescheduled by
+      // activity, so post-final generation cannot extend it (bounded cost).
+      clearTerminalReleaseDeadline();
+      const timer = setTimeout(() => {
+        delete timers.terminalRelease;
+        if (params.isCompleted() || params.signal.aborted) {
+          return;
+        }
+        input.onDeadline();
+      }, resolveWatchTimeoutMs(input.deadlineMs));
+      timer.unref?.();
+      timers.terminalRelease = timer;
+    },
+    clearTerminalReleaseDeadline,
     scheduleProgressWatches,
     clearCompletionIdleTimer,
     clearAllTimers,

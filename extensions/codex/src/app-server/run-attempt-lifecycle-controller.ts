@@ -8,6 +8,7 @@ import {
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { reportCodexExecutionNotification } from "./attempt-notification-state.js";
+import { CODEX_TERMINAL_RELEASE_COMPLETION_DEADLINE_MS } from "./attempt-timeouts.js";
 import {
   resolveTerminalDynamicToolBatchAction,
   shouldReleaseTurnAfterTerminalDynamicTool,
@@ -35,7 +36,8 @@ export function createCodexAttemptLifecycleController(
     fastModeAutoStartedAtMs,
     fastModeAutoProgressState,
   } = connection;
-  const { state, activeTurnItemIds, pendingOpenClawDynamicToolCompletionIds } = turnRuntime;
+  const { state, activeTurnItemIds, pendingOpenClawDynamicToolCompletionIds, turnWatches } =
+    turnRuntime;
   const releaseTurnAfterTerminalDynamicTool = (value: {
     call: CodexDynamicToolCallParams;
     response: CodexDynamicToolCallResponse;
@@ -56,25 +58,110 @@ export function createCodexAttemptLifecycleController(
       return;
     }
     state.pendingTerminalDynamicToolRelease = undefined;
+    if (value.call.tool === "sessions_yield") {
+      trajectoryRecorder?.recordEvent("turn.dynamic_tool_terminal_release", {
+        threadId: value.call.threadId,
+        turnId: value.call.turnId,
+        toolCallId: value.call.callId,
+        name: value.call.tool,
+        durationMs: value.durationMs,
+        mode: "interrupt_and_complete_locally",
+      });
+      embeddedAgentLog.info("codex app-server turn released immediately after sessions_yield", {
+        threadId: value.call.threadId,
+        turnId: value.call.turnId,
+        toolCallId: value.call.callId,
+        durationMs: value.durationMs,
+      });
+      // sessions_yield must release the requester immediately so settled
+      // subagents can resume it. Keep the merged #123124 ownership contract:
+      // interrupt native work in the background, but complete locally now.
+      turnRuntime.steeringQueueRef.current?.cancel();
+      void turnRuntime.interruptTurn(value.call.turnId, { locallyCompleted: true });
+      turnRuntime.completeTurn();
+      return;
+    }
+    if (state.terminalReleaseAwaitingTurnCompletion) {
+      return;
+    }
     trajectoryRecorder?.recordEvent("turn.dynamic_tool_terminal_release", {
       threadId: value.call.threadId,
       turnId: value.call.turnId,
       toolCallId: value.call.callId,
       name: value.call.tool,
       durationMs: value.durationMs,
+      mode: "await_turn_completed",
     });
-    embeddedAgentLog.info("codex app-server turn released after terminal dynamic tool result", {
+    embeddedAgentLog.info(
+      "codex app-server turn awaiting natural completion after terminal dynamic tool result",
+      {
+        threadId: value.call.threadId,
+        turnId: value.call.turnId,
+        toolCallId: value.call.callId,
+        tool: value.call.tool,
+        durationMs: value.durationMs,
+      },
+    );
+    // A terminal result closes steering input: reject unconsumed steering now so
+    // completion delivery uses its fallback path, and so a deadline interrupt
+    // cannot drop accepted pending input later.
+    turnRuntime.steeringQueueRef.current?.cancel();
+    // The assistant-completion recovery watch interrupts on release; the
+    // terminal-release deadline owns post-release interruption from here.
+    turnWatches.disarmAssistantCompletionIdleWatch();
+    // Interrupting here would persist Codex's "user interrupted" marker into
+    // the thread rollout on every clean close. Instead wait for Codex's own
+    // turn/completed (the terminal notification path completes and resolves),
+    // bounded by an absolute deadline. The completion idle watch stays armed
+    // as the backstop if Codex never answers the deadline interrupt.
+    state.terminalReleaseAwaitingTurnCompletion = {
       threadId: value.call.threadId,
       turnId: value.call.turnId,
       toolCallId: value.call.callId,
       tool: value.call.tool,
-      durationMs: value.durationMs,
+      interruptRequested: false,
+    };
+    turnWatches.armTerminalReleaseDeadline({
+      deadlineMs: CODEX_TERMINAL_RELEASE_COMPLETION_DEADLINE_MS,
+      onDeadline: () => interruptTurnForTerminalRelease("completion_deadline"),
     });
-    // Interrupt drops accepted pending input. Reject unconsumed steering first so
-    // completion delivery can use its fallback path instead of reporting success.
+  };
+  const interruptTurnForTerminalRelease = (
+    cause: "completion_deadline" | "new_inbound_message",
+  ) => {
+    const pending = state.terminalReleaseAwaitingTurnCompletion;
+    if (
+      !pending ||
+      pending.interruptRequested ||
+      state.completed ||
+      runAbortController.signal.aborted
+    ) {
+      return;
+    }
+    // Attribution must precede the RPC: terminal classification reads this flag
+    // to keep an OpenClaw-initiated release from counting as a user abort.
+    pending.interruptRequested = true;
+    turnWatches.clearTerminalReleaseDeadline();
+    trajectoryRecorder?.recordEvent("turn.terminal_release_interrupt", {
+      threadId: pending.threadId,
+      turnId: pending.turnId,
+      toolCallId: pending.toolCallId,
+      name: pending.tool,
+      cause,
+      deadlineMs: CODEX_TERMINAL_RELEASE_COMPLETION_DEADLINE_MS,
+    });
+    embeddedAgentLog.warn(
+      "codex app-server turn still active after terminal release; interrupting",
+      {
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        toolCallId: pending.toolCallId,
+        tool: pending.tool,
+        cause,
+      },
+    );
     turnRuntime.steeringQueueRef.current?.cancel();
-    void turnRuntime.interruptTurn(value.call.turnId, { locallyCompleted: true });
-    turnRuntime.completeTurn();
+    void turnRuntime.interruptTurn(pending.turnId).then(turnRuntime.completeTurn);
   };
   const scheduleTerminalDynamicToolReleaseCheck = () => {
     if (
@@ -242,6 +329,7 @@ export function createCodexAttemptLifecycleController(
   return {
     scheduleTerminalDynamicToolReleaseCheck,
     scheduleTurnReleaseAfterTerminalDynamicTool,
+    interruptTurnForTerminalRelease,
     emitLifecycleStart,
     emitLifecycleTerminal,
     buildLifecycleTerminalMeta,
