@@ -174,6 +174,7 @@ async function resolveExplicitTarget(params: {
               "fetch",
               "--no-prune",
               "--no-tags",
+              "--refmap=",
               "--",
               remote,
               `+${tagFetchRef}:${tagFetchRef}`,
