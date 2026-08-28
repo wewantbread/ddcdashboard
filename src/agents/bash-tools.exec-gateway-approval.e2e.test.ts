@@ -6,7 +6,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../config/config.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
@@ -27,14 +27,16 @@ import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { withTimeout } from "../utils/with-timeout.js";
 import {
-  closeAdmittedRunDelegatedAuthority,
   createOperationalRunInstanceRef,
   getAdmittedRunDelegatedAuthority,
   prepareAgentRunAdmission,
-  retainAdmittedRunDelegatedAuthority,
 } from "./admitted-run-context.js";
 import { createExecTool } from "./bash-tools.exec-run.js";
 import type { ExecApprovalFollowupOutcome } from "./bash-tools.exec-types.js";
+import {
+  createAdmittedGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./tools/gateway-caller-context.js";
 
 const TEST_ENV_KEYS = [
   "HOME",
@@ -68,7 +70,7 @@ describe("gateway-hosted exec approvals", () => {
   });
 
   it(
-    "keeps a detached approval alive after its agent turn settles",
+    "keeps manager-owned detached approval work after its agent turn settles",
     async () => {
       const envSnapshot = captureEnv(TEST_ENV_KEYS);
       cleanup.push(() => envSnapshot.restore());
@@ -169,9 +171,7 @@ describe("gateway-hosted exec approvals", () => {
         timeoutMs: 60_000,
         operationalRunInstance,
       });
-      registration.bindAgentRunDelegatedAuthority(authority, () => {
-        closeAdmittedRunDelegatedAuthority(admittedRunContext);
-      });
+      registration.bindAgentRunDelegatedAuthority(authority);
       cleanup.push(() => {
         registration.cleanup({ force: true });
         preparedAdmission.close();
@@ -188,24 +188,27 @@ describe("gateway-hosted exec approvals", () => {
           resolveOutcome(outcome);
           return undefined;
         },
-        detachedApproval: {
-          signal: registration.controller.signal,
-          retainAuthority: () => retainAdmittedRunDelegatedAuthority(admittedRunContext),
-        },
       });
 
-      const pending = await tool.execute(runId, {
-        command: "printf 'smoke\\n'",
-        workdir: workspaceDir,
-        timeoutSeconds: 5,
+      const callerIdentity = createAdmittedGatewayToolCallerIdentity({
+        admittedRunContext,
+        agentId: "main",
+        sessionKey: "agent:main:exec-approval-e2e",
       });
+      const pending = await withGatewayToolCallerIdentity(callerIdentity, () =>
+        tool.execute(runId, {
+          command: "printf 'smoke\\n'",
+          workdir: workspaceDir,
+          timeoutSeconds: 5,
+        }),
+      );
 
       expect(pending.details.status).toBe("approval-pending");
       if (pending.details.status !== "approval-pending") {
         throw new Error("expected approval-pending exec result");
       }
       registration.cleanup();
-      expect(validateAgentRunDelegatedAuthority(authority)).toBe(true);
+      expect(validateAgentRunDelegatedAuthority(authority)).toBe(false);
 
       await operator.request(
         "exec.approval.resolve",
@@ -219,7 +222,6 @@ describe("gateway-hosted exec approvals", () => {
       expect(outcome.status).toBe("completed");
       expect(outcome.exitCode).toBe(0);
       expect(outcome.aggregated).toBe("smoke");
-      await vi.waitFor(() => expect(validateAgentRunDelegatedAuthority(authority)).toBe(false));
     },
     EXEC_APPROVAL_E2E_TIMEOUT_MS,
   );

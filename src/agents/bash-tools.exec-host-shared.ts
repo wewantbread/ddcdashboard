@@ -96,6 +96,7 @@ type RegisteredExecApprovalRequestContext = {
   initiatingSurface: ExecApprovalInitiatingSurfaceState;
   sentApproverDms: boolean;
   unavailableReason: ExecApprovalUnavailableReason | null;
+  gatewayGeneration?: string;
 };
 
 /** Destination and context for async exec approval follow-up delivery. */
@@ -315,6 +316,9 @@ async function createAndRegisterDefaultExecApprovalRequest(
     initiatingSurface,
     sentApproverDms,
     unavailableReason,
+    ...(registration.gatewayGeneration
+      ? { gatewayGeneration: registration.gatewayGeneration }
+      : {}),
   };
 }
 
@@ -472,6 +476,7 @@ export async function resolveExecApprovalWaitOutcome<TTimeoutContext = undefined
   params: Omit<ExecApprovalDecisionParams<TTimeoutContext>, "decision"> & {
     approvalId: string;
     preResolvedDecision: string | null | undefined;
+    gatewayGeneration?: string;
     signal?: AbortSignal;
   },
 ): Promise<
@@ -488,6 +493,7 @@ export async function resolveExecApprovalWaitOutcome<TTimeoutContext = undefined
     decision = await resolveRegisteredExecApprovalDecision({
       approvalId: params.approvalId,
       preResolvedDecision: params.preResolvedDecision,
+      ...(params.gatewayGeneration ? { gatewayGeneration: params.gatewayGeneration } : {}),
     });
   } catch (error) {
     return { kind: isExecApprovalRunAbortedError(error) ? "run-aborted" : "request-failed" };
