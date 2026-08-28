@@ -46,10 +46,15 @@ export function createMemoryRegistrars(state: PluginRegistryState) {
       registry.memoryCapabilities.push({
         pluginId: record.id,
         capability: consolidationCapability,
+        memorySlotSelected: record.memorySlotSelected === true,
       });
       return;
     }
-    registry.memoryCapabilities.push({ pluginId: record.id, capability });
+    registry.memoryCapabilities.push({
+      pluginId: record.id,
+      capability,
+      memorySlotSelected: record.memorySlotSelected === true,
+    });
   };
 
   const registerMemoryPromptSupplement = (

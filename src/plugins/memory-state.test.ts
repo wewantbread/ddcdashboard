@@ -262,7 +262,9 @@ describe("memory plugin state", () => {
 
     expect(resolveMemoryFlushPlan({})?.relativePath).toBe("memory/sidecar.md");
     expect(getMemoryRuntime()).toBe(runtime);
-    expect(getMemoryCapabilityRegistration()?.pluginId).toBe("memory-lancedb");
+    // The plugin that contributed the core capability keeps attribution; a
+    // later artifacts-only bridge layers on without taking it over.
+    expect(getMemoryCapabilityRegistration()?.pluginId).toBe("memory-core");
     await expect(listActiveMemoryPublicArtifacts({ cfg: {} as never })).resolves.toEqual([
       {
         kind: "memory-root",

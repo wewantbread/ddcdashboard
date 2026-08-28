@@ -98,7 +98,7 @@ describe("dual-kind memory registration gate", () => {
       },
     });
     expect(registry.registry.memoryCapabilities).toEqual([
-      { pluginId: "memory-only", capability: {} },
+      { pluginId: "memory-only", capability: {}, memorySlotSelected: false },
     ]);
     expect(
       registry.registry.diagnostics.filter(
@@ -135,6 +135,7 @@ describe("dual-kind memory registration gate", () => {
           runtime,
           promptBuilder,
         },
+        memorySlotSelected: true,
       },
     ]);
     expect(
@@ -185,11 +186,16 @@ describe("dual-kind memory registration gate", () => {
     registry.rollbackPluginGlobalSideEffects(bridgeRecord.id, bridgeRecord);
 
     expect(registry.registry.memoryCapabilities).toEqual([
-      { pluginId: "memory-core", capability: { runtime, flushPlanResolver } },
+      {
+        pluginId: "memory-core",
+        capability: { runtime, flushPlanResolver },
+        memorySlotSelected: true,
+      },
     ]);
     expect(resolveMemoryCapabilityRegistration(registry.registry.memoryCapabilities)).toEqual({
       pluginId: "memory-core",
       capability: { runtime, flushPlanResolver },
+      memorySlotSelected: true,
     });
   });
 
@@ -221,6 +227,7 @@ describe("dual-kind memory registration gate", () => {
         flushPlanResolver,
         publicArtifacts: expect.any(Object),
       },
+      memorySlotSelected: true,
     });
   });
 });
@@ -278,6 +285,7 @@ describe("memory sidecar runtime gate", () => {
       {
         pluginId: "memory-bridge",
         capability: { publicArtifacts: expect.any(Object) },
+        memorySlotSelected: false,
       },
     ]);
     expect(
@@ -285,5 +293,50 @@ describe("memory sidecar runtime gate", () => {
         (d) => d.pluginId === "memory-bridge" && d.level === "warn",
       ),
     ).toHaveLength(0);
+  });
+
+  /** Registration order flips when a config-path memory plugin loads before the bundled sidecar. */
+  it("keeps the slot owner capability when a later sidecar contributes its consolidation", () => {
+    const { config, registry } = createPluginRegistryFixture();
+    const runtime = createStubMemoryRuntime();
+    const flushPlanResolver = () => null;
+    const sidecarPromptBuilder = () => ["sidecar prompt"];
+
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "acme-memory",
+        name: "Acme Memory",
+        kind: "memory",
+        memorySlotSelected: true,
+      }),
+      register(api) {
+        api.registerMemoryCapability({ runtime });
+      },
+    });
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "memory-core",
+        name: "Memory Core",
+        kind: "memory",
+      }),
+      register(api) {
+        api.registerMemoryCapability({
+          promptBuilder: sidecarPromptBuilder,
+          flushPlanResolver,
+          publicArtifacts: { listArtifacts: async () => [] },
+        });
+      },
+    });
+
+    const selected = resolveMemoryCapabilityRegistration(registry.registry.memoryCapabilities);
+    expect(selected?.pluginId).toBe("acme-memory");
+    expect(selected?.capability.runtime).toBe(runtime);
+    expect(selected?.capability.promptBuilder).toBe(sidecarPromptBuilder);
+    expect(selected?.capability.flushPlanResolver).toBe(flushPlanResolver);
+    expect(selected?.memorySlotSelected).toBe(true);
   });
 });
