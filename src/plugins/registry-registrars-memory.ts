@@ -31,24 +31,36 @@ export function createMemoryRegistrars(state: PluginRegistryState) {
     }
     // A dreaming sidecar stays loadable so its consolidation lifecycle (prompt
     // section, flush plan, public artifacts) survives beside the selected memory
-    // plugin, but the slot owner is the only indexing-runtime authority. Keeping a
-    // second runtime active re-embeds corpora that no registered tool ever reads —
-    // silent embedding-provider spend with no consumer.
-    const dropRuntime = !record.memorySlotSelected && capability.runtime !== undefined;
-    if (dropRuntime) {
+    // plugin, but slot-owner facts never do: the owner is the only indexing
+    // runtime, and Active Memory resolves recall authorization by resolved
+    // plugin id against the configured memory slot, so a sidecar's recall tool
+    // identity or private-transcript grant must not survive registration for the
+    // owner-first capability merge to lend to the selected plugin.
+    const memorySlotSelected = record.memorySlotSelected === true;
+    const dropsSlotOwnerFacts =
+      !memorySlotSelected &&
+      (capability.runtime !== undefined ||
+        capability.deterministicRecallToolName !== undefined ||
+        capability.supportsPrivateTranscriptRecall !== undefined);
+    if (dropsSlotOwnerFacts) {
       pushDiagnostic({
         level: "warn",
         pluginId: record.id,
         source: record.source,
         message:
-          "memory plugin not selected for the memory slot; skipping its indexing runtime registration (consolidation lifecycle preserved)",
+          "memory plugin not selected for the memory slot; skipping its indexing runtime and recall registration (consolidation lifecycle preserved)",
       });
     }
-    const { runtime: _droppedRuntime, ...consolidationCapability } = capability;
+    const {
+      runtime: _droppedRuntime,
+      deterministicRecallToolName: _droppedRecallToolName,
+      supportsPrivateTranscriptRecall: _droppedPrivateRecall,
+      ...consolidationCapability
+    } = capability;
     registry.memoryCapabilities.push({
       pluginId: record.id,
-      capability: dropRuntime ? consolidationCapability : capability,
-      memorySlotSelected: record.memorySlotSelected === true,
+      capability: memorySlotSelected ? capability : consolidationCapability,
+      memorySlotSelected,
     });
   };
 

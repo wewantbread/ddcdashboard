@@ -339,4 +339,45 @@ describe("memory sidecar runtime gate", () => {
     expect(selected?.capability.flushPlanResolver).toBe(flushPlanResolver);
     expect(selected?.memorySlotSelected).toBe(true);
   });
+
+  /** Active Memory grants private-transcript recall by resolved plugin id, so a sidecar's recall declaration must never reach the merged owner capability. */
+  it("keeps recall authorization with the slot owner when a sidecar declares it", () => {
+    const { config, registry } = createPluginRegistryFixture();
+
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "acme-memory",
+        name: "Acme Memory",
+        kind: "memory",
+        memorySlotSelected: true,
+      }),
+      register(api) {
+        api.registerMemoryCapability({ runtime: createStubMemoryRuntime() });
+      },
+    });
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "memory-core",
+        name: "Memory Core",
+        kind: "memory",
+      }),
+      register(api) {
+        api.registerMemoryCapability({
+          deterministicRecallToolName: "memory_search",
+          supportsPrivateTranscriptRecall: true,
+          promptBuilder: () => ["sidecar prompt"],
+        });
+      },
+    });
+
+    const selected = resolveMemoryCapabilityRegistration(registry.registry.memoryCapabilities);
+    expect(selected?.pluginId).toBe("acme-memory");
+    expect(selected?.capability.deterministicRecallToolName).toBeUndefined();
+    expect(selected?.capability.supportsPrivateTranscriptRecall).toBeUndefined();
+    expect(selected?.capability.promptBuilder).toBeDefined();
+  });
 });
