@@ -92,17 +92,16 @@ catalog bridge, and MCP tools are available through the generated `MCP`
 namespace. The model normally sees `exec` and `wait`; tools such as `computer`
 whose structured results cannot cross the JSON-only bridge stay direct.
 
-`enabled` defaults to `"auto"`, which engages code mode only for models whose
-catalog entry flags `compat.codeMode: "preferred"`. See
+`enabled` defaults to `false`, including when the object sets other Code Mode
+options. To engage code mode only for models whose catalog entry flags
+`compat.codeMode: "preferred"`, enable `"auto"` explicitly. See
 [Code Mode - automatic per-model activation](/tools/code-mode#automatic-per-model-activation).
-
-To opt out for every run:
 
 ```json5
 {
   tools: {
     codeMode: {
-      enabled: false,
+      enabled: "auto",
     },
   },
 }
@@ -112,7 +111,7 @@ The shorthand is also accepted:
 
 ```json5
 {
-  tools: { codeMode: false },
+  tools: { codeMode: "auto" },
 }
 ```
 
@@ -286,6 +285,8 @@ Control UI repository previews and project discovery use the separate optional `
 ```
 
 Values shown are defaults except `applyPatch.allowModels` (empty/unset by default, meaning any compatible model may use `apply_patch`). `approvalRunningNoticeMs` emits a running notice when approval-backed exec runs long; `0` disables it.
+
+`tools.exec.grantExpiryDays` (unset by default) sets the default lifetime, in days (1–3650), for standing grants minted by Always allow on automation approvals. Unset keeps grants valid until revoked or the owning automation changes. Terms freeze at mint, so changing the value affects only future grants; see [Standing grants for automations](/tools/exec-approvals#standing-grants-for-automations).
 
 ### `tools.loopDetection`
 
@@ -634,6 +635,7 @@ Configuring a custom/local provider `baseUrl` is also the narrow network trust d
     | `supportsReasoningEffort` | Accepts a reasoning-effort control. |
     | `supportsTemperature` | Accepts `temperature` for this model and adapter. |
     | `supportsUsageInStreaming` | Emits usage metadata in streaming responses. |
+    | `supportsInstructions` | Responses API only: accepts the system prompt via top-level `instructions` instead of embedded in `input`. Defaults to `true` only for native OpenAI and xAI's main route — the two routes with confirmed contract evidence. Every other route, bundled or custom, defaults to `false`; set explicitly once verified against that endpoint. |
     | `supportsTools` | Supports structured tool/function calling. Set `false` to disable tools. |
     | `supportsStrictMode` | Accepts strict tool schemas. |
     | `requiresStringContent` | Requires plain-string Chat Completions message content. |

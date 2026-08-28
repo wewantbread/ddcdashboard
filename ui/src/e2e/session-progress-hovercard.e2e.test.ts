@@ -68,6 +68,7 @@ async function emitPullRequestSnapshot(
             state: "open",
             title: "Restore the session hovercard",
             url: "https://github.com/openclaw/openclaw/pull/417",
+            author: { login: "steipete" },
           },
           {
             additions: 72,
@@ -284,17 +285,22 @@ suite.define(() => {
                 updatedAt: now - 5 * 60_000,
               },
               {
-                createdActor: { type: "human", id: "profile-ada", label: "Ada King" },
+                createdActor: {
+                  type: "human",
+                  id: "profile-ada",
+                  label: "Ada King",
+                  identity: { type: "profile", id: "profile-ada" },
+                },
                 createdAt: now - 89 * 24 * 60 * 60_000,
                 key: sessionKey,
                 kind: "direct",
                 label: "Other session",
                 displayName: "Other session",
                 participants: [
-                  { type: "human", id: "profile-ada", label: "Ada King" },
-                  { type: "human", id: "profile-self", label: "You" },
-                  { type: "human", id: "profile-mira", label: "Mira" },
-                  { type: "human", id: "profile-riley", label: "Riley" },
+                  { identity: { type: "profile", id: "profile-ada" }, label: "Ada King" },
+                  { identity: { type: "profile", id: "profile-self" }, label: "You" },
+                  { identity: { type: "profile", id: "profile-mira" }, label: "Mira" },
+                  { identity: { type: "profile", id: "profile-riley" }, label: "Riley" },
                 ],
                 participantCount: 6,
                 startedAt: now - 89 * 24 * 60 * 60_000,
@@ -329,6 +335,9 @@ suite.define(() => {
           .poll(() => card.locator(".session-progress-card__heading").textContent())
           .toContain("1/3");
         await expect.poll(() => card.locator(".session-hovercard__pr-row").count()).toBe(4);
+        await expect
+          .poll(() => card.locator(".session-hovercard__pr-author").first().textContent())
+          .toBe("steipete");
         await captureProof(page, "sidebar-row-hovercard-maximum.png");
         await expect
           .poll(() => card.locator(".session-hovercard__identity-row").textContent())
@@ -944,7 +953,12 @@ suite.define(() => {
             "sessions.list": chatSessionListResponse([
               {
                 channelAvatarUrl,
-                createdActor: { type: "human", id: "profile-ada", label: "Ada King" },
+                createdActor: {
+                  type: "human",
+                  id: "profile-ada",
+                  label: "Ada King",
+                  identity: { type: "profile", id: "profile-ada" },
+                },
                 key: sessionKey,
                 kind: "direct",
                 label: "No progress card",
@@ -954,7 +968,12 @@ suite.define(() => {
               },
               {
                 channelAvatarUrl: successfulChannelAvatarUrl,
-                createdActor: { type: "human", id: "profile-ada", label: "Ada King" },
+                createdActor: {
+                  type: "human",
+                  id: "profile-ada",
+                  label: "Ada King",
+                  identity: { type: "profile", id: "profile-ada" },
+                },
                 key: avatarSessionKey,
                 kind: "direct",
                 label: "Channel avatar",
