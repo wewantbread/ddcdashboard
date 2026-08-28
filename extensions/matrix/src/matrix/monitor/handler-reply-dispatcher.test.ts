@@ -109,41 +109,44 @@ describe("createMatrixReplyDispatcher", () => {
     );
   });
 
-  it("drains every reasoning window before the final reply", async () => {
-    let resolveFirst!: (value: { visibleReplySent: boolean }) => void;
-    const firstDelivery = new Promise<{ visibleReplySent: boolean }>((resolve) => {
-      resolveFirst = resolve;
-    });
-    deliverMatrixRepliesMock
-      .mockImplementationOnce(async () => await firstDelivery)
-      .mockResolvedValue({ visibleReplySent: true });
-    const dispatcher = createDispatcher();
-    dispatcher.setReasoningLevel("stream");
+  it.each(["block", "final"] as const)(
+    "drains every reasoning window before the %s reply",
+    async (kind) => {
+      let resolveFirst!: (value: { visibleReplySent: boolean }) => void;
+      const firstDelivery = new Promise<{ visibleReplySent: boolean }>((resolve) => {
+        resolveFirst = resolve;
+      });
+      deliverMatrixRepliesMock
+        .mockImplementationOnce(async () => await firstDelivery)
+        .mockResolvedValue({ visibleReplySent: true });
+      const dispatcher = createDispatcher();
+      dispatcher.setReasoningLevel("stream");
 
-    dispatcher.turnDispatcherOptions.onReasoningStream?.({ text: "First window" });
-    const firstEnd = dispatcher.turnDispatcherOptions.onReasoningEnd?.();
-    dispatcher.turnDispatcherOptions.onReasoningStream?.({ text: "Second window" });
-    const secondEnd = dispatcher.turnDispatcherOptions.onReasoningEnd?.();
-    const finalDelivery = dispatcher.deliverReply({ text: "Final answer" }, { kind: "final" });
-    await Promise.resolve();
+      dispatcher.turnDispatcherOptions.onReasoningStream?.({ text: "First window" });
+      const firstEnd = dispatcher.turnDispatcherOptions.onReasoningEnd?.();
+      dispatcher.turnDispatcherOptions.onReasoningStream?.({ text: "Second window" });
+      const secondEnd = dispatcher.turnDispatcherOptions.onReasoningEnd?.();
+      const finalDelivery = dispatcher.deliverReply({ text: "Final answer" }, { kind });
+      await Promise.resolve();
 
-    expect(deliverMatrixRepliesMock).toHaveBeenCalledTimes(1);
-    resolveFirst({ visibleReplySent: true });
-    await expect(firstEnd).resolves.toBe(true);
-    await expect(secondEnd).resolves.toBe(true);
-    await expect(finalDelivery).resolves.toEqual({ visibleReplySent: true });
+      expect(deliverMatrixRepliesMock).toHaveBeenCalledTimes(1);
+      resolveFirst({ visibleReplySent: true });
+      await expect(firstEnd).resolves.toBe(true);
+      await expect(secondEnd).resolves.toBe(true);
+      await expect(finalDelivery).resolves.toEqual({ visibleReplySent: true });
 
-    expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ replies: [{ text: "First window", isReasoning: true }] }),
-    );
-    expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ replies: [{ text: "Second window", isReasoning: true }] }),
-    );
-    expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({ replies: [{ text: "Final answer" }] }),
-    );
-  });
+      expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ replies: [{ text: "First window", isReasoning: true }] }),
+      );
+      expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ replies: [{ text: "Second window", isReasoning: true }] }),
+      );
+      expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ replies: [{ text: "Final answer" }] }),
+      );
+    },
+  );
 });

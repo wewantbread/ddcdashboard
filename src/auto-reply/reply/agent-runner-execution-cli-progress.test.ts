@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { createCliJsonlStreamingParser } from "../../agents/cli-output-stream.js";
 import type { TemplateContext } from "../templating.js";
@@ -689,6 +690,7 @@ describe("executeAgentTurn: CLI progress bridging", () => {
     const onReasoningStream = vi.fn<NonNullable<GetReplyOptions["onReasoningStream"]>>(
       async (_payload) => undefined,
     );
+    const onReasoningEnd = vi.fn<NonNullable<GetReplyOptions["onReasoningEnd"]>>(async () => false);
     const executeAgentTurn = await getExecuteAgentTurnForTest();
     const followupRun = createFollowupRun();
     followupRun.run.provider = "claude-cli";
@@ -701,7 +703,7 @@ describe("executeAgentTurn: CLI progress bridging", () => {
         Provider: "telegram",
         MessageSid: "msg",
       } as unknown as TemplateContext,
-      opts: { onReasoningStream },
+      opts: { onReasoningEnd, onReasoningStream },
       typingSignals: createMockTypingSignaler(),
       blockReplyPipeline: null,
       blockStreamingEnabled: false,
@@ -729,6 +731,10 @@ describe("executeAgentTurn: CLI progress bridging", () => {
         requiresReasoningProgressOptIn: true,
       },
     ]);
+    expect(onReasoningEnd).toHaveBeenCalledOnce();
+    expect(expectDefined(onReasoningStream.mock.invocationCallOrder.at(-1))).toBeLessThan(
+      expectDefined(onReasoningEnd.mock.invocationCallOrder[0]),
+    );
   });
 
   it("bridges tagged Claude CLI reasoning separately from its visible answer", async () => {
