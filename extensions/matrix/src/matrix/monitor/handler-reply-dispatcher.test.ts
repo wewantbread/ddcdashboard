@@ -13,7 +13,7 @@ vi.mock("./replies.js", async () => {
   };
 });
 
-function createDispatcher() {
+function createDispatcher(config: { replyToMode?: "off" | "first"; replyToEventId?: string } = {}) {
   return createMatrixReplyDispatcher({
     cfg: {},
     prefixOptions: { responsePrefixContextProvider: () => ({ identityName: undefined }) },
@@ -38,7 +38,8 @@ function createDispatcher() {
     client: {} as MatrixClient,
     roomId: "!room:example.org",
     runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-    replyToMode: "off",
+    replyToMode: config.replyToMode ?? "off",
+    replyToEventId: config.replyToEventId,
     accountId: "default",
     mediaLocalRoots: [],
     logVerboseMessage: vi.fn(),
@@ -84,6 +85,26 @@ describe("createMatrixReplyDispatcher", () => {
       expect.objectContaining({
         roomId: "!room:example.org",
         replies: [{ text: "Checking tools", isReasoning: true }],
+      }),
+    );
+  });
+
+  it("preserves the final reply target after suppressing off-mode reasoning", async () => {
+    const dispatcher = createDispatcher({ replyToMode: "first", replyToEventId: "$incoming" });
+    expect(dispatcher.setReasoningLevel("off")).toBe(false);
+
+    await expect(
+      dispatcher.deliverReply({ text: "Hidden thought", isReasoning: true }, { kind: "final" }),
+    ).resolves.toMatchObject({ visibleReplySent: false });
+    await dispatcher.deliverReply({ text: "Visible final" }, { kind: "final" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledOnce();
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasRepliedRef: { value: false },
+        replies: [{ text: "Visible final" }],
+        replyToId: "$incoming",
+        replyToMode: "first",
       }),
     );
   });
