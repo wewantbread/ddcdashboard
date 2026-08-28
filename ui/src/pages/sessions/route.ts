@@ -81,11 +81,11 @@ async function loadSessionsRoute(
   context: ApplicationContext,
   location: RouteLocation,
 ): Promise<SessionsRouteData> {
-  const preferenceState = await import("./route-preferences.runtime.ts");
-  const preferences = preferenceState.loadSessionsPagePreferences();
   const gateway = context.gateway;
   const gatewaySnapshot = gateway.snapshot;
   const sessions = context.sessions;
+  const preferenceState = await import("./route-preferences.runtime.ts");
+  const preferences = preferenceState.loadSessionsPagePreferences();
   const options = routeOptions(location, preferences.statusFilter);
   const query = sessionsPageListQuery(context, {
     activeMinutes: parseStrictPositiveInteger(preferences.activeMinutes),

@@ -1,9 +1,14 @@
-import { SESSION_GROUP_MODES, type SessionsGroupBy } from "../../lib/sessions/grouping.ts";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  normalizeSessionsGroupBy,
+  SESSION_GROUP_MODES,
+  type SessionsGroupBy,
+} from "../../lib/sessions/grouping.ts";
 import type { SessionArchivedFilter } from "../../lib/sessions/index.ts";
 import { getSafeLocalStorage } from "../../local-storage.ts";
 
 const LEGACY_GROUP_BY_STORAGE_KEY = "openclaw:sessions:group-by";
-export const SESSIONS_PAGE_PREFERENCES_STORAGE_KEY = "openclaw:sessions:preferences:v1";
+const SESSIONS_PAGE_PREFERENCES_STORAGE_KEY = "openclaw:sessions:preferences:v1";
 const SORT_COLUMNS = ["key", "kind", "updated", "tokens"] as const;
 const SORT_DIRECTIONS = ["asc", "desc"] as const;
 const STATUS_FILTERS = ["active", "archived", "all"] as const;
@@ -24,7 +29,7 @@ export type SessionsPagePreferences = {
   pageSize: number;
 };
 
-export const DEFAULT_SESSIONS_PAGE_PREFERENCES: SessionsPagePreferences = {
+const DEFAULT_SESSIONS_PAGE_PREFERENCES: SessionsPagePreferences = {
   activeMinutes: "",
   limit: "50",
   includeGlobal: true,
@@ -37,12 +42,11 @@ export const DEFAULT_SESSIONS_PAGE_PREFERENCES: SessionsPagePreferences = {
   pageSize: 25,
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
-  return typeof value === "string" && values.includes(value as T);
+function isPreferenceValue<T extends string | number>(
+  value: unknown,
+  values: readonly T[],
+): value is T {
+  return values.some((candidate) => candidate === value);
 }
 
 function positiveIntegerString(value: unknown, fallback: string, allowEmpty = false): string {
@@ -62,7 +66,7 @@ function readStorageValue(storage: Storage, key: string): string | null {
 
 function storedGroupBy(storage: Storage): SessionsGroupBy {
   const raw = readStorageValue(storage, LEGACY_GROUP_BY_STORAGE_KEY);
-  return isOneOf(raw, SESSION_GROUP_MODES) ? raw : DEFAULT_SESSIONS_PAGE_PREFERENCES.groupBy;
+  return normalizeSessionsGroupBy(raw);
 }
 
 export function loadSessionsPagePreferences(): SessionsPagePreferences {
@@ -91,22 +95,24 @@ export function loadSessionsPagePreferences(): SessionsPagePreferences {
         typeof parsed.includeUnknown === "boolean"
           ? parsed.includeUnknown
           : DEFAULT_SESSIONS_PAGE_PREFERENCES.includeUnknown,
-      statusFilter: isOneOf(parsed.statusFilter, STATUS_FILTERS)
+      statusFilter: isPreferenceValue(parsed.statusFilter, STATUS_FILTERS)
         ? parsed.statusFilter
         : DEFAULT_SESSIONS_PAGE_PREFERENCES.statusFilter,
       searchQuery:
         typeof parsed.searchQuery === "string"
           ? parsed.searchQuery
           : DEFAULT_SESSIONS_PAGE_PREFERENCES.searchQuery,
-      sortColumn: isOneOf(parsed.sortColumn, SORT_COLUMNS)
+      sortColumn: isPreferenceValue(parsed.sortColumn, SORT_COLUMNS)
         ? parsed.sortColumn
         : DEFAULT_SESSIONS_PAGE_PREFERENCES.sortColumn,
-      sortDir: isOneOf(parsed.sortDir, SORT_DIRECTIONS)
+      sortDir: isPreferenceValue(parsed.sortDir, SORT_DIRECTIONS)
         ? parsed.sortDir
         : DEFAULT_SESSIONS_PAGE_PREFERENCES.sortDir,
-      groupBy: isOneOf(parsed.groupBy, SESSION_GROUP_MODES) ? parsed.groupBy : legacyGroupBy,
-      pageSize: PAGE_SIZES.includes(parsed.pageSize as (typeof PAGE_SIZES)[number])
-        ? (parsed.pageSize as (typeof PAGE_SIZES)[number])
+      groupBy: isPreferenceValue(parsed.groupBy, SESSION_GROUP_MODES)
+        ? parsed.groupBy
+        : legacyGroupBy,
+      pageSize: isPreferenceValue(parsed.pageSize, PAGE_SIZES)
+        ? parsed.pageSize
         : DEFAULT_SESSIONS_PAGE_PREFERENCES.pageSize,
     };
   } catch {

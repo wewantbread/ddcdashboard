@@ -6,7 +6,7 @@ import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionListOptions, SessionListSnapshot } from "../../lib/sessions/index.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
-import { DEFAULT_SESSIONS_PAGE_PREFERENCES, saveSessionsPagePreferences } from "./page-state.ts";
+import { loadSessionsPagePreferences, saveSessionsPagePreferences } from "./page-state.ts";
 import { page, type SessionsRouteData } from "./route.ts";
 
 const result: SessionsListResult = {
@@ -128,7 +128,7 @@ describe("sessions route", () => {
 
   it("uses persisted filters for the initial list request", async () => {
     saveSessionsPagePreferences({
-      ...DEFAULT_SESSIONS_PAGE_PREFERENCES,
+      ...loadSessionsPagePreferences(),
       activeMinutes: "15",
       limit: "100",
       includeGlobal: false,
@@ -154,7 +154,7 @@ describe("sessions route", () => {
 
   it("gives an explicit status URL precedence over persisted status", async () => {
     saveSessionsPagePreferences({
-      ...DEFAULT_SESSIONS_PAGE_PREFERENCES,
+      ...loadSessionsPagePreferences(),
       activeMinutes: "15",
       statusFilter: "archived",
     });
