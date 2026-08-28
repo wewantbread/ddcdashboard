@@ -616,16 +616,27 @@ export function createApplicationOverlays(
         operation.grantGeneration === approvalGrantGeneration &&
         readGatewayOperatorAccess(gateway.snapshot).canGrantApprovals &&
         isCurrentClient(operation.client);
+      // The Gateway owns this lifecycle token. Approval ids are reusable, so
+      // an older decision must never settle or annotate a replacement record.
+      const isCurrentApproval = () =>
+        promptState.execApprovalQueue.some(
+          (entry) =>
+            entry.id === active.id &&
+            entry.kind === active.kind &&
+            (active.instanceId
+              ? entry.instanceId === active.instanceId
+              : !entry.instanceId && entry.createdAtMs === active.createdAtMs),
+        );
       publish();
       try {
         await resolveApprovalRequest(client, active, decision);
-        if (!isCurrentOperation()) {
+        if (!isCurrentOperation() || !isCurrentApproval()) {
           return;
         }
         clearResolvedExecApprovalPrompt(promptState, active.id);
       } catch (error) {
         if (isStaleApprovalResolutionError(error)) {
-          if (!isCurrentOperation()) {
+          if (!isCurrentOperation() || !isCurrentApproval()) {
             return;
           }
           clearResolvedExecApprovalPrompt(promptState, active.id);
@@ -636,10 +647,7 @@ export function createApplicationOverlays(
           }
           return;
         }
-        if (
-          isCurrentOperation() &&
-          promptState.execApprovalQueue.some((entry) => entry.id === active.id)
-        ) {
+        if (isCurrentOperation() && isCurrentApproval()) {
           promptState.execApprovalErrors.set(active.id, `Approval failed: ${formatUiError(error)}`);
         }
       } finally {
