@@ -1,3 +1,4 @@
+import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import type { RouteLocation } from "@openclaw/uirouter";
 import { definePage } from "@openclaw/uirouter";
 import { html } from "lit";
@@ -32,14 +33,24 @@ type SessionsPageListFilters = {
   deepLinkSessionKey?: string | null;
 };
 
-function routeOptions(location: RouteLocation) {
+function routeOptions(
+  location: RouteLocation,
+  storedStatusFilter: SessionArchivedFilter = "active",
+) {
   const search = new URLSearchParams(location.search);
   const expandedSessionKey = search.get("session")?.trim() || null;
   // The retired internal `showArchived` param is deliberately not read; Sessions
   // URLs are not a shipped contract and stale links fall back to the Active view.
   const requestedStatus = search.get("status");
-  const statusFilter: SessionArchivedFilter =
-    requestedStatus === "archived" ? "archived" : requestedStatus === "all" ? "all" : "active";
+  const statusFilter: SessionArchivedFilter = search.has("status")
+    ? requestedStatus === "archived"
+      ? "archived"
+      : requestedStatus === "all"
+        ? "all"
+        : "active"
+    : expandedSessionKey
+      ? "active"
+      : storedStatusFilter;
   return { expandedSessionKey, statusFilter };
 }
 
@@ -70,14 +81,17 @@ async function loadSessionsRoute(
   context: ApplicationContext,
   location: RouteLocation,
 ): Promise<SessionsRouteData> {
+  const preferenceState = await import("./route-preferences.runtime.ts");
+  const preferences = preferenceState.loadSessionsPagePreferences();
   const gateway = context.gateway;
   const gatewaySnapshot = gateway.snapshot;
   const sessions = context.sessions;
-  const options = routeOptions(location);
+  const options = routeOptions(location, preferences.statusFilter);
   const query = sessionsPageListQuery(context, {
-    limit: SESSIONS_PAGE_DEFAULT_LIMIT,
-    includeGlobal: true,
-    includeUnknown: false,
+    activeMinutes: parseStrictPositiveInteger(preferences.activeMinutes),
+    limit: parseStrictPositiveInteger(preferences.limit) ?? SESSIONS_PAGE_DEFAULT_LIMIT,
+    includeGlobal: preferences.includeGlobal,
+    includeUnknown: preferences.includeUnknown,
     statusFilter: options.statusFilter,
     deepLinkSessionKey: options.expandedSessionKey,
   });

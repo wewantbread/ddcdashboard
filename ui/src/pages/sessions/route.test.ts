@@ -1,10 +1,12 @@
 // @vitest-environment node
 
 import type { RouteLoaderOptions } from "@openclaw/uirouter";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionListOptions, SessionListSnapshot } from "../../lib/sessions/index.ts";
+import { createStorageMock } from "../../test-helpers/storage.ts";
+import { DEFAULT_SESSIONS_PAGE_PREFERENCES, saveSessionsPagePreferences } from "./page-state.ts";
 import { page, type SessionsRouteData } from "./route.ts";
 
 const result: SessionsListResult = {
@@ -55,6 +57,14 @@ async function loadSessionsRoute(options: {
 }
 
 describe("sessions route", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorageMock());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it.each([
     {
       name: "default selected-agent roster",
@@ -114,5 +124,52 @@ describe("sessions route", () => {
     },
   ])("loads the managed $name without a raw list", async (testCase) => {
     await loadSessionsRoute(testCase);
+  });
+
+  it("uses persisted filters for the initial list request", async () => {
+    saveSessionsPagePreferences({
+      ...DEFAULT_SESSIONS_PAGE_PREFERENCES,
+      activeMinutes: "15",
+      limit: "100",
+      includeGlobal: false,
+      includeUnknown: true,
+      statusFilter: "active",
+    });
+
+    await loadSessionsRoute({
+      search: "",
+      scopeId: "writer",
+      expectedQuery: {
+        activeMinutes: 15,
+        limit: 100,
+        includeGlobal: false,
+        includeUnknown: true,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "active",
+        agentId: "writer",
+      },
+    });
+  });
+
+  it("gives an explicit status URL precedence over persisted status", async () => {
+    saveSessionsPagePreferences({
+      ...DEFAULT_SESSIONS_PAGE_PREFERENCES,
+      activeMinutes: "15",
+      statusFilter: "archived",
+    });
+
+    await loadSessionsRoute({
+      search: "?status=all",
+      scopeId: null,
+      expectedQuery: {
+        limit: 50,
+        includeGlobal: true,
+        includeUnknown: false,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "all",
+      },
+    });
   });
 });
