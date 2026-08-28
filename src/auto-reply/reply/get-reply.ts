@@ -926,6 +926,7 @@ export async function getReplyFromConfig(
       enableLocalPathSelfServe([finalized, sessionCtx]);
     }
     logResolverTiming("milestone", "before_fast_directive_prepared_reply");
+    resolvedOpts?.onReasoningLevelResolved?.("off");
     const fastReplyResult = await traceGetReplyPhase("reply.run_prepared_reply", () =>
       runPreparedReply({
         ctx,
@@ -1272,6 +1273,7 @@ export async function getReplyFromConfig(
   }
 
   logResolverTiming("milestone", "before_run_prepared_reply");
+  resolvedOpts?.onReasoningLevelResolved?.(resolvedReasoningLevel);
   const replyResult = await traceGetReplyPhase("reply.run_prepared_reply", () =>
     runPreparedReply({
       ctx,
