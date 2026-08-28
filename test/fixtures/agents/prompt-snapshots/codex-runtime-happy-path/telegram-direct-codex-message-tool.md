@@ -232,8 +232,8 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 0
   },
   "dynamicToolsJson": {
-    "chars": 55447,
-    "roughTokens": 13862
+    "chars": 55578,
+    "roughTokens": 13895
   },
   "openClawDeveloperInstructions": {
     "chars": 3518,
@@ -244,8 +244,8 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 6866
   },
   "totalWithDynamicToolsJson": {
-    "chars": 82913,
-    "roughTokens": 20729
+    "chars": 83044,
+    "roughTokens": 20761
   },
   "userInputText": {
     "chars": 863,
@@ -609,6 +609,7 @@ Full JSON: `codex-dynamic-tools.telegram-direct.json`
           "type": "string"
         },
         "channel": {
+          "description": "Name of one configured messaging provider, or \"all\" for broadcast; not a channel or conversation ID.",
           "type": "string"
         },
         "contentType": {
