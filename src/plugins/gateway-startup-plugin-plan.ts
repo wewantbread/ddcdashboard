@@ -222,6 +222,7 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
       rootConfig: params.config,
       enabledByDefault: isPluginEnabledByDefaultForPlatform(plugin, params.platform),
       activationSource,
+      env: params.env,
     });
     if (!activationState.enabled) {
       continue;
