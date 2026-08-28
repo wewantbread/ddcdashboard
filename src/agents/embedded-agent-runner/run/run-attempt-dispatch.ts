@@ -28,6 +28,7 @@ import {
   EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS,
 } from "./lane-runtime.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
+import { recordExplicitSkillSelectionsForRun } from "./skill-selection-usage.js";
 import { resolveSkillWorkshopAttemptParams } from "./skill-workshop-attempt-params.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptTrajectoryRecorder } from "./types.js";
 
@@ -533,9 +534,14 @@ export async function dispatchEmbeddedRunAttempt(input: {
     turnSourceAccountId: params.agentAccountId,
     turnSourceThreadId: params.currentThreadTs,
   });
-  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () =>
-    runEmbeddedAttemptWithBackend(attemptParams),
-  )
+  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () => {
+    recordExplicitSkillSelectionsForRun({
+      runId: attemptParams.runId,
+      selections: attemptParams.explicitSkillSelections,
+      skillsSnapshot: attemptParams.skillsSnapshot,
+    });
+    return runEmbeddedAttemptWithBackend(attemptParams);
+  })
     .catch((err: unknown): never => {
       throw control.getPostCompactionAbortError() ?? err;
     })

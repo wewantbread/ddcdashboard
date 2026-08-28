@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { consumeRunSkillUsage, hasRunWorkspaceSkillUsage } from "../../skills/runtime/run-usage.js";
+import { createCanonicalFixtureSkill } from "../../skills/test-support/test-helpers.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import {
   createEmbeddedRunReplayState,
@@ -123,9 +125,73 @@ function makeDispatchInput(
 
 describe("embedded run retry dispatch", () => {
   beforeEach(() => {
+    consumeRunSkillUsage("run-1");
     mocks.runAttempt.mockReset().mockResolvedValue({ terminal: { kind: "ok" } });
     mocks.settleRequesterAfterSessionSpawns.mockReset();
   });
+
+  it.each(["openclaw", "codex", "third-party"])(
+    "records only snapshot-matched explicit skill selections for the admitted %s run",
+    async (agentHarnessId) => {
+      const skillFile = "/tmp/workspace/skills/release/SKILL.md";
+      const bundledSkillFile = "/tmp/bundled/skills/lint/SKILL.md";
+      const input = makeDispatchInput({}, createEmbeddedRunReplayState());
+      input.runtime.agentHarnessId = agentHarnessId;
+      input.params.explicitSkillSelections = [
+        { name: "release_alias", path: skillFile },
+        { name: "spoofed_workspace", path: bundledSkillFile },
+        { name: "unmatched", path: "/tmp/workspace/skills/unmatched/SKILL.md" },
+      ];
+      input.params.skillsSnapshot = {
+        prompt: "",
+        skills: [],
+        resolvedSkills: [
+          createCanonicalFixtureSkill({
+            name: "release",
+            description: "Release safely",
+            filePath: skillFile,
+            baseDir: "/tmp/workspace/skills/release",
+            source: "workspace",
+          }),
+          createCanonicalFixtureSkill({
+            name: "lint",
+            description: "Lint safely",
+            filePath: bundledSkillFile,
+            baseDir: "/tmp/bundled/skills/lint",
+            source: "bundled",
+          }),
+        ],
+      };
+
+      await dispatchEmbeddedRunAttempt(input);
+      await dispatchEmbeddedRunAttempt(input);
+
+      expect(hasRunWorkspaceSkillUsage({ runId: "run-1", name: "release", skillFile })).toBe(true);
+      expect(
+        hasRunWorkspaceSkillUsage({
+          runId: "run-1",
+          name: "lint",
+          skillFile: bundledSkillFile,
+        }),
+      ).toBe(false);
+      expect(
+        hasRunWorkspaceSkillUsage({
+          runId: "run-1",
+          name: "unmatched",
+          skillFile: "/tmp/workspace/skills/unmatched/SKILL.md",
+        }),
+      ).toBe(false);
+      expect(consumeRunSkillUsage("run-1")).toEqual([
+        { name: "release", source: "workspace", activation: "command", skillFile },
+        {
+          name: "lint",
+          source: "bundled",
+          activation: "command",
+          skillFile: bundledSkillFile,
+        },
+      ]);
+    },
+  );
 
   it("preserves caller-owned turn facts and unsafe replay state on the next attempt", async () => {
     const sessionManager = { owner: "caller" };
