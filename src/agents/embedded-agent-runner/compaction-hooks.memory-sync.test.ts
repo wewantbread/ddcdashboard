@@ -38,7 +38,7 @@ describe("post-compaction memory sync non-outcomes", () => {
     await runPostCompactionSideEffects({
       config: { agents: { defaults: { compaction: { postIndexSync: "await" } } } } as never,
       sessionId: "s1",
-      sessionAgentId: "main",
+      agentId: "main",
       sessionFile: "/tmp/session.jsonl",
     });
 
@@ -54,7 +54,7 @@ describe("post-compaction memory sync non-outcomes", () => {
     await runPostCompactionSideEffects({
       config: { agents: { defaults: { compaction: { postIndexSync: "await" } } } } as never,
       sessionId: "s1",
-      sessionAgentId: "main",
+      agentId: "main",
       sessionFile: "/tmp/session.jsonl",
     });
 

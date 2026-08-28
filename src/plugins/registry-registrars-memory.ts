@@ -34,7 +34,8 @@ export function createMemoryRegistrars(state: PluginRegistryState) {
     // plugin, but the slot owner is the only indexing-runtime authority. Keeping a
     // second runtime active re-embeds corpora that no registered tool ever reads —
     // silent embedding-provider spend with no consumer.
-    if (!record.memorySlotSelected && capability.runtime) {
+    const dropRuntime = !record.memorySlotSelected && capability.runtime !== undefined;
+    if (dropRuntime) {
       pushDiagnostic({
         level: "warn",
         pluginId: record.id,
@@ -42,17 +43,11 @@ export function createMemoryRegistrars(state: PluginRegistryState) {
         message:
           "memory plugin not selected for the memory slot; skipping its indexing runtime registration (consolidation lifecycle preserved)",
       });
-      const { runtime: _droppedRuntime, ...consolidationCapability } = capability;
-      registry.memoryCapabilities.push({
-        pluginId: record.id,
-        capability: consolidationCapability,
-        memorySlotSelected: record.memorySlotSelected === true,
-      });
-      return;
     }
+    const { runtime: _droppedRuntime, ...consolidationCapability } = capability;
     registry.memoryCapabilities.push({
       pluginId: record.id,
-      capability,
+      capability: dropRuntime ? consolidationCapability : capability,
       memorySlotSelected: record.memorySlotSelected === true,
     });
   };
