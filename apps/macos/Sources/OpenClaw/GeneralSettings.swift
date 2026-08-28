@@ -1049,7 +1049,6 @@ extension GeneralSettings {
 
     private func applyDiscoveredGateway(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) {
         GatewayDiscoverySelectionSupport.applyRemoteSelection(gateway: gateway, state: self.state)
-        MacNodeModeCoordinator.shared.setPreferredGatewayStableID(gateway.stableID, state: self.state)
     }
 }
 
