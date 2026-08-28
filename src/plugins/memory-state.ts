@@ -50,9 +50,14 @@ export function resolveMemoryCapabilityRegistration(
     // The memory slot owner outranks registration order: a dreaming sidecar or
     // artifact bridge contributes fields the owner lacks, but never displaces
     // the owner's runtime or consolidation surface, no matter which loader
-    // order registered the two plugins.
+    // order registered the two plugins. Registration order still decides every
+    // other pairing (both undeclared, both declared, or a later declared
+    // owner), matching the shipped last-registration-wins contract that
+    // per-scope re-registration depends on.
     const owner =
-      existing.memorySlotSelected || !registration.memorySlotSelected ? existing : registration;
+      existing.memorySlotSelected === true && registration.memorySlotSelected !== true
+        ? existing
+        : registration;
     const contributor = owner === existing ? registration : existing;
     effective = {
       pluginId: owner.pluginId,
