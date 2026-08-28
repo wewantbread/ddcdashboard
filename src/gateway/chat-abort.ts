@@ -47,6 +47,8 @@ export type ChatAbortControllerEntry = {
   operationalRunInstance?: OperationalRunInstanceRef;
   /** Exact approval lease captured when this controller's execution was admitted. */
   agentRunDelegatedAuthority?: AgentRunDelegatedAuthority;
+  /** Normal turn settlement owner; forced cleanup still revokes the raw authority. */
+  closeAgentRunDelegatedAuthority?: () => void;
   agentId?: string;
   startedAtMs: number;
   /** False until lane admission reaches the execution boundary. */
@@ -146,7 +148,10 @@ type RegisteredChatAbortController = {
   registered: boolean;
   entry?: ChatAbortControllerEntry;
   markExecutionStarted: () => boolean;
-  bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
+  bindAgentRunDelegatedAuthority: (
+    authority: AgentRunDelegatedAuthority,
+    closeOnTurnSettlement?: () => void,
+  ) => void;
   cleanup: (opts?: { force?: boolean }) => void;
 };
 
@@ -232,7 +237,10 @@ export function registerChatAbortController(params: {
   expiresAtMs?: number;
 }): RegisteredChatAbortController {
   const controller = new AbortController();
-  const bindAgentRunDelegatedAuthority = (authority: AgentRunDelegatedAuthority) => {
+  const bindAgentRunDelegatedAuthority = (
+    authority: AgentRunDelegatedAuthority,
+    closeOnTurnSettlement?: () => void,
+  ) => {
     const entry = params.chatAbortControllers.get(params.runId);
     if (
       entry?.controller !== controller ||
@@ -245,6 +253,7 @@ export function registerChatAbortController(params: {
       throw new Error("agent run controller already owns a different authority");
     }
     entry.agentRunDelegatedAuthority = authority;
+    entry.closeAgentRunDelegatedAuthority = closeOnTurnSettlement;
   };
   let executionStarted = false;
   const markExecutionStarted = () => {
@@ -276,7 +285,11 @@ export function registerChatAbortController(params: {
       // This registration carries the exact operational instance. Close its
       // capability before terminal cleanup can observe a same-run successor.
       if (entry.agentRunDelegatedAuthority) {
-        releaseAgentRunDelegatedAuthority(entry.agentRunDelegatedAuthority);
+        if (opts?.force === true || !entry.closeAgentRunDelegatedAuthority) {
+          releaseAgentRunDelegatedAuthority(entry.agentRunDelegatedAuthority);
+        } else {
+          entry.closeAgentRunDelegatedAuthority();
+        }
       }
       if (opts?.force === true) {
         removeChatAbortControllerEntry(params.chatAbortControllers, params.runId, entry);

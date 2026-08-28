@@ -11,6 +11,7 @@ import {
 import { extractModelCompat } from "../../../plugins/provider-model-compat.js";
 import { getPluginToolMeta } from "../../../plugins/tools.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
+import { retainAdmittedRunDelegatedAuthority } from "../../admitted-run-context.js";
 import { createOpenClawCodingTools } from "../../agent-tools.js";
 import { createSkillInstructionDeliveryCache } from "../../agent-tools.read.js";
 import { getChannelAgentToolMeta } from "../../channel-tools.js";
@@ -241,6 +242,24 @@ export function prepareEmbeddedAttemptToolBase(params: {
       return replaySafetyOptions.declaredReplaySafe(candidate);
     },
   };
+  const retainDetachedApprovalAuthority = () => {
+    if (params.runAbortController.signal.aborted) {
+      return undefined;
+    }
+    const retained = retainAdmittedRunDelegatedAuthority(attempt.admittedRunContext);
+    if (!retained) {
+      return undefined;
+    }
+    const releaseOnAbort = () => retained.release();
+    params.runAbortController.signal.addEventListener("abort", releaseOnAbort, { once: true });
+    return Object.freeze({
+      assertActive: retained.assertActive,
+      release: () => {
+        params.runAbortController.signal.removeEventListener("abort", releaseOnAbort);
+        retained.release();
+      },
+    });
+  };
   const constructedToolsRaw = !shouldConstructTools
     ? []
     : (() => {
@@ -258,6 +277,10 @@ export function prepareEmbeddedAttemptToolBase(params: {
               : {}),
             config: attempt.config,
             elevated: attempt.bashElevated,
+            detachedApproval: {
+              signal: params.runAbortController.signal,
+              retainAuthority: retainDetachedApprovalAuthority,
+            },
           },
           sandbox: params.sandbox,
           sessionPermissionPolicy: params.sessionPermissionPolicy,

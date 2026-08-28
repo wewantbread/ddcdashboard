@@ -67,6 +67,8 @@ vi.mock("../utils/message-channel.js", () => {
       return Boolean(channel && channel !== INTERNAL_MESSAGE_CHANNEL && channel !== "tui");
     },
     isGatewayMessageChannel,
+    isInternalMessageChannel: (value?: string | null) =>
+      normalizeMessageChannel(value) === INTERNAL_MESSAGE_CHANNEL,
     normalizeMessageChannel,
     resolveGatewayMessageChannel: normalizeMessageChannel,
     resolveMessageChannel: (primary?: string | null, fallback?: string | null) =>
@@ -98,6 +100,10 @@ vi.mock("../utils/delivery-context.shared.js", () => ({
       ...(threadId != null && threadId !== "" ? { threadId } : {}),
     };
   },
+}));
+
+vi.mock("../infra/channel-approval-auth.js", () => ({
+  resolveApprovalCommandAuthorization: () => ({ authorized: true, explicit: true }),
 }));
 
 vi.mock("../infra/exec-approval-surface.js", () => ({
@@ -1166,6 +1172,8 @@ describe("exec approvals", () => {
       currentChannelId: "123",
       accountId: "default",
       currentThreadTs: "456",
+      senderId: "discord-sender-1",
+      config: {},
     });
 
     let settled = false;
