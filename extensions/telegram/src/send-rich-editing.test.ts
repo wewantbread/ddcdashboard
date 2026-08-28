@@ -117,19 +117,32 @@ describe("Telegram rich message edits", () => {
     expect(botRawApi.editMessageText).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized plain replacement without editing separate chunks", async () => {
+  it("rejects an oversized rich fallback locally without editing separate chunks", async () => {
     const text = `START${"x".repeat(4100)}END`;
     botRawApi.editMessageText.mockRejectedValueOnce(
       new Error("400: Bad Request: RICH_MESSAGE_URL_INVALID"),
     );
-    const rejection = new Error("400: Bad Request: message is too long");
-    botApi.editMessageText.mockRejectedValueOnce(rejection);
 
     await expect(
       editMessageTelegram("123", 321, text, { cfg: richConfig, token: "tok" }),
-    ).rejects.toBe(rejection);
+    ).rejects.toThrow(
+      "telegram editMessage failed: complete plain fallback is 4108 characters, exceeding the 4000-character edit limit",
+    );
 
-    expect(botApi.editMessageText).toHaveBeenCalledExactlyOnceWith("123", 321, text);
+    expect(botRawApi.editMessageText).toHaveBeenCalledOnce();
+    expect(botApi.editMessageText).not.toHaveBeenCalled();
+    expect(botApi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized 21-media plain projection before any edit request", async () => {
+    const text = `${mediaMarkdown(21)}\n\n${"x".repeat(4100)}`;
+
+    await expect(
+      editMessageTelegram("123", 321, text, { cfg: richConfig, token: "tok" }),
+    ).rejects.toThrow(/complete plain fallback is \d+ characters, exceeding the 4000-character/);
+
+    expect(botRawApi.editMessageText).not.toHaveBeenCalled();
+    expect(botApi.editMessageText).not.toHaveBeenCalled();
     expect(botApi.sendMessage).not.toHaveBeenCalled();
   });
 });

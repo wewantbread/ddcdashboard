@@ -651,6 +651,29 @@ describe("splitTelegramRichBlocks", () => {
     ).toEqual([20, 1]);
   });
 
+  it("splits a single list item containing 21 media without dropping its tail", () => {
+    const photos: InputRichBlock[] = Array.from({ length: 21 }, (_, index) => ({
+      type: "photo",
+      photo: { type: "photo", media: `https://example.com/${index}.jpg` },
+    }));
+    const tail: InputRichBlock = { type: "paragraph", text: "after media" };
+    const chunks = splitTelegramRichBlocks([
+      { type: "list", items: [{ value: 7, blocks: [...photos, tail] }] },
+    ]);
+    const lists = chunks.flat().filter((block) => block.type === "list");
+
+    expect(
+      chunks.map((chunk) =>
+        chunk.reduce((total, block) => total + countInputRichBlockMedia(block), 0),
+      ),
+    ).toEqual([20, 1]);
+    expect(lists.flatMap((list) => list.items).flatMap((item) => item.blocks)).toEqual([
+      ...photos,
+      tail,
+    ]);
+    expect(lists.flatMap((list) => list.items).map((item) => item.value)).toEqual([7, 7]);
+  });
+
   it("moves a gallery whole to the next rich message and preserves surrounding text order", () => {
     const photo = (index: number): InputRichBlock => ({
       type: "photo",

@@ -28,6 +28,7 @@ import {
   deliverTelegramTextPage,
   planTelegramTextDeliveryPages,
 } from "./telegram-text-delivery.js";
+import { TELEGRAM_TEXT_CHUNK_LIMIT } from "./text-chunk-limit.js";
 import { resolveTelegramBotUserIdFromToken } from "./token-fingerprint.js";
 
 type TelegramEditMessageTextParams = Parameters<TelegramApiContext["api"]["editMessageText"]>[3];
@@ -215,13 +216,19 @@ async function editMessageTelegramWithContext(
       fallbackLimit: Number.MAX_SAFE_INTEGER,
       sender: {
         sendPlain: (value, _fallback, label) =>
-          edit(
-            () =>
-              Object.keys(commonTextParams).length
-                ? api.editMessageText(chatId, messageId, value, commonTextParams)
-                : api.editMessageText(chatId, messageId, value),
-            label,
-          ),
+          value.length > TELEGRAM_TEXT_CHUNK_LIMIT
+            ? Promise.reject(
+                new Error(
+                  `telegram editMessage failed: complete plain fallback is ${value.length} characters, exceeding the ${TELEGRAM_TEXT_CHUNK_LIMIT}-character edit limit`,
+                ),
+              )
+            : edit(
+                () =>
+                  Object.keys(commonTextParams).length
+                    ? api.editMessageText(chatId, messageId, value, commonTextParams)
+                    : api.editMessageText(chatId, messageId, value),
+                label,
+              ),
         sendHtml: (value) =>
           edit(() =>
             api.editMessageText(chatId, messageId, value, {
