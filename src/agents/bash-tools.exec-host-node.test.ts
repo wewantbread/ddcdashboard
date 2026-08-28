@@ -1262,6 +1262,8 @@ describe("executeNodeHostCommand", () => {
         turnSourceTo: "telegram:12345",
         turnSourceAccountId: "work",
         turnSourceThreadId: "42",
+        turnSourceSenderId: "telegram-user",
+        config: {},
       }),
     );
 
