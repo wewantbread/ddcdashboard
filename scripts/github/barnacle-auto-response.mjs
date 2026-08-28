@@ -10,13 +10,15 @@ import {
 } from "./real-behavior-proof-policy.mjs";
 
 const activePrLimit = 20;
+const skillRoutingLabel = "r: skill";
+const standaloneSkillManifestPattern = /^(?:custodian-skills|skills)\/[^/]+\/SKILL\.md$/u;
 
 const thirdPartyExtensionMessage =
   "Please publish this as a third-party plugin on [ClawHub](https://clawhub.ai) instead of adding it to the core repo. Docs: https://docs.openclaw.ai/plugin and https://docs.openclaw.ai/clawhub";
 
 const rules = [
   {
-    label: "r: skill",
+    label: skillRoutingLabel,
     close: true,
     message:
       "Thanks for the contribution! New skills should be published on [ClawHub](https://clawhub.ai) for everyone to use. We’re keeping the core lean on skills, so I’m closing this out.",
@@ -79,9 +81,10 @@ const rules = [
 
 /** @type {Record<string, { color: string; description: string }>} */
 export const managedLabelSpecs = {
-  "r: skill": {
+  [skillRoutingLabel]: {
     color: "5319E7",
-    description: "Auto-close: skills should be published on ClawHub, not added to core.",
+    description:
+      "Auto-close: standalone skill additions should be published on ClawHub, not added to core.",
   },
   "r: support": {
     color: "0E8A16",
@@ -795,6 +798,7 @@ async function applyPullRequestCandidateLabels(github, context, core, pullReques
     candidateLabelsToApply,
     labelSet,
   );
+  return files;
 }
 
 function isAutomationUser(user, fallbackLogin = "") {
@@ -1085,7 +1089,33 @@ export async function runBarnacleAutoResponse({ github, context, core = console 
       core.info(`Skipping active PR limit for GitHub App-authored PR #${pullRequest.number}.`);
     }
 
-    await applyPullRequestCandidateLabels(github, context, core, pullRequest, labelSet);
+    const files = await applyPullRequestCandidateLabels(
+      github,
+      context,
+      core,
+      pullRequest,
+      labelSet,
+    );
+
+    const labelEventSender = context.payload.sender?.login ?? context.actor ?? "";
+    const explicitSkillRouting =
+      hasTriggerLabel ||
+      (isLabelEvent &&
+        context.payload.label?.name === skillRoutingLabel &&
+        !isAutomationActor(context) &&
+        (await isPrivilegedActor(github, context, labelEventSender, isMaintainer)));
+    if (
+      labelSet.has(skillRoutingLabel) &&
+      !explicitSkillRouting &&
+      !files.some(
+        (file) => file.status === "added" && standaloneSkillManifestPattern.test(file.filename),
+      )
+    ) {
+      await removeLabels(github, context, pullRequest.number, [skillRoutingLabel], labelSet);
+      core.info(
+        `Removed ${skillRoutingLabel} from #${pullRequest.number}: no standalone skill manifest was added.`,
+      );
+    }
 
     if (labelSet.has(dirtyLabel)) {
       await github.rest.issues.createComment({
