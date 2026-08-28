@@ -1406,6 +1406,326 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     ).not.toContain("gpt-5.6-sol/medium");
   });
 
+  it("passes gpt-5.6-sol and max as separate Codex ACP startup controls", async () => {
+    const baseStore: TestSessionStore = {
+      load: vi.fn(async () => undefined),
+      save: vi.fn(async () => {}),
+    };
+    const { runtime, delegate } = makeRuntime(baseStore, {
+      agentRegistry: {
+        resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+        list: () => ["codex", "openclaw"],
+      },
+    });
+    const ensure = vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+      sessionKey: "agent:codex:acp:test",
+      backend: "acpx",
+      runtimeSessionName: "codex",
+    });
+    vi.spyOn(delegate, "getStatus").mockResolvedValue({
+      details: {
+        configOptions: [
+          {
+            id: "reasoning_effort",
+            options: [{ value: "low" }, { value: "max" }],
+          },
+        ],
+      },
+    });
+    const setConfigOption = vi.spyOn(delegate, "setConfigOption").mockResolvedValue();
+
+    const handle = await runtime.ensureSession({
+      sessionKey: "agent:codex:acp:test",
+      agent: "codex",
+      mode: "persistent",
+      model: "openai/gpt-5.6-sol",
+      thinking: "max",
+    });
+
+    expect(readFirstEnsureSessionInput(ensure)).toEqual({
+      sessionKey: "agent:codex:acp:test",
+      agent: "codex",
+      mode: "persistent",
+      model: "gpt-5.6-sol",
+      sessionOptions: { model: "gpt-5.6-sol" },
+    });
+    expect(setConfigOption).toHaveBeenCalledWith({
+      handle: expect.objectContaining({ runtimeSessionName: "codex" }),
+      key: "reasoning_effort",
+      value: "max",
+    });
+    expect(handle.appliedThinking).toEqual({ kind: "applied", thinking: "max" });
+  });
+
+  it.each([
+    {
+      label: "does not include max",
+      model: "openai/gpt-5.5",
+      thinking: "max",
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          options: [{ value: "low" }, { value: "xhigh" }],
+        },
+      ],
+    },
+    {
+      label: "does not advertise reasoning effort",
+      model: "openai/gpt-5.5",
+      thinking: "max",
+      configOptions: [{ id: "model", options: [] }],
+    },
+    {
+      label: "does not support the inherited max model suffix",
+      model: "openai/gpt-5.5/max",
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          options: [{ value: "low" }, { value: "xhigh" }],
+        },
+      ],
+      expectedModel: "openai/gpt-5.5",
+    },
+  ])("drops inherited max when the selected Codex model $label", async (testCase) => {
+    const baseStore: TestSessionStore = {
+      load: vi.fn(async () => undefined),
+      save: vi.fn(async () => {}),
+    };
+    const { runtime, delegate } = makeRuntime(baseStore, {
+      agentRegistry: {
+        resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+        list: () => ["codex", "openclaw"],
+      },
+    });
+    vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+      sessionKey: "agent:codex:acp:test",
+      backend: "acpx",
+      runtimeSessionName: "codex",
+    });
+    vi.spyOn(delegate, "getStatus").mockResolvedValue({
+      details: { configOptions: testCase.configOptions },
+    });
+    const setConfigOption = vi.spyOn(delegate, "setConfigOption");
+
+    const handle = await runtime.ensureSession({
+      sessionKey: "agent:codex:acp:test",
+      agent: "codex",
+      mode: "persistent",
+      model: testCase.model,
+      ...(testCase.thinking ? { thinking: testCase.thinking } : {}),
+    });
+
+    expect(setConfigOption).not.toHaveBeenCalled();
+    expect(handle.appliedThinking).toEqual({ kind: "dropped" });
+    if (testCase.expectedModel) {
+      expect(handle.appliedModel).toEqual({ kind: "applied", model: testCase.expectedModel });
+    }
+  });
+
+  it.each([
+    {
+      model: "openai/gpt-5.5",
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          options: [{ value: "low" }, { value: "xhigh" }],
+        },
+      ],
+      recovery: "Use one of: low, xhigh.",
+    },
+    {
+      model: "google/gemini-3.1-flash-lite",
+      configOptions: [{ id: "model", options: [] }],
+      recovery: "The selected model exposes no configurable reasoning efforts.",
+    },
+  ])(
+    "rejects explicit max when Codex does not advertise it after resolving model $model",
+    async ({ model, configOptions, recovery }) => {
+      const baseStore: TestSessionStore = {
+        load: vi.fn(async (sessionId) => ({
+          acpxRecordId: sessionId,
+          agentCommand: CODEX_ACP_COMMAND,
+        })),
+        save: vi.fn(async () => {}),
+      };
+      const { runtime, delegate } = makeRuntime(baseStore, {
+        agentRegistry: {
+          resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+          list: () => ["codex", "openclaw"],
+        },
+      });
+      vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+        sessionKey: "agent:codex:acp:test",
+        backend: "acpx",
+        runtimeSessionName: "codex",
+      });
+      vi.spyOn(delegate, "getStatus").mockResolvedValue({ details: { configOptions } });
+      const close = vi.spyOn(delegate, "close").mockResolvedValue();
+      const setConfigOption = vi.spyOn(delegate, "setConfigOption");
+
+      await expect(
+        runtime.ensureSession({
+          sessionKey: "agent:codex:acp:test",
+          agent: "codex",
+          mode: "persistent",
+          model,
+          thinking: "max",
+          thinkingExplicit: true,
+        }),
+      ).rejects.toMatchObject({
+        code: "ACP_INVALID_RUNTIME_OPTION",
+        message: expect.stringContaining(recovery),
+      });
+      expect(setConfigOption).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "deferred Codex reasoning effort setup failed",
+          discardPersistentState: false,
+        }),
+      );
+    },
+  );
+
+  it("honors explicit off before a max model suffix", async () => {
+    const baseStore: TestSessionStore = {
+      load: vi.fn(async () => undefined),
+      save: vi.fn(async () => {}),
+    };
+    const { runtime, delegate } = makeRuntime(baseStore, {
+      agentRegistry: {
+        resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+        list: () => ["codex", "openclaw"],
+      },
+    });
+    const ensure = vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+      sessionKey: "agent:codex:acp:test",
+      backend: "acpx",
+      runtimeSessionName: "codex",
+    });
+    const setConfigOption = vi.spyOn(delegate, "setConfigOption");
+
+    const handle = await runtime.ensureSession({
+      sessionKey: "agent:codex:acp:test",
+      agent: "codex",
+      mode: "persistent",
+      model: "openai/gpt-5.5/max",
+      modelExplicit: true,
+      thinking: "off",
+      thinkingExplicit: true,
+    });
+
+    expect(readFirstEnsureSessionInput(ensure)).toMatchObject({
+      sessionOptions: { model: "gpt-5.5" },
+    });
+    expect(setConfigOption).not.toHaveBeenCalled();
+    expect(handle.appliedModel).toEqual({ kind: "applied", model: "openai/gpt-5.5" });
+    expect(handle.appliedThinking).toBeUndefined();
+  });
+
+  it("rejects an explicit max model suffix when the selected Codex model does not advertise it", async () => {
+    const baseStore: TestSessionStore = {
+      load: vi.fn(async (sessionId) => ({
+        acpxRecordId: sessionId,
+        agentCommand: CODEX_ACP_COMMAND,
+      })),
+      save: vi.fn(async () => {}),
+    };
+    const { runtime, delegate } = makeRuntime(baseStore, {
+      agentRegistry: {
+        resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+        list: () => ["codex", "openclaw"],
+      },
+    });
+    vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+      sessionKey: "agent:codex:acp:test",
+      backend: "acpx",
+      runtimeSessionName: "codex",
+    });
+    vi.spyOn(delegate, "getStatus").mockResolvedValue({
+      details: {
+        configOptions: [
+          {
+            id: "reasoning_effort",
+            options: [{ value: "low" }, { value: "xhigh" }],
+          },
+        ],
+      },
+    });
+    const close = vi.spyOn(delegate, "close").mockResolvedValue();
+    const setConfigOption = vi.spyOn(delegate, "setConfigOption");
+
+    await expect(
+      runtime.ensureSession({
+        sessionKey: "agent:codex:acp:test",
+        agent: "codex",
+        mode: "persistent",
+        model: "openai/gpt-5.5/max",
+        modelExplicit: true,
+        thinking: "high",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACP_INVALID_RUNTIME_OPTION",
+      message: expect.stringContaining('thinking level "max"'),
+    });
+    expect(setConfigOption).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "deferred Codex reasoning effort setup failed",
+        discardPersistentState: false,
+      }),
+    );
+  });
+
+  it("closes without discarding persistent state when deferred max setup fails", async () => {
+    const baseStore: TestSessionStore = {
+      load: vi.fn(async (sessionId) => ({
+        acpxRecordId: sessionId,
+        agentCommand: CODEX_ACP_COMMAND,
+      })),
+      save: vi.fn(async () => {}),
+    };
+    const { runtime, delegate } = makeRuntime(baseStore, {
+      agentRegistry: {
+        resolve: (agentName: string) => (agentName === "codex" ? CODEX_ACP_COMMAND : agentName),
+        list: () => ["codex", "openclaw"],
+      },
+    });
+    vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+      sessionKey: "agent:codex:acp:test",
+      backend: "acpx",
+      runtimeSessionName: "codex",
+    });
+    vi.spyOn(delegate, "getStatus").mockResolvedValue({
+      details: {
+        configOptions: [
+          {
+            id: "reasoning_effort",
+            options: [{ value: "max" }],
+          },
+        ],
+      },
+    });
+    const deferredFailure = new Error("deferred config failed");
+    vi.spyOn(delegate, "setConfigOption").mockRejectedValue(deferredFailure);
+    const close = vi.spyOn(delegate, "close").mockResolvedValue();
+
+    await expect(
+      runtime.ensureSession({
+        sessionKey: "agent:codex:acp:test",
+        agent: "codex",
+        mode: "persistent",
+        model: "openai/gpt-5.6-sol",
+        thinking: "max",
+      }),
+    ).rejects.toBe(deferredFailure);
+    expect(close).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "deferred Codex reasoning effort setup failed",
+        discardPersistentState: false,
+      }),
+    );
+  });
+
   it("starts Codex ACP without injecting a leaked non-openai default model", async () => {
     const baseStore: TestSessionStore = {
       load: vi.fn(async () => undefined),
@@ -1685,7 +2005,7 @@ describe("AcpxRuntime fresh reset wrapper", () => {
     expect(setConfigOption).not.toHaveBeenCalled();
   });
 
-  it("normalizes Codex ACP slash reasoning suffixes to config controls", async () => {
+  it("rejects non-atomic Codex ACP model and reasoning controls before changing the model", async () => {
     const baseStore: TestSessionStore = {
       load: vi.fn(async () => ({
         acpxRecordId: "agent:codex:acp:test",
@@ -1702,22 +2022,17 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       acpxRecordId: "agent:codex:acp:test",
     };
 
-    await runtime.setConfigOption({
-      handle,
-      key: "model",
-      value: "openai/gpt-5.4/high",
+    await expect(
+      runtime.setConfigOption({
+        handle,
+        key: "model",
+        value: "openai/gpt-5.4/high",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACP_BACKEND_UNSUPPORTED_CONTROL",
+      message: expect.stringContaining("Change the model first"),
     });
-
-    expect(setConfigOption).toHaveBeenNthCalledWith(1, {
-      handle,
-      key: "model",
-      value: "gpt-5.4",
-    });
-    expect(setConfigOption).toHaveBeenNthCalledWith(2, {
-      handle,
-      key: "reasoning_effort",
-      value: "high",
-    });
+    expect(setConfigOption).not.toHaveBeenCalled();
   });
 
   it("forwards getCapabilities input handles to the ACPX delegate", async () => {

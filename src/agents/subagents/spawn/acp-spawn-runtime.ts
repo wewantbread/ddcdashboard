@@ -80,6 +80,12 @@ type AcpSpawnRuntimeOptions = {
   timeoutSeconds?: number;
 };
 
+type AcpSpawnRuntimeSelection = {
+  runtimeOptions?: AcpSpawnRuntimeOptions;
+  modelExplicit: boolean;
+  thinkingExplicit: boolean;
+};
+
 function resolveAcpRuntimeTimeoutSeconds(runTimeoutSeconds?: number): number | undefined {
   if (!runTimeoutSeconds) {
     return undefined;
@@ -94,11 +100,10 @@ export function resolveAcpSpawnRuntimeOptions(params: {
   model?: string;
   thinking?: string;
   runTimeoutSeconds?: number;
-}):
-  | { ok: true; runtimeOptions?: AcpSpawnRuntimeOptions; modelExplicit: boolean }
-  | { ok: false; error: string } {
+}): ({ ok: true } & AcpSpawnRuntimeSelection) | { ok: false; error: string } {
   const policyAgentId = params.configAgentId ?? params.targetAgentId;
   const modelExplicit = normalizeOptionalString(params.model) !== undefined;
+  const thinkingExplicit = normalizeOptionalString(params.thinking) !== undefined;
   const model = resolveConfiguredSubagentSpawnModelSelection({
     cfg: params.cfg,
     agentId: policyAgentId,
@@ -139,7 +144,7 @@ export function resolveAcpSpawnRuntimeOptions(params: {
           ...(timeoutSeconds ? { timeoutSeconds } : {}),
         }
       : undefined;
-  return { ok: true, runtimeOptions, modelExplicit };
+  return { ok: true, runtimeOptions, modelExplicit, thinkingExplicit };
 }
 
 export async function initializeAcpSpawnRuntime(params: {
@@ -149,8 +154,7 @@ export async function initializeAcpSpawnRuntime(params: {
   runtimeMode: AcpRuntimeSessionMode;
   backendId?: string;
   resumeSessionId?: string;
-  runtimeOptions?: AcpSpawnRuntimeOptions;
-  modelExplicit?: boolean;
+  runtimeSelection: AcpSpawnRuntimeSelection;
   cwd?: string;
 }): Promise<AcpSpawnInitializedRuntime> {
   const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
@@ -179,8 +183,9 @@ export async function initializeAcpSpawnRuntime(params: {
     agent: params.targetAgentId,
     mode: params.runtimeMode,
     resumeSessionId: params.resumeSessionId,
-    runtimeOptions: params.runtimeOptions,
-    modelExplicit: params.modelExplicit,
+    runtimeOptions: params.runtimeSelection.runtimeOptions,
+    modelExplicit: params.runtimeSelection.modelExplicit,
+    thinkingExplicit: params.runtimeSelection.thinkingExplicit,
     cwd: params.cwd,
     backendId: params.backendId,
   });

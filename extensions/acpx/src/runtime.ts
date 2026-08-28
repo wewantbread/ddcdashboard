@@ -25,7 +25,10 @@ import {
 } from "acpx/runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { redactSensitiveText } from "openclaw/plugin-sdk/security-runtime";
-import { normalizeStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  asNullableRecord,
+  normalizeStringEntries,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { AcpRuntimeError, type AcpRuntime, type AcpRuntimeErrorCode } from "../runtime-api.js";
 import { CODEX_ACP_PACKAGE, OPENCLAW_CODEX_CONFIG_ARG } from "./codex-adapter.js";
@@ -396,6 +399,7 @@ const CODEX_ACP_THINKING_ALIASES = new Map<string, string | undefined>([
   ["extra_high", "xhigh"],
   ["extra high", "xhigh"],
   ["xhigh", "xhigh"],
+  ["max", "max"],
 ]);
 
 type CodexAcpModelOverride = {
@@ -404,8 +408,16 @@ type CodexAcpModelOverride = {
 };
 
 type CodexAcpModelClassification =
-  | { kind: "override"; override: CodexAcpModelOverride }
-  | { kind: "unsupported"; thinkingOverride?: CodexAcpModelOverride };
+  | {
+      kind: "override";
+      override: CodexAcpModelOverride;
+      reasoningEffortExplicit?: boolean;
+    }
+  | {
+      kind: "unsupported";
+      thinkingOverride?: CodexAcpModelOverride;
+      reasoningEffortExplicit?: boolean;
+    };
 
 function normalizeAgentName(value: string | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase();
@@ -563,7 +575,7 @@ function assertSupportedRuntimeSessionMode(
 function failUnsupportedCodexAcpThinking(rawThinking: string): never {
   throw new AcpRuntimeError(
     "ACP_INVALID_RUNTIME_OPTION",
-    `Codex ACP thinking level "${rawThinking}" is not supported. Use off, minimal, low, medium, high, or xhigh.`,
+    `Codex ACP thinking level "${rawThinking}" is not supported. Use off, minimal, low, medium, high, xhigh, or max.`,
   );
 }
 
@@ -586,14 +598,22 @@ function isCodexAcpReasoningEffortAlias(value: string | undefined): boolean {
 function classifyCodexAcpModelRequest(
   rawModel: string | undefined,
   rawThinking?: string,
+  provenance?: { modelExplicit?: boolean; thinkingExplicit?: boolean },
 ): CodexAcpModelClassification {
   const raw = rawModel?.trim();
+  const thinkingProvided = Boolean(rawThinking?.trim());
   const thinkingReasoningEffort = normalizeCodexAcpReasoningEffort(rawThinking);
   const thinkingOnlyOverride = thinkingReasoningEffort
     ? { reasoningEffort: thinkingReasoningEffort }
     : undefined;
   if (!raw) {
-    return { kind: "override", override: thinkingOnlyOverride ?? {} };
+    return {
+      kind: "override",
+      override: thinkingOnlyOverride ?? {},
+      ...(thinkingReasoningEffort && provenance?.thinkingExplicit
+        ? { reasoningEffortExplicit: true }
+        : {}),
+    };
   }
 
   let value = raw;
@@ -619,18 +639,42 @@ function classifyCodexAcpModelRequest(
   }
   if (!model || model.includes("/")) {
     return thinkingOnlyOverride
-      ? { kind: "unsupported", thinkingOverride: thinkingOnlyOverride }
+      ? {
+          kind: "unsupported",
+          thinkingOverride: thinkingOnlyOverride,
+          ...(provenance?.thinkingExplicit ? { reasoningEffortExplicit: true } : {}),
+        }
       : { kind: "unsupported" };
   }
 
-  const reasoningEffort = thinkingReasoningEffort ?? modelReasoningEffort;
+  const preferExplicitThinking = thinkingProvided && provenance?.thinkingExplicit;
+  const preferExplicitModelEffort =
+    modelReasoningEffort && provenance?.modelExplicit && !preferExplicitThinking;
+  const reasoningEffort = preferExplicitThinking
+    ? thinkingReasoningEffort
+    : preferExplicitModelEffort
+      ? modelReasoningEffort
+      : (thinkingReasoningEffort ?? modelReasoningEffort);
+  const reasoningEffortExplicit = preferExplicitModelEffort
+    ? true
+    : Boolean(
+        (thinkingReasoningEffort && provenance?.thinkingExplicit) ||
+        (modelReasoningEffort && !thinkingReasoningEffort && provenance?.modelExplicit),
+      );
   return {
     kind: "override",
     override: {
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),
     },
+    ...(reasoningEffortExplicit ? { reasoningEffortExplicit: true } : {}),
   };
+}
+
+function normalizeAppliedCodexAcpModel(rawModel: string, normalizedModel: string): string {
+  return rawModel.toLowerCase().startsWith(CODEX_ACP_OPENCLAW_PREFIX)
+    ? `${CODEX_ACP_OPENCLAW_PREFIX}${normalizedModel}`
+    : normalizedModel;
 }
 
 function withCodexSessionModel<T extends { model?: string }>(
@@ -662,11 +706,63 @@ function withAcpxSessionOptions(input: OpenClawRuntimeEnsureInput): AcpxDelegate
   const existingOptions = (input as { sessionOptions?: SessionAgentOptions }).sessionOptions;
   const model = input.model?.trim() || existingOptions?.model;
   const sessionOptions = model ? { ...existingOptions, model } : existingOptions;
-  const { modelExplicit: _modelExplicit, ...rest } = input;
+  const { modelExplicit: _modelExplicit, thinkingExplicit: _thinkingExplicit, ...rest } = input;
   return {
     ...rest,
     ...(sessionOptions ? { sessionOptions } : {}),
   } as AcpxDelegateEnsureInput;
+}
+
+function readCodexReasoningEffortOptions(status: AcpRuntimeStatus): string[] | undefined {
+  const configOptions = status.details?.configOptions;
+  if (!Array.isArray(configOptions)) {
+    return undefined;
+  }
+  const reasoningOption = configOptions.find((value) => {
+    return asNullableRecord(value)?.id === "reasoning_effort";
+  });
+  const reasoningRecord = asNullableRecord(reasoningOption);
+  if (!reasoningRecord) {
+    return [];
+  }
+  const options = reasoningRecord.options;
+  if (!Array.isArray(options)) {
+    return undefined;
+  }
+  return options.flatMap((value) => {
+    const optionValue = asNullableRecord(value)?.value;
+    return typeof optionValue === "string" ? [optionValue.trim().toLowerCase()] : [];
+  });
+}
+
+async function applyDeferredCodexMaxThinking(params: {
+  delegate: BaseAcpxRuntime;
+  handle: AcpRuntimeHandle;
+  input: OpenClawRuntimeEnsureInput;
+  explicit: boolean;
+}): Promise<OpenClawRuntimeHandle["appliedThinking"]> {
+  const supported = readCodexReasoningEffortOptions(
+    await params.delegate.getStatus({ handle: params.handle }),
+  );
+  if (supported && !supported.includes("max")) {
+    if (!params.explicit) {
+      return { kind: "dropped" };
+    }
+    const recovery =
+      supported.length > 0
+        ? `Use one of: ${supported.join(", ")}.`
+        : "The selected model exposes no configurable reasoning efforts. Omit thinking or choose another model.";
+    throw new AcpRuntimeError(
+      "ACP_INVALID_RUNTIME_OPTION",
+      `Codex ACP thinking level "max" is not supported by the selected model. ${recovery}`,
+    );
+  }
+  await params.delegate.setConfigOption({
+    handle: params.handle,
+    key: "reasoning_effort",
+    value: "max",
+  });
+  return { kind: "applied", thinking: "max" };
 }
 
 function isAcpModelCapabilityMissingError(error: unknown): boolean {
@@ -1510,7 +1606,10 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       ? normalizeClaudeAcpModelOverride(input.model)
       : undefined;
     const codexClassification = isCodexAcp
-      ? classifyCodexAcpModelRequest(input.model, input.thinking)
+      ? classifyCodexAcpModelRequest(input.model, input.thinking, {
+          modelExplicit: input.modelExplicit,
+          thinkingExplicit: input.thinkingExplicit,
+        })
       : undefined;
     if (codexClassification?.kind === "unsupported" && input.modelExplicit) {
       failUnsupportedCodexAcpModel(input.model ?? "");
@@ -1519,25 +1618,39 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       codexClassification?.kind === "override"
         ? codexClassification.override
         : codexClassification?.thinkingOverride;
-    const codexModelOverride =
-      classifiedCodexOverride && Object.keys(classifiedCodexOverride).length > 0
-        ? classifiedCodexOverride
+    const deferredCodexMaxThinking = classifiedCodexOverride?.reasoningEffort === "max";
+    const codexModelOverride = classifiedCodexOverride
+      ? {
+          ...classifiedCodexOverride,
+          ...(deferredCodexMaxThinking ? { reasoningEffort: undefined } : {}),
+        }
+      : undefined;
+    const effectiveCodexModelOverride =
+      codexModelOverride && Object.values(codexModelOverride).some(Boolean)
+        ? codexModelOverride
         : undefined;
     const requestedModel = input.model?.trim();
     const appliedModel: OpenClawRuntimeHandle["appliedModel"] =
       isCodexAcp && requestedModel
-        ? codexModelOverride?.model
-          ? { kind: "applied", model: requestedModel }
+        ? effectiveCodexModelOverride?.model
+          ? {
+              kind: "applied",
+              model: normalizeAppliedCodexAcpModel(
+                requestedModel,
+                effectiveCodexModelOverride.model,
+              ),
+            }
           : { kind: "dropped" }
         : undefined;
+    const codexInput = deferredCodexMaxThinking ? { ...input, thinking: undefined } : input;
     const ensureInput = isCodexAcp
-      ? withCodexSessionModel(input, codexModelOverride)
+      ? withCodexSessionModel(codexInput, effectiveCodexModelOverride)
       : claudeModelOverride
         ? { ...input, model: claudeModelOverride }
         : input;
     const stableLaunchCommand =
-      codexModelOverride && command
-        ? appendCodexAcpConfigOverrides(command, codexModelOverride)
+      effectiveCodexModelOverride && command
+        ? appendCodexAcpConfigOverrides(command, effectiveCodexModelOverride)
         : command;
     const reusableCommand = await this.readReusablePersistentSessionCommand({
       sessionKey: input.sessionKey,
@@ -1547,7 +1660,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       resumeSessionId: input.resumeSessionId,
     });
 
-    const handle = !codexModelOverride
+    const handle = !effectiveCodexModelOverride
       ? await this.runWithLaunchLease({
           sessionKey: ensureInput.sessionKey,
           command: stableLaunchCommand,
@@ -1564,7 +1677,7 @@ export class AcpxRuntime implements CompleteAcpRuntime {
           command: stableLaunchCommand,
           reusableCommand,
           run: () =>
-            this.codexAcpModelOverrideScope.run(codexModelOverride, () =>
+            this.codexAcpModelOverrideScope.run(effectiveCodexModelOverride, () =>
               this.withCodexWrapperDiagnostics({
                 command: stableLaunchCommand,
                 fallbackCode: "ACP_SESSION_INIT_FAILED",
@@ -1572,7 +1685,39 @@ export class AcpxRuntime implements CompleteAcpRuntime {
               }),
             ),
         });
-    return appliedModel ? { ...handle, appliedModel } : handle;
+    let appliedThinking: OpenClawRuntimeHandle["appliedThinking"];
+    if (deferredCodexMaxThinking) {
+      try {
+        appliedThinking = await applyDeferredCodexMaxThinking({
+          delegate,
+          handle,
+          input,
+          explicit: codexClassification?.reasoningEffortExplicit === true,
+        });
+      } catch (error) {
+        try {
+          await this.close({
+            handle,
+            reason: "deferred Codex reasoning effort setup failed",
+            discardPersistentState: false,
+          });
+        } catch (cleanupError) {
+          throw new AcpRuntimeError(
+            "ACP_SESSION_INIT_FAILED",
+            "Codex ACP reasoning effort setup failed and the partially initialized session could not be closed.",
+            { cause: new AggregateError([error, cleanupError]) },
+          );
+        }
+        throw error;
+      }
+    }
+    return appliedModel || appliedThinking
+      ? {
+          ...handle,
+          ...(appliedModel ? { appliedModel } : {}),
+          ...(appliedThinking ? { appliedThinking } : {}),
+        }
+      : handle;
   }
 
   async *runTurn(input: Parameters<AcpRuntime["runTurn"]>[0]): AsyncIterable<AcpRuntimeEvent> {
@@ -1796,15 +1941,14 @@ export class AcpxRuntime implements CompleteAcpRuntime {
           failUnsupportedCodexAcpModel(input.value);
         }
         const { override } = classification;
+        if (override.reasoningEffort) {
+          throw new AcpRuntimeError(
+            "ACP_BACKEND_UNSUPPORTED_CONTROL",
+            "Changing the Codex model and reasoning effort together on an existing session is unsupported. Change the model first, then set reasoning effort separately.",
+          );
+        }
         if (override.model) {
           await delegate.setConfigOption({ ...input, key: "model", value: override.model });
-        }
-        if (override.reasoningEffort) {
-          await delegate.setConfigOption({
-            ...input,
-            key: "reasoning_effort",
-            value: override.reasoningEffort,
-          });
         }
         return;
       }

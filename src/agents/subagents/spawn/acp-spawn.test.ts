@@ -1277,6 +1277,8 @@ describe("spawnAcpDirect", () => {
     expectAcceptedSpawn(result);
     const initInput = expectInitializeSessionFields({
       agent: "codex",
+      modelExplicit: true,
+      thinkingExplicit: true,
       runtimeOptions: {
         model: "openai/gpt-5.4",
         thinking: "high",
@@ -1317,6 +1319,8 @@ describe("spawnAcpDirect", () => {
     expectAcceptedSpawn(result);
     expectInitializeSessionFields({
       agent: "codex",
+      modelExplicit: false,
+      thinkingExplicit: false,
       runtimeOptions: {
         model: "openai/gpt-5.4",
         thinking: "high",
