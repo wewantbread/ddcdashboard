@@ -12,6 +12,11 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../../plugins/hooks.test-helpers.js";
+import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   type OpenClawStateDatabase,
@@ -158,6 +163,7 @@ describe("worker session tool topology", () => {
   let spawnOrder: string[];
 
   beforeEach(async () => {
+    resetGlobalHookRunner();
     root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "openclaw-worker-tools-"));
     database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     placements = createWorkerSessionPlacementStore({ database });
@@ -359,6 +365,7 @@ describe("worker session tool topology", () => {
   });
 
   afterEach(async () => {
+    resetGlobalHookRunner();
     for (const authority of delegatedAuthorities) {
       releaseAgentRunDelegatedAuthority(authority);
     }
@@ -416,6 +423,14 @@ describe("worker session tool topology", () => {
       sessionId,
       updatedAt: Date.now(),
       ...(parent ? { parentSessionKey: parent.sessionKey, parentSessionId: parent.sessionId } : {}),
+    });
+  }
+
+  function linkTargetToSource(): void {
+    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
+    setEntry(TARGET.sessionKey, TARGET.sessionId, {
+      sessionKey: SOURCE.sessionKey,
+      sessionId: SOURCE.sessionId,
     });
   }
 
@@ -826,11 +841,7 @@ describe("worker session tool topology", () => {
   });
 
   it("delivers only across exact live parent, child, and sibling incarnations", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    setEntry(TARGET.sessionKey, TARGET.sessionId, {
-      sessionKey: SOURCE.sessionKey,
-      sessionId: SOURCE.sessionId,
-    });
+    linkTargetToSource();
     await expect(send("parent-to-child")).resolves.toBeDefined();
 
     setEntry(SOURCE.sessionKey, SOURCE.sessionId, {
@@ -911,11 +922,7 @@ describe("worker session tool topology", () => {
   );
 
   it("deduplicates retries without collapsing distinct identical sends", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    setEntry(TARGET.sessionKey, TARGET.sessionId, {
-      sessionKey: SOURCE.sessionKey,
-      sessionId: SOURCE.sessionId,
-    });
+    linkTargetToSource();
 
     const first = await send("identical-send-one");
     const replay = await send("identical-send-one");
@@ -934,35 +941,39 @@ describe("worker session tool topology", () => {
     expect(secondKey).not.toBe(firstKey);
   });
 
-  it("coalesces concurrent retries into one message effect", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    setEntry(TARGET.sessionKey, TARGET.sessionId, {
-      sessionKey: SOURCE.sessionKey,
-      sessionId: SOURCE.sessionId,
+  it("coalesces concurrent policy blocks before message effects", async () => {
+    linkTargetToSource();
+    let finishPolicy: (() => void) | undefined;
+    const beforeToolCall = vi.fn(async (..._args: unknown[]) => {
+      await new Promise<void>((resolve) => {
+        finishPolicy = resolve;
+      });
+      return { block: true, blockReason: "blocked by worker session policy" };
     });
-    let finishDelivery: (() => void) | undefined;
-    delivered.mockImplementation(
-      async () =>
-        await new Promise<void>((resolve) => {
-          finishDelivery = resolve;
-        }),
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        { hookName: "before_tool_call", matcher: ["sessions_send"], handler: beforeToolCall },
+      ]),
     );
 
-    const retries = Array.from({ length: 32 }, () => send("concurrent-retry"));
-    await vi.waitFor(() => expect(delivered).toHaveBeenCalledOnce());
-    finishDelivery?.();
+    const retries = Array.from({ length: 32 }, () => send("concurrent-policy-block"));
+    await vi.waitFor(() => expect(beforeToolCall).toHaveBeenCalledOnce());
+    finishPolicy?.();
     const results = await Promise.all(retries);
+    const replay = await send("concurrent-policy-block");
 
     expect(new Set(results.map((result) => result.resultJson))).toHaveLength(1);
-    expect(delivered).toHaveBeenCalledOnce();
+    expect(replay.resultJson).toBe(results[0]?.resultJson);
+    expect(replay.resultJson).toContain("blocked by worker session policy");
+    expect(beforeToolCall.mock.calls[0]?.[0]).toMatchObject({
+      toolCallId: "concurrent-policy-block",
+      toolName: "sessions_send",
+    });
+    expect(delivered).not.toHaveBeenCalled();
   });
 
   it("replays a completed send after the target incarnation changes", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    setEntry(TARGET.sessionKey, TARGET.sessionId, {
-      sessionKey: SOURCE.sessionKey,
-      sessionId: SOURCE.sessionId,
-    });
+    linkTargetToSource();
 
     const first = await send("completed-before-target-replacement");
     setEntry(TARGET.sessionKey, "replacement-target", {
@@ -976,11 +987,7 @@ describe("worker session tool topology", () => {
   });
 
   it("records repeated downstream send failures as unknown instead of replayable failure", async () => {
-    setEntry(SOURCE.sessionKey, SOURCE.sessionId);
-    setEntry(TARGET.sessionKey, TARGET.sessionId, {
-      sessionKey: SOURCE.sessionKey,
-      sessionId: SOURCE.sessionId,
-    });
+    linkTargetToSource();
     delivered.mockImplementation(() => {
       throw new Error("target send response was lost");
     });
