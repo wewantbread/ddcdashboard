@@ -90,10 +90,17 @@ export function createInternalAgentTurnFacade(options: InternalAgentTurnFacadeOp
       return throwEnvelopeRejection(method, validationError);
     }
     options.assertContextCurrent?.();
+    const remainingTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs);
     const effectiveParams =
-      deadlineMs === undefined
+      remainingTimeoutMs === undefined
         ? params
-        : { ...params, timeoutMs: resolveRemainingGatewayDispatchTimeoutMs(deadlineMs) };
+        : {
+            ...params,
+            timeoutMs:
+              typeof params.timeoutMs === "number"
+                ? Math.min(params.timeoutMs, remainingTimeoutMs)
+                : remainingTimeoutMs,
+          };
     const result = runWithGatewayRequestEnvelope(
       method,
       options.client,

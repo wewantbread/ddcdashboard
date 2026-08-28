@@ -171,6 +171,14 @@ describe("createInternalAgentTurnFacade", () => {
     expect(assertContextCurrent).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves a shorter service timeout within the transport deadline", async () => {
+    waitForTurn.mockResolvedValue({ runId: "run-short-wait", status: "pending" });
+
+    await createFacade().wait({ runId: "run-short-wait", timeoutMs: 300 }, 1_000);
+
+    expect(waitForTurn).toHaveBeenCalledWith({ runId: "run-short-wait", timeoutMs: 300 });
+  });
+
   it("preserves accepted/final ordering and acceptance metadata without frames", async () => {
     let emitFinal!: () => void;
     const finalGate = new Promise<void>((resolve) => {
