@@ -88,6 +88,7 @@ export function resolveIncompleteTurnPayloadText(params: {
     params.timedOut ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
+    params.attempt.runtimeContinuationStarted ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     params.hasIntentionalTerminalCompletion
@@ -169,6 +170,7 @@ export function shouldRetryMissingAssistantTurn(params: {
     params.attempt.currentAttemptAssistant ||
     params.attempt.lastAssistant ||
     params.attempt.yieldDetected ||
+    params.attempt.runtimeContinuationStarted ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError
   ) {

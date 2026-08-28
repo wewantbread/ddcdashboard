@@ -23,6 +23,7 @@ const webFetchProviderDiscovery = vi.hoisted(() => ({
 // This boundary proves that credential-free web fetch config reaches the HTTP
 // listener. Model publication, chat metadata, and orphan recovery have dedicated owners.
 vi.mock("../agents/prepared-model-runtime.js", () => ({
+  loadPublishedGatewayReplyDispatchRuntime: vi.fn(async () => undefined),
   publishPreparedModelRuntimeSnapshot: vi.fn(async () => ({})),
   refreshPreparedModelRuntimeSnapshots: vi.fn(async () => {}),
 }));

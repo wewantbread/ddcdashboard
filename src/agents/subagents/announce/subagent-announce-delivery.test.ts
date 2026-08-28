@@ -2300,6 +2300,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       channel: undefined,
       to: undefined,
       bestEffortDeliver: true,
+      sourceReplyDeliveryMode: "message_tool_only",
     });
   });
 

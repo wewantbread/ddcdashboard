@@ -264,6 +264,34 @@ describe("terminal resolution", () => {
     expect(activateInternalPrompt).toHaveBeenCalledWith(EMPTY_RESPONSE_RETRY_INSTRUCTION);
   });
 
+  it("completes a runtime-owned native continuation as yielded without retrying", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      runtimeContinuationStarted: true,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const activateInternalPrompt = vi.fn();
+    const setTerminalLifecycleMeta = vi.fn();
+
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({ attempt, activateInternalPrompt, setTerminalLifecycleMeta }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    expect(activateInternalPrompt).not.toHaveBeenCalled();
+    expect(setTerminalLifecycleMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ livenessState: "paused", stopReason: "end_turn", yielded: true }),
+    );
+    if (resolved.action === "complete") {
+      expect(resolved.result.payloads).toBeUndefined();
+      expect(resolved.result.runtimeContinuationStarted).toBe(true);
+      expect(resolved.result.meta.yielded).toBe(true);
+    }
+  });
+
   it("retries an empty final turn after Anthropic server compaction", async () => {
     const assistant = emptyAssistant({
       providerReplay: {
@@ -683,6 +711,23 @@ describe("terminal resolution", () => {
 
     expect(request("required")).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
     expect(request("optional")).toBeNull();
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-native-continuation",
+          runId: "run:settled-native-continuation",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt: { ...attempt, runtimeContinuationStarted: true },
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBeNull();
     expect(
       resolveSettledTurnFinalizationRequest({
         runParams: {

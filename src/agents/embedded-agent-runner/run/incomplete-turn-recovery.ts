@@ -97,6 +97,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.timedOut ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
+    params.attempt.runtimeContinuationStarted ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||

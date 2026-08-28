@@ -50,6 +50,7 @@ type TerminalAttemptState = Pick<
   EmbeddedRunAttemptResult,
   | "clientToolCalls"
   | "yieldDetected"
+  | "runtimeContinuationStarted"
   | "didSendDeterministicApprovalPrompt"
   | "heartbeatToolResponse"
   | "lastToolError"
@@ -77,6 +78,7 @@ export function hasAttemptTerminalState(attempt: TerminalAttemptState): boolean 
   return Boolean(
     attempt.clientToolCalls ||
     attempt.yieldDetected ||
+    attempt.runtimeContinuationStarted ||
     attempt.didSendDeterministicApprovalPrompt ||
     attempt.heartbeatToolResponse ||
     attempt.lastToolError ||

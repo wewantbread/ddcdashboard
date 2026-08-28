@@ -108,6 +108,11 @@ export function resolveSettledTurnFinalizationRequest(input: {
   if (!input.settledTurnFinalizationAvailable) {
     return null;
   }
+  if (input.attempt.runtimeContinuationStarted === true) {
+    // A native child accepted by the runtime owns the next visible turn. Do not
+    // synthesize a final answer for the requester wake that started that child.
+    return null;
+  }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
   const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
   const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
@@ -578,9 +583,11 @@ function completeEmbeddedRun(
   });
   input.runParams.onSuccessfulAuthProfile?.(input.authProfileId);
   const replayInvalid = input.resolveReplayInvalid(null);
-  const yieldHasContinuation =
-    input.attempt.yieldDetected && hasYieldContinuationEvidence(input.attempt);
-  const livenessState = input.attempt.yieldDetected
+  const runtimeOwnedYield =
+    input.payloadCount === 0 && input.attempt.runtimeContinuationStarted === true;
+  const yielded = input.attempt.yieldDetected === true || runtimeOwnedYield;
+  const yieldHasContinuation = yielded && hasYieldContinuationEvidence(input.attempt);
+  const livenessState = yielded
     ? "paused"
     : resolveRunLivenessState({
         payloadCount: input.payloadCount,
@@ -591,7 +598,7 @@ function completeEmbeddedRun(
       });
   const stopReason = input.attempt.clientToolCalls
     ? "tool_calls"
-    : input.attempt.yieldDetected
+    : yielded
       ? "end_turn"
       : (input.attemptAssistant?.stopReason as string | undefined);
   // The truncation notice belongs to exactly the turns this fix newly delivers:
@@ -616,14 +623,14 @@ function completeEmbeddedRun(
       ? isTruncatedPartialReply
         ? [...input.payloadsForTerminalPath, { text: TRUNCATED_REPLY_NOTICE_TEXT }]
         : input.payloadsForTerminalPath
-      : input.attempt.yieldDetected && !yieldHasContinuation
+      : yielded && !yieldHasContinuation
         ? [{ text: YIELD_DIAGNOSTIC_TEXT }]
         : input.payloadsForTerminalPath;
   input.setTerminalLifecycleMeta({
     replayInvalid,
     livenessState,
     stopReason,
-    yielded: input.attempt.yieldDetected === true,
+    yielded,
   });
   return {
     action: "complete",
@@ -643,7 +650,7 @@ function completeEmbeddedRun(
         replayInvalid,
         livenessState,
         agentHarnessResultClassification: input.attempt.agentHarnessResultClassification,
-        ...(input.attempt.yieldDetected ? { yielded: true } : {}),
+        ...(yielded ? { yielded: true } : {}),
         ...(input.attempt.yieldAcknowledgment
           ? { yieldAcknowledgment: input.attempt.yieldAcknowledgment }
           : {}),

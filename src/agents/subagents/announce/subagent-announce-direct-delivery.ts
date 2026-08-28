@@ -233,11 +233,14 @@ export async function sendSubagentAnnounceDirectly(params: {
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
     // Synthetic requester-settle turns must not inherit a tool-only mode that suppresses the final.
-    const completionSourceReplyDeliveryMode = requiresMessageToolDelivery
-      ? "message_tool_only"
-      : params.requireVisibleReply && deliveryTarget.deliver
-        ? "automatic"
-        : undefined;
+    const sessionOnlySubagentCompletion =
+      params.expectsCompletionMessage && isSubagentCompletion && !deliveryTarget.deliver;
+    const completionSourceReplyDeliveryMode =
+      requiresMessageToolDelivery || sessionOnlySubagentCompletion
+        ? "message_tool_only"
+        : params.requireVisibleReply && deliveryTarget.deliver
+          ? "automatic"
+          : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
     const requesterQueueSettings = resolveQueueSettings({
       cfg,

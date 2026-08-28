@@ -16,7 +16,6 @@ import {
 import { resolvePersistedOverrideModelRef } from "../../agents/model-selection.js";
 import {
   acquireAgentRunPreparedModelRuntime,
-  loadPublishedGatewayReplyDispatchRuntime,
   type PreparedModelRuntimeLease,
   type PreparedReplyDispatchRuntime,
 } from "../../agents/prepared-model-runtime.js";
@@ -80,7 +79,7 @@ export type PreparedAgentRunDispatch = {
   resolvedThreadId?: string | number;
   dispatchTaskTrackingMode: Exclude<GatewayAgentTaskTrackingMode, "plugin_subagent">;
   preparedModelRuntimeLease: PreparedModelRuntimeLease;
-  replyDispatchRuntime: PreparedReplyDispatchRuntime;
+  replyDispatchRuntime: Pick<PreparedReplyDispatchRuntime, "config" | "pluginGeneration">;
   unpersistedOffloadedRefs: OffloadedRef[];
   userTurn: PreparedAgentRunUserTurn;
   workspaceOverride?: string;
@@ -381,9 +380,11 @@ export async function prepareAgentRunDispatch(params: {
     cleanupPreaccept(true);
     return false;
   };
-  let replyDispatchRuntime: PreparedReplyDispatchRuntime;
+  let replyDispatchRuntime: PreparedAgentRunDispatch["replyDispatchRuntime"];
   try {
-    const publishedRuntime = await loadPublishedGatewayReplyDispatchRuntime({
+    // Detached plugin callbacks can execute from a second OpenClaw module graph. Resolve the
+    // publication through the live Gateway context so admission always reaches its owner.
+    const publishedRuntime = await params.context.loadPublishedGatewayReplyDispatchRuntime?.({
       agentId: params.activeSessionAgentId,
       abortSignal: activeRunAbort.controller.signal,
     });
@@ -393,18 +394,20 @@ export async function prepareAgentRunDispatch(params: {
     if (!publishedRuntime) {
       throw new Error(`published reply runtime missing for ${params.activeSessionAgentId}`);
     }
-    replyDispatchRuntime = publishedRuntime;
+    const pluginGeneration =
+      publishedRuntime.pluginGeneration as PreparedReplyDispatchRuntime["pluginGeneration"];
+    replyDispatchRuntime = { config: publishedRuntime.config, pluginGeneration };
     preparedModelRuntimeLease = await acquireAgentRunPreparedModelRuntime(
       {
-        config: replyDispatchRuntime.config,
-        agentId: replyDispatchRuntime.agentId,
-        agentDir: replyDispatchRuntime.agentDir,
+        config: publishedRuntime.config,
+        agentId: publishedRuntime.agentId,
+        agentDir: publishedRuntime.agentDir,
         allowGatewaySubagentBinding: true,
-        workspaceDir: workspaceOverride ?? replyDispatchRuntime.workspaceDir,
+        workspaceDir: workspaceOverride ?? publishedRuntime.workspaceDir,
       },
       {
         catalogMode: "static",
-        pluginGeneration: replyDispatchRuntime.pluginGeneration,
+        pluginGeneration,
         abortSignal: activeRunAbort.controller.signal,
       },
     );
