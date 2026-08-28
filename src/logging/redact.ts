@@ -75,6 +75,30 @@ const URL_QUERY_PAIR_RE = new RegExp(
 const SECRET_VALUE_TRAILING_DELIMITER_RE = /(["'`,;)}\]]+)$/u;
 const SECRET_VALUE_SUFFIX_RE = /^["'`,;)}\]]*$/u;
 const SECRET_VALUE_QUOTE_CHARS = new Set(['"', "'", "`"]);
+const PROGRAMMATIC_ENV_LOOKUP_PATTERNS = [
+  { pattern: /^process\.env\.([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])/u, keyGroup: 1 },
+  {
+    pattern: /^process\.env\[\s*(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]/u,
+    keyGroup: 2,
+  },
+  {
+    pattern: /^Deno\.env\.get\(\s*(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)/u,
+    keyGroup: 2,
+  },
+  {
+    pattern: /^os\.getenv\(\s*(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)/u,
+    keyGroup: 2,
+  },
+  {
+    pattern: /^os\.environ\[\s*(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]/u,
+    keyGroup: 2,
+  },
+  {
+    pattern: /^os\.environ\.get\(\s*(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)/u,
+    keyGroup: 2,
+  },
+  { pattern: /^\$ENV\{([A-Za-z_][A-Za-z0-9_]*)\}/u, keyGroup: 1 },
+] as const;
 const FORM_BODY_LINE_BREAK_SPLIT_RE = /(\r\n|\r|\n)/u;
 const FORM_BODY_LINE_BREAK_SEGMENT_RE = /^(?:\r\n|\r|\n)$/u;
 const STRUCTURED_SECRET_FIELD_RE = new RegExp(
@@ -602,8 +626,48 @@ function shouldPreserveShellReferenceMatch(match: string, token: string): boolea
   return key ? isShellReferenceToKey(key, token) : false;
 }
 
+function shouldPreserveProgrammaticEnvLookupMatch(
+  match: string,
+  input: string | undefined,
+  matchOffset: number | undefined,
+): boolean {
+  if (!input || matchOffset == null || matchOffset < 0) {
+    return false;
+  }
+  const assignmentPrefix = match.match(/^(?:[\s,;])?([A-Za-z_][A-Za-z0-9_-]*)\b\s*[=:]\s*/u);
+  if (!assignmentPrefix) {
+    return false;
+  }
+  const rhsStart = matchOffset + assignmentPrefix[0].length;
+  const rhs = input.slice(rhsStart);
+  const lookup = PROGRAMMATIC_ENV_LOOKUP_PATTERNS.map(({ pattern, keyGroup }) => {
+    const matched = rhs.match(pattern);
+    return matched ? { text: matched[0], key: matched[keyGroup] } : undefined;
+  }).find(Boolean);
+  if (!lookup || lookup.key !== assignmentPrefix[1]) {
+    return false;
+  }
+  const lookupEnd = rhsStart + lookup.text.length;
+  const matchEnd = matchOffset + match.length;
+  return matchEnd <= lookupEnd || /^[;,)}\]]*$/u.test(input.slice(lookupEnd, matchEnd));
+}
+
 function isEmptyShellParameterExpansionTail(token: string): boolean {
   return /^[-=?+]\}$/.test(token);
+}
+
+function shouldPreserveShellReferencePatternMatch(
+  match: string,
+  token: string,
+  pattern: RegExp,
+  context?: { input?: string; offset?: number },
+): boolean {
+  return (
+    shellReferencePreservingPatterns.has(pattern) &&
+    (shouldPreserveShellReferenceMatch(match, token) ||
+      shouldPreserveProgrammaticEnvLookupMatch(match, context?.input, context?.offset) ||
+      isEmptyShellParameterExpansionTail(token))
+  );
 }
 
 function hasBackreferenceToGroup(pattern: RegExp, groupNumber: number): boolean {
@@ -703,20 +767,16 @@ function redactMatch(
   if (splitSecretValueForMask(formAwareValue.secret).maskable === "***") {
     return match;
   }
-  const isShellReferencePattern = shellReferencePreservingPatterns.has(pattern);
   // Preserve shell variable references (e.g. `MY_TOKEN=$MY_TOKEN`) for assignment patterns
   // registered as shell-reference-preserving, so non-secret expansions that merely echo the
   // assignment key are not masked.
-  if (
-    isShellReferencePattern &&
-    (shouldPreserveShellReferenceMatch(match, token) || isEmptyShellParameterExpansionTail(token))
-  ) {
+  if (shouldPreserveShellReferencePatternMatch(match, token, pattern, context)) {
     return match;
   }
   // Assignment values can legitimately include trailing shell/structural characters
   // (e.g. `${VAR:-default}`); mask the captured token whole so those characters count toward the
   // retained hint instead of being exposed by delimiter-aware masking.
-  const masked = isShellReferencePattern
+  const masked = shellReferencePreservingPatterns.has(pattern)
     ? maskToken(token)
     : `${maskSecretValue(formAwareValue.secret, { hinted: true })}${formAwareValue.suffix}`;
   if (token === match) {
@@ -804,6 +864,14 @@ function markPatternMatchRedaction(
     fullMatch,
     match.slice(1).map((value) => (typeof value === "string" ? value : "")),
   );
+  if (
+    shouldPreserveShellReferencePatternMatch(fullMatch, selected.value, pattern, {
+      input,
+      offset: match.index,
+    })
+  ) {
+    return;
+  }
   const tokenStart =
     selected.value === fullMatch
       ? 0
