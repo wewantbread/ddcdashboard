@@ -3432,6 +3432,7 @@ describe("repairMissingConfiguredPluginInstalls", () => {
     const updateArg = expectRecordFields(mockCallArg(mocks.updateNpmInstalledPlugins), {
       pluginIds: ["demo"],
     });
+    expect(updateArg.versionBoundToCorePluginIds).toEqual(new Set(["codex"]));
     const updateConfig = updateArg.config as Record<string, unknown>;
     expectRecordFields(updateConfig.plugins, { installs: records });
     const persistedRecords = mockCallArg(mocks.writePersistedInstalledPluginIndexInstallRecords);

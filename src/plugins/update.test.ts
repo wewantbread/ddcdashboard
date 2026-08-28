@@ -557,11 +557,13 @@ function createNpmUpdateFixture(params: {
   installerVersion?: string;
   installerResolvedSpec?: string;
   peerDependencies?: Record<string, string>;
+  runnable?: boolean;
 }) {
   const installPath = createInstalledPackageDir({
     name: params.packageName,
     version: params.installedVersion,
     ...(params.peerDependencies ? { peerDependencies: params.peerDependencies } : {}),
+    runnable: params.runnable,
   });
   if (params.registryVersion) {
     mockNpmViewMetadata({
@@ -3828,6 +3830,95 @@ describe("updateNpmInstalledPlugins", () => {
       version: "2026.7.33",
       resolvedSpec: "@openclaw/acpx@2026.7.33",
     });
+  });
+
+  it("targets the exact core cohort for a stable version-bound plugin", async () => {
+    const { config } = createNpmUpdateFixture({
+      pluginId: "codex",
+      packageName: "@openclaw/codex",
+      installedVersion: "2026.8.0",
+      registryVersion: "2026.8.1",
+      installerVersion: "2026.8.1",
+      installerResolvedSpec: "@openclaw/codex@2026.8.1",
+    });
+
+    await updatePlugin(config, "codex", {
+      updateChannel: "stable",
+      coreVersion: "2026.8.1",
+      versionBoundToCorePluginIds: new Set(["codex"]),
+    });
+
+    expect(npmInstallCall()?.spec).toBe("@openclaw/codex@2026.8.1");
+  });
+
+  it("preserves a runnable stable companion when npm normalizes a missing cohort to E404", async () => {
+    runCommandWithTimeoutMock.mockResolvedValueOnce({
+      code: 1,
+      stdout: "",
+      stderr:
+        "npm ERR! code E404\nnpm ERR! 404 '@openclaw/codex@2026.8.1' is not in this registry.",
+    });
+    const { config, installPath } = createNpmUpdateFixture({
+      pluginId: "codex",
+      packageName: "@openclaw/codex",
+      installedVersion: "2026.8.0",
+      runnable: true,
+    });
+
+    const result = await updatePlugin(config, "codex", {
+      updateChannel: "stable",
+      coreVersion: "2026.8.1",
+      versionBoundToCorePluginIds: new Set(["codex"]),
+      disableOnFailure: true,
+    });
+
+    expect(installPluginFromNpmSpecMock).not.toHaveBeenCalled();
+    expect(result.changed).toBe(false);
+    expect(result.config.plugins?.installs?.codex?.installPath).toBe(installPath);
+    expect(result.config.plugins?.entries?.codex?.enabled).not.toBe(false);
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({
+        pluginId: "codex",
+        status: "unchanged",
+        currentVersion: "2026.8.0",
+        nextVersion: "2026.8.0",
+      }),
+    ]);
+  });
+
+  it("does not preserve a third-party payload behind stale official install metadata", async () => {
+    runCommandWithTimeoutMock.mockResolvedValueOnce({
+      code: 1,
+      stdout: "",
+      stderr: "npm ERR! code E404\nnpm ERR! 404 '@acme/codex' is not in this registry.",
+    });
+    installPluginFromNpmSpecMock.mockResolvedValue({
+      ok: false,
+      error: "npm install failed",
+    });
+    const { config } = createNpmUpdateFixture({
+      pluginId: "codex",
+      packageName: "@acme/codex",
+      installedVersion: "1.0.0",
+      runnable: true,
+    });
+    const record = config.plugins?.installs?.codex;
+    if (record) {
+      record.spec = "@openclaw/codex";
+      record.resolvedName = "@openclaw/codex";
+      record.resolvedSpec = "@openclaw/codex@1.0.0";
+    }
+
+    const result = await updatePlugin(config, "codex", {
+      updateChannel: "stable",
+      coreVersion: "2026.8.1",
+      versionBoundToCorePluginIds: new Set(["codex"]),
+      disableOnFailure: true,
+    });
+
+    expect(npmInstallCall()?.spec).toBe("@openclaw/codex@2026.8.1");
+    expect(result.changed).toBe(true);
+    expect(result.config.plugins?.entries?.codex?.enabled).toBe(false);
   });
 
   it("preserves an explicit official pin during extended-stable updates", async () => {

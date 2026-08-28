@@ -1,6 +1,7 @@
 // `openclaw plugins update` command implementation for tracked npm plugins and hook packs.
 import { isDeepStrictEqual } from "node:util";
 import { theme } from "../../packages/terminal-core/src/theme.js";
+import { VERSION_BOUND_RUNTIME_PLUGIN_IDS } from "../commands/doctor/shared/configured-runtime-plugin-installs.js";
 import {
   assertConfigWriteAllowedInCurrentMode,
   getRuntimeConfig,
@@ -420,6 +421,7 @@ async function runPluginUpdateCommandUnlocked(params: RunPluginUpdateCommandPara
                 officialPluginUpdateChannel,
                 syncOfficialPluginInstalls: params.opts.all ? true : undefined,
                 coreVersion: VERSION,
+                versionBoundToCorePluginIds: VERSION_BOUND_RUNTIME_PLUGIN_IDS,
                 ...installPolicyWarningAcknowledgement,
                 ...resolvePluginCapabilityConsentCliOptions({
                   acceptCapabilities: params.opts.acceptCapabilities,

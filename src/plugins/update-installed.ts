@@ -1,22 +1,17 @@
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../packages/gateway-protocol/src/capability-consent-error-details.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveNpmSpecMetadata } from "../infra/install-source-utils.js";
 import { parseRegistryNpmSpec } from "../infra/npm-registry-spec.js";
 import {
   readInstalledPackageManifest,
   readInstalledPackageVersion,
 } from "../infra/package-update-utils.js";
-import type { UpdateChannel } from "../infra/update-channels.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveBundledPluginSources } from "./bundled-sources.js";
-import {
-  capturePluginCapabilityConsentHandlerErrors,
-  type PluginCapabilityConsentHandler,
-} from "./capability-consent.js";
+import { capturePluginCapabilityConsentHandlerErrors } from "./capability-consent.js";
 import { buildClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
-import type { InstallSafetyOverrides } from "./install-security-scan.types.js";
 import { copyPluginInstallTransactionRequest } from "./install-transaction.js";
+import { isUnavailableNpmTarget } from "./install-types.js";
 import { PLUGIN_INSTALL_ERROR_CODE, resolvePluginInstallDir } from "./install.js";
 import {
   buildNpmResolutionInstallFields,
@@ -59,6 +54,7 @@ import {
   resolveRecordedExtensionsDir,
   withoutPluginInstallRecord,
 } from "./update-config.js";
+import type { UpdateNpmInstalledPluginsParams } from "./update-installed.types.js";
 import {
   expectedIntegrityForNpmFallback,
   expectedIntegrityForNpmUpdate,
@@ -75,8 +71,6 @@ import {
   shouldBypassTrustedOfficialUnchangedNpmCheck,
   shouldSkipUnchangedNpmInstall,
   type PluginUpdateChannelFallback,
-  type PluginUpdateIntegrityDriftParams,
-  type PluginUpdateLogger,
   type PluginUpdateOutcome,
   type PluginUpdateSummary,
 } from "./update-source.js";
@@ -88,26 +82,9 @@ import {
 } from "./update-summary.js";
 import { reconcileUnchangedUpdate } from "./update-unchanged.js";
 
-export async function updateNpmInstalledPlugins(params: {
-  config: OpenClawConfig;
-  logger?: PluginUpdateLogger;
-  pluginIds?: string[];
-  skipIds?: Set<string>;
-  skipDisabledPlugins?: boolean;
-  syncOfficialPluginInstalls?: boolean;
-  disableOnFailure?: boolean;
-  timeoutMs?: number;
-  dryRun?: boolean;
-  updateChannel?: UpdateChannel;
-  officialPluginUpdateChannel?: UpdateChannel;
-  coreVersion?: string;
-  dangerouslyForceUnsafeInstall?: boolean;
-  onInstallPolicyWarning?: InstallSafetyOverrides["onInstallPolicyWarning"];
-  specOverrides?: Record<string, string>;
-  onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
-  onCapabilityConsent?: PluginCapabilityConsentHandler;
-  packagePluginIds?: Readonly<Record<string, readonly string[]>>;
-}): Promise<PluginUpdateSummary> {
+export async function updateNpmInstalledPlugins(
+  params: UpdateNpmInstalledPluginsParams,
+): Promise<PluginUpdateSummary> {
   const logger = params.logger ?? {};
   const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
   const installs = params.config.plugins?.installs ?? {};
@@ -224,8 +201,15 @@ export async function updateNpmInstalledPlugins(params: {
             updateChannel,
             officialPackageName: officialNpmPackageName,
             coreVersion: params.coreVersion,
+            versionBoundToCore: params.versionBoundToCorePluginIds?.has(pluginId),
           })
         : undefined;
+    const resolvedVersionBoundOfficialCohort =
+      updateChannel === "stable" &&
+      params.versionBoundToCorePluginIds?.has(pluginId) === true &&
+      trustedOfficialNpmSpec !== undefined &&
+      npmSpecs?.installSpec !== undefined &&
+      npmSpecs.installSpec !== npmSpecs.recordSpec;
     const clawhubSpecs =
       record.source === "clawhub"
         ? resolveClawHubUpdateSpecs({
@@ -354,13 +338,8 @@ export async function updateNpmInstalledPlugins(params: {
     }
     // Payload validation is filesystem work needed only to preserve state after metadata failures.
     // Every failure path below ends this plugin iteration, so the result cannot be reused.
-    const hasRunnableInstalledPayloadForFailure = async (code?: string): Promise<boolean> => {
-      if (
-        code !== PLUGIN_INSTALL_ERROR_CODE.NPM_METADATA_FAILURE ||
-        !params.disableOnFailure ||
-        params.dryRun ||
-        currentVersion === undefined
-      ) {
+    const hasRunnableInstalledPayload = async (): Promise<boolean> => {
+      if (!params.disableOnFailure || params.dryRun || currentVersion === undefined) {
         return false;
       }
       try {
@@ -370,6 +349,9 @@ export async function updateNpmInstalledPlugins(params: {
         return false;
       }
     };
+    const hasRunnableInstalledPayloadForFailure = async (code?: string): Promise<boolean> =>
+      code === PLUGIN_INSTALL_ERROR_CODE.NPM_METADATA_FAILURE &&
+      (await hasRunnableInstalledPayload());
     const extensionsDir = resolveRecordedExtensionsDir({
       pluginId,
       installPath,
@@ -458,6 +440,24 @@ export async function updateNpmInstalledPlugins(params: {
           recordFailure(pluginId, `Failed to check ${pluginId}: ${metadataResult.error}`, {
             code,
             installedPayloadRunnable: await hasRunnableInstalledPayloadForFailure(code),
+          });
+          continue;
+        }
+        if (
+          resolvedVersionBoundOfficialCohort &&
+          installedManifest?.name === officialNpmPackageName &&
+          isUnavailableNpmTarget(metadataResult) &&
+          currentVersion !== undefined &&
+          (await hasRunnableInstalledPayload())
+        ) {
+          const message = `Keeping "${pluginId}" at ${currentVersion}: exact stable companion cohort ${effectiveSpec} is unavailable.`;
+          logger.warn?.(message);
+          outcomes.push({
+            pluginId,
+            status: "unchanged",
+            currentVersion,
+            nextVersion: currentVersion,
+            message,
           });
           continue;
         }
