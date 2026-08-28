@@ -90,10 +90,14 @@ export function createInternalAgentTurnFacade(options: InternalAgentTurnFacadeOp
       return throwEnvelopeRejection(method, validationError);
     }
     options.assertContextCurrent?.();
+    const effectiveParams =
+      deadlineMs === undefined
+        ? params
+        : { ...params, timeoutMs: resolveRemainingGatewayDispatchTimeoutMs(deadlineMs) };
     const result = runWithGatewayRequestEnvelope(
       method,
       options.client,
-      () => createAgentTurnService({ context, isWebchatConnect }).waitForTurn(params),
+      () => createAgentTurnService({ context, isWebchatConnect }).waitForTurn(effectiveParams),
       {
         context,
         isWebchatConnect,

@@ -498,6 +498,59 @@ describe("createInternalAgentTurnFacade", () => {
     expect(startTurn).toHaveBeenCalledOnce();
   });
 
+  it("recomputes a cached replay wait timeout after authorization", async () => {
+    vi.useFakeTimers();
+    authorizeGatewayRequestPreDispatch
+      .mockResolvedValueOnce({ error: null })
+      .mockImplementationOnce(
+        async () =>
+          await new Promise<{ error: null }>((resolve) => {
+            setTimeout(() => resolve({ error: null }), 400);
+          }),
+      );
+    startTurn.mockImplementation(async ({ io }) => {
+      io.emitAcceptance([
+        true,
+        { admitted: true, runId: "run-auth-delayed", status: "in_flight" },
+        undefined,
+      ]);
+    });
+    waitForTurn.mockImplementation(
+      async ({ timeoutMs }: { timeoutMs?: number }) =>
+        await new Promise<{ runId: string; status: "timeout"; timeoutPhase: "gateway_draining" }>(
+          (resolve) => {
+            setTimeout(
+              () =>
+                resolve({
+                  runId: "run-auth-delayed",
+                  status: "timeout",
+                  timeoutPhase: "gateway_draining",
+                }),
+              timeoutMs,
+            );
+          },
+        ),
+    );
+
+    try {
+      const outcome = createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "run-auth-delayed" },
+        { expectFinal: true, timeoutMs: 1_000 },
+      );
+      await vi.advanceTimersByTimeAsync(400);
+      expect(waitForTurn).toHaveBeenCalledWith({ runId: "run-auth-delayed", timeoutMs: 600 });
+      await vi.advanceTimersByTimeAsync(600);
+
+      await expect(outcome).resolves.toMatchObject({
+        ok: true,
+        payload: { admitted: true, runId: "run-auth-delayed", status: "in_flight" },
+      });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("lets restart recovery abort the exact cached run before reattachment completes", async () => {
     vi.useFakeTimers();
     startTurn.mockImplementation(async ({ io }) => {

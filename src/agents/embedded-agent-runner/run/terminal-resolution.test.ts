@@ -270,6 +270,7 @@ describe("terminal resolution", () => {
       assistantTexts: [],
       lastAssistant: assistant,
       currentAttemptAssistant: assistant,
+      yieldDetected: true,
       runtimeContinuationStarted: true,
       currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
     });
@@ -292,12 +293,13 @@ describe("terminal resolution", () => {
     }
   });
 
-  it("infers a runtime-owned yield when payloads contain only supplemental lanes", async () => {
+  it("preserves an explicit runtime-owned yield with only supplemental payload lanes", async () => {
     const assistant = emptyAssistant();
     const attempt = makeEmbeddedRunnerAttempt({
       assistantTexts: [],
       lastAssistant: assistant,
       currentAttemptAssistant: assistant,
+      yieldDetected: true,
       runtimeContinuationStarted: true,
       currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
     });
@@ -319,6 +321,26 @@ describe("terminal resolution", () => {
         stopReason: "end_turn",
         yielded: true,
       });
+    }
+  });
+
+  it("does not infer a retained yield from a native child start alone", async () => {
+    const assistant = emptyAssistant({ stopReason: "aborted" });
+    const attempt = makeEmbeddedRunnerAttempt({
+      terminal: { kind: "timeout", phase: "prompt", source: "external" },
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      runtimeContinuationStarted: true,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(makeTerminalInput({ attempt }));
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action === "complete") {
+      expect(resolved.result.meta.yielded).toBeUndefined();
+      expect(resolved.result.runtimeContinuationStarted).toBe(true);
     }
   });
 
