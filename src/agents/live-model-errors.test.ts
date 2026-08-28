@@ -83,5 +83,12 @@ describe("live model error helpers", () => {
       false,
     );
     expect(isModelNotFoundErrorMessage("request ended without sending any chunks")).toBe(false);
+    // Bare "Model is unavailable." (no "not") is intentionally NOT handled by
+    // this early detector: classify.ts consults it before billing/plan
+    // classification, and a bare "is unavailable" match here would shadow
+    // billing text like "The model is unavailable in your current plan" (see
+    // GENERIC_MODEL_NOT_FOUND_RE in failover/message-patterns.ts, which runs
+    // after billing and owns this case instead).
+    expect(isModelNotFoundErrorMessage("Model is unavailable.")).toBe(false);
   });
 });

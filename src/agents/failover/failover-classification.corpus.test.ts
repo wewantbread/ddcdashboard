@@ -184,6 +184,53 @@ describe("cross-layer drift (documents current behavior, see refactor-02)", () =
     expect(classifyReplyRequest({ message })).toMatchObject({ code: "provider_model_unavailable" });
   });
 
+  it("classifies bare 'Model is unavailable.' as model_not_found, not the generic format fallback", () => {
+    // OpenCode Zen's actual withdrawn-route body (#19 RCA): no "not found"/"not
+    // available" wording, so this previously fell through to the HTTP-400
+    // default `format` reason instead of the correct model-unavailable copy.
+    const message =
+      "400 Error from provider (Console): Upstream request failed: Model is unavailable.";
+    const classification = classifyFailoverSignal({ message });
+
+    expect(classification).toEqual({ kind: "reason", reason: "model_not_found" });
+    expect(classifyReplyRequest({ message })).toMatchObject({ code: "provider_model_unavailable" });
+  });
+
+  it("classifies bare plan-entitlement prose (no Z.ai code marker) as billing, not model_not_found", () => {
+    // ClawSweeper (#130389 re-review): the billing plan-entitlement pattern
+    // only recognized "not available ... current plan"; "is unavailable ...
+    // current plan" is the same equivalent plan-entitlement wording but,
+    // without a "code":1311 (or similar) marker, previously fell through
+    // billing entirely and was picked up by the widened generic model regex.
+    const message = "The model is unavailable in your current plan";
+    const classification = classifyFailoverSignal({ message });
+
+    expect(classification).toEqual({ kind: "reason", reason: "billing" });
+  });
+
+  it("keeps billing/plan-entitlement precedence over the literal bare model-unavailable phrase", () => {
+    // This phrase contains the exact literal substring the bare-unavailable
+    // fix matches ("model" ... "is unavailable"), so it is the phrase that
+    // actually exercises the new detector's collision risk against billing —
+    // unlike the older "not available ... current plan" sample below, which
+    // never reaches the new regex at all. The "code":1311 marker is required
+    // for this exact prose to classify as billing at all (bare prose without
+    // a billing marker doesn't match isBillingErrorMessage on its own).
+    // Billing/plan wording must still win despite also matching the new regex.
+    const message = '{"code":1311,"message":"The model is unavailable in your current plan"}';
+    const classification = classifyFailoverSignal({ message });
+
+    expect(classification).toEqual({ kind: "reason", reason: "billing" });
+  });
+
+  it("keeps billing/plan-entitlement precedence over 'not available' wording", () => {
+    const message =
+      '{"code":1311,"message":"The model you requested is not available in your current plan"}';
+    const classification = classifyFailoverSignal({ message });
+
+    expect(classification).toEqual({ kind: "reason", reason: "billing" });
+  });
+
   it.each([
     "Custom tool call output is missing for call id: call_live_123.",
     "The number of toolResult blocks at messages.186.content exceeds the number of toolUse blocks of previous turn.",
