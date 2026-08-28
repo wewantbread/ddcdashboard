@@ -34,7 +34,6 @@ import { MemoryDB, type MemoryEntry, type MemorySearchResult } from "./lancedb-s
 import { sanitizeForMemoryCapture } from "./memory-capture-sanitization.js";
 import { registerMemoryCli } from "./memory-cli.js";
 import {
-  type AutoCaptureCursor,
   cleanMemorySearchResults,
   detectCategory,
   extractUserTextContent,
@@ -43,7 +42,6 @@ import {
   looksLikePromptInjection,
   messageFingerprint,
   normalizeRecallQuery,
-  resolveAutoCaptureStartIndex,
   shouldCapture,
 } from "./memory-policy.js";
 
@@ -114,7 +112,7 @@ export default definePluginEntry({
 
     const vectorDim = dimensions ?? vectorDimsForModel(model);
     const db = new MemoryDB(resolvedDbPath, vectorDim, cfg.storageOptions);
-    const autoCaptureCursors = new Map<string, AutoCaptureCursor>();
+    const autoCaptureCursors = new Map<string, Set<string>>();
     const memoryRecallCooldowns = new Map<string, { until: number; error: string }>();
     const resolveRuntimeConfig = (): OpenClawConfig =>
       (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
@@ -572,59 +570,58 @@ export default definePluginEntry({
       try {
         const rawCursorKey = ctx.sessionKey ?? ctx.sessionId;
         const cursorKey = rawCursorKey ? `${agentId}:${rawCursorKey}` : undefined;
-        const startIndex = resolveAutoCaptureStartIndex(
-          event.messages,
-          cursorKey ? autoCaptureCursors.get(cursorKey) : undefined,
+        const currentFingerprints = new Set(event.messages.map(messageFingerprint));
+        // Retain fixed-size hashes only for messages that still survive in the
+        // current transcript; rescans then need no positional fallback or FIFO.
+        const processedFingerprints = new Set(
+          [...(cursorKey ? (autoCaptureCursors.get(cursorKey) ?? []) : [])].filter((fingerprint) =>
+            currentFingerprints.has(fingerprint),
+          ),
         );
+        if (cursorKey) {
+          autoCaptureCursors.set(cursorKey, processedFingerprints);
+        }
         let stored = 0;
         let capturableSeen = 0;
-        for (let index = startIndex; index < event.messages.length; index++) {
-          const message = event.messages[index];
-          let messageProcessed = false;
-
-          try {
-            for (const text of extractUserTextContent(message)) {
-              // Sanitize envelope metadata before checking and storing
-              const sanitized = sanitizeForMemoryCapture(text);
-              if (
-                !sanitized ||
-                !shouldCapture(sanitized, {
-                  customTriggers: currentCfg.customTriggers,
-                  maxChars: currentCfg.captureMaxChars,
-                })
-              ) {
-                continue;
-              }
-              capturableSeen++;
-              if (capturableSeen > 3) {
-                continue;
-              }
-
-              const category = detectCategory(sanitized);
-              const vector = await embeddings.embed(agentId, sanitized, currentCfg.embedding);
-
-              const existing = await findCleanDuplicateMemory(db, agentId, vector);
-              if (existing) {
-                continue;
-              }
-
-              await db.store(agentId, {
-                text: sanitized,
-                vector,
-                importance: 0.7,
-                category,
-              });
-              stored++;
-            }
-            messageProcessed = true;
-          } finally {
-            if (messageProcessed && cursorKey) {
-              autoCaptureCursors.set(cursorKey, {
-                nextIndex: index + 1,
-                lastMessageFingerprint: messageFingerprint(message),
-              });
-            }
+        for (const message of event.messages) {
+          const fingerprint = messageFingerprint(message);
+          if (processedFingerprints.has(fingerprint)) {
+            continue;
           }
+          for (const text of extractUserTextContent(message)) {
+            // Sanitize envelope metadata before checking and storing
+            const sanitized = sanitizeForMemoryCapture(text);
+            if (
+              !sanitized ||
+              !shouldCapture(sanitized, {
+                customTriggers: currentCfg.customTriggers,
+                maxChars: currentCfg.captureMaxChars,
+              })
+            ) {
+              continue;
+            }
+            capturableSeen++;
+            if (capturableSeen > 3) {
+              continue;
+            }
+
+            const category = detectCategory(sanitized);
+            const vector = await embeddings.embed(agentId, sanitized, currentCfg.embedding);
+
+            const existing = await findCleanDuplicateMemory(db, agentId, vector);
+            if (existing) {
+              continue;
+            }
+
+            await db.store(agentId, {
+              text: sanitized,
+              vector,
+              importance: 0.7,
+              category,
+            });
+            stored++;
+          }
+          processedFingerprints.add(fingerprint);
         }
 
         if (stored > 0) {

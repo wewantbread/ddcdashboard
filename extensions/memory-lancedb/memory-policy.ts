@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   asOptionalRecord,
   normalizeLowercaseStringOrEmpty,
@@ -10,11 +11,6 @@ import {
 } from "./config.js";
 import type { MemorySearchResult } from "./lancedb-store.js";
 import { looksLikeEnvelopeSludge } from "./memory-capture-sanitization.js";
-
-export type AutoCaptureCursor = {
-  nextIndex: number;
-  lastMessageFingerprint?: string;
-};
 
 export function extractUserTextContent(message: unknown): string[] {
   const msgObj = asOptionalRecord(message);
@@ -68,38 +64,20 @@ function normalizeMaxChars(value: number | undefined, fallback: number): number 
 
 export function messageFingerprint(message: unknown): string {
   const msgObj = asOptionalRecord(message);
+  let source: string;
   if (!msgObj) {
-    return `${typeof message}:${String(message)}`;
-  }
-  try {
-    return JSON.stringify({
-      role: msgObj.role,
-      content: msgObj.content,
-    });
-  } catch {
-    return `${String(msgObj.role)}:${String(msgObj.content)}`;
-  }
-}
-
-export function resolveAutoCaptureStartIndex(
-  messages: unknown[],
-  cursor: AutoCaptureCursor | undefined,
-): number {
-  if (!cursor) {
-    return 0;
-  }
-  if (cursor.lastMessageFingerprint && cursor.nextIndex > 0) {
-    for (let index = messages.length - 1; index >= 0; index--) {
-      if (messageFingerprint(messages[index]) === cursor.lastMessageFingerprint) {
-        return index + 1;
-      }
+    source = `${typeof message}:${String(message)}`;
+  } else {
+    try {
+      source = JSON.stringify({
+        role: msgObj.role,
+        content: msgObj.content,
+      });
+    } catch {
+      source = `${String(msgObj.role)}:${String(msgObj.content)}`;
     }
-    return 0;
   }
-  if (cursor.nextIndex <= messages.length) {
-    return cursor.nextIndex;
-  }
-  return 0;
+  return createHash("sha256").update(source).digest("hex");
 }
 
 // LanceDB Provider
