@@ -137,6 +137,21 @@ function buildCodexProviderOverrideWarning(providerOverride: unknown): string {
   return lines.join("\n");
 }
 
+function noteStaleGlobalPasteFindings(cfg: OpenClawConfig): void {
+  const findings = collectStaleGlobalPasteFindings({ cfg });
+  if (findings.length === 0) {
+    return;
+  }
+  note(
+    findings
+      .map((finding) =>
+        finding.fixHint ? `- ${finding.message}\n  ${finding.fixHint}` : `- ${finding.message}`,
+      )
+      .join("\n"),
+    "Auth profiles",
+  );
+}
+
 function legacyCodexProviderOverrideToHealthFinding(providerOverride: unknown): HealthFinding {
   const message =
     "Legacy openai-codex transport override can shadow configured Codex OAuth credentials.";
@@ -565,6 +580,10 @@ export async function noteAuthProfileHealth(params: {
   prompter: DoctorPrompter;
   allowKeychainPrompt: boolean;
 }): Promise<void> {
+  // Leftover global paste metadata is report-only and can exist with no usable
+  // store target. Note it before the empty-target return so ordinary doctor
+  // prints the same warning as collectAuthProfileHealthFindings.
+  noteStaleGlobalPasteFindings(params.cfg);
   const configuredProfiles = Object.keys(params.cfg.auth?.profiles ?? {}).length > 0;
   const targets = listAuthProfileHealthTargets(params.cfg);
   const activeTargets = targets.filter((target) =>
