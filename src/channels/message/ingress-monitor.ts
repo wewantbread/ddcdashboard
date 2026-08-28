@@ -464,7 +464,12 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
         if (drainIdleWake !== wake) {
           return;
         }
-        const shouldRearm = drainIdleWakeRequested && running && !isAborted();
+        // The first idle wake may beat the watchdog's release write. Keep a
+        // second wake armed so a preserved row is repumped after that commit.
+        const shouldRearm =
+          (drainIdleWakeRequested || (activeDrain.hasPendingStallSettlements?.() ?? false)) &&
+          running &&
+          !isAborted();
         drainIdleWake = undefined;
         drainIdleWakeRequested = false;
         if (shouldRearm) {
