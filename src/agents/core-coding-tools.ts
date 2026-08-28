@@ -68,7 +68,7 @@ type CoreCodingToolsOptions = {
   codingRoot: string;
   containmentRoot: string;
   includeBaseCodingTools: boolean;
-  includeShellTools: boolean;
+  shellTools: "disabled" | "patch-only" | "full";
   workspaceOnly: boolean;
   readOnly: boolean;
   sandbox?: SandboxContext;
@@ -101,14 +101,14 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
   if (
     sandboxRoot &&
     !sandboxFsBridge &&
-    (options.includeBaseCodingTools || options.includeShellTools)
+    (options.includeBaseCodingTools || options.shellTools !== "disabled")
   ) {
     throw new Error("Sandbox filesystem bridge is unavailable.");
   }
 
   const skillReadRoots = sandboxRoot ? undefined : resolveSkillReadRoots(options.skillsSnapshot);
   const needsReadOnlyWorkspaceSkillMounts =
-    options.includeShellTools || (options.includeBaseCodingTools && options.workspaceOnly);
+    options.shellTools !== "disabled" || (options.includeBaseCodingTools && options.workspaceOnly);
   const readOnlyWorkspaceSkillMounts =
     sandbox && needsReadOnlyWorkspaceSkillMounts
       ? resolveReadOnlyWorkspaceSkillMounts({
@@ -226,21 +226,25 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
   options.recordToolPrepStage?.("base-coding-tools");
 
   const shell: AnyAgentTool[] = [];
-  if (options.includeShellTools) {
-    if (options.applyPatchEnabled && (!sandboxRoot || allowWorkspaceWrites)) {
-      shell.push(
-        createApplyPatchTool({
-          cwd: options.codingRoot,
-          root: options.containmentRoot,
-          sandbox:
-            sandboxRoot && allowWorkspaceWrites
-              ? { root: sandboxRoot, bridge: sandboxFsBridge! }
-              : undefined,
-          workspaceOnly: options.applyPatchWorkspaceOnly,
-          memoryWriteProvenance: options.memoryWriteProvenance,
-        }),
-      );
-    }
+  if (
+    options.shellTools !== "disabled" &&
+    options.applyPatchEnabled &&
+    (!sandboxRoot || allowWorkspaceWrites)
+  ) {
+    shell.push(
+      createApplyPatchTool({
+        cwd: options.codingRoot,
+        root: options.containmentRoot,
+        sandbox:
+          sandboxRoot && allowWorkspaceWrites
+            ? { root: sandboxRoot, bridge: sandboxFsBridge! }
+            : undefined,
+        workspaceOnly: options.applyPatchWorkspaceOnly,
+        memoryWriteProvenance: options.memoryWriteProvenance,
+      }),
+    );
+  }
+  if (options.shellTools === "full") {
     shell.push(
       createLazyExecTool({
         ...options.execDefaults,
