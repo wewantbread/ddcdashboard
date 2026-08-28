@@ -116,6 +116,9 @@ export function createMatrixReplyDispatcher(config: {
       if (payload.isReasoning === true && reasoningLevel !== "on") {
         return mergeMatrixReplyDeliveryResults([]);
       }
+      if (payload.isReasoning === true) {
+        return await deliverReplies([payload]);
+      }
       const completeDelivery = async (
         result: MatrixReplyDeliveryResult,
       ): Promise<MatrixReplyDeliveryResult> => {

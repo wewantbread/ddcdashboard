@@ -202,6 +202,7 @@ export async function deliverMatrixReplies(params: {
           threadId: params.threadId,
           audioAsVoice: reply.audioAsVoice,
           accountId: params.accountId,
+          disableMentions: isReasoningPayload ? true : undefined,
           onDeliveryResult,
         });
         first = false;
