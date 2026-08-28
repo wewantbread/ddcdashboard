@@ -4,7 +4,7 @@ import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js"
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
 
-export type IngressDrainTestPayload = { text: string };
+export type IngressDrainTestPayload = { text: string; kind?: "ambient" | "addressed" };
 
 export function createTestIngressQueue(
   stateDir: string,

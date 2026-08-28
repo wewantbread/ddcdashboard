@@ -324,6 +324,7 @@ describe("GatewayPlugin", () => {
       d: {
         id: "m1",
         channel_id: "c1",
+        channel_type: 0,
         content: "hello",
         attachments: [],
         timestamp: new Date().toISOString(),
@@ -339,10 +340,14 @@ describe("GatewayPlugin", () => {
     expect(dispatchGatewayEvent).toHaveBeenCalledTimes(1);
     const dispatched = firstDispatchedData(dispatchGatewayEvent) as {
       author?: { id: string };
+      channel_type?: number;
       message?: { author?: { id: string } | null; content?: string };
       content?: string;
     };
     expect(dispatched.author?.id).toBe("u1");
+    // Durable ingress reads the channel kind from this envelope field, so the
+    // raw MESSAGE_CREATE frame must reach the listener unmapped.
+    expect(dispatched.channel_type).toBe(0);
     expect(dispatched.content).toBe("hello");
     expect(dispatched.message).toBeUndefined();
   });

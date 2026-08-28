@@ -27,6 +27,16 @@ export type DiscordMessageDispatchData = {
   channel?: unknown;
 };
 
+/**
+ * MESSAGE_CREATE is forwarded as the raw gateway frame, which carries envelope
+ * extras `APIMessage` does not declare. Durable ingress persists the frame, so
+ * the boundary type must expose them instead of casting at each reader.
+ */
+type DiscordMessageCreateEvent = APIMessage & {
+  channel_type?: number;
+  guild_id?: string;
+};
+
 type DiscordReactionDispatchData = {
   user_id?: string;
   channel_id: string;
@@ -73,7 +83,7 @@ export abstract class GuildDeleteListener extends BaseListener {
 
 export abstract class MessageCreateListener extends BaseListener {
   readonly type = GatewayDispatchEvents.MessageCreate;
-  abstract override handle(data: APIMessage, client: Client): Promise<void> | void;
+  abstract override handle(data: DiscordMessageCreateEvent, client: Client): Promise<void> | void;
 }
 
 export abstract class InteractionCreateListener extends BaseListener {

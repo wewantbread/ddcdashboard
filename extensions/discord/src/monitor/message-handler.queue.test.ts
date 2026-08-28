@@ -519,7 +519,7 @@ describe("createDiscordMessageHandler queue behavior", () => {
         const preflight = vi.fn(async (params: { data: { message?: { id?: string } } }) => {
           const id = params.data.message?.id ?? "unknown";
           attempted.push(id);
-          if (id === "poison") {
+          if (id === "1-poison") {
             throw new Error("deterministic preflight failure");
           }
           return null;
@@ -535,29 +535,30 @@ describe("createDiscordMessageHandler queue behavior", () => {
           },
         });
         try {
-          await handler(createRawMessage("poison", "lane-a") as never, {} as never);
-          await handler(createRawMessage("follower", "lane-a") as never, {} as never);
-          await handler(createRawMessage("independent", "lane-b") as never, {} as never);
+          // Numeric prefixes preserve canonical queue order when fake-time admissions share a tick.
+          await handler(createRawMessage("1-poison", "lane-a") as never, {} as never);
+          await handler(createRawMessage("2-next", "lane-a") as never, {} as never);
+          await handler(createRawMessage("3-other", "lane-b") as never, {} as never);
 
           for (let attempt = 0; attempt < DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS; attempt += 1) {
             await vi.advanceTimersByTimeAsync(3 * 60_000);
           }
 
-          await vi.waitFor(() => expect(attempted).toContain("follower"));
-          expect(attempted.indexOf("independent")).toBeGreaterThanOrEqual(0);
-          expect(attempted.indexOf("independent")).toBeLessThan(attempted.indexOf("follower"));
-          expect(attempted.filter((id) => id === "poison")).toHaveLength(
+          await vi.waitFor(() => expect(attempted).toContain("2-next"));
+          expect(attempted.indexOf("3-other")).toBeGreaterThanOrEqual(0);
+          expect(attempted.indexOf("3-other")).toBeLessThan(attempted.indexOf("2-next"));
+          expect(attempted.filter((id) => id === "1-poison")).toHaveLength(
             DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
           );
-          await expect(queue.enqueue("poison", {} as DiscordIngressPayload)).resolves.toMatchObject(
-            {
-              kind: "failed",
-              record: { reason: "retry-limit-exceeded" },
-            },
-          );
           await expect(
-            queue.enqueue("follower", {} as DiscordIngressPayload),
-          ).resolves.toMatchObject({ kind: "completed" });
+            queue.enqueue("1-poison", {} as DiscordIngressPayload),
+          ).resolves.toMatchObject({
+            kind: "failed",
+            record: { reason: "retry-limit-exceeded" },
+          });
+          await expect(queue.enqueue("2-next", {} as DiscordIngressPayload)).resolves.toMatchObject(
+            { kind: "completed" },
+          );
           const runtimeErrors = mockCalls(params.runtime.error as unknown as MockCallSource).map(
             ([message]) => String(message),
           );

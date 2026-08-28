@@ -67,6 +67,44 @@ run after the queue opens but before the drain starts. `stop` first settles
 accepted admissions, then aborts and disposes the drain, waits for the pump and
 active deliveries, and disposes again to close the lazy-creation race.
 
+### Pre-claim pending disposition
+
+The `drain` block accepts two optional channel-owned callbacks. Both are
+backward compatible: a channel that passes neither keeps today's behaviour.
+
+| Option                                                    | Contract                                                                                                                             |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `resolvePendingDisposition(record, context)`              | Give one pending row a terminal disposition before it is claimed, or return `null`/`undefined` to leave it a normal claim candidate. |
+| `onPendingDispositionCommitted(record, disposition, ctx)` | Observe a disposition that was durably committed. Receipt only; the terminal write already happened.                                 |
+
+The drain has no opinion about what a disposition means. It applies what the
+channel returns and reports what it committed, so the seam stays
+channel-agnostic.
+
+**Timing.** `resolvePendingDisposition` runs once per pending row per drain
+pass, before `claimNext` and before any lane-blocking or retry-delay scan. It
+does not run for rows already claimed by this or another worker.
+
+**Payload state.** The record is the row exactly as stored. Its payload has not
+been through the `payload` codec — that runs at claim time — so it may be any
+JSON the queue holds, including `null`. Narrow before reading it, and return
+`null` for anything you cannot interpret: the row then reaches the canonical
+claim-time path, which fails it once through `createClaimError` /
+`resolveNonRetryableFailure` with claim fencing, retry accounting, and the
+failure receipt intact. Throwing from this callback aborts the whole drain pass,
+so one poison row must never be allowed to starve later fresh work.
+
+**Failure semantics.** A committed disposition writes a terminal failure through
+the existing `queue.fail(...)` path with the channel's `reason` and `message`,
+so suppressed rows land in the same failed/dead-letter table an operator already
+inspects and can resubmit from. There is no separate disposal path and no new
+queue API.
+
+**Races.** The commit is CAS-fenced against a concurrent claim. If the claim
+wins, the row is retained, its lane is blocked for that pass, and
+`onPendingDispositionCommitted` does not fire. The committed callback therefore
+fires at most once per settled row and never for a lost race or a failed write.
+
 Keep transport-specific redaction, raw-envelope validation, non-retryable
 classification, and persisted payload shape in the plugin. Webhook transports
 should acknowledge only after `admit` resolves; non-replay transports should
