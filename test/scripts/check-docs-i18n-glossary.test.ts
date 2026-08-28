@@ -6,7 +6,7 @@ import {
   createGitRunner,
   parseArgs,
   readGitFile,
-} from "../../scripts/check-docs-i18n-glossary.mts";
+} from "../../scripts/lib/docs-i18n-glossary-git.mts";
 import * as managedChildProcess from "../../scripts/lib/managed-child-process.mts";
 import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
