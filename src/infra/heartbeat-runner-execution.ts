@@ -606,7 +606,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
       });
     }
   }
-  const { hasExecCompletion, hasCronEvents } = heartbeatRunPrompt;
+  const { hasExecCompletion, hasCronEvents, hasGenericEvents } = heartbeatRunPrompt;
   return {
     kind: "ready",
     ...preflight.session,
@@ -622,6 +622,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
       preflight,
       hasExecCompletion,
       hasCronEvents,
+      hasGenericEvents,
     }),
   } as const;
 }

@@ -11,8 +11,10 @@ import { formatErrorMessage } from "./errors.js";
 import {
   buildCronEventPrompt,
   buildExecEventPrompt,
+  buildSystemEventPrompt,
   isCronSystemEvent,
   isExecCompletionEvent,
+  isHeartbeatNoiseEvent,
   isRelayableExecCompletionEvent,
 } from "./heartbeat-events-filter.js";
 import {
@@ -21,10 +23,7 @@ import {
   resolveHeartbeatResponseToolPrompt,
   type HeartbeatConfig,
 } from "./heartbeat-runner-config.js";
-import {
-  resolveHeartbeatSession,
-  resolveIsolatedHeartbeatSessionKey,
-} from "./heartbeat-runner-session.js";
+import { resolveHeartbeatSession } from "./heartbeat-runner-session.js";
 import {
   resolveHeartbeatWakePayloadFlags,
   type HeartbeatWakePayloadFlags,
@@ -112,17 +111,9 @@ export async function resolveHeartbeatPreflight(params: {
     if (!wakeFlags.isWakePayload) {
       return false;
     }
-    if (params.heartbeat?.isolatedSession !== true) {
-      return true;
-    }
-    const configuredSession = resolveHeartbeatSession(params.cfg, params.agentId, params.heartbeat);
-    const { isolatedSessionKey } = resolveIsolatedHeartbeatSessionKey({
-      agentId: params.agentId,
-      sessionKey: session.sessionKey,
-      configuredSessionKey: configuredSession.sessionKey,
-      sessionEntry: session.entry,
-    });
-    return isolatedSessionKey === session.sessionKey;
+    // Restart and hook producers enqueue on the configured/base session even
+    // when the model turn runs in a fresh isolated `:heartbeat` session.
+    return true;
   })();
   const shouldInspectPendingEvents =
     wakeFlags.isExecEventWake ||
@@ -210,6 +201,7 @@ type HeartbeatPromptResolution = {
   hasExecCompletion: boolean;
   hasRelayableExecCompletion: boolean;
   hasCronEvents: boolean;
+  hasGenericEvents: boolean;
   usesHeartbeatResponseTool: boolean;
 };
 
@@ -243,7 +235,15 @@ export function resolveHeartbeatRunPrompt(params: {
         isCronSystemEvent(event.text),
     )
     .map((event) => event.text);
-  const execEvents = params.preflight.shouldInspectPendingEvents
+  const shouldInspectExecEvents =
+    params.preflight.shouldInspectPendingEvents &&
+    !(
+      params.heartbeat?.isolatedSession === true &&
+      params.preflight.isWakePayload &&
+      !params.preflight.isCronWake &&
+      !params.preflight.session.entry?.heartbeatIsolatedBaseSessionKey
+    );
+  const execEvents = shouldInspectExecEvents
     ? pendingEventEntries
         .filter((event) => isExecCompletionEvent(event.text))
         .map((event) => event.text)
@@ -252,6 +252,21 @@ export function resolveHeartbeatRunPrompt(params: {
   const hasRelayableExecCompletion =
     params.canRelayToUser && execEvents.some((event) => isRelayableExecCompletionEvent(event));
   const hasCronEvents = cronEvents.length > 0;
+  const genericEvents =
+    params.preflight.shouldInspectPendingEvents && !params.preflight.isExecEventWake
+      ? pendingEventEntries
+          .filter(
+            (event) =>
+              !isExecCompletionEvent(event.text) &&
+              !(
+                (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) &&
+                isCronSystemEvent(event.text)
+              ) &&
+              !isHeartbeatNoiseEvent(event.text),
+          )
+          .map((event) => event.text)
+      : [];
+  const hasGenericEvents = genericEvents.length > 0;
   if (params.scheduledTasks.length > 0) {
     const taskList = params.scheduledTasks
       .map((task) => `- ${task.name}: ${task.prompt}`)
@@ -270,6 +285,7 @@ ${completionInstruction}`;
       hasExecCompletion: false,
       hasRelayableExecCompletion: false,
       hasCronEvents: false,
+      hasGenericEvents: false,
       usesHeartbeatResponseTool: params.useHeartbeatResponseTool,
     };
   }
@@ -285,9 +301,14 @@ ${completionInstruction}`;
           deliverToUser: params.canRelayToUser,
           useHeartbeatResponseTool: baseUsesHeartbeatResponseTool,
         })
-      : baseUsesHeartbeatResponseTool
-        ? resolveHeartbeatResponseToolPrompt(params.cfg, params.heartbeat)
-        : resolveConfiguredHeartbeatPrompt(params.cfg, params.heartbeat);
+      : hasGenericEvents
+        ? buildSystemEventPrompt(genericEvents, {
+            deliverToUser: params.canRelayToUser,
+            useHeartbeatResponseTool: baseUsesHeartbeatResponseTool,
+          })
+        : baseUsesHeartbeatResponseTool
+          ? resolveHeartbeatResponseToolPrompt(params.cfg, params.heartbeat)
+          : resolveConfiguredHeartbeatPrompt(params.cfg, params.heartbeat);
   const basePromptWithDirectives = appendHeartbeatScratch(
     basePrompt,
     params.heartbeatScratchContent,
@@ -297,6 +318,7 @@ ${completionInstruction}`;
     hasExecCompletion,
     hasRelayableExecCompletion,
     hasCronEvents,
+    hasGenericEvents,
     usesHeartbeatResponseTool: baseUsesHeartbeatResponseTool,
   };
 }
@@ -305,6 +327,7 @@ export function selectSystemEventsConsumedByHeartbeat(params: {
   preflight: HeartbeatPreflight;
   hasExecCompletion: boolean;
   hasCronEvents: boolean;
+  hasGenericEvents: boolean;
 }): SystemEvent[] {
   const { preflight } = params;
   if (!preflight.shouldInspectPendingEvents || preflight.pendingEventEntries.length === 0) {
@@ -322,6 +345,26 @@ export function selectSystemEventsConsumedByHeartbeat(params: {
   }
   if (preflight.isExecEventWake && !params.hasExecCompletion) {
     return [];
+  }
+  if (
+    preflight.isWakePayload &&
+    !params.hasExecCompletion &&
+    !params.hasCronEvents &&
+    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text))
+  ) {
+    return [];
+  }
+  if (params.hasGenericEvents) {
+    // Generic events and known heartbeat noise are owned by this prompt. Keep
+    // dedicated exec/cron entries queued so their specialized prompt can own them.
+    return preflight.pendingEventEntries.filter(
+      (event) =>
+        !isExecCompletionEvent(event.text) &&
+        !(
+          (preflight.isCronWake || event.contextKey?.startsWith("cron:")) &&
+          isCronSystemEvent(event.text)
+        ),
+    );
   }
   return preflight.pendingEventEntries;
 }
