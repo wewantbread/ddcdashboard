@@ -125,6 +125,23 @@ describe("runGatewayUpdate", () => {
       if (key === `git -C ${tempDir} rev-parse HEAD`) {
         return { stdout: "abc123", stderr: "", code: 0 };
       }
+      if (key === `git -C ${tempDir} status --porcelain -- :!dist/control-ui/`) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (key === `git -C ${tempDir} fetch --all --prune --no-prune-tags --no-tags`) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (key === `git -C ${tempDir} remote`) {
+        return { stdout: "origin\n", stderr: "", code: 0 };
+      }
+      if (key === `git -C ${tempDir} config --get branch.main.remote`) {
+        return { stdout: "origin\n", stderr: "", code: 0 };
+      }
+      if (
+        key === `git -C ${tempDir} fetch --no-prune --no-tags -- origin +refs/tags/*:refs/tags/*`
+      ) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
       if (key === `git -C ${tempDir} tag --list v* --sort=-v:refname`) {
         return { stdout: `${params.stableTag}\n`, stderr: "", code: 0 };
       }
@@ -332,7 +349,12 @@ describe("runGatewayUpdate", () => {
       [`git -C ${tempDir} rev-parse --show-toplevel`]: { stdout: tempDir },
       [`git -C ${tempDir} rev-parse HEAD`]: { stdout: "abc123" },
       [`git -C ${tempDir} status --porcelain -- :!dist/control-ui/`]: { stdout: "" },
-      [`git -C ${tempDir} fetch --all --prune --tags`]: { stdout: "" },
+      [`git -C ${tempDir} fetch --all --prune --no-prune-tags --no-tags`]: { stdout: "" },
+      [`git -C ${tempDir} remote`]: { stdout: "origin\n" },
+      [`git -C ${tempDir} config --get branch.main.remote`]: { stdout: "origin\n" },
+      [`git -C ${tempDir} fetch --no-prune --no-tags -- origin +refs/tags/*:refs/tags/*`]: {
+        stdout: "",
+      },
       [`git -C ${tempDir} tag --list v* --sort=-v:refname`]: { stdout: `${tagOutput}\n` },
       [`git -C ${tempDir} checkout --detach ${stableTag}`]: { stdout: "" },
     };
@@ -1263,7 +1285,7 @@ describe("runGatewayUpdate", () => {
       [`git -C ${tempDir} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: {
         stdout: "origin/main",
       },
-      [`git -C ${tempDir} fetch --all --prune --tags`]: { stdout: "" },
+      [`git -C ${tempDir} fetch --all --prune --no-prune-tags --no-tags`]: { stdout: "" },
       [`git -C ${tempDir} rev-parse @{upstream}`]: { stdout: "upstream123" },
       [`git -C ${tempDir} rev-list --max-count=10 upstream123`]: { stdout: "upstream123\n" },
       [`git -C ${tempDir} rebase upstream123`]: { code: 1, stderr: "conflict" },
@@ -3531,6 +3553,23 @@ describe("runGatewayUpdate", () => {
         }
         if (key === `git -C ${tempDir} rev-parse --abbrev-ref HEAD`) {
           return toCommandResult({ stdout: "main\n" });
+        }
+        if (key === `git -C ${tempDir} status --porcelain -- :!dist/control-ui/`) {
+          return toCommandResult();
+        }
+        if (key === `git -C ${tempDir} fetch --all --prune --no-prune-tags --no-tags`) {
+          return toCommandResult();
+        }
+        if (key === `git -C ${tempDir} remote`) {
+          return toCommandResult({ stdout: "origin\n" });
+        }
+        if (key === `git -C ${tempDir} config --get branch.main.remote`) {
+          return toCommandResult({ stdout: "origin\n" });
+        }
+        if (
+          key === `git -C ${tempDir} fetch --no-prune --no-tags -- origin +refs/tags/*:refs/tags/*`
+        ) {
+          return toCommandResult();
         }
         if (key === `git -C ${tempDir} tag --list v* --sort=-v:refname`) {
           return toCommandResult({ stdout: `${stableTag}\n` });
