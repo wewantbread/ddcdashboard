@@ -110,6 +110,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     dedupeByMessageIdempotency:
       options.idempotencyLookup !== "caller-checked" &&
       options.idempotencyLookup !== "scan-assistant",
+    relocateSupersededIdempotencyKey: options.idempotencyLookup === "caller-checked",
   });
   if (!appended && idempotencyKey && options.idempotencyLookup !== "caller-checked") {
     const existing = readTranscriptMessageByScopedIdempotencyKey(

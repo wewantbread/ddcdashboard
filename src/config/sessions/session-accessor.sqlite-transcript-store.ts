@@ -56,6 +56,7 @@ export function appendTranscriptEventInTransaction(
     allowStoredAlias?: boolean;
     dedupeByMessageIdempotency?: boolean;
     onProjectionReconcileNeeded?: () => void;
+    relocateSupersededIdempotencyKey?: boolean;
     scheduleProjectionReconcile?: boolean;
     touchMutation?: boolean;
   } = {},
@@ -114,16 +115,33 @@ export function appendTranscriptEventInTransaction(
     );
     return true;
   }
-  // Caller-checked appends may retain a duplicate key in the payload, but the
-  // identity index can point at only one row.
+  // Caller-checked replay appends may retain a duplicate key in the payload
+  // when superseding an abandoned branch (transcript rewrite replay, worker
+  // commit recovery). The identity index can point at only one row, so move
+  // it to this append instead of leaving a future duplicate delivery resolve
+  // to the row being replaced. scan-assistant appends collide with a
+  // different role on purpose (see chat.abort-persistence.test.ts) and must
+  // not steal the key from that row: drop it from this append instead.
+  const supersededIdentity =
+    identity.messageIdempotencyKey && !options.dedupeByMessageIdempotency
+      ? readTranscriptIdentityByMessageIdempotencyKey(
+          database,
+          scope.sessionId,
+          identity.messageIdempotencyKey,
+        )
+      : undefined;
+  if (supersededIdentity && options.relocateSupersededIdempotencyKey) {
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("transcript_event_identities")
+        .set({ message_idempotency_key: null })
+        .where("session_id", "=", scope.sessionId)
+        .where("event_id", "=", supersededIdentity.eventId),
+    );
+  }
   const indexedMessageIdempotencyKey =
-    identity.messageIdempotencyKey &&
-    !options.dedupeByMessageIdempotency &&
-    readTranscriptIdentityByMessageIdempotencyKey(
-      database,
-      scope.sessionId,
-      identity.messageIdempotencyKey,
-    )
+    supersededIdentity && !options.relocateSupersededIdempotencyKey
       ? undefined
       : identity.messageIdempotencyKey;
   executeSqliteQuerySync(
