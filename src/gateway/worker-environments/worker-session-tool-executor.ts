@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
-  WorkerGitHubPublishParams,
   WorkerSessionsSendParams,
   WorkerSessionsSpawnParams,
   WorkerSessionToolResult,
@@ -23,7 +22,6 @@ import { jsonResult } from "../../agents/tools/tool-results.js";
 import { DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH } from "../../config/agent-limits.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { inheritSessionCreationPolicy } from "../../config/sessions/session-entry-provenance.js";
-import { sha256Base64Url, sha256HexPrefixCore } from "../../infra/crypto-digest.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { WORKER_TOOL_NAMES } from "../../worker/tool-authority.js";
 import type { GitHubPublicationCoordinator } from "../github-publication.js";
@@ -40,8 +38,15 @@ import type { WorkerEnvironmentService } from "./service.js";
 import {
   createWorkerPortalToolExecutor,
   type WorkerPortalToolExecutorDependencies,
-  type WorkerPortalToolRequest,
 } from "./worker-portal-tool-executor.js";
+import {
+  applyWorkerSessionToolPolicy,
+  computeWorkerSessionToolRequestDigest as computeRequestDigest,
+  workerChildSessionKey as childSessionKey,
+  WorkerSessionToolOutcomeUnknownError,
+  workerSessionToolOperationKey as operationKey,
+  type WorkerSessionToolRequest,
+} from "./worker-session-tool-operation.js";
 import {
   serializeWorkerSessionToolResult as serializeResult,
   workerSessionToolErrorResult as errorResult,
@@ -54,36 +59,6 @@ import {
   type WorkerSessionToolSource as ExactSource,
   type WorkerSessionToolTarget as ExactTarget,
 } from "./worker-session-tool-topology.js";
-
-type WorkerSessionToolRequest =
-  | WorkerPortalToolRequest
-  | ({ identity: WorkerConnectionIdentity; signal?: AbortSignal } & (
-      | { toolName: "sessions_spawn"; request: WorkerSessionsSpawnParams }
-      | { toolName: "sessions_send"; request: WorkerSessionsSendParams }
-      | { toolName: "github_publish"; request: WorkerGitHubPublishParams }
-    ));
-
-class WorkerSessionToolOutcomeUnknownError extends Error {
-  constructor(cause: unknown) {
-    super("Worker session operation outcome is unknown; it was not replayed", { cause });
-    this.name = "WorkerSessionToolOutcomeUnknownError";
-  }
-}
-
-function computeRequestDigest(value: unknown): string {
-  return sha256Base64Url(`openclaw.worker-session-tool-request.v1\0${JSON.stringify(value)}`);
-}
-
-function operationKey(operationSeed: string, purpose: string): string {
-  return sha256Base64Url(`openclaw.worker-session-tool-operation.v1\0${operationSeed}\0${purpose}`);
-}
-
-function childSessionKey(operationSeed: string, targetAgentId: string): string {
-  return `agent:${targetAgentId}:dashboard:cloud-${sha256HexPrefixCore(
-    `openclaw.worker-session-tool-operation.v1\0${operationSeed}\0child-session`,
-    32,
-  )}`;
-}
 
 export function createWorkerSessionToolExecutor(params: {
   resolveGatewayContext: GatewayContextResolver;
@@ -609,26 +584,49 @@ export function createWorkerSessionToolExecutor(params: {
           ),
       };
     }
+    const completeOperation = (result: unknown, failed = false) => {
+      const resultJson = serializeResult(result);
+      return params.placements.completeWorkerSessionToolOperation({
+        sourceSessionId: source.sessionId,
+        sourceClaimId,
+        toolCallId: request.request.toolCallId,
+        requestDigest,
+        resultJson,
+        failed,
+      })
+        ? resultJson
+        : serializeResult(errorResult(new Error("Worker session operation lost ownership")));
+    };
     const operation = (async () => {
+      let operationRequest = request;
       let result: unknown;
       let failed = false;
       try {
+        // Only the elected durable owner runs policy; retries reuse its terminal result.
+        const policy = await applyWorkerSessionToolPolicy({ request, source });
+        if ("result" in policy) {
+          return completeOperation(policy.result);
+        }
+        operationRequest = policy.request;
         const target =
-          request.toolName === "sessions_send"
+          operationRequest.toolName === "sessions_send"
             ? exactAuthorizedTarget({
                 source,
-                requestedSessionKey: request.request.sessionKey,
+                requestedSessionKey: operationRequest.request.sessionKey,
+                placements: params.placements,
               })
             : undefined;
         let childKey = started.childSessionKey;
-        if (request.toolName === "sessions_spawn" && !childKey) {
-          const targetAgentId = normalizeAgentId(request.request.agentId ?? source.agentId);
+        if (operationRequest.toolName === "sessions_spawn" && !childKey) {
+          const targetAgentId = normalizeAgentId(
+            operationRequest.request.agentId ?? source.agentId,
+          );
           childKey = childSessionKey(started.operationSeed, targetAgentId);
           if (
             !params.placements.bindWorkerSessionToolOperationChild({
               sourceSessionId: source.sessionId,
               sourceClaimId,
-              toolCallId: request.request.toolCallId,
+              toolCallId: operationRequest.request.toolCallId,
               requestDigest,
               childSessionKey: childKey,
             })
@@ -637,33 +635,36 @@ export function createWorkerSessionToolExecutor(params: {
           }
         }
         result =
-          request.toolName === "sessions_spawn"
+          operationRequest.toolName === "sessions_spawn"
             ? await spawn({
                 source,
-                identity: request.identity,
-                request: request.request,
+                identity: operationRequest.identity,
+                request: operationRequest.request,
                 operationSeed: started.operationSeed,
                 childSessionKey: childKey!,
-                ...(request.signal ? { signal: request.signal } : {}),
+                ...(operationRequest.signal ? { signal: operationRequest.signal } : {}),
               })
             : await send({
                 source,
-                identity: request.identity,
+                identity: operationRequest.identity,
                 target: target!,
-                request: request.request,
+                request: operationRequest.request,
                 idempotencyKey: `worker-session-send:${operationKey(
                   started.operationSeed,
                   "target-send",
                 )}`,
-                ...(request.signal ? { signal: request.signal } : {}),
+                ...(operationRequest.signal ? { signal: operationRequest.signal } : {}),
               });
       } catch (error) {
-        if (error instanceof WorkerSessionToolOutcomeUnknownError || request.signal?.aborted) {
+        if (
+          error instanceof WorkerSessionToolOutcomeUnknownError ||
+          operationRequest.signal?.aborted
+        ) {
           if (
             !params.placements.abandonWorkerSessionToolOperation({
               sourceSessionId: source.sessionId,
               sourceClaimId,
-              toolCallId: request.request.toolCallId,
+              toolCallId: operationRequest.request.toolCallId,
               requestDigest,
             })
           ) {
@@ -682,20 +683,7 @@ export function createWorkerSessionToolExecutor(params: {
         failed = true;
         result = errorResult(error);
       }
-      const resultJson = serializeResult(result);
-      if (
-        !params.placements.completeWorkerSessionToolOperation({
-          sourceSessionId: source.sessionId,
-          sourceClaimId,
-          toolCallId: request.request.toolCallId,
-          requestDigest,
-          resultJson,
-          failed,
-        })
-      ) {
-        return serializeResult(errorResult(new Error("Worker session operation lost ownership")));
-      }
-      return resultJson;
+      return completeOperation(result, failed);
     })();
     inFlight.set(inFlightKey, operation);
     try {
