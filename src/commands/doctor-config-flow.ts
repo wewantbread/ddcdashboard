@@ -8,6 +8,7 @@ import { withProgress } from "../cli/progress.js";
 import { configIncludeOwnsAgentRoster } from "../config/agent-roster-provenance.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
+import { configWriteTargetsIncludeBoundary } from "../config/mutate.js";
 import { CONFIG_PATH } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
@@ -34,7 +35,6 @@ import {
   type DoctorConfigMutationResult,
   type DoctorConfigMutationState,
 } from "./doctor/shared/config-mutation-state.js";
-import { isSingleTopLevelIncludeMigration } from "./doctor/shared/include-migration-ownership.js";
 import { normalizeCompatibilityConfigValues } from "./doctor/shared/legacy-config-core-migrate.js";
 import type { DoctorPluginMetadataSnapshotState } from "./doctor/shared/plugin-metadata-snapshot-scope.js";
 
@@ -603,13 +603,8 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   });
   const cfg = finalized.cfg;
   const shouldWriteConfig = finalized.shouldWriteConfig && !legacyMigrationBlocksWrite;
-  const singleTopLevelIncludeWrite =
-    shouldWriteConfig &&
-    isSingleTopLevelIncludeMigration({
-      parsed: snapshot.parsed,
-      sourceConfig: snapshot.sourceConfig,
-      candidate: cfg,
-    });
+  const includeBoundaryWrite =
+    shouldWriteConfig && configWriteTargetsIncludeBoundary({ snapshot, nextConfig: cfg });
 
   const configuredOpencodePluginIds = [
     cfg.models?.providers?.opencode || cfg.models?.providers?.["opencode-zen"]
@@ -649,7 +644,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     ...(sourceLastTouchedVersion ? { sourceLastTouchedVersion } : {}),
     ...(legacyMigrationPartiallyValid ? { skipPluginValidationOnWrite: true } : {}),
     ...(shouldWriteConfig && explicitSetPaths.length > 0 ? { explicitSetPaths } : {}),
-    ...(singleTopLevelIncludeWrite ? { skipWizardMetadataForIncludeWrite: true } : {}),
+    ...(includeBoundaryWrite ? { skipWizardMetadataForIncludeWrite: true } : {}),
     ...(shouldRepairCronCodexModelRefsAfterConfigWrite
       ? { shouldRepairCronCodexModelRefsAfterConfigWrite: true }
       : {}),
