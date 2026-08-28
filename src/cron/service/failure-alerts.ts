@@ -204,7 +204,17 @@ function transportFailureAlert(
   let pendingFallback = true;
   const fallback = (reachedRecipient = false) => {
     if (pendingFallback && !reachedRecipient) {
-      enqueueCronNotification(state, params.job, params.payload.text ?? "", "failure-alert");
+      // The fallback enqueue can itself fail (e.g. the job's agent was
+      // removed); a failed alert runs inside async send callbacks and must
+      // never escape as an unhandled rejection.
+      try {
+        enqueueCronNotification(state, params.job, params.payload.text ?? "", "failure-alert");
+      } catch (err) {
+        state.deps.log.warn(
+          { jobId: params.job.id, err: String(err) },
+          "cron: failure alert fallback enqueue failed",
+        );
+      }
     }
     pendingFallback = false;
   };
