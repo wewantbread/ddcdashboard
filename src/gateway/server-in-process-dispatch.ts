@@ -65,6 +65,13 @@ export function createGatewayDispatchTimeoutError(method: string): Error {
   return new Error(`gateway request timeout for ${method}`);
 }
 
+/** Rejects an expired request even when its timer callback has not run yet. */
+export function throwIfGatewayDispatchDeadlineExpired(method: string, deadlineMs?: number): void {
+  if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+    throw createGatewayDispatchTimeoutError(method);
+  }
+}
+
 function resolveDispatchAbortError(method: string, signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -92,6 +99,7 @@ export async function waitForGatewayDispatchDeadline<T>(
     if (signal?.aborted) {
       throw resolveDispatchAbortError(method, signal);
     }
+    throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
     const remainingTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs);
     if (remainingTimeoutMs === undefined && !signal) {
       return await promise;

@@ -10,6 +10,7 @@ import {
   type GatewayMethodDispatchResponse,
   resolveGatewayDispatchDeadlineMs,
   resolveRemainingGatewayDispatchTimeoutMs,
+  throwIfGatewayDispatchDeadlineExpired,
   throwIfGatewayDispatchAborted,
   waitForGatewayDispatchDeadline,
   unwrapGatewayMethodDispatchResponse,
@@ -82,6 +83,7 @@ export function createInternalAgentTurnFacade(options: InternalAgentTurnFacadeOp
       signal,
       onSignalAbort,
     );
+    throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
     if (authorization.error) {
       return throwEnvelopeRejection(method, authorization.error);
     }
@@ -154,6 +156,7 @@ export function createInternalAgentTurnFacade(options: InternalAgentTurnFacadeOp
       dispatchOptions.signal,
       dispatchOptions.onSignalAbort,
     );
+    throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
     if (authorization.error) {
       return { ok: false, error: authorization.error };
     }
