@@ -21,6 +21,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import * as pluginEnable from "../plugins/enable.js";
 import { withoutPluginInstallRecords } from "../plugins/installed-plugin-index-records.js";
+import { RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON } from "../plugins/managed-npm-retention-contract.js";
 import { hasRetainedManagedNpmInstallMarker } from "../plugins/managed-npm-retention.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { ProviderAuthChoiceMetadata } from "../plugins/provider-auth-choices.js";
@@ -5236,17 +5237,17 @@ describe("activateSetupInference", () => {
     expect(markRetained).toHaveBeenNthCalledWith(1, {
       packageDir: expectDefined(installRecords[0], "installRecords[0] test invariant").installPath,
       pluginId: "codex",
-      reason: "openclaw-inference-activation-not-committed",
+      reason: RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
     });
     expect(markRetained).toHaveBeenNthCalledWith(2, {
       packageDir: expectDefined(installRecords[0], "installRecords[0] test invariant").installPath,
       pluginId: "codex",
-      reason: "openclaw-inference-activation-not-committed",
+      reason: RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
     });
     expect(markRetained).toHaveBeenNthCalledWith(3, {
       packageDir: expectDefined(installRecords[1], "installRecords[1] test invariant").installPath,
       pluginId: "codex",
-      reason: "openclaw-inference-activation-not-committed",
+      reason: RETAINED_MANAGED_NPM_INFERENCE_ACTIVATION_REASON,
     });
     expect(clearInstallRecords).toHaveBeenCalledTimes(3);
     expect(clearMetadata).toHaveBeenCalledTimes(3);
