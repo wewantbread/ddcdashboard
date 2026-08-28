@@ -680,18 +680,25 @@ describe("channel ingress drain", () => {
     });
   });
 
-  it("keeps retry-accounted abandonment pending beyond the failure threshold", async () => {
+  it("retry-accounts abandonment and dead-letters it at the failure threshold", async () => {
+    // Abandonment is retry-accounted (unlike onCancelled above, which is
+    // budget-free). This previously asserted the row stayed pending past
+    // maxAttempts, which let an unadoptable claim retry forever and hold its
+    // lane head; the ceiling now terminalizes it through the same bounded
+    // disposition onFailed uses.
     await withTempState(async (stateDir) => {
       let clock = 1;
+      const maxAttempts = 3;
       const queue = createTestIngressQueue(stateDir, { now: () => clock });
       await queue.enqueue("abandoned", { text: "x" }, { laneKey: "l", receivedAt: 1 });
 
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      const pendingPerPass: Array<Array<{ attempts: number }>> = [];
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         clock += 1;
         const drain = createChannelIngressDrain<Payload>({
           queue,
           now: () => clock,
-          retryPolicy: { maxAttempts: 1, deadLetterMinAgeMs: 0, baseMs: 0, maxMs: 0 },
+          retryPolicy: { maxAttempts, deadLetterMinAgeMs: 0, baseMs: 0, maxMs: 0 },
           dispatchClaimedEvent: async (_event, lifecycle) => {
             await lifecycle.onAbandoned();
             return { kind: "deferred" };
@@ -700,16 +707,28 @@ describe("channel ingress drain", () => {
         await drain.drainOnce();
         await drain.waitForIdle();
         drain.dispose();
+        pendingPerPass.push(await queue.listPending());
       }
 
-      expect(await queue.listPending()).toEqual([
+      // Below the ceiling every abandonment consumes exactly one attempt and
+      // records the durable last error; the pass that reaches maxAttempts
+      // leaves nothing pending.
+      expect(pendingPerPass).toEqual([
+        [expect.objectContaining({ id: "abandoned", attempts: 1, lastError: "turn-abandoned" })],
+        [expect.objectContaining({ id: "abandoned", attempts: 2, lastError: "turn-abandoned" })],
+        [],
+      ]);
+      expect(await queue.listFailed?.()).toEqual([
         expect.objectContaining({
           id: "abandoned",
-          attempts: 3,
-          lastError: "turn-abandoned",
+          reason: "retry-limit-exceeded",
+          // Producer identity survives: not collapsed into a dispatch failure.
+          message: "turn-abandoned",
+          // fail() never increments; the claim-time budget is what is retained.
+          attempts: maxAttempts - 1,
+          payload: { text: "x" },
         }),
       ]);
-      expect(await queue.listFailed?.()).toEqual([]);
     });
   });
 

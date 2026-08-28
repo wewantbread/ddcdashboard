@@ -381,6 +381,9 @@ describe("Feishu durable ingress debounce lifecycle", () => {
   });
 
   it("preserves abandon retry accounting, backoff, threshold, and restart behavior", async () => {
+    // receivedAt stays "now", so the default 24h dead-letter age floor is not
+    // met. maxAttempts therefore releases rather than terminalizes; the aged
+    // ceiling is covered by the Microsoft Teams sibling of this test.
     vi.useFakeTimers();
     const now = Date.UTC(2026, 0, 2);
     vi.setSystemTime(now);

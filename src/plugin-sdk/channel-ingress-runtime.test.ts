@@ -92,6 +92,8 @@ describe("plugin-sdk/channel-ingress-runtime", () => {
   });
 
   it("cancellation-settles every source in mixed capable and legacy fan-in", async () => {
+    // Legacy sources still receive onAbandoned from cancel(); the drain treats
+    // that invocation as budget-free cancel-compat, not genuine abandonment.
     const adopted = vi.fn(async () => {});
     const cancelled = vi.fn(async () => {});
     const legacyAbandoned = vi.fn(async () => {});

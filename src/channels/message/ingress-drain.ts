@@ -20,7 +20,11 @@ import {
   isLiveLocalIngressDrainOwner,
   registerLiveIngressDrainInstance,
 } from "./ingress-claim-owner.js";
-import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
+import {
+  createIngressSettleOwner,
+  isIngressCancelCompat,
+  type ChannelIngressDispatchLifecycle,
+} from "./ingress-drain-lifecycle.js";
 import {
   activeClaimKey,
   IngressAdoptionLostError,
@@ -358,36 +362,6 @@ export function createChannelIngressDrain<
     await releaseClaim(claim, { lastError: disposition.message });
   };
 
-  const createSettleOwner = (
-    state: ActiveHandlerState<TPayload, TMetadata>,
-  ): ((fn: () => Promise<void>) => Promise<void>) => {
-    let settlePromise: Promise<void> | undefined;
-    let settled = false;
-    return async (fn) => {
-      if (settled) {
-        return;
-      }
-      if (settlePromise) {
-        await settlePromise;
-        return;
-      }
-      settlePromise = (async () => {
-        // Only mark settled after the tombstone/fail/release write commits.
-        // Write failure must keep heartbeat + in-memory ownership (wedged > duplicated).
-        await fn();
-        settled = true;
-        state.phase = "settled";
-        removeActive(state);
-      })();
-      try {
-        await settlePromise;
-      } catch (err) {
-        settlePromise = undefined;
-        throw err;
-      }
-    };
-  };
-
   const armStallWatchdog = (state: ActiveHandlerState<TPayload, TMetadata>) => {
     clearStallTimer(state);
     state.stallTimer = setTimeout(() => {
@@ -423,9 +397,9 @@ export function createChannelIngressDrain<
     state.stallTimer.unref?.();
   };
 
-  const releaseUnadopted = async (
+  const settleUnadopted = async (
     state: ActiveHandlerState<TPayload, TMetadata>,
-    releaseOptions: { lastError?: string; recordAttempt?: boolean },
+    outcome: "cancelled" | "abandoned",
   ) => {
     if (state.phase !== "deferred" && state.phase !== "dispatching") {
       return;
@@ -436,7 +410,11 @@ export function createChannelIngressDrain<
     clearStallTimer(state);
     await state
       .settleOnce(async () => {
-        await releaseClaim(state.claim, releaseOptions);
+        if (outcome === "cancelled") {
+          await releaseClaim(state.claim, { recordAttempt: false });
+          return;
+        }
+        await applyFailureDisposition(state.claim, new Error("turn-abandoned"));
       })
       .catch(() => undefined);
   };
@@ -504,10 +482,15 @@ export function createChannelIngressDrain<
       onCancelled: async () => {
         // Cancellation means ownership ended before delivery, so preserve every
         // prior retry fact while reopening the canonical row for replacement.
-        await releaseUnadopted(state, { recordAttempt: false });
+        await settleUnadopted(state, "cancelled");
       },
       onAbandoned: async () => {
-        await releaseUnadopted(state, { lastError: "turn-abandoned" });
+        // Mixed fan-in cancel falls back to onAbandoned when a source predates
+        // onCancelled. That path is still cancellation: do not charge budget.
+        // A genuine un-admitted turn takes the same bounded disposition as
+        // onFailed, or it retries forever and holds the head of its FIFO lane.
+        const outcome = isIngressCancelCompat() ? "cancelled" : "abandoned";
+        await settleUnadopted(state, outcome);
       },
     };
   };
@@ -546,7 +529,7 @@ export function createChannelIngressDrain<
       task: Promise.resolve(),
       settleOnce: async () => {},
     } as ActiveHandlerState<TPayload, TMetadata>;
-    state.settleOnce = createSettleOwner(state);
+    state.settleOnce = createIngressSettleOwner(state, removeActive);
     const lifecycle = createLifecycle(state);
     armStallWatchdog(state);
     armClaimRefresh(state);
