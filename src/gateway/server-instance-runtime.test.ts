@@ -187,7 +187,7 @@ describe("createGatewayInstanceRuntime", () => {
       entry: {
         ts: Date.now(),
         ok: true,
-        payload: { runId, status: "accepted" },
+        payload: { admitted: true, runId, status: "accepted" },
       },
     });
     const onAccepted = vi.fn();
@@ -202,7 +202,9 @@ describe("createGatewayInstanceRuntime", () => {
         (error: unknown) => ({ error, status: "rejected" as const }),
       );
 
-    await vi.waitFor(() => expect(onAccepted).toHaveBeenCalledWith({ runId, status: "in_flight" }));
+    await vi.waitFor(() =>
+      expect(onAccepted).toHaveBeenCalledWith({ admitted: true, runId, status: "in_flight" }),
+    );
     emitAgentEvent({
       runId,
       stream: "lifecycle",

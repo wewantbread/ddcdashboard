@@ -394,8 +394,7 @@ export async function prepareAgentRunDispatch(params: {
     if (!publishedRuntime) {
       throw new Error(`published reply runtime missing for ${params.activeSessionAgentId}`);
     }
-    const pluginGeneration =
-      publishedRuntime.pluginGeneration as PreparedReplyDispatchRuntime["pluginGeneration"];
+    const pluginGeneration = publishedRuntime.pluginGeneration;
     replyDispatchRuntime = { config: publishedRuntime.config, pluginGeneration };
     preparedModelRuntimeLease = await acquireAgentRunPreparedModelRuntime(
       {

@@ -809,6 +809,23 @@ describe("deliverAgentCommandResult payload normalization", () => {
     });
   });
 
+  it("preserves native continuation evidence across command delivery", async () => {
+    const onDeliveryResult = vi.fn();
+    const delivered = await deliverAgentCommandResultForTest({
+      omitReplyTarget: true,
+      opts: { deliver: false },
+      payloads: [],
+      result: { runtimeContinuationStarted: true },
+      onDeliveryResult,
+    });
+
+    expect(delivered.runtimeContinuationStarted).toBe(true);
+    expect(onDeliveryResult).toHaveBeenCalledOnce();
+    expect(onDeliveryResult).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeContinuationStarted: true }),
+    );
+  });
+
   it("does not automatically redeliver text and media already sent to the same target", async () => {
     const delivered = await deliverAgentCommandResultForTest({
       opts: { threadId: "171.222" },
