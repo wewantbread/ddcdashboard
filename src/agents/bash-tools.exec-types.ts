@@ -93,6 +93,8 @@ export type ExecToolDefaults = {
   /** Channel-owned sender/chat metadata. Exec subprocesses receive only sender/chat IDs. */
   channelContext?: PluginHookChannelContext;
   accountId?: string;
+  /** Real sender of the turn, distinct from its channel or group delivery target. */
+  senderId?: string;
   approvalReviewerDeviceId?: string;
   /** Deny approval-requiring commands without creating operator approval events. */
   nonInteractiveApproval?: boolean;

@@ -65,6 +65,7 @@ import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,
 } from "./bash-tools.exec-types.js";
+import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type SendExecApprovalFollowupResult =
   typeof import("./bash-tools.exec-host-shared.js").sendExecApprovalFollowupResult;
@@ -72,6 +73,8 @@ type BuildExecApprovalFollowupTarget =
   typeof import("./bash-tools.exec-host-shared.js").buildExecApprovalFollowupTarget;
 type ExecApprovalFollowupTarget = Parameters<BuildExecApprovalFollowupTarget>[0];
 type ExecAutoReviewer = typeof import("../infra/exec-auto-review.js").defaultExecAutoReviewer;
+type ResolveApprovalCommandAuthorization =
+  typeof import("../infra/channel-approval-auth.js").resolveApprovalCommandAuthorization;
 type BuildExecApprovalFollowupTargetMock = (
   value: ExecApprovalFollowupTarget,
 ) => ExecApprovalFollowupTarget | null;
@@ -94,6 +97,7 @@ type MockRegisteredExecApprovalRequest = {
   initiatingSurface: unknown;
   sentApproverDms: boolean;
   unavailableReason: string | null;
+  gatewayGeneration?: string;
 };
 
 type MockExecHostApprovalContext = {
@@ -193,7 +197,7 @@ const defaultExecAutoReviewerMock = vi.hoisted(() =>
     rationale: "allowed",
   })),
 );
-const commitExecAuthorizationMock = vi.hoisted(() => vi.fn(async () => undefined));
+const commitExecAuthorizationMock = vi.hoisted(() => vi.fn(async (_input?: unknown) => undefined));
 const resolveApprovalDecisionOrUndefinedMock = vi.hoisted(() =>
   vi.fn(
     async (_params?: {
@@ -388,6 +392,13 @@ const detectInterpreterInlineEvalArgvMock = vi.hoisted(() =>
     } | null => null,
   ),
 );
+const resolveApprovalCommandAuthorizationMock = vi.hoisted(() =>
+  vi.fn<ResolveApprovalCommandAuthorization>(() => ({ authorized: true, explicit: true })),
+);
+const resolveRegisteredExecApprovalDecisionMock = vi.hoisted(() =>
+  vi.fn<() => Promise<string | null | undefined>>(),
+);
+const registerExecApprovalRequestForHostOrThrowMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../infra/exec-approvals.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/exec-approvals.js")>()),
@@ -411,7 +422,8 @@ vi.mock("../infra/exec-auto-review.js", async (importOriginal) => ({
 vi.mock("./bash-tools.exec-approval-request.js", () => ({
   buildExecApprovalRequesterContext: vi.fn(() => ({})),
   buildExecApprovalTurnSourceContext: vi.fn(() => ({})),
-  registerExecApprovalRequestForHostOrThrow: vi.fn(async () => undefined),
+  registerExecApprovalRequestForHostOrThrow: registerExecApprovalRequestForHostOrThrowMock,
+  resolveRegisteredExecApprovalDecision: resolveRegisteredExecApprovalDecisionMock,
   isExecApprovalRunAbortedError: (error: unknown) => error === runAbortedApprovalError,
 }));
 
@@ -449,6 +461,10 @@ vi.mock("../infra/command-analysis/inline-eval.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/command-analysis/inline-eval.js")>()),
   describeInterpreterInlineEval: vi.fn(() => "python -c"),
   detectInterpreterInlineEvalArgv: detectInterpreterInlineEvalArgvMock,
+}));
+
+vi.mock("../infra/channel-approval-auth.js", () => ({
+  resolveApprovalCommandAuthorization: resolveApprovalCommandAuthorizationMock,
 }));
 
 let processGatewayAllowlist: typeof import("./bash-tools.exec-host-gateway.js").processGatewayAllowlist;
@@ -585,6 +601,14 @@ describe("processGatewayAllowlist", () => {
     }));
     detectInterpreterInlineEvalArgvMock.mockReset();
     detectInterpreterInlineEvalArgvMock.mockReturnValue(null);
+    resolveApprovalCommandAuthorizationMock.mockReset();
+    resolveApprovalCommandAuthorizationMock.mockReturnValue({ authorized: true, explicit: true });
+    resolveRegisteredExecApprovalDecisionMock.mockReset();
+    resolveRegisteredExecApprovalDecisionMock.mockImplementation(async () => {
+      const outcome = await resolveExecApprovalWaitOutcomeMock.mock.results.at(-1)?.value;
+      return outcome?.kind === "resolved" ? outcome.decision : undefined;
+    });
+    registerExecApprovalRequestForHostOrThrowMock.mockReset();
     resolveExecApprovalUnavailableDecisionsMock.mockClear();
     buildExecApprovalPendingToolResultMock.mockReturnValue({
       details: { status: "approval-pending" },
@@ -600,6 +624,7 @@ describe("processGatewayAllowlist", () => {
       initiatingSurface: "origin",
       sentApproverDms: false,
       unavailableReason: null,
+      gatewayGeneration: "gateway-generation-1",
     });
   });
 
@@ -649,6 +674,34 @@ describe("processGatewayAllowlist", () => {
       promise: Promise.resolve(params.outcome),
     });
     buildExecApprovalFollowupTargetMock.mockImplementation((value) => value);
+  }
+
+  function useApprovalRegistrationBoundary() {
+    registerExecApprovalRequestForHostOrThrowMock.mockImplementation(
+      async (params: { approvalId: string; detached?: boolean }) => ({
+        id: params.approvalId,
+        expiresAtMs: Date.now() + 60_000,
+        ...(params.detached ? { gatewayGeneration: "gateway-generation-1" } : {}),
+      }),
+    );
+    createAndRegisterDefaultExecApprovalRequestMock.mockImplementation(async (params) => {
+      const registration = await (
+        params as { register: (approvalId: string) => Promise<{ gatewayGeneration?: string }> }
+      ).register("req-1");
+      return {
+        approvalId: "req-1",
+        approvalSlug: "slug-1",
+        warningText: "",
+        expiresAtMs: Date.now() + 60_000,
+        preResolvedDecision: null,
+        initiatingSurface: "origin",
+        sentApproverDms: false,
+        unavailableReason: null,
+        ...(registration.gatewayGeneration
+          ? { gatewayGeneration: registration.gatewayGeneration }
+          : {}),
+      };
+    });
   }
 
   function useRealUnavailableApprovalGate() {
@@ -2542,6 +2595,53 @@ EOF`,
     expect(approvalInput?.outcome?.exitCode).toBe(0);
   });
 
+  it.each([
+    { trigger: "diagnostics", approvalFollowupMode: "direct" as const },
+    { trigger: "export-trajectory", approvalFollowupMode: "agent" as const },
+  ])("keeps $trigger command approvals outside detached agent ownership", async (params) => {
+    useApprovalRegistrationBoundary();
+
+    const result = await runGatewayAllowlist({
+      command: "openclaw gateway diagnostics export --json",
+      trigger: params.trigger,
+      approvalFollowupMode: params.approvalFollowupMode,
+      turnSourceChannel: "webchat",
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(registerExecApprovalRequestForHostOrThrowMock).toHaveBeenCalledWith(
+      expect.objectContaining({ detached: false }),
+    );
+  });
+
+  it("moves deferred agent approval ownership to the Gateway generation", async () => {
+    useApprovalRegistrationBoundary();
+    resolveApprovalCommandAuthorizationMock.mockReturnValue({
+      authorized: false,
+      explicit: false,
+      reason: "sender-not-authorized",
+    });
+
+    const result = await withGatewayToolCallerIdentity(
+      {
+        agentId: "main",
+        sessionKey: "agent:main:telegram:direct:user",
+        signedAgentRuntimeIdentityToken: "trusted-runtime-token",
+      },
+      async () =>
+        await runGatewayAllowlist({
+          command: "echo ok",
+          turnSourceChannel: "telegram",
+          turnSourceTo: "telegram:user",
+        }),
+    );
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(registerExecApprovalRequestForHostOrThrowMock).toHaveBeenCalledWith(
+      expect.objectContaining({ detached: true }),
+    );
+  });
+
   it("uses async agent followups for explicit webchat approval mode", async () => {
     resolveExecHostApprovalContextMock.mockReturnValue({
       approvals: { allowlist: [], file: { version: 1, agents: {} } },
@@ -2872,6 +2972,8 @@ EOF`,
       const result = await runGatewayAllowlist({
         command: "find . -maxdepth 1",
         turnSourceChannel,
+        turnSourceSenderId: "approver-1",
+        config: {},
       });
 
       expect(result.pendingResult).toBeUndefined();
@@ -2906,6 +3008,8 @@ EOF`,
       const result = await runGatewayAllowlist({
         command: "find . -maxdepth 1",
         turnSourceChannel,
+        turnSourceSenderId: "approver-1",
+        config: {},
       });
 
       expect(result.pendingResult).toBeUndefined();
@@ -2919,6 +3023,56 @@ EOF`,
       expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
     },
   );
+
+  it("returns approval-pending when a Telegram turn sender cannot approve", async () => {
+    const config = {};
+    resolveApprovalCommandAuthorizationMock.mockReturnValue({
+      authorized: false,
+      reason: "not an approver",
+      explicit: true,
+    });
+    resolveApprovalDecisionOrUndefinedMock.mockResolvedValue("allow-once");
+    createExecApprovalDecisionStateMock.mockReturnValue({
+      baseDecision: { timedOut: false },
+      approvedByAsk: true,
+      deniedReason: null,
+    });
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "telegram",
+      turnSourceAccountId: "default",
+      turnSourceSenderId: "counterpart-1",
+      config,
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(resolveApprovalCommandAuthorizationMock).toHaveBeenCalledWith({
+      cfg: config,
+      channel: "telegram",
+      accountId: "default",
+      senderId: "counterpart-1",
+      kind: "exec",
+    });
+  });
+
+  it("returns approval-pending for a senderless native-channel turn", async () => {
+    resolveApprovalDecisionOrUndefinedMock.mockResolvedValue("allow-once");
+    createExecApprovalDecisionStateMock.mockReturnValue({
+      baseDecision: { timedOut: false },
+      approvedByAsk: true,
+      deniedReason: null,
+    });
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "telegram",
+      config: {},
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    expect(resolveApprovalCommandAuthorizationMock).not.toHaveBeenCalled();
+  });
 
   it("waits outside admission, then atomically hands an approved process to the registry", async () => {
     let resolveApproval: (decision: ExecApprovalDecision) => void = () => {};
@@ -3262,6 +3416,98 @@ EOF`,
     expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
     expect(runExecProcessMock).not.toHaveBeenCalled();
     expect(sendExecApprovalFollowupResultMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects detached execution when its Gateway generation changes after approval", async () => {
+    let resolveApproval: (decision: ExecApprovalDecision) => void = () => {};
+    resolveApprovalDecisionOrUndefinedMock.mockReturnValue(
+      new Promise<ExecApprovalDecision>((resolve) => {
+        resolveApproval = resolve;
+      }),
+    );
+    createExecApprovalDecisionStateMock.mockReturnValue({
+      baseDecision: { timedOut: false },
+      approvedByAsk: true,
+      deniedReason: null,
+    });
+    buildExecApprovalFollowupTargetMock.mockImplementation((value) => value);
+    resolveRegisteredExecApprovalDecisionMock.mockResolvedValue(undefined);
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "feishu",
+      runId: "run-replaced-after-approval",
+      toolCallId: "tool-replaced-after-approval",
+    });
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    await vi.waitFor(() => {
+      expect(resolveApprovalDecisionOrUndefinedMock).toHaveBeenCalledOnce();
+    });
+
+    resolveApproval("allow-once");
+    await vi.waitFor(() => expect(resolveRegisteredExecApprovalDecisionMock).toHaveBeenCalled());
+
+    expect(commitExecAuthorizationMock).not.toHaveBeenCalled();
+    expect(runExecProcessMock).not.toHaveBeenCalled();
+    expect(markBackgroundedMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks authorization writes when restart begins after generation validation", async () => {
+    mockApprovedDetachedExec({
+      outcome: { status: "completed", exitCode: 0, timedOut: false, aggregated: "done" },
+    });
+    resolveRegisteredExecApprovalDecisionMock.mockImplementationOnce(async () => {
+      markGatewayRestartDraining();
+      return "allow-once";
+    });
+    let authorizationWrites = 0;
+    commitExecAuthorizationMock.mockImplementation(async (input) => {
+      const params = input as Parameters<
+        typeof import("../infra/exec-approvals.js").commitExecAuthorizationLocked
+      >[0];
+      params.assertActive?.();
+      authorizationWrites += 1;
+    });
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "feishu",
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce());
+    expect(authorizationWrites).toBe(0);
+    expect(runExecProcessMock).not.toHaveBeenCalled();
+    expect(markBackgroundedMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks process spawn when restart begins after final generation validation", async () => {
+    mockApprovedDetachedExec({
+      outcome: { status: "completed", exitCode: 0, timedOut: false, aggregated: "done" },
+    });
+    resolveRegisteredExecApprovalDecisionMock
+      .mockResolvedValueOnce("allow-once")
+      .mockImplementationOnce(async () => {
+        queueMicrotask(markGatewayRestartDraining);
+        return "allow-once";
+      });
+    const runtime = await vi.importActual<typeof import("./bash-tools.exec-runtime.js")>(
+      "./bash-tools.exec-runtime.js",
+    );
+    runExecProcessMock.mockImplementation(runtime.runExecProcess);
+
+    const result = await runGatewayAllowlist({
+      command: "find . -maxdepth 1",
+      turnSourceChannel: "feishu",
+      env: { PATH: "/usr/bin:/bin" },
+    });
+
+    expect(result.pendingResult?.details.status).toBe("approval-pending");
+    await vi.waitFor(() => expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledOnce());
+    expect(commitExecAuthorizationMock).toHaveBeenCalledOnce();
+    expect(startupCancellationMocks.prepare).toHaveBeenCalledOnce();
+    expect(startupCancellationMocks.spawn).not.toHaveBeenCalled();
+    expect(markBackgroundedMock).not.toHaveBeenCalled();
   });
 
   it("keeps the fire-and-forget path for headless cron approval followups", async () => {

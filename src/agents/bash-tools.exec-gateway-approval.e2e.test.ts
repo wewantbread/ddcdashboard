@@ -10,6 +10,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../config/config.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
+import {
+  registerChatAbortController,
+  type ChatAbortControllerEntry,
+} from "../gateway/chat-abort.js";
 import { ADMIN_SCOPE } from "../gateway/method-scopes.js";
 import { startGatewayServer } from "../gateway/server.js";
 import {
@@ -18,11 +22,21 @@ import {
   getGatewayE2ePortBlock,
 } from "../gateway/test-helpers.e2e.js";
 import { GATEWAY_STARTUP_MUTATED_ENV_KEYS } from "../gateway/test-helpers.env.js";
+import { validateAgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { withTimeout } from "../utils/with-timeout.js";
+import {
+  createOperationalRunInstanceRef,
+  getAdmittedRunDelegatedAuthority,
+  prepareAgentRunAdmission,
+} from "./admitted-run-context.js";
 import { createExecTool } from "./bash-tools.exec-run.js";
 import type { ExecApprovalFollowupOutcome } from "./bash-tools.exec-types.js";
+import {
+  createAdmittedGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./tools/gateway-caller-context.js";
 
 const TEST_ENV_KEYS = [
   "HOME",
@@ -56,7 +70,7 @@ describe("gateway-hosted exec approvals", () => {
   });
 
   it(
-    "lets OpenClaw-style gateway tool calls request and wait for approval over separate connections",
+    "keeps manager-owned detached approval work after its agent turn settles",
     async () => {
       const envSnapshot = captureEnv(TEST_ENV_KEYS);
       cleanup.push(() => envSnapshot.restore());
@@ -135,6 +149,33 @@ describe("gateway-hosted exec approvals", () => {
       const outcomePromise = new Promise<ExecApprovalFollowupOutcome>((resolve) => {
         resolveOutcome = resolve;
       });
+      const runId = "exec-approval-e2e";
+      const operationalRunInstance = createOperationalRunInstanceRef(runId);
+      const preparedAdmission = prepareAgentRunAdmission({
+        cfg: {},
+        facts: {
+          runId,
+          agentId: "main",
+          ingress: { kind: "system", boundary: "test", state: "present" },
+        },
+        operationalRunInstance,
+      });
+      const admittedRunContext = await preparedAdmission.admit("embedded");
+      const authority = getAdmittedRunDelegatedAuthority(admittedRunContext)!;
+      const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
+      const registration = registerChatAbortController({
+        chatAbortControllers,
+        runId,
+        sessionId: "session-exec-approval-e2e",
+        sessionKey: "agent:main:exec-approval-e2e",
+        timeoutMs: 60_000,
+        operationalRunInstance,
+      });
+      registration.bindAgentRunDelegatedAuthority(authority);
+      cleanup.push(() => {
+        registration.cleanup({ force: true });
+        preparedAdmission.close();
+      });
 
       const tool = createExecTool({
         host: "gateway",
@@ -149,16 +190,25 @@ describe("gateway-hosted exec approvals", () => {
         },
       });
 
-      const pending = await tool.execute("exec-approval-e2e", {
-        command: "printf 'smoke\\n'",
-        workdir: workspaceDir,
-        timeoutSeconds: 5,
+      const callerIdentity = createAdmittedGatewayToolCallerIdentity({
+        admittedRunContext,
+        agentId: "main",
+        sessionKey: "agent:main:exec-approval-e2e",
       });
+      const pending = await withGatewayToolCallerIdentity(callerIdentity, () =>
+        tool.execute(runId, {
+          command: "printf 'smoke\\n'",
+          workdir: workspaceDir,
+          timeoutSeconds: 5,
+        }),
+      );
 
       expect(pending.details.status).toBe("approval-pending");
       if (pending.details.status !== "approval-pending") {
         throw new Error("expected approval-pending exec result");
       }
+      registration.cleanup();
+      expect(validateAgentRunDelegatedAuthority(authority)).toBe(false);
 
       await operator.request(
         "exec.approval.resolve",

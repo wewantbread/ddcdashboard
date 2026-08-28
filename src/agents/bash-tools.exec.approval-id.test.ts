@@ -24,6 +24,9 @@ import { callGatewayTool } from "./tools/gateway.js";
 const createExecTool = (
   defaults?: Parameters<typeof createExecToolImpl>[0],
 ): ReturnType<typeof createExecToolImpl> => createExecToolImpl({ agentId: "main", ...defaults });
+const resolveApprovalCommandAuthorizationMock = vi.hoisted(() =>
+  vi.fn(() => ({ authorized: true, explicit: true })),
+);
 
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: vi.fn(),
@@ -67,6 +70,8 @@ vi.mock("../utils/message-channel.js", () => {
       return Boolean(channel && channel !== INTERNAL_MESSAGE_CHANNEL && channel !== "tui");
     },
     isGatewayMessageChannel,
+    isInternalMessageChannel: (value?: string | null) =>
+      normalizeMessageChannel(value) === INTERNAL_MESSAGE_CHANNEL,
     normalizeMessageChannel,
     resolveGatewayMessageChannel: normalizeMessageChannel,
     resolveMessageChannel: (primary?: string | null, fallback?: string | null) =>
@@ -98,6 +103,10 @@ vi.mock("../utils/delivery-context.shared.js", () => ({
       ...(threadId != null && threadId !== "" ? { threadId } : {}),
     };
   },
+}));
+
+vi.mock("../infra/channel-approval-auth.js", () => ({
+  resolveApprovalCommandAuthorization: resolveApprovalCommandAuthorizationMock,
 }));
 
 vi.mock("../infra/exec-approval-surface.js", () => ({
@@ -358,6 +367,17 @@ function mockAcceptedApprovalFlow(options: {
   });
 }
 
+function mockAcceptedNodeApprovalFlow() {
+  mockAcceptedApprovalFlow({
+    onNodeInvoke: (params) => {
+      const invoke = params as { command?: string };
+      return invoke.command === "system.run.prepare"
+        ? buildPreparedSystemRunPayload(params)
+        : { payload: { success: true, stdout: "node-ok" } };
+    },
+  });
+}
+
 function mockPendingApprovalRegistration() {
   vi.mocked(callGatewayTool).mockImplementation(async (method) => {
     if (method === "exec.approval.request") {
@@ -451,6 +471,8 @@ describe("exec approvals", () => {
     setTestEnvValue("OPENCLAW_DISABLE_BUNDLED_PLUGINS", "1");
     vi.mocked(callGatewayTool).mockReset();
     vi.mocked(sendMessage).mockClear();
+    resolveApprovalCommandAuthorizationMock.mockReset();
+    resolveApprovalCommandAuthorizationMock.mockReturnValue({ authorized: true, explicit: true });
   });
 
   afterEach(() => {
@@ -520,6 +542,49 @@ describe("exec approvals", () => {
     const agent = requireRecord(agentParams, "agent followup params");
     expectAuthenticatedExecFollowup(agent, "agent:main:main");
     expect(String(agent.idempotencyKey)).toContain(approvalId);
+  });
+
+  it("keeps an authorized native node approval inline", async () => {
+    mockAcceptedNodeApprovalFlow();
+    const tool = createExecTool({
+      host: "node",
+      ask: "always",
+      approvalRunningNoticeMs: 0,
+      sessionKey: "agent:main:discord:channel:123",
+      messageProvider: "discord",
+      currentChannelId: "123",
+      accountId: "default",
+      senderId: "authorized-sender",
+      config: {},
+    });
+
+    const result = await tool.execute("call-node-authorized", { command: "echo ok" });
+
+    expect(result.details.status).toBe("completed");
+    expect(getResultText(result)).toContain("node-ok");
+  });
+
+  it("returns pending for an unauthorized native node approval", async () => {
+    resolveApprovalCommandAuthorizationMock.mockReturnValue({
+      authorized: false,
+      explicit: false,
+    });
+    mockAcceptedNodeApprovalFlow();
+    const tool = createExecTool({
+      host: "node",
+      ask: "always",
+      approvalRunningNoticeMs: 0,
+      sessionKey: "agent:main:discord:channel:123",
+      messageProvider: "discord",
+      currentChannelId: "123",
+      accountId: "default",
+      senderId: "unauthorized-sender",
+      config: {},
+    });
+
+    const result = await tool.execute("call-node-unauthorized", { command: "echo ok" });
+
+    expect(result.details.status).toBe("approval-pending");
   });
 
   it("skips approval when node allowlist is satisfied", async () => {
@@ -1166,6 +1231,8 @@ describe("exec approvals", () => {
       currentChannelId: "123",
       accountId: "default",
       currentThreadTs: "456",
+      senderId: "discord-sender-1",
+      config: {},
     });
 
     let settled = false;
