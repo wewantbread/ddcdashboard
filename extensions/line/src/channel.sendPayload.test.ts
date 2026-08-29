@@ -1,17 +1,14 @@
 // Line tests cover channel.sendPayload plugin behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
-import {
-  verifyChannelMessageAdapterCapabilityProofs,
-  verifyChannelMessageReceiveAckPolicyAdapterProofs,
-} from "openclaw/plugin-sdk/channel-outbound";
+import { verifyChannelMessageReceiveAckPolicyAdapterProofs } from "openclaw/plugin-sdk/channel-outbound";
 import { chunkMarkdownText as chunkMarkdownTextForLine } from "openclaw/plugin-sdk/reply-runtime";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../api.js";
 import { linePlugin } from "./channel.js";
-import { createRuntime, lineResult } from "./channel.sendPayload.test-support.js";
 import { lineConfigAdapter } from "./config-adapter.js";
 import { resolveLineGroupRequireMention } from "./group-policy.js";
+import { createRuntime, lineResult } from "./outbound-harness.test-support.js";
 import { lineOutboundAdapter } from "./outbound.js";
 import { setLineRuntime } from "./runtime.js";
 import { createLineSendReceipt } from "./send-receipt.js";
@@ -897,58 +894,6 @@ describe("line outbound sendPayload", () => {
         cfg,
       }),
     ).rejects.toThrow(/require previewimageurl/i);
-  });
-
-  it("declares message adapter durable text and media with receipt proofs", async () => {
-    const { runtime, mocks } = createRuntime();
-    setLineRuntime(runtime);
-    const cfg = { channels: { line: {} } } as OpenClawConfig;
-
-    const proofResults = await verifyChannelMessageAdapterCapabilityProofs({
-      adapterName: "line",
-      adapter: linePlugin.message!,
-      proofs: {
-        text: async () => {
-          const result = await linePlugin.message?.send?.text?.({
-            cfg,
-            to: "line:user:U123",
-            text: "hello",
-            accountId: "primary",
-          });
-          expect(mocks.pushMessageLine).toHaveBeenCalledWith("line:user:U123", "hello", {
-            verbose: false,
-            accountId: "primary",
-            cfg,
-          });
-          expect(result?.receipt.platformMessageIds).toEqual(["m-text"]);
-        },
-        media: async () => {
-          const result = await linePlugin.message?.send?.media?.({
-            cfg,
-            to: "line:user:U123",
-            text: "image",
-            mediaUrl: "https://example.com/image.jpg",
-            accountId: "primary",
-          });
-          expect(mocks.sendMessageLine).toHaveBeenCalledWith("line:user:U123", "", {
-            verbose: false,
-            mediaUrl: "https://example.com/image.jpg",
-            accountId: "primary",
-            cfg,
-          });
-          expect(result?.receipt.platformMessageIds).toEqual(["m-media"]);
-        },
-        messageSendingHooks: () => {
-          expect(linePlugin.message?.send?.text).toBeTypeOf("function");
-        },
-      },
-    });
-
-    expect(proofResults.find((result) => result.capability === "text")?.status).toBe("verified");
-    expect(proofResults.find((result) => result.capability === "media")?.status).toBe("verified");
-    expect(proofResults.find((result) => result.capability === "messageSendingHooks")?.status).toBe(
-      "verified",
-    );
   });
 
   it("declares receive ack policies for immediate LINE webhook acknowledgement", async () => {
