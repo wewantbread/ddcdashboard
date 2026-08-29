@@ -84,6 +84,66 @@ describe("renderTelegramProgressDraftPreview", () => {
     expect(rendered).toMatch(/…[^<]*file\.ts<\/code>/u);
   });
 
+  it("bounds the bold status headline with the configured budget", () => {
+    const narration = "I am checking whether the generated video exists after the render finished";
+
+    const rendered = renderTelegramProgressDraftPreview(
+      `${narration}\n\n✅ Inspect\n▸ Patch`,
+      [],
+      false,
+      true,
+      24,
+    ).text;
+
+    const bold = rendered.match(/<b>([^<]*)<\/b>/u)?.[1] ?? "";
+    expect(bold).toBe("I am checking whether…");
+    expect(rendered).toContain("✅ Inspect");
+    expect(rendered).not.toContain("video");
+  });
+
+  it("bounds the rich status headline with the configured budget", () => {
+    const narration = "I am checking whether the generated video exists after the render finished";
+
+    const preview = renderTelegramProgressDraftPreview(
+      `${narration}\n\n✅ Inspect`,
+      [],
+      true,
+      true,
+      24,
+    );
+
+    expect(preview.text).toContain("I am checking whether…");
+    expect(preview.text).not.toContain("video");
+    expect(JSON.stringify(preview.richMessage)).toContain("I am checking whether…");
+    expect(JSON.stringify(preview.richMessage)).not.toContain("video");
+  });
+
+  it("keeps the label and fallback detail within one line budget", () => {
+    const path = `path/to/${"nested/".repeat(20)}file.ts`;
+    const line = buildChannelProgressDraftLine(
+      {
+        event: "tool",
+        toolCallId: "call-1",
+        name: "Bash",
+        phase: "start",
+        args: { command: `cat ${path}` },
+      },
+      { commandText: "raw" },
+    );
+    if (!line) {
+      throw new Error("expected a progress line for Bash");
+    }
+
+    // A valid budget shorter than the label plus the canonical compactor's
+    // eight-character detail minimum must still bound the composed line.
+    const rendered = renderTelegramProgressDraftPreview("Working", [line], false, true, 12).text;
+    const toolLine = (rendered.split("<br>")[1] ?? "").replace(/<[^>]+>/gu, "");
+
+    expect(Array.from(toolLine).length).toBeLessThanOrEqual(12);
+    expect(toolLine).toContain("Bash");
+    expect(toolLine).toContain("…");
+  });
+
   it("keeps the historical 300 budget when no budget is passed", () => {
     const line = {
       kind: "item" as const,

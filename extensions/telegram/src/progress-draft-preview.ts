@@ -47,9 +47,25 @@ function clipTelegramProgressDetail(detail: string, label: string, maxLineChars:
   // suffix around a middle ellipsis instead of blindly cutting the tail.
   const prefix = `${label}: `;
   const compacted = clipTelegramProgressText(`${prefix}${detail}`, maxLineChars);
-  return compacted.startsWith(prefix)
-    ? compacted.slice(prefix.length)
-    : clipTelegramProgressText(detail, maxLineChars);
+  if (compacted.startsWith(prefix)) {
+    return compacted.slice(prefix.length);
+  }
+  // The canonical compactor keeps the label only while the remaining detail
+  // budget still reaches its eight-character minimum. For a valid budget
+  // shorter than that, reserve the label and its rendered separator before
+  // clipping the fallback detail, so the composed label + detail line stays
+  // within one line budget like the shared renderer's whole-line cap.
+  const detailBudget = maxLineChars - Array.from(`${label} `).length;
+  return detailBudget >= 1 ? clipTelegramProgressText(detail, detailBudget) : "";
+}
+
+function clipTelegramProgressLabel(label: string, maxLineChars: number): string {
+  // Structured labels stay verbatim while they fit; a label longer than the
+  // configured budget is itself compacted so the composed line can never
+  // exceed the budget through its label half alone.
+  return Array.from(label).length > maxLineChars
+    ? clipTelegramProgressText(label, maxLineChars)
+    : label;
 }
 
 function renderTelegramProgressStringLine(text: string, maxLineChars: number): string {
@@ -82,13 +98,17 @@ function renderTelegramProgressLine(
   if (!line.icon && (!line.label || line.label === "Commentary")) {
     return renderTelegramProgressText(line.text, maxLineChars);
   }
-  const label = [line.icon, line.label].filter(Boolean).join(" ");
+  const label = clipTelegramProgressLabel(
+    [line.icon, line.label].filter(Boolean).join(" "),
+    maxLineChars,
+  );
   const parts = [`<b>${escapeTelegramProgressHtml(label)}</b>`];
   const detail = line.detail && line.detail !== line.label ? line.detail : undefined;
   if (detail) {
-    parts.push(
-      `<code>${escapeTelegramProgressHtml(clipTelegramProgressDetail(detail, label, maxLineChars))}</code>`,
-    );
+    const clippedDetail = clipTelegramProgressDetail(detail, label, maxLineChars);
+    if (clippedDetail) {
+      parts.push(`<code>${escapeTelegramProgressHtml(clippedDetail)}</code>`);
+    }
   } else {
     const text = line.text.trim();
     if (text && text !== label) {
@@ -152,11 +172,17 @@ function progressLineToRichText(
   if (!line.icon && (!line.label || line.label === "Commentary")) {
     return progressTextToRichText(line.text, maxLineChars);
   }
-  const label = [line.icon, line.label].filter(Boolean).join(" ");
+  const label = clipTelegramProgressLabel(
+    [line.icon, line.label].filter(Boolean).join(" "),
+    maxLineChars,
+  );
   const parts: RichText[] = [boldRichText(label)];
   const detail = line.detail && line.detail !== line.label ? line.detail : undefined;
   if (detail) {
-    parts.push(codeRichText(clipTelegramProgressDetail(detail, label, maxLineChars)));
+    const clippedDetail = clipTelegramProgressDetail(detail, label, maxLineChars);
+    if (clippedDetail) {
+      parts.push(codeRichText(clippedDetail));
+    }
   } else {
     const text = line.text.trim();
     if (text && text !== label) {
@@ -195,6 +221,11 @@ export function renderTelegramProgressDraftPreview(
       .split(/\r?\n/u)
       .map((line) => line.trim())
       .filter(Boolean);
+    // The first status line is the draft's headline. It carries the shared
+    // narration's own 280-character cap, not the configured per-line budget,
+    // so bound it here with the same resolved budget as every other visible
+    // line in both HTML and rich-message mode.
+    const headline = statusLines[0] ? clipTelegramProgressText(statusLines[0], maxLineChars) : "";
     const workLines = lines.filter(isStatusHeadlineWorkLine);
     const renderedLines = workLines
       .map((line) => renderTelegramProgressLine(line, maxLineChars))
@@ -203,7 +234,7 @@ export function renderTelegramProgressDraftPreview(
       const renderedStatusLines =
         statusLines.length > 1
           ? [
-              `<b>${escapeTelegramProgressHtml(statusLines[0] ?? "")}</b>`,
+              `<b>${escapeTelegramProgressHtml(headline)}</b>`,
               ...statusLines
                 .slice(1)
                 .map((line) => renderTelegramProgressStringLine(line, maxLineChars)),
@@ -214,7 +245,7 @@ export function renderTelegramProgressDraftPreview(
     const richStatusParts: RichText[] =
       statusLines.length > 1
         ? [
-            boldRichText(statusLines[0] ?? ""),
+            boldRichText(headline),
             ...statusLines.slice(1).map((line) => markdownLineToRichText(line, maxLineChars)),
           ]
         : statusLines.map((line) => markdownLineToRichText(line, maxLineChars));
@@ -225,7 +256,9 @@ export function renderTelegramProgressDraftPreview(
       .map((line) => line.text)
       .map((line) => line.trim())
       .filter(Boolean);
-    const plainText = [...statusLines, ...plainLineTexts].join("\n");
+    const plainText = [headline, ...statusLines.slice(1), ...plainLineTexts]
+      .filter(Boolean)
+      .join("\n");
     return {
       text: plainText,
       richMessage: buildTelegramRichBlocksPlan(
