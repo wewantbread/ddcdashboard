@@ -129,6 +129,17 @@ function resolveProviderConfigRecord(
   );
 }
 
+function resolveConfiguredSpeechVoice(
+  config: SpeechProviderConfig | undefined,
+): string | undefined {
+  return (
+    trimToUndefined(config?.speakerVoice) ??
+    trimToUndefined(config?.speakerVoiceId) ??
+    trimToUndefined(config?.voice) ??
+    trimToUndefined(config?.voiceId)
+  );
+}
+
 function readModelProviderConfig(
   cfg: unknown,
   providerConfigKey: string,
@@ -224,7 +235,7 @@ export function createOpenAiCompatibleSpeechProvider<
               policy: options.baseUrlPolicy,
             }),
       model: normalizeModel(trimToUndefined(raw?.model ?? raw?.modelId), options.defaultModel),
-      voice: trimToUndefined(raw?.voice ?? raw?.voiceId) ?? options.defaultVoice,
+      voice: resolveConfiguredSpeechVoice(raw) ?? options.defaultVoice,
       speed: asFiniteNumber(raw?.speed),
       responseFormat: normalizeResponseFormat({
         providerLabel: options.label,
@@ -250,7 +261,7 @@ export function createOpenAiCompatibleSpeechProvider<
               policy: options.baseUrlPolicy,
             }),
       model: normalizeModel(trimToUndefined(config.model ?? config.modelId), normalized.model),
-      voice: trimToUndefined(config.voice ?? config.voiceId) ?? normalized.voice,
+      voice: resolveConfiguredSpeechVoice(config) ?? normalized.voice,
       speed: asFiniteNumber(config.speed) ?? normalized.speed,
       responseFormat:
         normalizeResponseFormat({
@@ -324,9 +335,9 @@ export function createOpenAiCompatibleSpeechProvider<
       if (modelId !== undefined) {
         next.model = normalizeModel(modelId, options.defaultModel);
       }
-      const voiceId = trimToUndefined(talkProviderConfig.voiceId);
-      if (voiceId !== undefined) {
-        next.voice = voiceId;
+      const voice = resolveConfiguredSpeechVoice(talkProviderConfig);
+      if (voice !== undefined) {
+        next.voice = voice;
       }
       const speed = asFiniteNumber(talkProviderConfig.speed);
       if (speed !== undefined) {
