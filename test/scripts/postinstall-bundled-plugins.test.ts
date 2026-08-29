@@ -285,6 +285,27 @@ describe("bundled plugin postinstall", () => {
     );
   });
 
+  it("skips the registry migration when the postinstall opt-out is set", async () => {
+    // The flag already short-circuits runBundledPluginPostinstall. It has to cover
+    // this path too, or an operator who opted out still gets operator state touched.
+    const packageRoot = await createTempDirAsync("postinstall-registry-optout-");
+    const log = { log: vi.fn(), warn: vi.fn() };
+    const migratePluginRegistryForInstall = vi.fn();
+    const importModule = vi.fn(async () => ({ migratePluginRegistryForInstall }));
+
+    const result = await runPluginRegistryPostinstallMigration({
+      packageRoot,
+      existsSync: vi.fn(() => true),
+      importModule,
+      env: { OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL: "1", OPENCLAW_HOME: "/tmp/home" },
+      log,
+    });
+
+    expect(result).toEqual({ status: "skipped", reason: "postinstall-disabled" });
+    expect(migratePluginRegistryForInstall).not.toHaveBeenCalled();
+    expect(importModule).not.toHaveBeenCalled();
+  });
+
   it("does not migrate operator plugin state from a source checkout", async () => {
     const packageRoot = "/source";
     const existingPaths = new Set([

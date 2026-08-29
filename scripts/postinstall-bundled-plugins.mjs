@@ -554,6 +554,13 @@ export async function runPluginRegistryPostinstallMigration(params = {}) {
   const env = params.env ?? process.env;
   const pathExists = params.existsSync ?? existsSync;
 
+  // The documented postinstall opt-out has to cover this path too. Without it the
+  // flag stops the bundled-plugin half while this migration still runs and still
+  // touches operator state, so an operator who opted out gets migrated anyway.
+  if (env?.[DISABLE_POSTINSTALL_ENV]?.trim()) {
+    return { status: "skipped", reason: "postinstall-disabled" };
+  }
+
   // Registry migration belongs to installed-package upgrades. Source checkouts
   // can contain stale dist from a different build and must not touch operator state.
   if (isSourceCheckoutRoot({ packageRoot, existsSync: pathExists })) {
