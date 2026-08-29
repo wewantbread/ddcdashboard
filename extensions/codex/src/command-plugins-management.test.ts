@@ -2,11 +2,8 @@
 import type { PluginCommandContext, PluginCommandResult } from "openclaw/plugin-sdk/plugin-entry";
 import { describe, expect, it, vi } from "vitest";
 import type { v2 } from "./app-server/protocol.js";
-import {
-  handleCodexPluginsSubcommand,
-  type CodexPluginsConfigBlock,
-  type CodexPluginsManagementIO,
-} from "./command-plugins-management.js";
+import type { CodexPluginsConfigBlock, CodexPluginsManagementIO } from "./command-plugin-config.js";
+import { handleCodexPluginsSubcommand } from "./command-plugins-management.js";
 
 type CodexPluginConfigEntry = NonNullable<CodexPluginsConfigBlock["plugins"]>[string];
 type CodexPluginsManagementRuntime = NonNullable<
@@ -46,13 +43,15 @@ const fakeCtx: PluginCommandContext = {
   getCurrentConversationBinding: async () => null,
 };
 
+function presentationButtons(result: PluginCommandResult) {
+  return (result.presentation?.blocks ?? []).flatMap((block) =>
+    block.type === "buttons" ? block.buttons : [],
+  );
+}
+
 function buttonCommands(result: PluginCommandResult): string[] {
-  const block = result.presentation?.blocks.find((candidate) => candidate.type === "buttons");
-  if (!block || block.type !== "buttons") {
-    throw new Error("expected button presentation");
-  }
-  return block.buttons.map((button) =>
-    button.action?.type === "command" ? button.action.command : "",
+  return presentationButtons(result).flatMap((button) =>
+    button.action?.type === "command" ? [button.action.command] : [],
   );
 }
 
@@ -162,6 +161,8 @@ describe("Codex /codex plugins subcommand", () => {
     expect(buttonCommands(result)).toEqual([
       "/codex plugins list",
       "/codex plugins available",
+      "/codex plugins status",
+      "/codex plugins recheck",
       "/codex plugins enable",
       "/codex plugins disable",
       "/codex plugins help",
@@ -902,14 +903,15 @@ describe("Codex /codex plugins subcommand", () => {
     expect(result.text).toContain("will not be exposed");
   });
 
-  it("reports app connector sign-in requirements without undoing owner authorization", async () => {
+  it("preserves app setup links without undoing owner authorization", async () => {
     const io = inMemoryIO();
+    const installUrl = "https://chatgpt.com/apps/github/connector_github";
     const runtime = pluginRuntime({
       marketplacePath: "/repo/marketplace.json",
       install: vi.fn(async () => ({
         authPolicy: "ON_INSTALL",
         appsNeedingAuth: [
-          { id: "github", name: "GitHub", description: null, installUrl: null, category: null },
+          { id: "github", name: "GitHub", description: null, installUrl, category: null },
         ],
       })),
     });
@@ -921,8 +923,120 @@ describe("Codex /codex plugins subcommand", () => {
       runtime,
     );
 
-    expect(result.text).toContain("GitHub still require connector authentication");
+    expect(result.text).toContain("1 app still requires connector authentication");
+    expect(result.text).toContain(installUrl);
+    expect(result.presentation?.blocks).toContainEqual({
+      type: "buttons",
+      buttons: [{ label: "Set up / manage GitHub", action: { type: "url", url: installUrl } }],
+    });
+    expect(buttonCommands(result)).toEqual([
+      "/codex plugins recheck security-review@company-tools",
+    ]);
     expect(io.current()["security-review@company-tools"]?.enabled).toBe(true);
+  });
+
+  it("preserves the returned hosted origin and URL punctuation in setup links", async () => {
+    const installUrl =
+      "https://preview.chatgpt-staging.com/apps/github/connector_github?source=app&view=setup#details";
+    const runtime = pluginRuntime({
+      marketplacePath: "/repo/marketplace.json",
+      install: vi.fn(async () => ({
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: [
+          { id: "github", name: "GitHub", description: null, installUrl, category: null },
+        ],
+      })),
+    });
+
+    const result = await handleCodexPluginsSubcommand(
+      fakeCtx,
+      ["install", "security-review@company-tools"],
+      inMemoryIO(),
+      runtime,
+    );
+
+    expect(result.text).toContain(installUrl);
+    expect(result.text).toContain("same ChatGPT account and workspace as Codex");
+    expect(result.text).toContain("does not confirm that it is connected or callable");
+    expect(result.presentation?.blocks).toContainEqual({
+      type: "buttons",
+      buttons: [{ label: "Set up / manage GitHub", action: { type: "url", url: installUrl } }],
+    });
+    expect(result.presentationTextMode).toBe("fallback");
+  });
+
+  it.each([
+    null,
+    "not a URL",
+    "javascript:alert(1)",
+    "http://chatgpt.com/apps/github/github",
+    "https://fixture-user@chatgpt.com/apps/github/github",
+    "https://chatgpt.com.evil.example/apps/github/github",
+    "https://evilchatgpt.com/apps/github/github",
+    "https://chatgpt.com/\u0000apps/github/github",
+    `https://chatgpt.com/apps/${"x".repeat(2048)}`,
+  ])("gives a manual setup path without exposing unsafe or missing URL %j", async (installUrl) => {
+    const io = inMemoryIO();
+    const runtime = pluginRuntime({
+      marketplacePath: "/repo/marketplace.json",
+      install: vi.fn(async () => ({
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: [
+          { id: "github", name: "GitHub", description: null, installUrl, category: null },
+        ],
+      })),
+    });
+
+    const result = await handleCodexPluginsSubcommand(
+      fakeCtx,
+      ["install", "security-review@company-tools"],
+      io,
+      runtime,
+    );
+
+    expect(result.text).toContain("GitHub: setup/manage link unavailable");
+    expect(result.text).toContain("In Codex CLI, run /apps and select this app");
+    expect(presentationButtons(result).some((button) => button.action?.type === "url")).toBe(false);
+    if (installUrl) {
+      expect(result.text).not.toContain(installUrl);
+    }
+    expect(io.current()["security-review@company-tools"]?.enabled).toBe(true);
+  });
+
+  it("bounds app setup output and accounts for apps beyond the displayed links", async () => {
+    const runtime = pluginRuntime({
+      marketplacePath: "/repo/marketplace.json",
+      install: vi.fn(async () => ({
+        authPolicy: "ON_INSTALL",
+        appsNeedingAuth: Array.from({ length: 7 }, (_, index) => ({
+          id: `app-${index}`,
+          name: `App ${index}`,
+          description: null,
+          installUrl: `https://chatgpt.com/apps/app-${index}/app-${index}`,
+          category: null,
+        })),
+      })),
+    });
+
+    const result = await handleCodexPluginsSubcommand(
+      fakeCtx,
+      ["install", "security-review@company-tools"],
+      inMemoryIO(),
+      runtime,
+    );
+
+    const buttons = presentationButtons(result).filter((button) => button.action?.type === "url");
+    expect(buttons).toHaveLength(5);
+    expect(buttons?.map((button) => button.label)).toEqual([
+      "Set up / manage App 0",
+      "Set up / manage App 1",
+      "Set up / manage App 2",
+      "Set up / manage App 3",
+      "Set up / manage App 4",
+    ]);
+    expect(result.text).toContain("7 apps still require connector authentication");
+    expect(result.text).toContain("2 more apps are not shown");
+    expect(result.text).toContain("In Codex CLI, run /apps to review the remaining apps");
   });
 
   it("supports qualified identifiers when enabling a legacy configured plugin key", async () => {
