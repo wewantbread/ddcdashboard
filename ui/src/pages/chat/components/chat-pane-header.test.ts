@@ -397,14 +397,57 @@ describe("chat pane header", () => {
     expect(container.querySelector(".chat-pane__placement-chip")).toBeNull();
   });
 
-  it("places pane presence between the identity trail and face control", () => {
+  it("groups owner, participants, and viewers before the mobile face row", () => {
     const { container } = mountHeader({
+      narrow: true,
+      showOwnerChip: true,
+      session: row({
+        owner: { actor: { type: "human", id: "profile-ada", label: "Ada" } },
+        participants: [{ identity: { type: "profile", id: "profile-bob" }, label: "Bob" }],
+        participantCount: 1,
+      }),
       presence: html`<span data-slot="presence"></span>`,
       faceControl: html`<span data-slot="face"></span>`,
     });
-    const crumbs = container.querySelector(".chat-pane__crumbs");
-    expect(crumbs?.nextElementSibling?.getAttribute("data-slot")).toBe("presence");
-    expect(crumbs?.nextElementSibling?.nextElementSibling?.getAttribute("data-slot")).toBe("face");
+    const people = container.querySelector(".chat-pane__people");
+
+    expect(people?.querySelector("openclaw-session-owner-chip")).not.toBeNull();
+    expect(people?.querySelector(".chat-pane__participants")).not.toBeNull();
+    expect(people?.querySelector('[data-slot="presence"]')).not.toBeNull();
+    expect(container.querySelector(".chat-pane__topbar-row [data-slot=face]")).toBeNull();
+    expect(container.querySelector(".chat-pane__face-row [data-slot=face]")).not.toBeNull();
+  });
+
+  it("keeps desktop placement before presence and the face control", () => {
+    const { container } = mountHeader({
+      session: row({
+        placement: {
+          state: "active",
+          generation: 1,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+          stateChangedAtMs: 1,
+          environmentId: "worker:one",
+          activeOwnerEpoch: 1,
+          workerBundleHash: "a".repeat(64),
+          workspaceBaseManifestRef: "base-manifest",
+          remoteWorkspaceDir: "/worker/repo",
+        },
+      }),
+      presence: html`<span data-slot="presence"></span>`,
+      faceControl: html`<span data-slot="face"></span>`,
+    });
+    const topbar = container.querySelector(".chat-pane__topbar-row");
+
+    expect(
+      [...(topbar?.children ?? [])]
+        .filter((element) =>
+          element.matches(
+            '.chat-pane__placement-control, [data-slot="presence"], [data-slot="face"]',
+          ),
+        )
+        .map((element) => element.getAttribute("data-slot") ?? "placement"),
+    ).toEqual(["placement", "presence", "face"]);
   });
 
   it("leads with the project, then a separator, then the session title", () => {

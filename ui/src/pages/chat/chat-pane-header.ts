@@ -467,6 +467,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
         : nothing,
       faceControl: renderBoardViewSwitch({
         hasBoard: board.hasBoard,
+        narrow: this.narrow,
         face: board.face,
         dock: board.dock,
         canChangeDock: canChangeBoardDock,

@@ -69,6 +69,7 @@ function dockLabel(dock: BoardVisibleChatDock): string {
 
 export function renderBoardViewSwitch(props: {
   hasBoard: boolean;
+  narrow: boolean;
   face: BoardFace;
   dock: BoardTab["chatDock"];
   canChangeDock: boolean;
@@ -80,30 +81,21 @@ export function renderBoardViewSwitch(props: {
     return nothing;
   }
 
+  const showSplit = !props.narrow && props.canChangeDock;
   const mode: BoardViewMode =
-    props.face === "chat" ? "chat" : props.dock === "hidden" ? "dashboard" : "split";
-  const segmented = props.canChangeDock
-    ? renderSettingsSegmented<BoardViewMode>({
-        value: mode,
-        ariaLabel: t("chat.board.faceLabel"),
-        options: [
-          { value: "chat", label: t("chat.board.chatFace") },
-          { value: "split", label: t("chat.board.splitFace") },
-          { value: "dashboard", label: t("chat.board.dashboardFace") },
-        ],
-        onChange: (value) => props.onSelectMode(value),
-      })
-    : renderSettingsSegmented<BoardFace>({
-        value: props.face,
-        ariaLabel: t("chat.board.faceLabel"),
-        options: [
-          { value: "chat", label: t("chat.board.chatFace") },
-          { value: "dashboard", label: t("chat.board.dashboardFace") },
-        ],
-        onChange: (value) => props.onSelectMode(value),
-      });
+    props.face === "chat" ? "chat" : showSplit && props.dock !== "hidden" ? "split" : "dashboard";
+  const segmented = renderSettingsSegmented<BoardViewMode>({
+    value: mode,
+    ariaLabel: t("chat.board.faceLabel"),
+    options: [
+      { value: "chat", label: t("chat.board.chatFace") },
+      ...(showSplit ? [{ value: "split" as const, label: t("chat.board.splitFace") }] : []),
+      { value: "dashboard", label: t("chat.board.dashboardFace") },
+    ],
+    onChange: props.onSelectMode,
+  });
   const visibleDock = props.dock === "hidden" ? null : props.dock;
-  const showDockCaret = mode === "split" && props.canChangeDock && visibleDock !== null;
+  const showDockCaret = showSplit && mode === "split" && visibleDock !== null;
 
   return html`
     <div class="chat-pane__face-switch ${showDockCaret ? "chat-pane__face-switch--split" : ""}">
@@ -143,7 +135,7 @@ export function renderBoardViewSwitch(props: {
             </wa-dropdown>
           `
         : nothing}
-      ${mode === "chat" ? nothing : props.fullscreenControl}
+      ${props.narrow || mode === "chat" ? nothing : props.fullscreenControl}
     </div>
   `;
 }
