@@ -12,6 +12,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { encodeSessionStateWatchTarget } from "./session-watch-target.js";
 
 type SessionUpstreamDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -227,28 +228,36 @@ export function listWatchedSessionUpstreamLinks(
   try {
     const { db } = openOpenClawStateDatabase(options);
     // Watch cursors own demand. Unwatched adopted sessions stay out of the polling hot path.
-    // The join matches on session_key only, which is unambiguous because adoption creates
-    // links under the single resolved store agent (one row per session_key). The seen-key
-    // guard below fails closed if a future multi-agent adoption ever breaks that invariant,
-    // so a cross-agent link can never be probed against another agent's watch cursor.
-    const rows = executeSqliteQuerySync(
+    // Match each link against the cursor identity that owns its agent and session key;
+    // bare global session keys can legitimately exist in several agent stores.
+    const linkRows = executeSqliteQuerySync(
       db,
       getSessionUpstreamKysely(db)
-        .selectFrom("session_upstream_links as links")
-        .innerJoin(
-          "session_watch_cursors as cursors",
-          "cursors.target_session_key",
-          "links.session_key",
-        )
-        .selectAll("links")
+        .selectFrom("session_upstream_links")
+        .selectAll()
         .distinct()
-        .orderBy("links.catalog_id", "asc")
-        .orderBy("links.session_key", "asc"),
+        .orderBy("catalog_id", "asc")
+        .orderBy("session_key", "asc"),
     ).rows;
-    const links = rows.map(rowToSessionUpstreamLink);
-    // Fail closed on the single-agent-per-key invariant: the key-only cursor join
-    // cannot disambiguate two agents sharing a bare adopted key, so drop EVERY link
-    // for any duplicated key rather than probe an arbitrary agent's upstream.
+    const watchedTargetKeys = new Set(
+      executeSqliteQuerySync(
+        db,
+        getSessionUpstreamKysely(db)
+          .selectFrom("session_watch_cursors")
+          .select("target_session_key")
+          .distinct(),
+      ).rows.map((row) => row.target_session_key),
+    );
+    const links = linkRows.map(rowToSessionUpstreamLink).filter((link) =>
+      watchedTargetKeys.has(
+        encodeSessionStateWatchTarget({
+          sessionKey: link.sessionKey,
+          agentId: link.agentId,
+        }),
+      ),
+    );
+    // Keep the duplicate-key guard for legacy rows that may still be visible while
+    // an older runtime is draining; never probe an arbitrary agent's upstream.
     const keyCounts = new Map<string, number>();
     for (const link of links) {
       keyCounts.set(link.sessionKey, (keyCounts.get(link.sessionKey) ?? 0) + 1);
