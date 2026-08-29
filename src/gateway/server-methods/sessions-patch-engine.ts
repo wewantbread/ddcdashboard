@@ -290,8 +290,11 @@ async function executeSessionPatchMutations(params: {
           identities: target.lifecycleIdentities,
         })),
         prepare: async () => {
-          await Promise.all(
-            prepared
+          await Promise.all([
+            ...prepared
+              .filter((target) => target.fullPatch.reasoningLevel !== undefined)
+              .map((target) => loadModelCatalog(target.targetAgentId).catch(() => undefined)),
+            ...prepared
               .filter((target) => target.fullPatch.archived === true)
               .map(async (target) => {
                 try {
@@ -315,7 +318,7 @@ async function executeSessionPatchMutations(params: {
                   };
                 }
               }),
-          );
+          ]);
         },
         run: async () => {
           const groups = new Map<string, PreparedPatchTarget[]>();
