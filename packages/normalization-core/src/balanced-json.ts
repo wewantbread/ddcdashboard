@@ -16,18 +16,19 @@ function isJsonOpeningDelimiter(
 /** Extracts the first balanced JSON object/array from text. */
 export function extractBalancedJsonPrefix(
   raw: string,
-  opts: { openers?: readonly JsonOpeningDelimiter[] } = {},
+  opts: { openers?: readonly JsonOpeningDelimiter[]; skipQuotedOpeners?: boolean } = {},
 ): BalancedJsonFragment | null {
   const openers = opts.openers ?? (["{", "["] as const);
   let start = 0;
-  while (start < raw.length && !isJsonOpeningDelimiter(raw[start], openers)) {
-    start += 1;
-  }
   const stack: JsonOpeningDelimiter[] = [];
   let inString = false;
   let escaped = false;
-  for (let index = start; index < raw.length; index += 1) {
+  for (let index = 0; index < raw.length; index += 1) {
     const char = raw[index];
+    // CLI prose respects quotes; diagnostics must also inspect quoted payloads.
+    if (!opts.skipQuotedOpeners && stack.length === 0 && !isJsonOpeningDelimiter(char, openers)) {
+      continue;
+    }
     if (inString) {
       if (escaped) {
         escaped = false;
@@ -39,6 +40,9 @@ export function extractBalancedJsonPrefix(
     } else if (char === '"') {
       inString = true;
     } else if (isJsonOpeningDelimiter(char, openers)) {
+      if (stack.length === 0) {
+        start = index;
+      }
       stack.push(char);
     } else if (stack.length > 0 && char === (stack.at(-1) === "{" ? "}" : "]")) {
       stack.pop();
@@ -53,7 +57,7 @@ export function extractBalancedJsonPrefix(
 /** Extracts every balanced JSON object/array fragment from arbitrary text. */
 export function extractBalancedJsonFragments(
   raw: string,
-  opts: { openers?: readonly JsonOpeningDelimiter[] } = {},
+  opts: { openers?: readonly JsonOpeningDelimiter[]; skipQuotedOpeners?: boolean } = {},
 ): BalancedJsonFragment[] {
   const fragments: BalancedJsonFragment[] = [];
   for (let offset = 0; offset < raw.length;) {

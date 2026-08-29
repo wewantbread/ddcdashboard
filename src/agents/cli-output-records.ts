@@ -59,10 +59,6 @@ export function isClaudeStreamJsonResult(params: {
   return supportsCliJsonlToolEvents(params) && params.parsed.type === "result";
 }
 
-function extractJsonObjectCandidates(raw: string): string[] {
-  return extractBalancedJsonFragments(raw, { openers: ["{"] }).map((fragment) => fragment.json);
-}
-
 export function decodeCliRecords(raw: string): Record<string, unknown>[] {
   const parsedRecords: Record<string, unknown>[] = [];
   const trimmed = raw.trim();
@@ -81,9 +77,12 @@ export function decodeCliRecords(raw: string): Record<string, unknown>[] {
   }
 
   // Some CLIs prefix JSON with banners/logs; balanced scanning recovers structured records.
-  for (const candidate of extractJsonObjectCandidates(trimmed)) {
+  for (const { json } of extractBalancedJsonFragments(trimmed, {
+    openers: ["{"],
+    skipQuotedOpeners: true,
+  })) {
     try {
-      const parsed = JSON.parse(candidate);
+      const parsed = JSON.parse(json);
       if (isRecord(parsed)) {
         parsedRecords.push(parsed);
       }
