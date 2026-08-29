@@ -226,6 +226,7 @@ const readCommitProbe = (
         return { commit: null, present: true };
       }
       try {
+        // SAFETY: JSON.parse returns unknown data; the indexed field is validated before use.
         const parsed = JSON.parse(raw) as Record<string, unknown>;
         const value = parsed[field];
         return { commit: typeof value === "string" ? formatCommit(value) : null, present: true };
