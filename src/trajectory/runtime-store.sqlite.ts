@@ -1,12 +1,14 @@
 // SQLite trajectory runtime store owns session-scoped runtime event rows.
 
 import { parseDateStringTimestampMs } from "@openclaw/normalization-core/number-coercion";
+import { type Kysely, sql } from "kysely";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
@@ -40,7 +42,23 @@ export type SqliteTrajectoryRuntimeScope = {
 type SqliteTrajectoryRuntimeReadScope = Omit<
   SqliteTrajectoryRuntimeScope,
   "maxGlobalRuntimeBytes" | "maxRuntimeBytes"
->;
+> & {
+  /**
+   * Optional byte budget enforced before parsing runtime event rows. When set,
+   * the reader sums event_json byte lengths via SQL and rejects with a typed
+   * error before materializing parsed entries, mirroring the file-path stat-size
+   * guard. Ignored for tail-bounded reads.
+   */
+  maxEventBytes?: number;
+  /**
+   * Optional row-count budget enforced before parsing runtime event rows. When
+   * set, the reader counts matching rows via SQL and rejects with a typed error
+   * before materializing parsed entries, so the documented export cap protects
+   * memory rather than only reporting after allocation. Ignored for tail-bounded
+   * reads.
+   */
+  maxEventCount?: number;
+};
 
 type SqliteTrajectoryRuntimeEventRow = {
   event: TrajectoryEvent;
@@ -127,6 +145,81 @@ export async function loadSqliteTrajectoryRuntimeEvents(
   return loadSqliteTrajectoryRuntimeEventsSync(scope);
 }
 
+/**
+ * Preflights the combined SQLite source bytes (transcript + runtime) for one
+ * session before either reader parses rows. Runs both SUM aggregates inside a
+ * single deferred read transaction so the two sizes share one SQLite snapshot,
+ * then rejects when their total exceeds the export-owned envelope. This is
+ * defense-in-depth on top of the per-source guards: node:sqlite is a single
+ * connection per database handle, export is a cold diagnostic path, and the
+ * runtime writer's append/trim runs in its own serialized write transaction,
+ * so no concurrent writer can insert rows between this snapshot and the readers.
+ */
+export function preflightCombinedSqliteSourceBytesSync(
+  scope: SqliteTrajectoryRuntimeScope & {
+    maxCombinedBytes?: number;
+  },
+): void {
+  if (
+    scope.maxCombinedBytes === undefined ||
+    !Number.isFinite(scope.maxCombinedBytes) ||
+    scope.maxCombinedBytes < 0
+  ) {
+    return;
+  }
+  const budget = Math.floor(scope.maxCombinedBytes);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(scope));
+  const db = getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(database.db);
+  runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      const transcriptBytes = sumSourceBytesForSession(
+        database.db,
+        db,
+        "transcript_events",
+        scope.sessionId,
+      );
+      const runtimeBytes = sumSourceBytesForSession(
+        database.db,
+        db,
+        "trajectory_runtime_events",
+        scope.sessionId,
+      );
+      const totalBytes = transcriptBytes + runtimeBytes;
+      if (totalBytes > budget) {
+        throw new Error(
+          `Trajectory combined SQLite sources are too large to export (${totalBytes} bytes; limit ${budget})`,
+        );
+      }
+    },
+    {
+      databaseLabel: database.path,
+      operationLabel: "trajectory combined source-byte preflight",
+    },
+  );
+}
+
+/** Sums event_json BLOB bytes plus one JSONL separator per row for one table. */
+function sumSourceBytesForSession(
+  database: import("node:sqlite").DatabaseSync,
+  db: Kysely<OpenClawAgentKyselyDatabase>,
+  table: "transcript_events" | "trajectory_runtime_events",
+  sessionId: string,
+): number {
+  const row = executeSqliteQueryTakeFirstSync(
+    database,
+    db
+      .selectFrom(table)
+      .select(
+        /* kysely-allow-raw: byte size uses metadata-only octet length (casting to BLOB loads overflow payloads) plus one JSONL separator per row to match file-path stat.size; the canonical serializer appends a trailing newline for every nonempty batch. */
+        sql<number>`COALESCE(SUM(OCTET_LENGTH(event_json)), 0)
+          + COUNT(*)`.as("total_bytes"),
+      )
+      .where("session_id", "=", sessionId),
+  );
+  return row?.total_bytes ?? 0;
+}
+
 /** Loads runtime trajectory events synchronously for CLI and export paths. */
 function loadSqliteTrajectoryRuntimeEventsSync(
   scope: SqliteTrajectoryRuntimeReadScope,
@@ -148,33 +241,96 @@ export function loadSqliteTrajectoryRuntimeEventRowsSync(
     scope.tailEvents !== undefined && Number.isFinite(scope.tailEvents)
       ? Math.max(0, Math.floor(scope.tailEvents))
       : undefined;
-  let query = db
-    .selectFrom("trajectory_runtime_events")
-    .select(["seq", "event_json"])
-    .where("session_id", "=", scope.sessionId)
-    .orderBy("seq", tailEvents === undefined ? "asc" : "desc");
   const afterSeq = scope.afterSeq;
-  if (afterSeq !== undefined && Number.isFinite(afterSeq)) {
-    query = query.where("seq", ">", Math.floor(afterSeq));
-  }
-  const normalizedMaxEvents =
-    scope.maxEvents !== undefined && Number.isFinite(scope.maxEvents)
-      ? Math.max(0, Math.floor(scope.maxEvents))
-      : undefined;
-  const maxEvents =
-    tailEvents === undefined
-      ? normalizedMaxEvents
-      : normalizedMaxEvents === undefined
-        ? tailEvents
-        : Math.min(tailEvents, normalizedMaxEvents);
-  if (maxEvents !== undefined && Number.isFinite(maxEvents)) {
-    query = query.limit(Math.max(0, Math.floor(maxEvents)));
-  }
-  const rows = executeSqliteQuerySync(database.db, query).rows.map((row) => ({
-    event: JSON.parse(row.event_json) as TrajectoryEvent,
-    seq: row.seq,
-  }));
-  return tailEvents === undefined ? rows : rows.toReversed();
+  return runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      if (
+        tailEvents === undefined &&
+        scope.maxEventCount !== undefined &&
+        Number.isFinite(scope.maxEventCount) &&
+        scope.maxEventCount >= 0
+      ) {
+        const eventLimit = Math.floor(scope.maxEventCount);
+        const countRow: { event_count: number | null } | undefined =
+          executeSqliteQueryTakeFirstSync(
+            database.db,
+            db
+              .selectFrom("trajectory_runtime_events")
+              .select((eb) => [eb.fn.countAll<number>().as("event_count")])
+              .where("session_id", "=", scope.sessionId)
+              .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+                query.where("seq", ">", Math.floor(afterSeq!)),
+              ),
+          );
+        const eventCount = countRow?.event_count ?? 0;
+        if (eventCount > eventLimit) {
+          throw new Error(
+            `Trajectory runtime store has too many events to export (${eventCount}; limit ${eventLimit})`,
+          );
+        }
+      }
+      if (
+        scope.maxEventBytes !== undefined &&
+        Number.isFinite(scope.maxEventBytes) &&
+        scope.maxEventBytes >= 0 &&
+        tailEvents === undefined
+      ) {
+        const budget = Math.floor(scope.maxEventBytes);
+        const aggregate: { total_bytes: number | null } | undefined =
+          executeSqliteQueryTakeFirstSync(
+            database.db,
+            db
+              .selectFrom("trajectory_runtime_events")
+              .select(
+                /* kysely-allow-raw: byte budget uses metadata-only octet length (casting to BLOB loads overflow payloads) plus a per-row JSONL separator to match file-path stat.size. */
+                sql<number>`COALESCE(SUM(OCTET_LENGTH(event_json)), 0)
+                + COUNT(*)`.as("total_bytes"),
+              )
+              .where("session_id", "=", scope.sessionId)
+              .$if(afterSeq !== undefined && Number.isFinite(afterSeq), (query) =>
+                query.where("seq", ">", Math.floor(afterSeq!)),
+              ),
+          );
+        const totalBytes = aggregate?.total_bytes ?? 0;
+        if (totalBytes > budget) {
+          throw new Error(
+            `Trajectory runtime store is too large to export (${totalBytes} bytes; limit ${budget})`,
+          );
+        }
+      }
+      let query = db
+        .selectFrom("trajectory_runtime_events")
+        .select(["seq", "event_json"])
+        .where("session_id", "=", scope.sessionId)
+        .orderBy("seq", tailEvents === undefined ? "asc" : "desc");
+      if (afterSeq !== undefined && Number.isFinite(afterSeq)) {
+        query = query.where("seq", ">", Math.floor(afterSeq));
+      }
+      const normalizedMaxEvents =
+        scope.maxEvents !== undefined && Number.isFinite(scope.maxEvents)
+          ? Math.max(0, Math.floor(scope.maxEvents))
+          : undefined;
+      const maxEvents =
+        tailEvents === undefined
+          ? normalizedMaxEvents
+          : normalizedMaxEvents === undefined
+            ? tailEvents
+            : Math.min(tailEvents, normalizedMaxEvents);
+      if (maxEvents !== undefined && Number.isFinite(maxEvents)) {
+        query = query.limit(Math.max(0, Math.floor(maxEvents)));
+      }
+      const rows = executeSqliteQuerySync(database.db, query).rows.map((row) => ({
+        event: JSON.parse(row.event_json) as TrajectoryEvent,
+        seq: row.seq,
+      }));
+      return tailEvents === undefined ? rows : rows.toReversed();
+    },
+    {
+      databaseLabel: database.path,
+      operationLabel: "trajectory runtime fenced read",
+    },
+  );
 }
 
 function sweepSqliteTrajectoryRuntimeRetention(

@@ -47,6 +47,12 @@ type SessionTranscriptRuntimeScope = SessionAccessScope & {
 export type SessionTranscriptReadScope = Omit<SessionTranscriptRuntimeScope, "sessionKey"> & {
   sessionKey?: string;
   sessionEntry?: Partial<Pick<SessionEntry, "sessionId">>;
+  /**
+   * Optional byte budget enforced before parsing transcript event rows. When set,
+   * the reader sums event_json lengths via SQL and rejects with a typed error
+   * before materializing parsed entries, mirroring the file-path stat-size guard.
+   */
+  maxEventBytes?: number;
 };
 
 export type SessionTranscriptWriteScope = Omit<SessionTranscriptAccessScope, "sessionId"> & {
