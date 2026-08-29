@@ -70,6 +70,8 @@ const ROOT_TEST_ENTRY_GLOBS = [
   "test/fixtures/ts-topology/basic/**/*.{js,mjs,cjs,ts,mts,cts}!",
   // The focused Oxlint test invokes these deliberate violations by path.
   "test/fixtures/oxlint-boundary-guards/*.ts!",
+  // The gateway-fatal real-behavior proof spawns this child-process driver by path.
+  "test/helpers/pr131735-background-completion-alive-proof.ts!",
 ] as const;
 
 const workspaces = Object.fromEntries(
