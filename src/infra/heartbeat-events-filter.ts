@@ -1,6 +1,6 @@
 // Filters heartbeat event text before it is added to prompts.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS,
   isHeartbeatAcknowledgementText,
@@ -9,6 +9,7 @@ import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 
 const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
 const MAX_SYSTEM_EVENT_PROMPT_CHARS = 8_000;
+const MAX_HEARTBEAT_EVENT_PROMPT_CHARS = 16_000;
 const STRUCTURED_EXEC_COMPLETION_EVENT_RE =
   /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code -?\d+|signal [^)]+)\)(?: :: ([\s\S]*))?$/i;
 
@@ -78,7 +79,7 @@ function formatExecEventPromptText(pendingEvents: string[]): {
 // Build a dynamic prompt for cron events by embedding the actual event content.
 // This ensures the model sees the reminder text directly instead of relying on
 // "shown in the system messages above" which may not be visible in context.
-export function buildCronEventPrompt(
+function buildCronEventPrompt(
   pendingEvents: string[],
   opts?: {
     deliverToUser?: boolean;
@@ -110,7 +111,7 @@ export function buildCronEventPrompt(
   );
 }
 
-export function buildExecEventPrompt(
+function buildExecEventPrompt(
   pendingEvents: string[],
   opts?: { deliverToUser?: boolean; useHeartbeatResponseTool?: boolean },
 ): string {
@@ -180,16 +181,42 @@ export function buildHeartbeatEventPrompt(params: {
   if (params.genericEvents?.length) {
     sections.push(buildSystemEventPrompt([...params.genericEvents], opts));
   }
-  return sections.length > 1
-    ? [
-        "Multiple heartbeat events were triggered. Assess each event and handle every event shown below.",
-        ...sections,
-      ].join("\n\n")
-    : (sections[0] ?? buildSystemEventPrompt([], opts));
+  if (sections.length === 0) {
+    return buildSystemEventPrompt([], opts);
+  }
+  if (sections.length === 1) {
+    return truncateHeartbeatEventPromptSection(sections[0], MAX_HEARTBEAT_EVENT_PROMPT_CHARS);
+  }
+  const header =
+    "Multiple heartbeat events were triggered. Assess each event and handle every event shown below.";
+  const separator = "\n\n";
+  const sectionBudget = Math.max(
+    1,
+    Math.floor(
+      (MAX_HEARTBEAT_EVENT_PROMPT_CHARS - header.length - separator.length * sections.length) /
+        sections.length,
+    ),
+  );
+  return [
+    header,
+    ...sections.map((section) => truncateHeartbeatEventPromptSection(section, sectionBudget)),
+  ].join(separator);
+}
+
+function truncateHeartbeatEventPromptSection(section: string, maxChars: number): string {
+  if (section.length <= maxChars) {
+    return section;
+  }
+  const marker = "\n\n[truncated]\n\n";
+  const bodyBudget = Math.max(0, maxChars - marker.length);
+  const headBudget = Math.ceil(bodyBudget * 0.7);
+  const tailBudget = bodyBudget - headBudget;
+  const tail = tailBudget > 0 ? sliceUtf16Safe(section, -tailBudget) : "";
+  return `${truncateUtf16Safe(section, headBudget)}${marker}${tail}`;
 }
 
 /** Build a heartbeat prompt for system events that are not owned by exec or cron. */
-export function buildSystemEventPrompt(
+function buildSystemEventPrompt(
   pendingEvents: string[],
   opts?: { deliverToUser?: boolean; useHeartbeatResponseTool?: boolean },
 ): string {
