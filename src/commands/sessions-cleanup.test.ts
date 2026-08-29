@@ -1,9 +1,12 @@
 // Sessions cleanup tests cover stale session cleanup and runtime output.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
-import { SessionsCleanupPartialError } from "../config/sessions.js";
-import type { SessionCleanupSummary, SessionStoreTarget } from "../config/sessions.js";
-import type { SessionsCleanupOptions } from "../config/sessions.js";
+import {
+  SessionsCleanupPartialError,
+  type SessionCleanupSummary,
+  type SessionStoreTarget,
+  type SessionsCleanupOptions,
+} from "../config/sessions.js";
 import { GatewayTransportError } from "../gateway/transport-error.js";
 import type { RuntimeEnv } from "../runtime.js";
 

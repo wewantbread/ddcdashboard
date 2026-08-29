@@ -1,7 +1,10 @@
 // Partial-failure types and serialization for sessions cleanup.
 // Split from cleanup-service.ts to keep that module under the oxlint max-lines budget.
 
-import type { SessionCleanupSummary, SessionsCleanupResult } from "./cleanup-service.js";
+import type {
+  SessionDiskBudgetSweepResult,
+  SessionUnreferencedArtifactSweepResult,
+} from "./disk-budget.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { SessionStoreTarget } from "./targets.js";
@@ -13,6 +16,36 @@ export type SessionsCleanupPartialErrorDetail = {
   message: string;
   lifecycleCommitted?: boolean;
 };
+
+export type SessionCleanupSummary = {
+  agentId: string;
+  storePath: string;
+  mode: ResolvedSessionMaintenanceConfig["mode"];
+  dryRun: boolean;
+  beforeCount: number;
+  afterCount: number;
+  missing: number;
+  dmScopeRetired: number;
+  modelRunPruned: number;
+  archived?: number;
+  pruned: number;
+  capped: number;
+  unreferencedArtifacts: SessionUnreferencedArtifactSweepResult;
+  diskBudget: SessionDiskBudgetSweepResult | null;
+  wouldMutate: boolean;
+  applied?: true;
+  appliedCount?: number;
+};
+
+export type SessionsCleanupResult =
+  | SessionCleanupSummary
+  | {
+      allAgents: true;
+      mode: ResolvedSessionMaintenanceConfig["mode"];
+      dryRun: boolean;
+      stores: SessionCleanupSummary[];
+      partialError?: SessionsCleanupPartialErrorDetail;
+    };
 
 /**
  * Thrown when `sessions.cleanup` applies some stores but a later target fails

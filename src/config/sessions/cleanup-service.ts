@@ -7,12 +7,10 @@ import { getLogger } from "../../logging/logger.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { SessionsCleanupPartialError } from "./cleanup-service-partial.js";
-import type { SessionsCleanupPartialErrorDetail } from "./cleanup-service-partial.js";
+import type { SessionCleanupSummary } from "./cleanup-service-partial.js";
 import {
   pruneUnreferencedSessionArtifacts,
   resolveSessionArtifactCanonicalPathsForEntry,
-  type SessionDiskBudgetSweepResult,
-  type SessionUnreferencedArtifactSweepResult,
 } from "./disk-budget.js";
 import { resolveSessionStorePathCore } from "./paths.js";
 import {
@@ -50,6 +48,8 @@ export {
   SessionsCleanupPartialError,
   buildSessionsCleanupPartialResult,
   serializeSessionCleanupResult,
+  type SessionCleanupSummary,
+  type SessionsCleanupResult,
   type SessionsCleanupPartialErrorDetail,
 } from "./cleanup-service-partial.js";
 
@@ -70,36 +70,6 @@ type SessionCleanupAction =
   | "prune-stale"
   | "cap-overflow"
   | "retire-dm-scope";
-
-export type SessionCleanupSummary = {
-  agentId: string;
-  storePath: string;
-  mode: ResolvedSessionMaintenanceConfig["mode"];
-  dryRun: boolean;
-  beforeCount: number;
-  afterCount: number;
-  missing: number;
-  dmScopeRetired: number;
-  modelRunPruned: number;
-  archived?: number;
-  pruned: number;
-  capped: number;
-  unreferencedArtifacts: SessionUnreferencedArtifactSweepResult;
-  diskBudget: SessionDiskBudgetSweepResult | null;
-  wouldMutate: boolean;
-  applied?: true;
-  appliedCount?: number;
-};
-
-export type SessionsCleanupResult =
-  | SessionCleanupSummary
-  | {
-      allAgents: true;
-      mode: ResolvedSessionMaintenanceConfig["mode"];
-      dryRun: boolean;
-      stores: SessionCleanupSummary[];
-      partialError?: SessionsCleanupPartialErrorDetail;
-    };
 
 type SessionsCleanupRunResult = {
   mode: ResolvedSessionMaintenanceConfig["mode"];
