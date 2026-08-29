@@ -291,10 +291,12 @@ function asGatewayPartialCleanupResult(error: unknown): SessionsCleanupResult | 
   if (!error || typeof error !== "object") {
     return null;
   }
+  // SAFETY: Gateway error envelopes are untyped; details carries the partial result only when partialError is present.
   const details = (error as { details?: unknown }).details;
   if (!details || typeof details !== "object" || !("partialError" in details)) {
     return null;
   }
+  // SAFETY: Verified above via the "partialError" in details guard; details is the partial result shape.
   return details as SessionsCleanupResult;
 }
 

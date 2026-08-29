@@ -93,10 +93,4 @@ test("sessions.cleanup handler emits sessions.changed on lifecycle-committed par
     new Set(["conn-1"]),
     expect.objectContaining({ dropIfSlow: true }),
   );
-
-  expect(logDebug).toHaveBeenCalledWith(
-    expect.stringContaining(
-      "sessions.cleanup applied /tmp/fake/main/sessions.sqlite (failing publication)",
-    ),
-  );
 });

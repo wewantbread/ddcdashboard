@@ -18,7 +18,6 @@ import {
   resolveExistingAgentSessionStoreTargetsSync,
   resolveSessionStorePathCore,
   runSessionsCleanup,
-  serializeSessionCleanupResult,
   SessionsCleanupPartialError,
   type SessionEntry,
 } from "../../config/sessions.js";
@@ -79,6 +78,7 @@ import {
   createSessionPlacementBatchProjector,
   readSessionPlacementFields,
 } from "./session-placement-read-projection.js";
+import { respondSessionsCleanupPartialFailure } from "./sessions-cleanup-partial.js";
 import { respondWithCachedSessionList } from "./sessions-list-cache.js";
 import { resolveSessionSearchScope } from "./sessions-search-scope.js";
 import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-shared.js";
@@ -524,36 +524,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       }
     } catch (error) {
       if (error instanceof SessionsCleanupPartialError) {
-        const result = serializeSessionCleanupResult({
-          mode: error.mode,
-          dryRun: false,
-          summaries: error.appliedSummaries,
-          partialError: {
-            failingAgentId: error.failingTarget.agentId,
-            failingStorePath: error.failingTarget.storePath,
-            message: error.message,
-            lifecycleCommitted: error.lifecycleCommitted,
-          },
-        });
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, error.message, { details: result }),
-        );
-        for (const summary of error.appliedSummaries) {
-          emitSessionsChanged(context, { reason: "cleanup", sessionKey: undefined });
-          if (summary.wouldMutate) {
-            context.logGateway.debug(
-              `sessions.cleanup applied ${summary.storePath}: ${summary.beforeCount} -> ${summary.afterCount}`,
-            );
-          }
-        }
-        if (error.lifecycleCommitted) {
-          emitSessionsChanged(context, { reason: "cleanup", sessionKey: undefined });
-          context.logGateway.debug(
-            `sessions.cleanup applied ${error.failingTarget.storePath} (failing publication)`,
-          );
-        }
+        respondSessionsCleanupPartialFailure({ error, context, respond });
         return;
       }
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));
