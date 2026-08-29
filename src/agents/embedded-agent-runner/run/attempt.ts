@@ -275,6 +275,7 @@ export async function runEmbeddedAttempt(
           getProviderRuntimeHandle,
           isRawModelRun,
           preparedToolBase,
+          sandbox,
           sessionAgentId,
         }),
       { config: params.config },
