@@ -166,7 +166,12 @@ it("keeps the active stream when the current session is selected again", async (
 }, 65_000);
 
 it("clears only the visible conversation and restores it from session history", async () => {
-  const fixture = await startTuiFixture();
+  const fixture = await startTuiFixture({
+    env: {
+      OPENCLAW_TUI_PTY_BTW_DELAY_MS: "5000",
+      OPENCLAW_TUI_PTY_BTW_GAP_DELAY_MS: "1000",
+    },
+  });
   const prompt = "live reply dedupe proof: clear view";
   const reply = "TUI_LIVE_SECOND";
   try {
@@ -176,13 +181,32 @@ it("clears only the visible conversation and restores it from session history", 
     const before = await readFixtureLog(fixture.logPath);
     const historyLoadsBefore = before.filter((entry) => entry.method === "loadHistory").length;
 
+    await fixture.run.write("/btw picker focus proof\r", { delay: false });
+    await fixture.waitForLogEntry(
+      (entry) =>
+        entry.method === "sendChat" &&
+        objectFieldEquals(entry, "message", "/btw picker focus proof"),
+      STARTUP_TIMEOUT_MS,
+    );
+    await fixture.run.write("/clear-view\r", { delay: false });
+    const blockedRows = await waitForSynchronizedFrameRows(
+      fixture.run,
+      (frame) =>
+        frame.some((row) => row.includes("abort or wait for the current run before /clear-view")),
+      10_000,
+    );
+    expect(blockedRows.some((row) => row.includes(prompt) || row.includes(reply))).toBe(true);
+    await fixture.waitForLogEntry((entry) => entry.method === "pickerSideGap", 10_000);
+
     await fixture.run.write("/clear-view\r", { delay: false });
     const clearedRows = await waitForSynchronizedFrameRows(
       fixture.run,
       (frame) => frame.some((row) => row.includes("view cleared; session history is unchanged")),
-      STARTUP_TIMEOUT_MS,
+      10_000,
     );
     expect(clearedRows.some((row) => row.includes(prompt) || row.includes(reply))).toBe(false);
+    await fixture.waitForLogEntry((entry) => entry.method === "pickerSideFinal", 10_000);
+    expect(fixture.run.output()).not.toContain("PTY_SIDE_OK");
     const afterClear = await readFixtureLog(fixture.logPath);
     expect(markerSends(afterClear, "/clear-view")).toHaveLength(0);
     expect(afterClear.filter((entry) => entry.method === "resetSession")).toHaveLength(0);
@@ -194,18 +218,16 @@ it("clears only the visible conversation and restores it from session history", 
         return entries.filter((entry) => entry.method === "loadHistory").length;
       })
       .toBeGreaterThan(historyLoadsBefore);
-    const restoredRows = await waitForSynchronizedFrameRows(
+    await waitForSynchronizedFrameRows(
       fixture.run,
       (frame) =>
         frame.some((row) => row.includes(prompt)) && frame.some((row) => row.includes(reply)),
-      STARTUP_TIMEOUT_MS,
+      10_000,
     );
-    expect(restoredRows.some((row) => row.includes(prompt))).toBe(true);
-    expect(restoredRows.some((row) => row.includes(reply))).toBe(true);
   } finally {
     await fixture.cleanup();
   }
-}, 65_000);
+}, 90_000);
 
 it("hides a stale approval when startup restores the remembered session", async () => {
   const stateDir = tempDirs.make("openclaw-tui-identity-");

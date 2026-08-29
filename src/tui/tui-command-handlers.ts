@@ -90,6 +90,7 @@ type CommandHandlerContext = {
   noteLocalBtwRunId?: (runId: string) => void;
   forgetLocalRunId?: (runId: string) => void;
   forgetLocalBtwRunId?: (runId: string) => void;
+  hasPendingLocalBtwRuns?: () => boolean;
   consumeCompletedRunForPendingSend?: (runId: string) => boolean;
   isRunObserved?: (runId: string) => boolean;
   flushPendingHistoryRefreshIfIdle?: () => void;
@@ -134,6 +135,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     noteLocalBtwRunId,
     forgetLocalRunId,
     forgetLocalBtwRunId,
+    hasPendingLocalBtwRuns,
     consumeCompletedRunForPendingSend,
     isRunObserved,
     flushPendingHistoryRefreshIfIdle,
@@ -239,6 +241,11 @@ export function createCommandHandlers(context: CommandHandlerContext) {
 
   const hasUnsafeSessionRollover = () =>
     hasTrackedAbortTarget() || state.activityStatus === "finishing context";
+
+  // Side questions do not claim the main activity slot, but their delayed
+  // results still render into the current view after a clear.
+  const hasClearViewBlocker = () =>
+    hasUnsafeSessionRollover() || hasPendingLocalBtwRuns?.() === true;
 
   const rejectUnsafeSessionRollover = (command: "new" | "reset") => {
     if (!hasUnsafeSessionRollover()) {
@@ -839,7 +846,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       }
     },
     "clear-view": () => {
-      if (hasUnsafeSessionRollover()) {
+      if (hasClearViewBlocker()) {
         chatLog.addSystem("abort or wait for the current run before /clear-view");
         return;
       }

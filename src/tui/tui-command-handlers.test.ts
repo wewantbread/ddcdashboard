@@ -125,6 +125,7 @@ function createHarness(params?: {
   abortActive?: AbortActiveMock;
   consumeCompletedRunForPendingSend?: ConsumeCompletedRunMock;
   isRunObserved?: (runId: string) => boolean;
+  hasPendingLocalBtwRuns?: () => boolean;
   flushPendingHistoryRefreshIfIdle?: FlushPendingHistoryRefreshMock;
   refreshAgents?: RefreshAgentsMock;
   agentDefaultId?: string;
@@ -263,6 +264,7 @@ function createHarness(params?: {
     noteLocalBtwRunId,
     forgetLocalRunId,
     forgetLocalBtwRunId,
+    hasPendingLocalBtwRuns: params?.hasPendingLocalBtwRuns,
     consumeCompletedRunForPendingSend: params?.consumeCompletedRunForPendingSend,
     isRunObserved: params?.isRunObserved,
     flushPendingHistoryRefreshIfIdle: params?.flushPendingHistoryRefreshIfIdle,
@@ -347,6 +349,17 @@ describe("tui command handlers", () => {
     expect(clearAll).not.toHaveBeenCalled();
     expect(addSystem).toHaveBeenCalledWith("abort or wait for the current run before /clear-view");
     expect(sendChat).not.toHaveBeenCalled();
+  });
+
+  it("preserves the visible chat log while a side question is in flight", async () => {
+    const { handleCommand, clearAll, addSystem } = createHarness({
+      hasPendingLocalBtwRuns: () => true,
+    });
+
+    await handleCommand("/clear-view");
+
+    expect(clearAll).not.toHaveBeenCalled();
+    expect(addSystem).toHaveBeenCalledWith("abort or wait for the current run before /clear-view");
   });
 
   it("does not open the agent picker from a cached roster after refresh failure", async () => {
