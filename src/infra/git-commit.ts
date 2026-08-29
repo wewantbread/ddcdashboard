@@ -32,6 +32,7 @@ declare const WORKER_DEPLOY_BUILD: boolean;
 type CommitMetadataReaders = {
   readGitCommit?: (searchDir: string, packageRoot: string | null) => string | null | undefined;
   readBuildInfoCommit?: () => string | null;
+  readLoadedCommit?: (moduleUrl: string) => { commit: string | null; present: boolean };
   readPackageJsonCommit?: () => string | null;
 };
 
@@ -207,17 +208,83 @@ const readCommitFromBuildInfo = () => {
   }
 };
 
+const readCommitProbe = (
+  moduleUrl: string,
+  candidates: readonly string[],
+  field: "commit" | "head",
+): { commit: string | null; present: boolean } => {
+  try {
+    for (const candidate of candidates) {
+      const filePath = fileURLToPath(new URL(candidate, moduleUrl));
+      let raw: string;
+      try {
+        raw = safeReadFilePrefix(filePath, 1024);
+      } catch (error) {
+        if (isMissingPathError(error)) {
+          continue;
+        }
+        return { commit: null, present: true };
+      }
+      try {
+        // SAFETY: JSON.parse returns unknown data; the indexed field is validated before use.
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const value = parsed[field];
+        return { commit: typeof value === "string" ? formatCommit(value) : null, present: true };
+      } catch {
+        return { commit: null, present: true };
+      }
+    }
+  } catch {
+    // invalid module URL
+  }
+  return { commit: null, present: false };
+};
+
+const readLoadedCommit = (moduleUrl: string): { commit: string | null; present: boolean } => {
+  const buildStamp = readCommitProbe(moduleUrl, ["../.buildstamp", "./.buildstamp"], "head");
+  const runtimeStamp = readCommitProbe(
+    moduleUrl,
+    ["../.runtime-postbuildstamp", "./.runtime-postbuildstamp"],
+    "head",
+  );
+  if (buildStamp.commit || runtimeStamp.commit) {
+    return {
+      commit:
+        buildStamp.commit && buildStamp.commit === runtimeStamp.commit ? buildStamp.commit : null,
+      present: true,
+    };
+  }
+  const buildInfo = readCommitProbe(
+    moduleUrl,
+    ["../build-info.json", "./build-info.json"],
+    "commit",
+  );
+  return {
+    commit: buildInfo.commit,
+    present: buildInfo.present || buildStamp.present || runtimeStamp.present,
+  };
+};
+
 export const resolveCommitHash = (
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     moduleUrl?: string;
+    preferLoadedCommit?: boolean;
     readers?: CommitMetadataReaders;
   } = {},
 ) => {
   const env = options.env ?? process.env;
   const readers = options.readers ?? {};
   const readGitCommit = readers.readGitCommit ?? readCommitFromGit;
+  if (options.preferLoadedCommit) {
+    const loaded = (readers.readLoadedCommit ?? readLoadedCommit)(
+      options.moduleUrl ?? import.meta.url,
+    );
+    if (loaded.present) {
+      return loaded.commit;
+    }
+  }
   const envCommit = env.GIT_COMMIT?.trim() || env.GIT_SHA?.trim();
   const normalized = formatCommit(envCommit);
   if (normalized) {

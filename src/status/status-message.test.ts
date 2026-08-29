@@ -1,8 +1,30 @@
 // Status message tests cover status message formatting and persistence.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { testing as cliBackendsTesting } from "../agents/cli-backends.test-support.js";
 import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions/types.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
+
+const runtimeIdentity = vi.hoisted(() => ({
+  loadedCommit: "loaded00",
+  mutableCheckoutCommit: "moved00",
+}));
+
+vi.mock("../version.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../version.js")>();
+  return {
+    ...actual,
+    resolveRuntimeServiceCommit: () => runtimeIdentity.loadedCommit,
+  };
+});
+
+vi.mock("../infra/git-commit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../infra/git-commit.js")>();
+  return {
+    ...actual,
+    resolveCommitHash: () => runtimeIdentity.mutableCheckoutCommit,
+  };
+});
+
 import { buildStatusMessage, buildStatusMessageParts } from "./status-message.js";
 
 function statusTestModel(id: string, name: string, contextWindow: number): ModelDefinitionConfig {
@@ -42,6 +64,21 @@ describe("buildStatusMessage current time", () => {
 });
 
 describe("buildStatusMessageParts presentation", () => {
+  it("uses the loaded build commit after the checkout moves", () => {
+    const parts = buildStatusMessageParts({
+      now: 1_751_529_600_000,
+      config: { agents: { defaults: { userTimezone: "UTC", timeFormat: "24" } } },
+      agent: { model: "anthropic/claude-haiku-4-5" },
+      sessionKey: "agent:main:main",
+      sessionScope: "per-sender",
+      queue: { mode: "steer", depth: 0 },
+      modelAuth: "api-key",
+    });
+
+    expect(parts.presentation.title).toContain("(loaded00)");
+    expect(parts.presentation.title).not.toContain(runtimeIdentity.mutableCheckoutCommit);
+  });
+
   it("mirrors the text body as a titled status table with context lines", () => {
     const parts = buildStatusMessageParts({
       now: 1_751_529_600_000,

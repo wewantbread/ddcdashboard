@@ -9,6 +9,11 @@ const { mockWarn, mockThrowOpen, mockThrowWrite } = vi.hoisted(() => ({
   mockThrowWrite: vi.fn(),
 }));
 
+const runtimeIdentity = vi.hoisted(() => ({
+  loadedCommit: "loaded00",
+  mutableCheckoutCommit: "moved00",
+}));
+
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => ({ warn: mockWarn }),
 }));
@@ -27,6 +32,22 @@ vi.mock("../state/openclaw-state-db.js", async (importOriginal) => {
       mockThrowWrite();
       return actual.runOpenClawStateWriteTransaction(...args);
     },
+  };
+});
+
+vi.mock("../version.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../version.js")>();
+  return {
+    ...actual,
+    resolveRuntimeServiceCommit: () => runtimeIdentity.loadedCommit,
+  };
+});
+
+vi.mock("./git-commit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./git-commit.js")>();
+  return {
+    ...actual,
+    resolveCommitHash: () => runtimeIdentity.mutableCheckoutCommit,
   };
 });
 
@@ -536,6 +557,29 @@ describe("restart sentinel", () => {
               version: "actual-version",
             },
           },
+        },
+      });
+    });
+  });
+
+  it("uses the loaded build commit after the checkout moves", async () => {
+    await withRestartSentinelStateDir(async () => {
+      await writeRestartSentinel({
+        kind: "update",
+        status: "ok",
+        ts: Date.now(),
+        stats: {
+          mode: "git",
+          root: process.cwd(),
+          after: { sha: runtimeIdentity.loadedCommit, version: "actual-version" },
+        },
+      });
+
+      await finalizeUpdateRestartSentinelRunningVersion("actual-version");
+
+      await expect(readRestartSentinel()).resolves.toMatchObject({
+        payload: {
+          status: "ok",
         },
       });
     });

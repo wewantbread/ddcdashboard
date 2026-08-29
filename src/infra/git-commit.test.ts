@@ -129,6 +129,99 @@ describe("git commit resolution", () => {
     ).toBe(repoCommit.slice(0, 7));
   });
 
+  it("prefers loaded build stamps over a checkout that moved after the build", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-loaded-build"),
+        env: { GIT_COMMIT: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: "aaaaaaa", present: true }),
+        },
+      }),
+    ).toBe("aaaaaaa");
+    expect(readGitCommit).not.toHaveBeenCalled();
+  });
+
+  it("does not guess from Git when loaded build stamps disagree", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-incoherent-build"),
+        env: {},
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: null, present: true }),
+        },
+      }),
+    ).toBeNull();
+    expect(readGitCommit).not.toHaveBeenCalled();
+  });
+
+  it("falls back to live Git for true source execution without build metadata", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-source-runtime"),
+        env: {},
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: null, present: false }),
+        },
+      }),
+    ).toBe("bbbbbbb");
+  });
+
+  it("uses build info when source-archive stamps have no Git head", async () => {
+    const root = await makeTempDir("git-commit-headless-build");
+    const dist = path.join(root, "dist");
+    await fs.mkdir(dist, { recursive: true });
+    await fs.writeFile(path.join(dist, ".buildstamp"), JSON.stringify({ head: null }));
+    await fs.writeFile(path.join(dist, ".runtime-postbuildstamp"), JSON.stringify({}));
+    await fs.writeFile(
+      path.join(dist, "build-info.json"),
+      JSON.stringify({ commit: "0123456789abcdef0123456789abcdef01234567" }),
+    );
+
+    expect(
+      resolveCommitHash({
+        env: {},
+        moduleUrl: pathToFileURL(path.join(dist, "version-chunk.js")).href,
+        preferLoadedCommit: true,
+      }),
+    ).toBe("0123456");
+  });
+
+  it("does not guess from live metadata when commitless build stamps lack build info", async () => {
+    const root = await makeTempDir("git-commit-headless-build-no-info");
+    const dist = path.join(root, "dist");
+    await makeFakeGitRepo(root, {
+      head: "abcdef0123456789abcdef0123456789abcdef01\n",
+    });
+    await fs.mkdir(dist, { recursive: true });
+    await fs.writeFile(path.join(dist, ".buildstamp"), JSON.stringify({ head: null }));
+    await fs.writeFile(path.join(dist, ".runtime-postbuildstamp"), JSON.stringify({}));
+
+    expect(
+      resolveCommitHash({
+        cwd: root,
+        env: { GIT_COMMIT: "fedcba9876543210fedcba9876543210fedcba98" },
+        moduleUrl: pathToFileURL(path.join(dist, "version-chunk.js")).href,
+        preferLoadedCommit: true,
+      }),
+    ).toBeNull();
+  });
+
   it("caches build-info fallback results per resolved search directory", async () => {
     const temp = await makeTempDir("git-commit-build-info-cache");
     const readBuildInfoCommit = vi.fn(() => "deadbee");
