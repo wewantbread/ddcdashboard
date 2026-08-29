@@ -41,7 +41,6 @@ import {
   restorePriorAgentsDefaultsModelUnlessOptIn,
   resolveProviderMatch,
 } from "../../plugins/provider-auth-choice-helpers.js";
-import { applyAuthProfileConfig } from "../../plugins/provider-auth-helpers.js";
 import { createVpsAwareOAuthHandlers } from "../../plugins/provider-oauth-flow.js";
 import { resolvePluginProvidersCore } from "../../plugins/providers.runtime.js";
 import {
@@ -519,6 +518,25 @@ function resolveConfiguredAuthSelectionForProvider(
     : { createIfMissing: false };
 }
 
+async function promotePastedProfileInAgentOrder(params: {
+  agentDir: string;
+  provider: string;
+  profileId: string;
+  config: OpenClawConfig;
+}) {
+  const configuredSelection = resolveConfiguredAuthSelectionForProvider(
+    params.config,
+    params.provider,
+  );
+  await promoteAuthProfileInOrder({
+    agentDir: params.agentDir,
+    provider: params.provider,
+    profileId: params.profileId,
+    createIfMissing: configuredSelection.createIfMissing,
+    ...(configuredSelection.order ? { createFromOrder: configuredSelection.order } : {}),
+  });
+}
+
 async function runProviderAuthMethod(params: {
   config: OpenClawConfig;
   agentId: string;
@@ -644,7 +662,8 @@ export async function modelsAuthPasteTokenCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent);
+  const config = await loadValidConfigOrThrow();
+  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent, config);
   const rawProvider = normalizeOptionalString(opts.provider);
   if (!rawProvider) {
     throw new Error(
@@ -691,11 +710,14 @@ export async function modelsAuthPasteTokenCommand(
     agentDir,
   });
 
-  await updateConfig((cfg) => applyAuthProfileConfig(cfg, { profileId, provider, mode: "token" }));
+  await promotePastedProfileInAgentOrder({ agentDir, provider, profileId, config });
 
+  // Pasted credentials are agent-scoped: the profile lives only in the
+  // targeted agent's store. Do not write global `auth.profiles`/`auth.order`
+  // metadata — that declares a profile the default agent cannot resolve and
+  // breaks its auth routing after a secondary-agent paste.
   await refreshRunningGatewayAuthState(agentId);
 
-  logConfigUpdated(runtime);
   runtime.log(`Auth profile: ${profileId} (${provider}/token)`);
   if (provider === "anthropic") {
     runtime.log("Anthropic setup-token auth is supported in OpenClaw.");
@@ -713,7 +735,8 @@ export async function modelsAuthPasteApiKeyCommand(
   },
   runtime: RuntimeEnv,
 ) {
-  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent);
+  const config = await loadValidConfigOrThrow();
+  const { agentId, agentDir } = await resolveModelsAuthAgent(opts.agent, config);
   const rawProvider = normalizeOptionalString(opts.provider);
   if (!rawProvider) {
     throw new Error(
@@ -749,13 +772,14 @@ export async function modelsAuthPasteApiKeyCommand(
     agentDir,
   });
 
-  await updateConfig((cfg) =>
-    applyAuthProfileConfig(cfg, { profileId, provider, mode: "api_key" }),
-  );
+  await promotePastedProfileInAgentOrder({ agentDir, provider, profileId, config });
 
+  // Pasted credentials are agent-scoped: the profile lives only in the
+  // targeted agent's store. Do not write global `auth.profiles`/`auth.order`
+  // metadata — that declares a profile the default agent cannot resolve and
+  // breaks its auth routing after a secondary-agent paste.
   await refreshRunningGatewayAuthState(agentId);
 
-  logConfigUpdated(runtime);
   runtime.log(`Auth profile: ${profileId} (${provider}/api_key)`);
 }
 
