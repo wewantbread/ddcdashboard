@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
+import { formatSessionArchiveTimestamp } from "../config/sessions/artifacts.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { heartbeatLog } from "./heartbeat-runner-config.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
@@ -129,9 +130,17 @@ describe("runHeartbeatOnce - isolated heartbeat transcript rollover", () => {
         `{"type":"message","sessionKey":"${isolatedSessionKey}"}\n`,
       );
       replySpy.mockResolvedValueOnce({ text: "All good." });
-      // Make the archive rename fail with EACCES so the per-file error callback
-      // must surface the failure instead of swallowing it.
-      await fs.chmod(sessionsDir, 0o555);
+      // Force a deterministic rename failure independent of user privileges:
+      // pin the archive timestamp and pre-create the archive target as a
+      // directory, so renameSync(file -> directory) fails with EISDIR. The
+      // per-file error callback must surface that failure instead of
+      // swallowing it.
+      const fixedNow = nowMs;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(fixedNow);
+      const archiveStamp = formatSessionArchiveTimestamp(fixedNow);
+      await fs.mkdir(path.join(sessionsDir, `previous-wake.jsonl.deleted.${archiveStamp}`), {
+        recursive: true,
+      });
       const warnSpy = vi.spyOn(heartbeatLog, "warn");
       try {
         const result = await runHeartbeatOnce({
@@ -157,7 +166,7 @@ describe("runHeartbeatOnce - isolated heartbeat transcript rollover", () => {
         );
       } finally {
         warnSpy.mockRestore();
-        await fs.chmod(sessionsDir, 0o755);
+        nowSpy.mockRestore();
       }
     });
   });

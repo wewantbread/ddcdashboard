@@ -296,6 +296,116 @@ describe("doctor transcript and heartbeat session repairs", () => {
     expect(text).not.toContain(" ls ");
   });
 
+  it("skips cron sessions whose transcripts were archived by the run lifecycle", async () => {
+    const cfg: OpenClawConfig = {};
+    writeSessionStore(cfg, {
+      "agent:main:cron:daily-job": {
+        sessionId: "reaped-cron-run",
+        updatedAt: Date.now(),
+      },
+      "agent:main:cron:daily-job:run:reaped-cron-run": {
+        sessionId: "reaped-cron-run",
+        updatedAt: Date.now(),
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).not.toContain("recent sessions are missing transcripts");
+  });
+
+  it("skips isolated heartbeat sessions whose transcripts were removed by rollover", async () => {
+    const cfg: OpenClawConfig = {};
+    writeSessionStore(cfg, {
+      "agent:main:main:heartbeat": {
+        sessionId: "previous-heartbeat-wake",
+        updatedAt: Date.now(),
+        heartbeatIsolatedBaseSessionKey: "agent:main:main",
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).not.toContain("recent sessions are missing transcripts");
+  });
+
+  it("keeps missing-transcript warnings for real sessions next to churn rows", async () => {
+    const cfg: OpenClawConfig = {};
+    writeSessionStore(cfg, {
+      "agent:main:telegram:dm:real-peer": {
+        sessionId: "vanished-transcript",
+        updatedAt: Date.now(),
+      },
+      "agent:main:cron:daily-job": {
+        sessionId: "reaped-cron-run",
+        updatedAt: Date.now(),
+      },
+      "agent:main:main:heartbeat": {
+        sessionId: "previous-heartbeat-wake",
+        updatedAt: Date.now(),
+        heartbeatIsolatedBaseSessionKey: "agent:main:main",
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).toContain("1/1 recent sessions are missing transcripts");
+  });
+
+  it("still warns for an older real session when newer churn rows fill the recent window", async () => {
+    const cfg: OpenClawConfig = {};
+    const now = Date.now();
+    writeSessionStore(cfg, {
+      "agent:main:telegram:dm:real-peer": {
+        sessionId: "vanished-transcript",
+        updatedAt: now - 5_000,
+      },
+      "agent:main:cron:job-a": { sessionId: "cron-run-a", updatedAt: now - 4_000 },
+      "agent:main:cron:job-a:run:cron-run-a": {
+        sessionId: "cron-run-a",
+        updatedAt: now - 3_000,
+      },
+      "agent:main:cron:job-b": { sessionId: "cron-run-b", updatedAt: now - 2_000 },
+      "agent:main:cron:job-b:run:cron-run-b": {
+        sessionId: "cron-run-b",
+        updatedAt: now - 1_000,
+      },
+      "agent:main:main:heartbeat": {
+        sessionId: "latest-heartbeat-wake",
+        updatedAt: now,
+        heartbeatIsolatedBaseSessionKey: "agent:main:main",
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).toContain("1/1 recent sessions are missing transcripts");
+  });
+
+  it("skips canonical heartbeat rows even when rollover stamped an interaction timestamp", async () => {
+    // Real rollover rows are created via resolveCronSession(..., forceNew),
+    // which stamps lastInteractionAt on every fresh isolated session. The
+    // transient classification must therefore key off synthetic ownership and
+    // the canonical key shape, not activity timestamps (#131770).
+    const cfg: OpenClawConfig = {};
+    const now = Date.now();
+    writeSessionStore(cfg, {
+      "agent:main:main:heartbeat": {
+        sessionId: "rolled-heartbeat-wake",
+        updatedAt: now,
+        lastInteractionAt: now,
+        heartbeatIsolatedBaseSessionKey: "agent:main:main",
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).not.toContain("recent sessions are missing transcripts");
+  });
+
+  it("keeps missing-transcript warnings for non-canonical heartbeat markers", async () => {
+    const cfg: OpenClawConfig = {};
+    writeSessionStore(cfg, {
+      "agent:main:telegram:dm:real-peer": {
+        sessionId: "mis-marked-session",
+        updatedAt: Date.now(),
+        heartbeatIsolatedBaseSessionKey: "agent:main:main",
+      },
+    });
+    const text = await runStateIntegrityText(cfg);
+    expect(text).toContain("1/1 recent sessions are missing transcripts");
+  });
+
   it("preserves a non-main compatibility owner for a fixed legacy store", async () => {
     const storePath = path.join(tempHome, "fixed-store", "sessions.json");
     const cfg: OpenClawConfig = {
