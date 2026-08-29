@@ -1,14 +1,21 @@
 // Boundary proof: the outbound delivery mirror fences its transcript write
 // against the DESTINATION session, never against the ambient admitted run.
+import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import type { OwnedSessionTranscriptWriteContext } from "../../config/sessions/transcript-write-context.js";
 
 const appendAssistantMessageToSessionTranscriptMock = vi.hoisted(() =>
-  vi.fn(async () => ({
-    ok: true,
-    target: { sessionId: "session-b", sessionKey: "session-b", storePath: "/tmp/store.sqlite" },
-  })),
+  vi.fn(
+    async (_params: {
+      sessionKey?: string;
+      expectedWriterRunId?: string;
+      expectedLifecycleRevision?: string;
+    }) => ({
+      ok: true,
+      target: { sessionId: "session-b", sessionKey: "session-b", storePath: "/tmp/store.sqlite" },
+    }),
+  ),
 );
 
 vi.mock("../../config/sessions/transcript.runtime.js", () => ({
@@ -61,7 +68,10 @@ describe("outbound delivery transcript mirror", () => {
       async () => await mirrorDeliveredPayloads(mirrorParams("agent:main:discord:c:2") as never),
     );
     expect(appendAssistantMessageToSessionTranscriptMock).toHaveBeenCalledTimes(1);
-    const appendParams = appendAssistantMessageToSessionTranscriptMock.mock.calls[0][0];
+    const appendParams = expectDefined(
+      appendAssistantMessageToSessionTranscriptMock.mock.calls[0]?.[0],
+      "transcript append call",
+    );
     expect(appendParams.sessionKey).toBe("agent:main:discord:c:2");
     expect(appendParams.expectedWriterRunId).toBeUndefined();
     expect(appendParams.expectedLifecycleRevision).toBeUndefined();
@@ -73,7 +83,10 @@ describe("outbound delivery transcript mirror", () => {
       ownedRunContext("agent:main:discord:c:1"),
       async () => await mirrorDeliveredPayloads(mirrorParams("agent:main:discord:c:1") as never),
     );
-    const appendParams = appendAssistantMessageToSessionTranscriptMock.mock.calls[0][0];
+    const appendParams = expectDefined(
+      appendAssistantMessageToSessionTranscriptMock.mock.calls[0]?.[0],
+      "transcript append call",
+    );
     expect(appendParams.expectedWriterRunId).toBe("run-agent:main:discord:c:1");
     expect(appendParams.expectedLifecycleRevision).toBe("rev-1");
   });
