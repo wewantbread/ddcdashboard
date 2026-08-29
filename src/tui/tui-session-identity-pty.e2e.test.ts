@@ -165,6 +165,48 @@ it("keeps the active stream when the current session is selected again", async (
   }
 }, 65_000);
 
+it("clears only the visible conversation and restores it from session history", async () => {
+  const fixture = await startTuiFixture();
+  const prompt = "live reply dedupe proof: clear view";
+  const reply = "TUI_LIVE_SECOND";
+  try {
+    await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+    await fixture.run.write(`${prompt}\r`, { delay: false });
+    await fixture.run.waitForOutput(reply);
+    const before = await readFixtureLog(fixture.logPath);
+    const historyLoadsBefore = before.filter((entry) => entry.method === "loadHistory").length;
+
+    await fixture.run.write("/clear-view\r", { delay: false });
+    const clearedRows = await waitForSynchronizedFrameRows(
+      fixture.run,
+      (frame) => frame.some((row) => row.includes("view cleared; session history is unchanged")),
+      STARTUP_TIMEOUT_MS,
+    );
+    expect(clearedRows.some((row) => row.includes(prompt) || row.includes(reply))).toBe(false);
+    const afterClear = await readFixtureLog(fixture.logPath);
+    expect(markerSends(afterClear, "/clear-view")).toHaveLength(0);
+    expect(afterClear.filter((entry) => entry.method === "resetSession")).toHaveLength(0);
+
+    await fixture.run.write("\x14", { delay: false });
+    await expect
+      .poll(async () => {
+        const entries = await readFixtureLog(fixture.logPath);
+        return entries.filter((entry) => entry.method === "loadHistory").length;
+      })
+      .toBeGreaterThan(historyLoadsBefore);
+    const restoredRows = await waitForSynchronizedFrameRows(
+      fixture.run,
+      (frame) =>
+        frame.some((row) => row.includes(prompt)) && frame.some((row) => row.includes(reply)),
+      STARTUP_TIMEOUT_MS,
+    );
+    expect(restoredRows.some((row) => row.includes(prompt))).toBe(true);
+    expect(restoredRows.some((row) => row.includes(reply))).toBe(true);
+  } finally {
+    await fixture.cleanup();
+  }
+}, 65_000);
+
 it("hides a stale approval when startup restores the remembered session", async () => {
   const stateDir = tempDirs.make("openclaw-tui-identity-");
   await seedRememberedSession(stateDir);
