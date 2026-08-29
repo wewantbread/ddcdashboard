@@ -253,7 +253,15 @@ const readLoadedCommit = (moduleUrl: string): { commit: string | null; present: 
       present: true,
     };
   }
-  return readCommitProbe(moduleUrl, ["../build-info.json", "./build-info.json"], "commit");
+  const buildInfo = readCommitProbe(
+    moduleUrl,
+    ["../build-info.json", "./build-info.json"],
+    "commit",
+  );
+  return {
+    commit: buildInfo.commit,
+    present: buildInfo.present || buildStamp.present || runtimeStamp.present,
+  };
 };
 
 export const resolveCommitHash = (
