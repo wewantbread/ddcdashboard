@@ -19,6 +19,7 @@ import {
   resolveSessionStorePathCore,
   runSessionsCleanup,
   serializeSessionCleanupResult,
+  SessionsCleanupPartialError,
   type SessionEntry,
 } from "../../config/sessions.js";
 import { listSessionEntriesReadOnly } from "../../config/sessions/session-accessor.js";
@@ -522,6 +523,39 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         }
       }
     } catch (error) {
+      if (error instanceof SessionsCleanupPartialError) {
+        const result = serializeSessionCleanupResult({
+          mode: error.mode,
+          dryRun: false,
+          summaries: error.appliedSummaries,
+          partialError: {
+            failingAgentId: error.failingTarget.agentId,
+            failingStorePath: error.failingTarget.storePath,
+            message: error.message,
+            lifecycleCommitted: error.lifecycleCommitted,
+          },
+        });
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, error.message, { details: result }),
+        );
+        for (const summary of error.appliedSummaries) {
+          emitSessionsChanged(context, { reason: "cleanup", sessionKey: undefined });
+          if (summary.wouldMutate) {
+            context.logGateway.debug(
+              `sessions.cleanup applied ${summary.storePath}: ${summary.beforeCount} -> ${summary.afterCount}`,
+            );
+          }
+        }
+        if (error.lifecycleCommitted) {
+          emitSessionsChanged(context, { reason: "cleanup", sessionKey: undefined });
+          context.logGateway.debug(
+            `sessions.cleanup applied ${error.failingTarget.storePath} (failing publication)`,
+          );
+        }
+        return;
+      }
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));
     }
   },
