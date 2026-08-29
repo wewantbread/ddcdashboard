@@ -159,7 +159,8 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   // +1: shared ingress error factory projected through the deprecated message barrel.
   // +1: shared ingress retention defaults projected through the deprecated message barrel.
   // +1: WhatsApp ack-policy bridge counted via channel-message's wildcard re-export.
-  "channel-message": 132,
+  // +1: canonical progress-line compaction projected via channel-outbound's wildcard re-export.
+  "channel-message": 133,
   // +2: Slack progress-draft render bridge (function + mode type).
   "channel-outbound": 2,
   // +2: WhatsApp ack-policy bridge (function + mode type).
@@ -327,7 +328,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared bounded HTTP rejection transport replaces plugin-local close policies.
       // +1: prepared model-provider builder preserves the stable builder's return contract.
       // +1: canonical SecretRef default-alias predicate for plugin binding parity.
-      4353,
+      // +2: canonical boundary-aware progress-line compaction via channel-outbound
+      //     and channel-message's wildcard re-export.
+      4355,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -431,7 +434,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared bounded HTTP rejection transport replaces plugin-local close policies.
       // +1: prepared model-provider builder preserves the stable builder's return contract.
       // +1: canonical SecretRef default-alias predicate for plugin binding parity.
-      2589,
+      // +2: canonical boundary-aware progress-line compaction via channel-outbound
+      //     and channel-message's wildcard re-export.
+      2591,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

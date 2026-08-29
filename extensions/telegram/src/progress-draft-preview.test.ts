@@ -46,4 +46,55 @@ describe("renderTelegramProgressDraftPreview", () => {
     expect(rendered).toContain("<b>📖 Read</b>");
     expect(rendered.match(/📖/gu) ?? []).toHaveLength(1);
   });
+
+  it("honors a configured budget and cuts prose on word boundaries", () => {
+    const line = {
+      kind: "item" as const,
+      label: "Commentary",
+      text: "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+      prefix: false,
+    };
+
+    const rendered = renderTelegramProgressDraftPreview("Working", [line], false, true, 24).text;
+
+    expect(rendered).toContain("alpha beta gamma…");
+    expect(rendered).not.toContain("epsilon");
+  });
+
+  it("keeps command detail prefixes and useful path suffixes", () => {
+    const path = `path/to/${"nested/".repeat(20)}file.ts`;
+    const line = buildChannelProgressDraftLine(
+      {
+        event: "tool",
+        toolCallId: "call-1",
+        name: "Bash",
+        phase: "start",
+        args: { command: `cat ${path}` },
+      },
+      { commandText: "raw" },
+    );
+    if (!line) {
+      throw new Error("expected a progress line for Bash");
+    }
+
+    const rendered = renderTelegramProgressDraftPreview("Working", [line], false, true, 60).text;
+
+    expect(rendered).toContain("<b>🛠️ Bash</b>");
+    // The tail of the path carries the information; keep it visible.
+    expect(rendered).toMatch(/…[^<]*file\.ts<\/code>/u);
+  });
+
+  it("keeps the historical 300 budget when no budget is passed", () => {
+    const line = {
+      kind: "item" as const,
+      label: "Commentary",
+      text: `${"x ".repeat(150)}tail`,
+      prefix: false,
+    };
+
+    const rendered = renderTelegramProgressDraftPreview("Working", [line], false, true).text;
+
+    expect(rendered).toContain("…");
+    expect(rendered).not.toContain("tail");
+  });
 });
