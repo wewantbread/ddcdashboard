@@ -113,7 +113,9 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
     ]),
   );
   let completed: string | undefined;
+  const abandonOperation = vi.fn(() => true);
   const placements = {
+    abandonWorkerSessionToolOperation: abandonOperation,
     beginWorkerSessionToolOperation: () =>
       completed
         ? { kind: "completed", resultJson: completed }
@@ -171,6 +173,8 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(fixture.run).toHaveBeenCalledOnce();
   expect(gatewayDispatch).not.toHaveBeenCalled();
+  expect(sendOwner.execute).toHaveBeenCalledOnce();
+  expect(abandonOperation).not.toHaveBeenCalled();
 });
 
 it("fences child creation when delegated authority closes before commit", async () => {
@@ -185,7 +189,9 @@ it("fences child creation when delegated authority closes before commit", async 
     ]),
   );
   let completed: string | undefined;
+  const abandonOperation = vi.fn(() => true);
   const placements = {
+    abandonWorkerSessionToolOperation: abandonOperation,
     beginWorkerSessionToolOperation: () =>
       completed
         ? { kind: "completed", resultJson: completed }
@@ -247,4 +253,5 @@ it("fences child creation when delegated authority closes before commit", async 
   expect(replay.resultJson).toContain("worker turn authority changed");
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(gatewayCreate).toHaveBeenCalledOnce();
+  expect(abandonOperation).not.toHaveBeenCalled();
 });
