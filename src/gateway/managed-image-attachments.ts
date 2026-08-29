@@ -2004,6 +2004,7 @@ export async function handleManagedOutgoingMediaHttpRequest(
   );
   const byteResponse = resolveByteResponse({
     file: opened.stat,
+    validatorPolicy: "immutable-metadata",
     method: req.method,
     request: req,
   });
