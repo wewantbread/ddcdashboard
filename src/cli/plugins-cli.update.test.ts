@@ -1412,6 +1412,7 @@ describe("plugins cli update", () => {
       expect(updateParams.officialPluginUpdateChannel).toBe(
         resolveRegistryUpdateChannel({ configChannel: updateChannel, currentVersion: VERSION }),
       );
+      expect(updateParams.versionBoundToCorePluginIds).toEqual(new Set(["codex"]));
     },
   );
 

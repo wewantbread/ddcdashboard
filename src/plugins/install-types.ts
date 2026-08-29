@@ -115,6 +115,8 @@ export function isUnavailableNpmTarget(result: {
 }): boolean {
   return (
     result.code === PLUGIN_INSTALL_ERROR_CODE.NPM_PACKAGE_NOT_FOUND ||
-    /\b(ETARGET|notarget)\b|No matching version found|dist-tag|tag .*not found/i.test(result.error)
+    /\b(ETARGET|notarget)\b|No matching version found|Package not found on npm:|dist-tag|tag .*not found/i.test(
+      result.error,
+    )
   );
 }
