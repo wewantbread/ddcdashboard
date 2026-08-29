@@ -42,6 +42,8 @@ import {
 import {
   applyWorkerSessionToolPolicy,
   computeWorkerSessionToolRequestDigest as computeRequestDigest,
+  createWorkerSessionToolGatewayCaller,
+  runWithWorkerSessionToolExecutionIdentity,
   workerChildSessionKey as childSessionKey,
   WorkerSessionToolOutcomeUnknownError,
   workerSessionToolOperationKey as operationKey,
@@ -431,12 +433,8 @@ export function createWorkerSessionToolExecutor(params: {
   }) => {
     operation.signal?.throwIfAborted();
     exactSource({ identity: operation.identity, placements: params.placements });
-    const executionIdentityCapability = getWorkerTurnExecutionIdentityCapability(
-      params.placements,
-      operation.source.turnClaim,
-    );
     const config = getRuntimeConfig();
-    const executeFencedSend = async () => {
+    const executeFencedSend = async (workerIdentity?: WorkerTurnExecutionIdentity) => {
       const assertCurrentTarget = () => {
         const target = exactAuthorizedTarget({
           source: operation.source,
@@ -457,13 +455,13 @@ export function createWorkerSessionToolExecutor(params: {
         idempotencyKey: operation.idempotencyKey,
         config,
         ...(operation.signal ? { signal: operation.signal } : {}),
-        callGateway: (request) =>
-          callAgentToolGatewayRequest({
-            ...request,
-            ...(operation.signal ? { signal: operation.signal } : {}),
-          }),
+        callGateway: createWorkerSessionToolGatewayCaller({
+          ...(workerIdentity ? { identity: workerIdentity } : {}),
+          ...(operation.signal ? { signal: operation.signal } : {}),
+        }),
       });
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        workerIdentity?.receiptAuthority();
         try {
           operation.signal?.throwIfAborted();
           exactSource({ identity: operation.identity, placements: params.placements });
@@ -485,24 +483,25 @@ export function createWorkerSessionToolExecutor(params: {
         new Error("Worker sessions_send did not return a result"),
       );
     };
-    const executeWithTopologyFence = async () => {
-      const topologyParent = operation.target.topologyParent;
-      if (!topologyParent) {
-        return await executeFencedSend();
+    const executeWithTopologyFence = async (workerIdentity?: WorkerTurnExecutionIdentity) => {
+      if (!operation.target.topologyParent) {
+        return await executeFencedSend(workerIdentity);
       }
-      // Sibling authority exists only while the exact shared parent exists. Hold
-      // that third incarnation through target admission and the message effect.
+      // Hold the sibling authority's shared-parent incarnation through target admission and delivery.
       return await runWithScopedSessionAccess({
         cfg: config,
-        expectedSessionId: topologyParent.sessionId,
-        targetSessionKey: topologyParent.sessionKey,
+        expectedSessionId: operation.target.topologyParent.sessionId,
+        targetSessionKey: operation.target.topologyParent.sessionKey,
         ...(operation.signal ? { signal: operation.signal } : {}),
-        run: executeFencedSend,
+        run: () => executeFencedSend(workerIdentity),
       });
     };
-    return executionIdentityCapability
-      ? await executionIdentityCapability.run(executeWithTopologyFence)
-      : await executeWithTopologyFence();
+    return await runWithWorkerSessionToolExecutionIdentity({
+      claim: operation.source.turnClaim,
+      placements: params.placements,
+      resolveGatewayContext: params.resolveGatewayContext,
+      run: executeWithTopologyFence,
+    });
   };
 
   return async (request: WorkerSessionToolRequest): Promise<WorkerSessionToolResult> => {

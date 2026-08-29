@@ -11,9 +11,21 @@ import {
   buildBlockedToolResult,
   runBeforeToolCallHook,
 } from "../../agents/agent-tools.before-tool-call.js";
+import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
+import {
+  callAgentToolGatewayRequest,
+  type AgentToolGatewayRequestCaller,
+  withAgentToolGatewayRuntimeIdentity,
+} from "../../agents/tools/in-process-gateway.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { sha256Base64Url, sha256HexPrefixCore } from "../../infra/crypto-digest.js";
+import type { GatewayContextResolver } from "../server-methods/types.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
+import type { WorkerSessionPlacementStore } from "./placement-store.js";
+import {
+  getWorkerTurnExecutionIdentityCapability,
+  type WorkerTurnExecutionIdentity,
+} from "./placement-turn-claim-events.js";
 import type { WorkerPortalToolRequest } from "./worker-portal-tool-executor.js";
 import type { WorkerSessionToolSource } from "./worker-session-tool-topology.js";
 
@@ -38,6 +50,61 @@ export class WorkerSessionToolOutcomeUnknownError extends Error {
     super("Worker session operation outcome is unknown; it was not replayed", { cause });
     this.name = "WorkerSessionToolOutcomeUnknownError";
   }
+}
+
+export function createWorkerSessionToolGatewayCaller(params: {
+  identity?: WorkerTurnExecutionIdentity;
+  signal?: AbortSignal;
+}): AgentToolGatewayRequestCaller {
+  return async (request) => {
+    const identity = params.identity;
+    identity?.receiptAuthority();
+    const gatewayRequest = { ...request, ...(params.signal ? { signal: params.signal } : {}) };
+    return await callAgentToolGatewayRequest(
+      identity
+        ? withAgentToolGatewayRuntimeIdentity(gatewayRequest, {
+            kind: "agentRuntime",
+            agentId: identity.agentId,
+            sessionKey: identity.sessionKey,
+            operationalRunInstance: identity.operationalRunInstance,
+            delegatedAuthority: {
+              kind: "worker",
+              ...identity.delegatedAuthority,
+              turnClaim: identity.turnClaim,
+            },
+            executionIdentity: identity.executionIdentityToken,
+          })
+        : gatewayRequest,
+    );
+  };
+}
+
+export async function runWithWorkerSessionToolExecutionIdentity<T>(params: {
+  claim: WorkerSessionToolSource["turnClaim"];
+  placements: WorkerSessionPlacementStore;
+  resolveGatewayContext: GatewayContextResolver;
+  run: (identity?: WorkerTurnExecutionIdentity) => Promise<T>;
+}): Promise<T> {
+  const capability = getWorkerTurnExecutionIdentityCapability(params.placements, params.claim);
+  if (!capability) {
+    return await params.run();
+  }
+  return await capability.run(
+    async (identity) =>
+      await withGatewayToolCallerIdentity(
+        {
+          agentId: identity.agentId,
+          sessionKey: identity.sessionKey,
+          gatewayContextResolver: params.resolveGatewayContext,
+          operationalRunInstance: identity.operationalRunInstance,
+          executionIdentityToken: identity.executionIdentityToken,
+          receiptAuthority: identity.receiptAuthority,
+          workerTurnClaim: identity.turnClaim,
+          workerTurnExecutionIdentityCapability: capability,
+        },
+        () => params.run(identity),
+      ),
+  );
 }
 
 export function computeWorkerSessionToolRequestDigest(value: unknown): string {
