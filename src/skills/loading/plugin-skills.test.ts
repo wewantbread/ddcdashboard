@@ -505,7 +505,11 @@ describe("resolvePluginSkillRoots", () => {
     const staleRoot = await tempDirs.make("stale-plugin-skills-");
     const staleSkill = path.join(staleRoot, "stale-skill");
     await fs.mkdir(staleSkill, { recursive: true });
-    fsSync.symlinkSync(staleSkill, path.join(pluginSkillsDir, "stale-skill"), "dir");
+    fsSync.symlinkSync(
+      staleSkill,
+      path.join(pluginSkillsDir, "stale-skill"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     hoisted.loadPluginManifestRegistryForInstalledIndex.mockReturnValue({
       diagnostics: [],
@@ -527,7 +531,11 @@ describe("resolvePluginSkillRoots", () => {
     const staleRoot = await tempDirs.make("stale-plugin-skills-");
     const staleSkill = path.join(staleRoot, "stale-skill");
     await fs.mkdir(staleSkill, { recursive: true });
-    fsSync.symlinkSync(staleSkill, path.join(pluginSkillsDir, "stale-skill"), "dir");
+    fsSync.symlinkSync(
+      staleSkill,
+      path.join(pluginSkillsDir, "stale-skill"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     const roots = resolvePluginSkillRoots({
       workspaceDir: undefined,
@@ -735,7 +743,11 @@ describe("publishPluginSkills", () => {
     const dir1 = await writeSkillDir(skillParent1, "my-skill", "old");
     const dir2 = await writeSkillDir(skillParent2, "my-skill", "new");
 
-    fsSync.symlinkSync(dir1, path.join(managedDir, "my-skill"), "dir");
+    fsSync.symlinkSync(
+      dir1,
+      path.join(managedDir, "my-skill"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     publishPluginSkills([dir2], { pluginSkillsDir: managedDir });
 
@@ -751,7 +763,7 @@ describe("publishPluginSkills", () => {
     const currentDir = await writeSkillDir(currentParent, "my-skill", "new");
     const linkPath = path.join(managedDir, "my-skill");
 
-    fsSync.symlinkSync(staleDir, linkPath, "dir");
+    fsSync.symlinkSync(staleDir, linkPath, process.platform === "win32" ? "junction" : "dir");
     await fs.rm(staleParent, { recursive: true, force: true });
 
     publishPluginSkills([currentDir], { pluginSkillsDir: managedDir });
@@ -782,7 +794,11 @@ describe("publishPluginSkills", () => {
     const dir = await writeSkillDir(skillParent, "current-skill");
     const staleDir = await writeSkillDir(skillParent, "stale-skill");
 
-    fsSync.symlinkSync(staleDir, path.join(managedDir, "stale-skill"), "dir");
+    fsSync.symlinkSync(
+      staleDir,
+      path.join(managedDir, "stale-skill"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     publishPluginSkills([dir], { pluginSkillsDir: managedDir });
 
@@ -814,7 +830,11 @@ describe("publishPluginSkills", () => {
     const nonexistentDir = path.join(skillParent, "nonexistent");
 
     // Create a symlink to a nonexistent directory.
-    fsSync.symlinkSync(nonexistentDir, path.join(managedDir, "broken-skill"), "dir");
+    fsSync.symlinkSync(
+      nonexistentDir,
+      path.join(managedDir, "broken-skill"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 
     publishPluginSkills([dir], { pluginSkillsDir: managedDir });
 
