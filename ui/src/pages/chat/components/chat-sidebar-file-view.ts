@@ -373,7 +373,7 @@ export function renderSidebarFile(
       </div>
       ${markdownFile && controls
         ? html`
-            <div class="sidebar-file-preview" ?hidden=${!previewing}>
+            <div class="file-view sidebar-file-preview" ?hidden=${!previewing}>
               ${markdownHtml
                 ? html`
                     <article

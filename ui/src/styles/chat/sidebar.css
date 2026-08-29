@@ -1644,10 +1644,8 @@ openclaw-session-discussion {
 }
 
 .sidebar-file-view__modes {
-  min-height: 30px;
-  flex: 0 0 auto;
   align-self: center;
-  margin: 8px 10px;
+  margin: 8px;
 }
 
 .sidebar-file-view__actions {
@@ -1765,31 +1763,13 @@ openclaw-session-discussion {
   overflow: hidden;
 }
 
-.file-view[hidden],
-.sidebar-file-preview[hidden] {
-  display: none;
-}
-
 .sidebar-file-preview {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
   padding: 20px 18px 24px;
   overflow: auto;
-  background: var(--panel);
 }
 
 .sidebar-file-preview__content {
-  min-width: 0;
-  max-width: 100%;
   overflow-wrap: anywhere;
-  font-size: calc(14.5px * var(--control-ui-text-scale));
-  line-height: 1.72;
-}
-
-.sidebar-file-preview__content :where(pre, table) {
-  max-width: 100%;
-  overflow-x: auto;
 }
 
 .file-view__mount,
