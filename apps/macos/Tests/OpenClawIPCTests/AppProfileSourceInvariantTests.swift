@@ -36,6 +36,7 @@ struct AppProfileSourceInvariantTests {
         #expect(directStandardOwners == ["AppProfile.swift"])
         #expect(hardcodedGatewayLabelOwners == ["AppProfile.swift"])
         #expect(unscopedAppStorageOwners.sorted() == ["DebugSettings.swift", "GeneralSettings.swift"])
+
         let settingsRoot = try String(
             contentsOf: sourceRoot.appendingPathComponent("SettingsRootView.swift"),
             encoding: .utf8)

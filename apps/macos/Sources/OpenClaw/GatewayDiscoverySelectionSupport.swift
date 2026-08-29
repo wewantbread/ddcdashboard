@@ -10,9 +10,10 @@ enum GatewayDiscoverySelectionSupport {
         gateway: GatewayDiscoveryModel.DiscoveredGateway,
         state: AppState)
     {
-        let preferredTransport = self.preferredTransport(
-            for: gateway,
-            current: state.remoteTransport)
+        let previousRoute = Self.routeBinding(state: state)
+        let previousRouteWasDiscoveryOwned = GatewayDiscoveryPreferences
+            .preferredGatewayOwnsRoute(previousRoute)
+        let preferredTransport = self.preferredTransport(for: gateway)
         if preferredTransport != state.remoteTransport {
             state.remoteTransport = preferredTransport
         }
@@ -23,6 +24,21 @@ enum GatewayDiscoverySelectionSupport {
             state.remoteUrl = self.sshTunnelGatewayUrl(current: state.remoteUrl)
         }
         state.remoteTarget = GatewayDiscoveryHelpers.sshTarget(for: gateway) ?? ""
+        MacNodeModeCoordinator.shared.setPreferredGatewayStableID(gateway.stableID, state: state)
+        guard let selectedRoute = Self.routeBinding(state: state),
+              selectedRoute != previousRoute || !previousRouteWasDiscoveryOwned
+        else { return }
+        // Selection establishes ownership before persistence. A failed atomic
+        // save leaves routing unavailable; retry still removes both auth kinds.
+        state.clearRemoteCredentialsForDiscoverySelection(routeBinding: selectedRoute)
+    }
+
+    private static func routeBinding(state: AppState) -> String? {
+        GatewayDiscoveryPreferences.routeBinding(
+            connectionMode: .remote,
+            remoteTransport: state.remoteTransport,
+            remoteURL: state.remoteUrl,
+            remoteTarget: state.remoteTarget)
     }
 
     private static func sshTunnelGatewayUrl(current: String) -> String {
@@ -40,29 +56,22 @@ enum GatewayDiscoverySelectionSupport {
     }
 
     static func preferredTransport(
-        for gateway: GatewayDiscoveryModel.DiscoveredGateway,
-        current: AppState.RemoteTransport) -> AppState.RemoteTransport
+        for gateway: GatewayDiscoveryModel.DiscoveredGateway) -> AppState.RemoteTransport
     {
         if self.shouldPreferDirectTransport(for: gateway) {
             return .direct
         }
-        return current
+        return .ssh
     }
 
     static func shouldPreferDirectTransport(
         for gateway: GatewayDiscoveryModel.DiscoveredGateway) -> Bool
     {
-        guard GatewayDiscoveryHelpers.directUrl(for: gateway) != nil else { return false }
-        if gateway.gatewayTls || gateway.gatewayDirectReachable {
-            return true
-        }
-
-        guard let host = GatewayDiscoveryHelpers.resolvedServiceHost(for: gateway)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        else {
-            return false
-        }
-        return host.hasSuffix(".ts.net")
+        // Bonjour TXT never decides routing. This fact is minted only by the
+        // dedicated Tailscale Serve source and preserved through deduplication.
+        guard gateway.supportsSecureDirectTransport,
+              let url = GatewayDiscoveryHelpers.directUrl(for: gateway)
+        else { return false }
+        return url.hasPrefix("wss://")
     }
 }
