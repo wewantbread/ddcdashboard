@@ -479,7 +479,8 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
     resolveGatewayContext: params.resolveGatewayContext,
     placements: params.startup.placementStore,
     environments: workerEnvironmentService,
-    dispatchChild: (request) => dispatchChild(request),
+    dispatchChild: (request, onTransition, authorize) =>
+      dispatchChild(request, onTransition, authorize),
     githubPublication: {
       requestForClaim: (request) => githubPublication.requestForClaim(request),
     },

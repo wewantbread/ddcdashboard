@@ -32,6 +32,30 @@ describe("worker placement reclaim authority", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it("rechecks dispatch authority immediately before provider allocation", async () => {
+    let authorized = true;
+    const harness = createTestHarness();
+
+    await expect(
+      harness.service.dispatch(
+        REQUEST,
+        (placement) => {
+          if (placement.state === "provisioning") {
+            authorized = false;
+          }
+        },
+        () => {
+          if (!authorized) {
+            throw new Error("session dispatch authority closed");
+          }
+        },
+      ),
+    ).rejects.toThrow("session dispatch authority closed");
+
+    expect(harness.environments.create).not.toHaveBeenCalled();
+    expect(harness.log).not.toContain("environment:create");
+  });
+
   it("stops final effects when authority closes during workspace reconciliation", async () => {
     let authorized = true;
     const harness = createTestHarness({

@@ -269,6 +269,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       const localPath = await options.resolveWorkspacePath(request);
       // Workspace preparation yields; fence the current paired node again before durable provision.
       await validateDevicePlacement();
+      authorize?.();
       const idempotencyKey =
         request.idempotencyKey ?? `session-dispatch:${request.sessionId}:${placement.generation}`;
       const expectedEnvironmentId = deriveEnvironmentIntent(idempotencyKey).environmentId;
@@ -280,6 +281,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
         patch: { environmentId: expectedEnvironmentId },
       });
       reportTransition(onTransition, placement);
+      authorize?.();
       const environment = request.inheritedProfile
         ? await environments.createFromProfileSnapshot(
             {
