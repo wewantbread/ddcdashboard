@@ -13,7 +13,7 @@ import type { WorkspaceBootstrapFile } from "./workspace.js";
 
 type ToolReportEntry = SessionSystemPromptReport["tools"]["entries"][number];
 
-const toolReportEntryCache = new WeakMap<AgentTool, ToolReportEntry>();
+const toolReportEntryCache = new Map<string, ToolReportEntry>();
 const toolSchemaStatsCache = new WeakMap<
   object,
   Pick<ToolReportEntry, "propertiesCount" | "schemaChars" | "schemaHash">
@@ -84,7 +84,10 @@ function buildToolSchemaStats(
 
 function buildToolsEntries(tools: AgentTool[]): SessionSystemPromptReport["tools"]["entries"] {
   return tools.map((tool) => {
-    const cached = toolReportEntryCache.get(tool);
+    const name = tool.name ?? tool.label ?? "";
+  const summary = (typeof tool.description === "string" ? tool.description : "").trim();
+  const cacheKey = name + "\0" + summary;
+  const cached = toolReportEntryCache.get(cacheKey);
     if (cached) {
       return cached;
     }
@@ -93,7 +96,7 @@ function buildToolsEntries(tools: AgentTool[]): SessionSystemPromptReport["tools
     const summaryChars = summary.length;
     const schemaStats = buildToolSchemaStats(tool.parameters);
     const entry = { name, summaryChars, summaryHash: sha256(summary), ...schemaStats };
-    toolReportEntryCache.set(tool, entry);
+    toolReportEntryCache.set(cacheKey, entry);
     return entry;
   });
 }
