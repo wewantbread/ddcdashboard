@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createSuiteTempRootTracker } from "./test-helpers/temp-dir.js";
 import {
   VERSION,
@@ -94,6 +94,61 @@ describe("version resolution", () => {
       await writeJsonFixture(root, "build-info.json", { buildId: "x".repeat(97) });
       expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBeNull();
     });
+  });
+
+  it("captures the runtime commit from loaded build metadata once", async () => {
+    let buildInfoCommit = "abcdef0123456789abcdef0123456789abcdef01";
+    vi.doMock("node:module", async () => {
+      const actual = await vi.importActual<typeof import("node:module")>("node:module");
+      return {
+        createRequire: (moduleUrl: Parameters<typeof actual.createRequire>[0]) => {
+          const realRequire = actual.createRequire(moduleUrl);
+          return Object.assign(
+            (candidate: string) =>
+              candidate.endsWith("build-info.json")
+                ? { commit: buildInfoCommit }
+                : realRequire(candidate),
+            realRequire,
+          );
+        },
+      };
+    });
+    vi.resetModules();
+    try {
+      const runtimeVersion = await import("./version.js");
+      expect(runtimeVersion.resolveRuntimeServiceCommit()).toBe("abcdef0");
+      buildInfoCommit = "fedcba9876543210fedcba9876543210fedcba98";
+      expect(runtimeVersion.resolveRuntimeServiceCommit()).toBe("abcdef0");
+    } finally {
+      vi.doUnmock("node:module");
+      vi.resetModules();
+    }
+  });
+
+  it("rejects malformed loaded build commits", async () => {
+    vi.doMock("node:module", async () => {
+      const actual = await vi.importActual<typeof import("node:module")>("node:module");
+      return {
+        createRequire: (moduleUrl: Parameters<typeof actual.createRequire>[0]) => {
+          const realRequire = actual.createRequire(moduleUrl);
+          return Object.assign(
+            (candidate: string) =>
+              candidate.endsWith("build-info.json")
+                ? { commit: "prefix-abcdef0123456789abcdef0123456789abcdef01-suffix" }
+                : realRequire(candidate),
+            realRequire,
+          );
+        },
+      };
+    });
+    vi.resetModules();
+    try {
+      const runtimeVersion = await import("./version.js");
+      expect(runtimeVersion.resolveRuntimeServiceCommit()).toBeNull();
+    } finally {
+      vi.doUnmock("node:module");
+      vi.resetModules();
+    }
   });
 
   it("returns null when no version metadata exists", async () => {

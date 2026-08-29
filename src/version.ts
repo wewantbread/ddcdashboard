@@ -65,6 +65,27 @@ function readBuildIdFromJsonCandidates(moduleUrl: string): string | null {
   }
 }
 
+function readCommitFromBuildInfoCandidates(moduleUrl: string): string | null {
+  try {
+    const require = createRequire(moduleUrl);
+    for (const candidate of BUILD_INFO_CANDIDATES) {
+      try {
+        // SAFETY: build-info is controlled by the build step; only its optional commit field is read.
+        const parsed = require(candidate) as { commit?: unknown };
+        const commit = normalizeOptionalString(parsed.commit);
+        if (commit && /^[0-9a-f]{40}$/iu.test(commit)) {
+          return commit.slice(0, 7).toLowerCase();
+        }
+      } catch {
+        // ignore missing or unreadable candidate
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
     const trimmed = normalizeOptionalString(value);
@@ -156,9 +177,14 @@ export function resolveRuntimeServiceVersion(
 // Generated build provenance is immutable for a process. Resolve it once so
 // handshakes never poll the filesystem on the connection hot path.
 const RUNTIME_SERVICE_BUILD_ID = readBuildIdFromBuildInfoForModuleUrl(import.meta.url);
+const RUNTIME_SERVICE_COMMIT = readCommitFromBuildInfoCandidates(import.meta.url);
 
 export function resolveRuntimeServiceBuildId(): string | null {
   return RUNTIME_SERVICE_BUILD_ID;
+}
+
+export function resolveRuntimeServiceCommit(): string | null {
+  return RUNTIME_SERVICE_COMMIT;
 }
 
 export function resolveCompatibilityHostVersion(

@@ -1,5 +1,27 @@
 // Tests for SQLite user_version pragma helper.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const runtimeIdentity = vi.hoisted(() => ({
+  loadedCommit: "loaded00",
+  mutableCheckoutCommit: "moved00",
+}));
+
+vi.mock("../version.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../version.js")>();
+  return {
+    ...actual,
+    resolveRuntimeServiceCommit: () => runtimeIdentity.loadedCommit,
+  };
+});
+
+vi.mock("./git-commit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./git-commit.js")>();
+  return {
+    ...actual,
+    resolveCommitHash: () => runtimeIdentity.mutableCheckoutCommit,
+  };
+});
+
 import { VERSION } from "../version.js";
 import {
   createNewerSqliteSchemaVersionError,
@@ -84,5 +106,12 @@ describe("describeRunningOpenClawBuild", () => {
 
     expect(described).toContain(VERSION);
     expect(described).toContain("installed at ");
+  });
+
+  it("uses the loaded build commit after the checkout moves", () => {
+    const described = describeRunningOpenClawBuild();
+
+    expect(described).toContain("(loaded00)");
+    expect(described).not.toContain(runtimeIdentity.mutableCheckoutCommit);
   });
 });
