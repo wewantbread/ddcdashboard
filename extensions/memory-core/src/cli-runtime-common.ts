@@ -22,12 +22,13 @@ import {
 } from "./cli.host.runtime.js";
 import type { MemoryCoreAcquireLocalService } from "./memory/embedding-local-service.js";
 import type { ShortTermAuditSummary } from "./short-term-promotion.js";
+import { getMemoryEmbeddingCommandSecretTargetIds } from "../../src/cli/command-secret-targets.js";
 const { warn } = theme;
 export type MemoryManager = NonNullable<
   Awaited<ReturnType<typeof getMemorySearchManager>>["manager"]
 >;
 type MemoryManagerPurpose = Parameters<typeof getMemorySearchManager>[0]["purpose"];
-function getMemoryCommandSecretTargetIds(): Set<string> {
+function getMemoryEmbeddingCommandSecretTargetIds(): Set<string> {
   return new Set(["memory.search.remote.apiKey", "agents.entries.*.memory.search.remote.apiKey"]);
 }
 function isMemorySecretOwnerFailure(error: unknown, message: string): boolean {
@@ -60,7 +61,7 @@ async function loadMemoryCommandConfig(
     const { resolvedConfig, diagnostics } = await resolveCommandSecretRefsViaGateway({
       config,
       commandName,
-      targetIds: getMemoryCommandSecretTargetIds(),
+      targetIds: getMemoryEmbeddingCommandSecretTargetIds(),
       ...(mode ? { mode } : {}),
     });
     return { config: resolvedConfig, diagnostics };
