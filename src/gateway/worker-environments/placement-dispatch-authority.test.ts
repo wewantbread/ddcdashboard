@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -54,6 +54,22 @@ describe("worker placement reclaim authority", () => {
 
     expect(harness.environments.create).not.toHaveBeenCalled();
     expect(harness.log).not.toContain("environment:create");
+  });
+
+  it("forwards dispatch authority into environment provisioning", async () => {
+    let authorized = true;
+    const harness = createTestHarness();
+
+    await harness.service.dispatch(REQUEST, undefined, () => {
+      if (!authorized) {
+        throw new Error("session dispatch authority closed");
+      }
+    });
+    const authorizeProvision = vi.mocked(harness.environments.create).mock.calls[0]?.[4];
+    expect(authorizeProvision).toEqual(expect.any(Function));
+
+    authorized = false;
+    expect(() => authorizeProvision?.()).toThrow("session dispatch authority closed");
   });
 
   it("stops final effects when authority closes during workspace reconciliation", async () => {

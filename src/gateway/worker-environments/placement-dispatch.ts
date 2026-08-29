@@ -282,6 +282,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       });
       reportTransition(onTransition, placement);
       authorize?.();
+      const authorizationArgs: [] | [() => void] = authorize ? [authorize] : [];
       const environment = request.inheritedProfile
         ? await environments.createFromProfileSnapshot(
             {
@@ -292,12 +293,14 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
             idempotencyKey,
             request.machineClass,
             request.executionMode,
+            ...authorizationArgs,
           )
         : await environments.create(
             request.profileId,
             idempotencyKey,
             request.machineClass,
             request.executionMode,
+            ...authorizationArgs,
           );
       return await startup.continueProvisionedDispatch({
         request,

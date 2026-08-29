@@ -74,6 +74,38 @@ describe("worker environment service", () => {
     });
   });
 
+  it("rechecks placement authority after installation preparation before provider allocation", async () => {
+    let releasePreparation!: () => void;
+    const preparationPaused = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    support.testState.prepareInstallation = vi.fn(async () => {
+      await preparationPaused;
+      return support.BUNDLE_ARTIFACT;
+    });
+    const provision = vi.fn(support.createProvider().provision);
+    const workerService = support.createService(support.createProvider({ provision }));
+    let authorized = true;
+
+    const creation = workerService.create(
+      "development",
+      "request-revoked-during-installation-preparation",
+      undefined,
+      undefined,
+      () => {
+        if (!authorized) {
+          throw new Error("session dispatch authority closed");
+        }
+      },
+    );
+    await vi.waitFor(() => expect(support.testState.prepareInstallation).toHaveBeenCalledOnce());
+    authorized = false;
+    releasePreparation();
+
+    await expect(creation).rejects.toThrow("session dispatch authority closed");
+    expect(provision).not.toHaveBeenCalled();
+  });
+
   it("requires explicit placement modes before provider allocation", async () => {
     const provision = vi.fn(support.createProvider().provision);
     const provider = support.createProvider({ supportedExecutionModes: undefined, provision });

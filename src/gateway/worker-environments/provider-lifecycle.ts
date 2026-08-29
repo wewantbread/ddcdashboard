@@ -224,6 +224,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     record: WorkerEnvironmentRecord,
     provider: WorkerProvider,
     preparedInstallation?: WorkerInstallationArtifact,
+    authorize?: () => void,
   ) => {
     let lease: WorkerLease;
     let executionMode: WorkerExecutionMode | undefined;
@@ -265,7 +266,10 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       lease = requireWorkerLease(
         await callProvider(
           record.environmentId,
-          () => provider.provision(profile, record.provisionOperationId, provisionOptions),
+          () => {
+            authorize?.();
+            return provider.provision(profile, record.provisionOperationId, provisionOptions);
+          },
           providerTimeoutMs,
         ),
       );
@@ -330,6 +334,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
   const resumeProvision = async (
     record: WorkerEnvironmentRecord,
     provider = providerFor(record.providerId),
+    authorize?: () => void,
   ) => {
     let installation: WorkerInstallationArtifact | undefined;
     await nodeProvisioning.prepare(record, provider);
@@ -352,7 +357,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       }
     }
     const provisioning = record.state === "requested" ? move(record, "provisioning") : record;
-    return finishProvision(provisioning, provider, installation);
+    return finishProvision(provisioning, provider, installation, authorize);
   };
 
   const cancelRequested = (record: WorkerEnvironmentRecord) =>
@@ -613,9 +618,10 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       };
       machineClass?: string;
       executionMode?: WorkerExecutionMode;
+      authorize?: () => void;
     } = {},
   ) => {
-    const { inherited, machineClass, executionMode } = createOptions;
+    const { inherited, machineClass, executionMode, authorize } = createOptions;
     const provisionSnapshot = {
       ...(machineClass === undefined ? {} : { machineClass }),
       ...(executionMode === undefined ? {} : { executionMode }),
@@ -652,7 +658,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           return existing;
         }
         if (!existing.leaseId && inState(existing, "requested", "provisioning")) {
-          return resumeProvision(existing);
+          return resumeProvision(existing, undefined, authorize);
         }
         return existing;
       }
@@ -705,7 +711,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         profileSnapshot,
         provisionOperationId,
       });
-      return resumeProvision(intent, provider);
+      return resumeProvision(intent, provider, authorize);
     });
   };
 
