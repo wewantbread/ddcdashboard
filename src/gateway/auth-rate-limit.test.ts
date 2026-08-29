@@ -525,6 +525,113 @@ describe("auth rate limiter", () => {
     expect(limiter.check("").allowed).toBe(false);
   });
 
+  // ---------- non-positive config values ----------
+
+  it("falls back to the default maxAttempts when configured with 0", () => {
+    limiter = createAuthRateLimiter({ maxAttempts: 0, windowMs: 60_000, lockoutMs: 300_000 });
+    limiter.recordFailure("10.0.0.50");
+    // Honoring maxAttempts: 0 would leave remaining at 0 forever and deny this
+    // IP on its first failure; the fallback keeps the default budget.
+    const result = limiter.check("10.0.0.50");
+    expect(result.allowed).toBe(true);
+    expect(result.remaining).toBe(9);
+  });
+
+  it("falls back to the default maxAttempts when configured with a negative value", () => {
+    limiter = createAuthRateLimiter({ maxAttempts: -3, windowMs: 60_000, lockoutMs: 300_000 });
+    limiter.recordFailure("10.0.0.53");
+    expect(limiter.check("10.0.0.53").remaining).toBe(9);
+  });
+
+  it("preserves positive fractional maxAttempts, including across lockout expiry", () => {
+    vi.useFakeTimers();
+    try {
+      limiter = createAuthRateLimiter({
+        maxAttempts: 0.5,
+        windowMs: 60_000,
+        lockoutMs: 5_000,
+        pruneIntervalMs: 0,
+      });
+      // A schema-accepted fraction keeps its established semantics: the first
+      // failure locks, and once the lockout expires the fractional budget is
+      // back. Flooring it to 0 would deny the IP forever (remaining always 0).
+      limiter.recordFailure("10.0.0.60");
+      expect(limiter.check("10.0.0.60").allowed).toBe(false);
+
+      vi.advanceTimersByTime(5_001);
+      const result = limiter.check("10.0.0.60");
+      expect(result.allowed).toBe(true);
+      expect(result.remaining).toBe(0.5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the default window for sub-millisecond windowMs", () => {
+    vi.useFakeTimers();
+    try {
+      limiter = createAuthRateLimiter({
+        maxAttempts: 2,
+        windowMs: 0.5,
+        lockoutMs: 60_000,
+        pruneIntervalMs: 0,
+      });
+      // resolveTimerTimeoutMs truncates, so 0.5 would collapse to a zero-width
+      // (or toy 1ms) window; the default window must apply instead, and
+      // attempts spaced past 1ms still accumulate.
+      limiter.recordFailure("10.0.0.61");
+      vi.advanceTimersByTime(2);
+      limiter.recordFailure("10.0.0.61");
+      const result = limiter.check("10.0.0.61");
+      expect(result.allowed).toBe(false);
+      expect(result.retryAfterMs).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the default lockout for sub-millisecond lockoutMs", () => {
+    vi.useFakeTimers();
+    try {
+      limiter = createAuthRateLimiter({
+        maxAttempts: 1,
+        windowMs: 60_000,
+        lockoutMs: 0.5,
+        pruneIntervalMs: 0,
+      });
+      limiter.recordFailure("10.0.0.62");
+      const locked = limiter.check("10.0.0.62");
+      expect(locked.allowed).toBe(false);
+      expect(locked.retryAfterMs).toBeGreaterThan(60_000);
+
+      // Still locked well past the would-be instant lockout.
+      vi.advanceTimersByTime(2);
+      expect(limiter.check("10.0.0.62").allowed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the default window when windowMs is 0", () => {
+    limiter = createAuthRateLimiter({ maxAttempts: 2, windowMs: 0, lockoutMs: 60_000 });
+    limiter.recordFailure("10.0.0.51");
+    limiter.recordFailure("10.0.0.51");
+    // windowMs: 0 would expire every failure instantly, so the limiter could
+    // never lock; the fallback keeps failures inside the default window.
+    const result = limiter.check("10.0.0.51");
+    expect(result.allowed).toBe(false);
+    expect(result.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it("falls back to the default lockout when lockoutMs is 0", () => {
+    limiter = createAuthRateLimiter({ maxAttempts: 1, windowMs: 60_000, lockoutMs: 0 });
+    limiter.recordFailure("10.0.0.52");
+    // lockoutMs: 0 would expire the lockout in the same tick it is set.
+    const result = limiter.check("10.0.0.52");
+    expect(result.allowed).toBe(false);
+    expect(result.retryAfterMs).toBeGreaterThan(0);
+  });
+
   // ---------- dispose ----------
 
   it("dispose clears all entries", () => {
