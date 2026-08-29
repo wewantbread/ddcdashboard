@@ -1,8 +1,11 @@
 // Sessions cleanup tests cover stale session cleanup and runtime output.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
+import { SessionsCleanupPartialError } from "../config/sessions.js";
+import type { SessionCleanupSummary, SessionStoreTarget } from "../config/sessions.js";
 import { GatewayTransportError } from "../gateway/transport-error.js";
 import type { RuntimeEnv } from "../runtime.js";
+import type { SessionsCleanupOptions } from "./sessions-cleanup.js";
 
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
@@ -26,7 +29,8 @@ vi.mock("./session-store-targets.js", () => ({
   resolveSessionStoreTargetsOrExit: mocks.resolveSessionStoreTargetsOrExit,
 }));
 
-vi.mock("../config/sessions.js", () => ({
+vi.mock("../config/sessions.js", async () => ({
+  ...(await vi.importActual<typeof import("../config/sessions.js")>("../config/sessions.js")),
   resolveSessionCleanupAction: mocks.resolveSessionCleanupAction,
   runSessionsCleanup: mocks.runSessionsCleanup,
   serializeSessionCleanupResult: mocks.serializeSessionCleanupResult,
@@ -782,5 +786,58 @@ describe("sessionsCleanupCommand", () => {
         },
       ],
     });
+  });
+
+  it("exits nonzero and surfaces partialError when runSessionsCleanup throws SessionsCleanupPartialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    mocks.callGateway.mockImplementation(() => {
+      // Force the local path: a pre-connect close means the Gateway never ran it.
+      throw gatewayTransportError("closed");
+    });
+    mocks.runSessionsCleanup.mockImplementation(() => {
+      throw new SessionsCleanupPartialError({
+        mode: "warn",
+        previewResults: [],
+        appliedSummaries: [
+          {
+            agentId: "main",
+            storePath: "/resolved/main-sessions.sqlite",
+            mode: "warn",
+            dryRun: false,
+            beforeCount: 3,
+            afterCount: 2,
+            missing: 0,
+            dmScopeRetired: 0,
+            modelRunPruned: 0,
+            pruned: 1,
+            capped: 0,
+            unreferencedArtifacts: { pruned: 0, byKind: {} },
+            diskBudget: null,
+            wouldMutate: true,
+          } as unknown as SessionCleanupSummary,
+        ],
+        failingTarget: {
+          agentId: "work",
+          storePath: "/resolved/work-sessions.sqlite",
+        } as unknown as SessionStoreTarget,
+        cause: new Error("disk failure"),
+        lifecycleCommitted: true,
+      });
+    });
+    mocks.resolveSessionStoreTargetsOrExit.mockReturnValue({ stores: [] } as never);
+    mocks.loadConfig.mockReturnValue({} as never);
+
+    const { runtime } = makeRuntime();
+    await sessionsCleanupCommand({ json: true } as SessionsCleanupOptions, runtime);
+
+    expect(mocks.serializeSessionCleanupResult).toHaveBeenCalledTimes(1);
+    const callArg = mocks.serializeSessionCleanupResult.mock.calls[0]?.[0] as {
+      partialError?: { failingAgentId: string };
+    };
+    expect(callArg.partialError).toBeDefined();
+    expect(callArg.partialError?.failingAgentId).toBe("work");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = prevExit;
   });
 });
