@@ -243,6 +243,12 @@ export function buildQuotedMessageOptions(params: {
   ]
     .filter(Boolean)
     .join("\n");
+  if (!previewText) {
+    // Cache miss: shipping `conversation: ""` renders a blank bubble and
+    // baileys cannot encode a key-only quote, so degrade to an unquoted
+    // reply — the body text still renders (#127948).
+    return undefined;
+  }
   return {
     quoted: {
       key: {
