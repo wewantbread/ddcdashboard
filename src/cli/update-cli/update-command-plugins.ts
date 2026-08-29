@@ -141,6 +141,7 @@ function isActionableSkippedPostUpdateOutcome(outcome: PluginUpdateOutcome): boo
 export async function updatePluginsAfterCoreUpdate(params: {
   root: string;
   channel: UpdateChannel;
+  requestedTag?: string;
   configSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>;
   configChanged?: boolean;
   restoredAuthoredChannels?: unknown;
@@ -218,6 +219,7 @@ export async function updatePluginsAfterCoreUpdate(params: {
     config: syncConfig,
     channel: pluginUpdateChannel,
     coreVersion: coreVersion ?? undefined,
+    requestedTag: params.requestedTag,
     workspaceDir: params.root,
     externalizedBundledPluginBridges: await listPersistedBundledPluginLocationBridges({
       workspaceDir: params.root,

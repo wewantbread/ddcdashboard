@@ -94,6 +94,7 @@ export async function finishUpdate(params: {
   installKindChanged: boolean;
   configSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>>;
   requestedChannel: UpdateChannel | null;
+  requestedTag?: string;
   storedChannel: UpdateChannel | null;
   channel: UpdateChannel;
   downgradeRisk: boolean;
@@ -288,6 +289,7 @@ export async function finishUpdate(params: {
           return await updatePluginsAfterCoreUpdate({
             root: postUpdateRoot,
             channel: params.channel,
+            requestedTag: params.requestedTag,
             configSnapshot: postUpdateConfigSnapshot,
             configChanged: restoredConfig.changed,
             restoredAuthoredChannels: restoredConfig.authoredChannels,
