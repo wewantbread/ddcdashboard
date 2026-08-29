@@ -1,8 +1,4 @@
-import {
-  embeddedAgentLog,
-  formatErrorMessage,
-  type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
-} from "openclaw/plugin-sdk/agent-harness-runtime";
+import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   asBoolean,
   asFiniteNumber,
@@ -10,7 +6,6 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import { CodexAppServerRpcError } from "./client.js";
-import { neutralizeCodexExplicitMentionSigils } from "./context-engine-projection.js";
 import { isJsonObject, type CodexServerNotification } from "./protocol.js";
 import type {
   CodexAppServerBindingIdentity,
@@ -137,18 +132,6 @@ export function readCodexFinalizationHookNotification(
 
 export function joinPresentSections(...sections: Array<string | undefined>): string {
   return sections.filter((section): section is string => Boolean(section?.trim())).join("\n\n");
-}
-
-export function prependCurrentInboundContext(
-  prompt: string,
-  context: EmbeddedRunAttemptParams["currentInboundContext"],
-): string {
-  // Inbound context carries quoted replies and room backlog, not the raw
-  // current request; Codex must not resolve explicit mentions from it.
-  const text = context?.text.trim();
-  return text
-    ? [neutralizeCodexExplicitMentionSigils(text), prompt].filter(Boolean).join("\n\n")
-    : prompt;
 }
 
 export function buildCodexAppServerTimeoutDiagnostics(params: {

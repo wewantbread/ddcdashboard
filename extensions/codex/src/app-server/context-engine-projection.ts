@@ -43,7 +43,7 @@ const MIN_PROMPT_BUDGET_TOKENS = 8_000;
 // quoted history must never count as a current explicit invocation, so swap
 // the sigils to same-length fullwidth lookalikes (same technique as
 // escapeCodexChatText). Only the raw current request stays selectable.
-export function neutralizeCodexExplicitMentionSigils(text: string): string {
+function neutralizeCodexExplicitMentionSigils(text: string): string {
   return text
     .replace(/\$(?=[A-Za-z0-9_:-])/gu, "＄")
     .replace(/\[@(?=[A-Za-z0-9_:-]+\]\()/gu, "[＠");

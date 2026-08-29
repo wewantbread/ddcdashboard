@@ -138,6 +138,10 @@
 ```json
 {
   "additionalContext": {
+    "openclaw_current_runtime": {
+      "kind": "application",
+      "value": "No current OpenClaw reply metadata or delivery directive."
+    },
     "openclaw_current_sender": {
       "kind": "untrusted",
       "value": "{\"sender\":{\"id\":\"1000001\",\"name\":\"Pash\",\"username\":\"pash\"}}"
