@@ -2,7 +2,7 @@
  * Tests Windows spawn compatibility helpers.
  */
 import { spawnSync } from "node:child_process";
-import { link, writeFile } from "node:fs/promises";
+import { copyFile, link, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createPluginSdkTestHarness } from "./test-helpers.js";
@@ -21,7 +21,15 @@ describe("resolveWindowsSpawnProgram", () => {
     async () => {
       const dir = await createTempDir("openclaw-windows-spawn-env-case-");
       const executable = path.join(dir, "mixed-env-tool.MiXeD");
-      await link(process.execPath, executable);
+      // Hard-linking needs write access to the SOURCE, which a non-elevated user
+      // does not have for a per-machine Node install: `process.execPath` under
+      // `C:\Program Files` fails with EPERM. Copying only needs read, so fall
+      // back to it rather than assuming the runner is elevated.
+      try {
+        await link(process.execPath, executable);
+      } catch {
+        await copyFile(process.execPath, executable);
+      }
       const env = { pAtH: dir, pAtHeXt: ".MiXeD" };
 
       const program = resolveWindowsSpawnProgram({
