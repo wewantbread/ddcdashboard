@@ -40,6 +40,7 @@ import {
   listMemoryEntryOrigins,
   recordMemorySessionTombstones,
 } from "./memory-entry-origins.js";
+import { applyMemoryFileRewrite } from "./memory-forget-atomic-write.js";
 import { collectTranscriptWrites } from "./memory-forget-curated-writes.js";
 import { summarizeParticipantMatches, type MemoryForgetReport } from "./memory-forget-report.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
@@ -77,6 +78,7 @@ type MemoryRewrite = {
   relativePath: string;
   content: string;
   remove: boolean;
+  expectedContent: string;
 };
 type ForgetIndexPlan = {
   chunks: Array<ForgetDatabase["memory_index_chunks"]>;
@@ -400,6 +402,7 @@ async function forgetWorkspaceMemory(
         relativePath: path.relative(workspaceDir, absolutePath).replaceAll("\\", "/"),
         content: rewritten,
         remove: rewritten.trim().length === 0,
+        expectedContent: content,
       });
     }
   }
@@ -437,6 +440,7 @@ async function forgetWorkspaceMemory(
         relativePath: path.relative(workspaceDir, absolutePath).replaceAll("\\", "/"),
         content: scrubbed.content,
         remove: false,
+        expectedContent: content,
       });
       removedMemoryEntries += scrubbed.removedEntries;
       removedMemoryLines += scrubbed.removedLines;
@@ -691,11 +695,7 @@ async function forgetWorkspaceMemory(
       });
     }
     for (const rewrite of [...memoryRewrites, ...corpusRewrites]) {
-      if (rewrite.remove) {
-        await fs.unlink(rewrite.absolutePath);
-      } else {
-        await fs.writeFile(rewrite.absolutePath, rewrite.content, "utf8");
-      }
+      await applyMemoryFileRewrite(rewrite);
     }
     deleteMemoryEntryOrigins({ agentId: params.agentId, entryKeys: [...entryKeys] });
     return report;
