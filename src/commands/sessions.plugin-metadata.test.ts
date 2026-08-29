@@ -1,4 +1,4 @@
-// Session listing prepares plugin-backed CLI provider metadata once for every row.
+// Session listing prepares plugin-backed CLI provider metadata once for selected rows.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 describe("sessions plugin metadata preparation", () => {
-  it("loads one plugin metadata snapshot before enriching every stored row", async () => {
+  it("loads one plugin metadata snapshot before enriching selected rows", async () => {
     const config = {
       agents: {
         defaults: {

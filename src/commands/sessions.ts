@@ -73,6 +73,12 @@ type SessionRow = SessionDisplayRow & {
   acpRuntime: boolean;
 };
 
+type SessionCandidate = {
+  agentId: string;
+  entry: SessionEntry;
+  sessionKey: string;
+};
+
 const AGENT_PAD = 10;
 const KIND_PAD = 11; // "spawn-child".length — longest kind label
 const RUNTIME_PAD = 18;
@@ -96,31 +102,34 @@ function applyAcpModelOverlayIfNeeded(
   return { provider: "acpx", model: `${agentId}-acp` };
 }
 
-function compareSessionRowsByUpdatedAt(a: SessionRow, b: SessionRow): number {
-  return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+function compareSessionCandidatesByUpdatedAt(a: SessionCandidate, b: SessionCandidate): number {
+  return (b.entry.updatedAt ?? 0) - (a.entry.updatedAt ?? 0);
 }
 
-function selectNewestSessionRows(rows: SessionRow[], limit: number | undefined): SessionRow[] {
+function selectNewestSessionCandidates(
+  candidates: SessionCandidate[],
+  limit: number | undefined,
+): SessionCandidate[] {
   if (limit === undefined) {
-    return rows.toSorted(compareSessionRowsByUpdatedAt);
+    return candidates.toSorted(compareSessionCandidatesByUpdatedAt);
   }
   if (limit > TOP_N_SELECTION_LIMIT) {
-    return rows.toSorted(compareSessionRowsByUpdatedAt).slice(0, limit);
+    return candidates.toSorted(compareSessionCandidatesByUpdatedAt).slice(0, limit);
   }
-  // For small limits, keep only the top N rows without sorting the full store;
+  // For small limits, keep only the top N candidates without sorting the full store;
   // large limits use the simpler full sort above.
-  const selected: SessionRow[] = [];
-  for (const row of rows) {
+  const selected: SessionCandidate[] = [];
+  for (const candidate of candidates) {
     const insertAt = selected.findIndex(
-      (candidate) => compareSessionRowsByUpdatedAt(row, candidate) < 0,
+      (selectedCandidate) => compareSessionCandidatesByUpdatedAt(candidate, selectedCandidate) < 0,
     );
     if (insertAt >= 0) {
-      selected.splice(insertAt, 0, row);
+      selected.splice(insertAt, 0, candidate);
       if (selected.length > limit) {
         selected.pop();
       }
     } else if (selected.length < limit) {
-      selected.push(row);
+      selected.push(candidate);
     }
   }
   return selected;
@@ -356,31 +365,43 @@ export async function sessionsCommand(
 
   const classifyCliProvider = prepareCliProviderClassifier(cfg);
   const activeSince = activeMinutes === undefined ? undefined : Date.now() - activeMinutes * 60_000;
-  const sessionEntries = targets.flatMap((target) => {
-    return listSessionEntriesReadOnly({ agentId: target.agentId, storePath: target.storePath })
+  const candidates = targets.flatMap((target) => {
+    return listSessionEntriesReadOnly({
+      agentId: target.agentId,
+      clone: false,
+      projection: "list",
+      storePath: target.storePath,
+    })
       .filter(
         ({ entry }) =>
           activeSince === undefined ||
           (typeof entry.updatedAt === "number" && entry.updatedAt >= activeSince),
       )
       .map(({ sessionKey, entry }) => {
-        const row = toSessionDisplayRow(sessionKey, entry);
-        const agentId = parseAgentSessionKey(row.key)?.agentId ?? target.agentId;
-        const acpSessionKey = resolveStoredSessionKeyForAgentStore({
-          cfg,
-          agentId,
-          sessionKey: row.key,
-        });
-        return { acpSessionKey, agentId, entry, row };
+        const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId;
+        return { agentId, entry, sessionKey };
       });
   });
+  const totalCount = candidates.length;
+  const sessionEntries = selectNewestSessionCandidates(candidates, limit).map(
+    ({ agentId, entry, sessionKey }) => ({
+      acpSessionKey: resolveStoredSessionKeyForAgentStore({
+        cfg,
+        agentId,
+        sessionKey,
+      }),
+      agentId,
+      entry,
+      row: toSessionDisplayRow(sessionKey, entry),
+    }),
+  );
   const acpSessionMetaByEntry = readAcpSessionMetaBatch({
     entries: sessionEntries.map(({ acpSessionKey, entry }) => ({
       sessionKey: acpSessionKey,
       entry,
     })),
   });
-  const allRows = sessionEntries.map(({ acpSessionKey, agentId, entry, row }) => {
+  const rows = sessionEntries.map(({ acpSessionKey, agentId, entry, row }) => {
     const acpMeta = acpSessionMetaByEntry.get(entry);
     const acpRuntime = acpMeta != null;
     // ACP rows need stored-key metadata before model/runtime resolution so
@@ -448,8 +469,6 @@ export async function sessionsCommand(
       }),
     });
   });
-  const totalCount = allRows.length;
-  const rows = selectNewestSessionRows(allRows, limit);
   const hasMore = rows.length < totalCount;
 
   if (opts.json) {
