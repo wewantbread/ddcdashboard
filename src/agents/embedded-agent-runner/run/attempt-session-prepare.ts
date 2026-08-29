@@ -281,11 +281,12 @@ type SessionBoundaryAttempt = Pick<
   | "onUserMessagePersistenceInvalidated"
   | "operation"
   | "prompt"
-  | "provider"
   | "suppressNextUserMessagePersistence"
   | "trigger"
   | "userTurnTranscriptRecorder"
->;
+> & {
+  provider?: string;
+};
 
 type LlmBoundaryOptions = NonNullable<Parameters<typeof normalizeMessagesForLlmBoundary>[1]>;
 
