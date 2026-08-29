@@ -431,6 +431,10 @@ export function createWorkerSessionToolExecutor(params: {
   }) => {
     operation.signal?.throwIfAborted();
     exactSource({ identity: operation.identity, placements: params.placements });
+    const executionIdentityCapability = getWorkerTurnExecutionIdentityCapability(
+      params.placements,
+      operation.source.turnClaim,
+    );
     const config = getRuntimeConfig();
     const executeFencedSend = async () => {
       const assertCurrentTarget = () => {
@@ -481,19 +485,24 @@ export function createWorkerSessionToolExecutor(params: {
         new Error("Worker sessions_send did not return a result"),
       );
     };
-    const topologyParent = operation.target.topologyParent;
-    if (!topologyParent) {
-      return await executeFencedSend();
-    }
-    // Sibling authority exists only while the exact shared parent exists. Hold
-    // that third incarnation through target admission and the message effect.
-    return await runWithScopedSessionAccess({
-      cfg: config,
-      expectedSessionId: topologyParent.sessionId,
-      targetSessionKey: topologyParent.sessionKey,
-      ...(operation.signal ? { signal: operation.signal } : {}),
-      run: executeFencedSend,
-    });
+    const executeWithTopologyFence = async () => {
+      const topologyParent = operation.target.topologyParent;
+      if (!topologyParent) {
+        return await executeFencedSend();
+      }
+      // Sibling authority exists only while the exact shared parent exists. Hold
+      // that third incarnation through target admission and the message effect.
+      return await runWithScopedSessionAccess({
+        cfg: config,
+        expectedSessionId: topologyParent.sessionId,
+        targetSessionKey: topologyParent.sessionKey,
+        ...(operation.signal ? { signal: operation.signal } : {}),
+        run: executeFencedSend,
+      });
+    };
+    return executionIdentityCapability
+      ? await executionIdentityCapability.run(executeWithTopologyFence)
+      : await executeWithTopologyFence();
   };
 
   return async (request: WorkerSessionToolRequest): Promise<WorkerSessionToolResult> => {
