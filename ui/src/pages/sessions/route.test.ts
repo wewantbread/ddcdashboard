@@ -159,6 +159,33 @@ describe("sessions route", () => {
     });
   });
 
+  it("falls back from malformed or unsafe persisted numeric filters", async () => {
+    saveSessionsPagePreferences({
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15x",
+      limit: "9007199254740992",
+    });
+
+    expect(loadSessionsPagePreferences()).toMatchObject({
+      activeMinutes: "",
+      limit: "50",
+    });
+
+    await loadSessionsRoute({
+      search: "",
+      scopeId: "writer",
+      expectedQuery: {
+        limit: 50,
+        includeGlobal: true,
+        includeUnknown: false,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "active",
+        agentId: "writer",
+      },
+    });
+  });
+
   it("gives an explicit status URL precedence over persisted status", async () => {
     saveSessionsPagePreferences({
       ...loadSessionsPagePreferences(),

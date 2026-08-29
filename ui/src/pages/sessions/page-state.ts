@@ -1,3 +1,4 @@
+import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeSessionsGroupBy,
@@ -53,7 +54,9 @@ function positiveIntegerString(value: unknown, fallback: string, allowEmpty = fa
   if (allowEmpty && value === "") {
     return "";
   }
-  return typeof value === "string" && /^[1-9]\d*$/.test(value) ? value : fallback;
+  return typeof value === "string" && parseStrictPositiveInteger(value) !== undefined
+    ? value
+    : fallback;
 }
 
 function readStorageValue(storage: Storage, key: string): string | null {
