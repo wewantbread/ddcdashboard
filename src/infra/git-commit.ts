@@ -246,10 +246,12 @@ const readLoadedCommit = (moduleUrl: string): { commit: string | null; present: 
     ["../.runtime-postbuildstamp", "./.runtime-postbuildstamp"],
     "head",
   );
-  if (buildStamp.present || runtimeStamp.present) {
-    const commit =
-      buildStamp.commit && buildStamp.commit === runtimeStamp.commit ? buildStamp.commit : null;
-    return { commit, present: true };
+  if (buildStamp.commit || runtimeStamp.commit) {
+    return {
+      commit:
+        buildStamp.commit && buildStamp.commit === runtimeStamp.commit ? buildStamp.commit : null,
+      present: true,
+    };
   }
   return readCommitProbe(moduleUrl, ["../build-info.json", "./build-info.json"], "commit");
 };

@@ -182,6 +182,26 @@ describe("git commit resolution", () => {
     ).toBe("bbbbbbb");
   });
 
+  it("uses build info when source-archive stamps have no Git head", async () => {
+    const root = await makeTempDir("git-commit-headless-build");
+    const dist = path.join(root, "dist");
+    await fs.mkdir(dist, { recursive: true });
+    await fs.writeFile(path.join(dist, ".buildstamp"), JSON.stringify({ head: null }));
+    await fs.writeFile(path.join(dist, ".runtime-postbuildstamp"), JSON.stringify({}));
+    await fs.writeFile(
+      path.join(dist, "build-info.json"),
+      JSON.stringify({ commit: "0123456789abcdef0123456789abcdef01234567" }),
+    );
+
+    expect(
+      resolveCommitHash({
+        env: {},
+        moduleUrl: pathToFileURL(path.join(dist, "version-chunk.js")).href,
+        preferLoadedCommit: true,
+      }),
+    ).toBe("0123456");
+  });
+
   it("caches build-info fallback results per resolved search directory", async () => {
     const temp = await makeTempDir("git-commit-build-info-cache");
     const readBuildInfoCommit = vi.fn(() => "deadbee");
