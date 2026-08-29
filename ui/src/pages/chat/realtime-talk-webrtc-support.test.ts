@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RealtimeTalkWebRtcOfferExchange } from "./realtime-talk-webrtc-support.ts";
+import {
+  RealtimeTalkWebRtcOfferExchange,
+  realtimeTalkInputTranscriptionUpdate,
+} from "./realtime-talk-webrtc-support.ts";
 
 const OPENAI_REALTIME_SDP_ANSWER_MAX_BYTES = 256 * 1024;
 
@@ -191,5 +194,31 @@ describe("RealtimeTalkWebRtcOfferExchange", () => {
 
     await expect(readAnswer(exchange, () => false)).resolves.toBeUndefined();
     expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("realtimeTalkInputTranscriptionUpdate", () => {
+  it("requests transcription for a session created without it", () => {
+    expect(
+      realtimeTalkInputTranscriptionUpdate({
+        type: "session.created",
+        session: { audio: { input: { turn_detection: { type: "server_vad" } } } },
+      }),
+    ).toEqual({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        audio: { input: { transcription: { model: "gpt-4o-mini-transcribe" } } },
+      },
+    });
+  });
+
+  it("leaves a session that already transcribes input alone", () => {
+    expect(
+      realtimeTalkInputTranscriptionUpdate({
+        type: "session.created",
+        session: { audio: { input: { transcription: { model: "whisper-1" } } } },
+      }),
+    ).toBeNull();
   });
 });
