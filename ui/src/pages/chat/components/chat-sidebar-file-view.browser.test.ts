@@ -90,7 +90,7 @@ describe.runIf(browserMode)("chat file editor", () => {
   });
 
   it("renders large Markdown drafts in a responsive preview", async () => {
-    const initial = `# Audit\n\n[Guide](guide.md)\n\n- First item\n- Second item\n\n${"long prose ".repeat(4_500)}`;
+    const initial = `# Audit\n\n[Guide](guide.md)\n\n![Remote diagram](https://example.com/private.png)\n\n- First item\n- Second item\n\n${"long prose ".repeat(4_500)}`;
     expect(initial.length).toBeGreaterThan(40_000);
     const panel = await mountFile({
       kind: "file",
@@ -124,6 +124,10 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(reader.querySelector("h1")?.textContent).toBe("Edited audit");
     expect(reader.querySelectorAll("li")).toHaveLength(2);
     expect(reader.querySelector(".markdown-plain-text-fallback")).toBeNull();
+    expect(reader.querySelector("img")).toBeNull();
+    expect(reader.querySelector(".markdown-external-image")?.textContent).toContain(
+      "External image not loaded",
+    );
 
     const guideLink = expectDefined(
       reader.querySelector<HTMLAnchorElement>('a[data-file-path="guide.md"]'),

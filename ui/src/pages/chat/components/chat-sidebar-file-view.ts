@@ -178,7 +178,7 @@ export function renderSidebarFile(
       ? toSanitizedMarkdownHtml(controls.previewContent, {
           codeBlockInteraction: "interactive",
           fileLinks: true,
-          mode: "document",
+          mode: "document-no-remote-images",
           sessionLinks: true,
         })
       : "";
@@ -273,11 +273,7 @@ export function renderSidebarFile(
         : nothing}
       ${markdownFile && controls
         ? html`
-            <div
-              class="settings-segmented sidebar-file-view__modes"
-              role="group"
-              aria-label=${content.name}
-            >
+            <div class="settings-segmented" role="group" aria-label=${content.name}>
               ${(["source", "preview"] as const).map((mode) => {
                 const active = controls.viewMode === mode;
                 return html`
