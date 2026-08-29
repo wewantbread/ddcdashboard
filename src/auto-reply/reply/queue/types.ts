@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 // Shared queue type contracts for admission, drain, and fallback handling.
 import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
@@ -19,6 +20,7 @@ import type { SessionEntry, SessionToolOverrides } from "../../../config/session
 import type { ReplyToMode } from "../../../config/types.base.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../../../config/types.tools.js";
+import { logVerbose } from "../../../globals.js";
 import type { MediaFact } from "../../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import type { PluginHookChannelContext } from "../../../plugins/hook-types.js";
@@ -114,6 +116,8 @@ export type FollowupRun = {
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   /** Canonical ownership lifecycle for durable ingress / reply-lane transfer. */
   turnAdoptionLifecycle?: TurnAdoptionLifecycle;
+  /** Host workspace staging directory to clean up after session settlement. */
+  hostWorkspaceStagingDir?: string;
   /** Records terminal queue-cap outcomes at the queue owner before lifecycle cleanup. */
   onQueueDisposition?: (disposition: FollowupQueueDisposition) => void;
   /** Keep delivery bound to the source that owned admission, not later runner defaults. */
@@ -278,7 +282,10 @@ const retiredTurnAdoptionCancellationLifecycles = new WeakSet<TurnAdoptionLifecy
 const completedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
 const completedTurnAdoptionLifecycleCallbacks = new WeakSet<TurnAdoptionLifecycle>();
 
-type FollowupLifecycleRun = Pick<FollowupRun, "steerPending" | "turnAdoptionLifecycle">;
+type FollowupLifecycleRun = Pick<
+  FollowupRun,
+  "steerPending" | "turnAdoptionLifecycle" | "hostWorkspaceStagingDir"
+>;
 
 export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
   const lifecycle = run.turnAdoptionLifecycle;
@@ -329,8 +336,30 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   }
 }
 
+export function cleanHostWorkspaceStaging(run: Pick<FollowupRun, "hostWorkspaceStagingDir">): void {
+  const hostWorkspaceStagingDir = run.hostWorkspaceStagingDir;
+  if (hostWorkspaceStagingDir) {
+    delete run.hostWorkspaceStagingDir;
+    // Remove only if empty: staged files are persisted into the transcript and
+    // re-read by history hydration on subsequent turns. Recursive deletion
+    // would destroy attachments still needed by the running session.
+    void fs.rmdir(hostWorkspaceStagingDir).catch((err: unknown) => {
+      // ENOTEMPTY is expected when staging succeeded; ENOENT is fine on double-call.
+      if (
+        err instanceof Error &&
+        !("code" in err && (err.code === "ENOTEMPTY" || err.code === "ENOENT"))
+      ) {
+        logVerbose(
+          `Failed to clean host workspace staging directory: ${hostWorkspaceStagingDir} (${err.message})`,
+        );
+      }
+    });
+  }
+}
+
 export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
   run.steerPending?.settle(false);
+  cleanHostWorkspaceStaging(run);
   const lifecycle = run.turnAdoptionLifecycle;
 
   const finish = () => {

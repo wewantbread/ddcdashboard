@@ -63,7 +63,8 @@ vi.mock("../../infra/system-events.js", () => ({
   enqueueSystemEvent: vi.fn(),
 }));
 
-vi.mock("./queue.js", () => ({
+vi.mock("./queue.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./queue.js")>()),
   refreshQueuedFollowupSession: vi.fn(),
 }));
 

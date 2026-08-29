@@ -30,6 +30,7 @@ const SCP_STDERR_TAIL_CHARS = 16_384;
 // partial failures without matching rewritten strings back to source paths.
 export type StageSandboxMediaResult = {
   staged: ReadonlyMap<number, string>;
+  hostWorkspaceStagingDir?: string;
 };
 
 const EMPTY_STAGE_RESULT: StageSandboxMediaResult = { staged: new Map() };
@@ -85,10 +86,13 @@ export async function stageSandboxMedia(params: {
   const usedNames = new Set<string>();
   const staged = new Map<number, string>();
   const stagedUrlAliases = new Set<number>();
-  const hostWorkspaceStagingDir =
+  const rawHostStagingDir =
     !sandbox && !ctx.MediaRemoteHost
       ? path.join("media", "inbound", `openclaw-staged-${crypto.randomUUID()}`)
       : undefined;
+  const hostWorkspaceStagingDir = rawHostStagingDir
+    ? path.resolve(effectiveWorkspaceDir, rawHostStagingDir)
+    : undefined;
 
   for (const entry of pathEntries) {
     const source = await resolveStageableMediaSource(entry.path);
@@ -109,8 +113,8 @@ export async function stageSandboxMedia(params: {
     }
     const stageIntoSandboxMediaDir = Boolean(sandbox);
     const relativeDest =
-      stageIntoSandboxMediaDir || hostWorkspaceStagingDir
-        ? path.join(hostWorkspaceStagingDir ?? path.join("media", "inbound"), fileName)
+      stageIntoSandboxMediaDir || rawHostStagingDir
+        ? path.join(rawHostStagingDir ?? path.join("media", "inbound"), fileName)
         : fileName;
     const dest = path.join(effectiveWorkspaceDir, relativeDest);
 
@@ -133,6 +137,13 @@ export async function stageSandboxMedia(params: {
         });
       }
     } catch (err) {
+      // copyIn may create the destination parent before a later source or
+      // identity check fails. The producer still owns that failed attempt, so
+      // remove only its destination and then the empty host staging directory.
+      await removeFailedStageDestination({ rootDir: effectiveWorkspaceDir, dest });
+      if (hostWorkspaceStagingDir) {
+        await fs.rmdir(hostWorkspaceStagingDir).catch(() => {});
+      }
       if (err instanceof FsSafeError && err.code === "too-large") {
         console.warn(`Inbound media staging skipped for ${fileName}: ${err.message}`);
       } else {
@@ -177,7 +188,30 @@ export async function stageSandboxMedia(params: {
     applyStagedMediaContext(sessionCtx, nextMedia);
   }
 
-  return { staged };
+  return {
+    staged,
+    ...(hostWorkspaceStagingDir ? { hostWorkspaceStagingDir } : {}),
+  };
+}
+
+async function removeFailedStageDestination(params: {
+  rootDir: string;
+  dest: string;
+}): Promise<void> {
+  const [rootReal, parentReal] = await Promise.all([
+    fs.realpath(params.rootDir),
+    fs.realpath(path.dirname(params.dest)),
+  ]).catch(() => [null, null] as const);
+  if (!rootReal || !parentReal) {
+    return;
+  }
+  const relativeParent = path.relative(rootReal, parentReal);
+  if (
+    relativeParent === "" ||
+    (!relativeParent.startsWith("..") && !path.isAbsolute(relativeParent))
+  ) {
+    await fs.unlink(params.dest).catch(() => {});
+  }
 }
 
 async function isUrlAliasForStagedSource(params: {
