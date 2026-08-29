@@ -30,11 +30,22 @@ describe("FileSettingsStorage", () => {
   }
 
   function failWritesUnder(dir: string) {
+    const realOpenSync = fs.openSync;
     const realWriteFileSync = fs.writeFileSync;
+    const tempFds = new Set<number>();
+    // fs-safe writes the temp blob through openSync + writeFileSync(fd), so the
+    // fault hooks the temp-file open and fails its first fd write, leaving a
+    // half-written blob behind, exactly like a mid-write ENOSPC.
+    vi.spyOn(fs, "openSync").mockImplementation((target, flags, mode) => {
+      const fd = realOpenSync(target, flags as never, mode as never);
+      if (String(target).startsWith(dir) && String(target).endsWith(".tmp")) {
+        tempFds.add(fd);
+      }
+      return fd;
+    });
     vi.spyOn(fs, "writeFileSync").mockImplementation((target, data, options) => {
-      if (String(target).startsWith(dir)) {
-        const text = String(data);
-        realWriteFileSync(target, text.slice(0, Math.floor(text.length / 2)), options as never);
+      if (typeof target === "number" && tempFds.has(target) && typeof data === "string") {
+        realWriteFileSync(target, data.slice(0, Math.floor(data.length / 2)), options as never);
         throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
       }
       return realWriteFileSync(target, data, options as never);
@@ -78,4 +89,21 @@ describe("FileSettingsStorage", () => {
     expect(fs.statSync(settingsPath).mode & 0o777).toBe(0o600);
     expect(fs.readFileSync(settingsPath, "utf-8")).toBe(JSON.stringify({ packages: ["new"] }));
   });
+
+  it.runIf(process.platform !== "win32")(
+    "preserves a final settings.json symlink and updates its target",
+    () => {
+      const { storage, agentDir, settingsPath } = createStorage();
+      const target = path.join(agentDir, "operator-managed-settings.json");
+      fs.writeFileSync(target, JSON.stringify({ packages: ["old"] }), "utf-8");
+      fs.symlinkSync(target, settingsPath);
+
+      storage.withLock("global", () => JSON.stringify({ packages: ["new"] }));
+
+      expect(fs.lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(target, "utf-8")).toBe(JSON.stringify({ packages: ["new"] }));
+      expect(fs.readFileSync(settingsPath, "utf-8")).toBe(JSON.stringify({ packages: ["new"] }));
+      expect(fs.readdirSync(agentDir).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
+    },
+  );
 });
