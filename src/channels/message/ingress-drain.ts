@@ -623,12 +623,17 @@ export function createChannelIngressDrain<
       if (shouldStop()) {
         break;
       }
+      // Claim straight from the pending table in global order without binding
+      // every pending id into a SQLite IN list (openclaw#127474). Sibling-drainer
+      // lane fencing is handled inside claimNext's transaction: it re-reads all
+      // currently claimed lanes and blocks them, so a sibling that claims an
+      // earlier same-lane row after this drain's snapshot is detected without
+      // transporting the pending id set.
       const claimed = await queue.claimNext({
         ownerId,
         blockedLaneKeys,
         orderBy,
         scanLimit,
-        candidateIds,
         deriveLaneKey: options.deriveLaneKey,
         ...(options.reconcileStoredLaneKey
           ? { reconcileStoredLaneKey: options.reconcileStoredLaneKey }
@@ -637,9 +642,6 @@ export function createChannelIngressDrain<
       if (!claimed) {
         break;
       }
-      // One snapshot row gets one attempt per pass. A released claim remains
-      // pending for the next pump instead of spinning through SQLite here.
-      candidateIds.delete(claimed.id);
       if (shouldStop()) {
         await queue.release(claimed, { recordAttempt: false });
         break;

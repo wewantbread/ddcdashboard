@@ -435,27 +435,18 @@ describe("channel ingress queue", () => {
     });
   });
 
-  it("blocks lanes claimed by candidate rows before claiming later candidates", async () => {
+  it("fences sibling-claimed lanes so a later same-lane pending row is not claimed", async () => {
     await withTempState(async (stateDir) => {
-      let clock = 1;
-      const queue = createTestIngressQueue<{ lane: string }>(stateDir, { now: () => clock++ });
-
-      await queue.enqueue("a", { lane: "chat-1" }, { receivedAt: 1 });
-      await queue.enqueue("b", { lane: "chat-1" }, { receivedAt: 2 });
-      await queue.enqueue("c", { lane: "chat-2" }, { receivedAt: 3 });
-      await queue.claim("a", { ownerId: "sibling-worker" });
-
-      const claimed = await queue.claimNext({
-        ownerId: "worker",
-        candidateIds: ["a", "b", "c"],
-        orderBy: "id",
-        deriveLaneKey: (record) => record.payload.lane,
-      });
-
-      expect(claimed?.id).toBe("c");
-      expect(claimed?.laneKey).toBe("chat-2");
-      const sameLanePending = (await queue.listPending()).find((record) => record.id === "b");
-      expect(sameLanePending?.laneKey).toBeUndefined();
+      const queue = createTestIngressQueue<{ lane: string }>(stateDir);
+      // "earlier" and "later" share lane L. A sibling claims "earlier" first.
+      await queue.enqueue("earlier", { lane: "L" }, { receivedAt: 1 });
+      await queue.enqueue("later", { lane: "L" }, { receivedAt: 2 });
+      await queue.claim("earlier", { ownerId: "sib" });
+      // Without the transaction-time fence, "later" is the only pending row and
+      // would be claimed. The fence blocks lane L, so claimNext returns null.
+      expect((await queue.claimNext({ deriveLaneKey: (r) => r.payload.lane }))?.id ?? null).toBe(
+        null,
+      );
     });
   });
 

@@ -913,6 +913,34 @@ export function createChannelIngressQueue<
             effectiveBlocked = new Set([...blocked, ...claimedCandidateLaneKeys]);
           }
         }
+        // Transaction-time sibling-drainer fence: a sibling can claim an earlier
+        // same-lane row after this drain's listClaims() snapshot. Re-read all
+        // currently claimed rows from other owners inside the transaction and
+        // block their lanes. Excludes this drain's own claims (including
+        // deferred-release lanes) via claim_owner. Bounded by active claim
+        // count (drain concurrency), not backlog size.
+        const normalizedOwnerId = normalizePart(claimOptions?.ownerId, `${process.pid}`);
+        const siblingClaimedRows = executeSqliteQuerySync(
+          tx.db,
+          kysely
+            .selectFrom("channel_ingress_events")
+            .selectAll()
+            .where("queue_name", "=", queueName)
+            .where("status", "=", "claimed")
+            .where("claim_owner", "!=", normalizedOwnerId),
+        ).rows;
+        const claimedLaneKeys = siblingClaimedRows
+          .map((row) => {
+            if (row.lane_key && !claimOptions?.reconcileStoredLaneKey) {
+              return row.lane_key;
+            }
+            const rec = baseRecord<TPayload, TMetadata>(row);
+            return rec ? resolveClaimLaneKey(rec) : (row.lane_key ?? undefined);
+          })
+          .filter((laneKey): laneKey is string => Boolean(laneKey));
+        if (claimedLaneKeys.length > 0) {
+          effectiveBlocked = new Set([...effectiveBlocked, ...claimedLaneKeys]);
+        }
         const baseSelect = kysely
           .selectFrom("channel_ingress_events")
           .selectAll()

@@ -10,6 +10,7 @@ import {
 import {
   createTestIngressQueue,
   type IngressDrainTestPayload as Payload,
+  seedPendingBacklog,
   withTempState,
 } from "./ingress-drain.test-helpers.js";
 
@@ -1120,6 +1121,21 @@ describe("channel ingress drain", () => {
       const again = await queue.enqueue("old", { text: "old" });
       expect(again.kind).toBe("completed");
       drain.dispose();
+    });
+  });
+
+  // Regression for openclaw#127474: backlog above SQLite's bind-variable ceiling.
+  it("drains a backlog larger than SQLite's bind-variable ceiling", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir, { now: () => 1_000 });
+      seedPendingBacklog(stateDir, 33_000);
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        dispatchClaimedEvent: async (_e, lc) => {
+          await lc.onAdopted();
+        },
+      });
+      expect((await drain.drainOnce()).started).toBe(32);
     });
   });
 });
