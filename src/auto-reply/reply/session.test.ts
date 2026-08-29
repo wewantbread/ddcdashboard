@@ -3731,7 +3731,10 @@ describe("initSessionState reset authorization", () => {
           allowed
             ? {
                 shouldContinue: false,
-                reply: { text: body === "/new" ? "✅ New session started." : "✅ Session reset." },
+                reply: {
+                  text: body === "/new" ? "✅ New session started." : "✅ Session reset.",
+                  isStatusNotice: true,
+                },
               }
             : { shouldContinue: false },
         );
