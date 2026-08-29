@@ -1,6 +1,6 @@
 // Tests node-role capability approvals stored on canonical paired-device records.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
   closeOpenClawStateDatabaseByPath,
@@ -1013,6 +1013,44 @@ describe("node surface approvals", () => {
       expect(resolveNodePairingGeneration(await getPairedDevice("node-1", baseDir))?.key).not.toBe(
         initialGeneration.key,
       );
+    });
+  });
+
+  test("keeps capability reapproval pending until its lifecycle resolves it", async () => {
+    await withNodePairingDir(async (baseDir) => {
+      await setupPairedNode(baseDir);
+      const requestedAtMs = Date.now();
+      const now = vi.spyOn(Date, "now").mockReturnValue(requestedAtMs);
+
+      try {
+        const upgrade = await requestNodePairing(
+          {
+            nodeId: "node-1",
+            platform: "android",
+            caps: ["voiceWake"],
+            commands: ["system.run"],
+          },
+          baseDir,
+        );
+
+        now.mockReturnValue(requestedAtMs + 24 * 60 * 60 * 1000);
+
+        await expect(listNodePairing(baseDir)).resolves.toMatchObject({
+          pending: [{ requestId: upgrade.request.requestId, caps: ["voiceWake"] }],
+        });
+        await expect(
+          approveNodePairing(
+            upgrade.request.requestId,
+            { callerScopes: ["operator.pairing", "operator.admin"] },
+            baseDir,
+          ),
+        ).resolves.toMatchObject({
+          requestId: upgrade.request.requestId,
+          node: { caps: ["voiceWake"] },
+        });
+      } finally {
+        now.mockRestore();
+      }
     });
   });
 });
