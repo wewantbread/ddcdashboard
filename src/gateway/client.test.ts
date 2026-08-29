@@ -1663,8 +1663,47 @@ describe("GatewayClient connect auth payload", () => {
     });
 
     const { connect } = startClientAndConnect({ client });
-    expect(connect.params?.client?.platform).toBe("macos");
+    expect(connect.params?.client).toMatchObject({
+      platform: "macos",
+      deviceFamily: "Mac",
+    });
     client.stop();
+  });
+
+  it("uses canonical Windows metadata when core clients rely on runtime defaults", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const client = createClientWithIdentity("device-default-windows", vi.fn(), {
+      clientName: GATEWAY_CLIENT_NAMES.CLI,
+      mode: GATEWAY_CLIENT_MODES.CLI,
+    });
+
+    try {
+      const { connect } = startClientAndConnect({ client });
+      expect(connect.params?.client).toMatchObject({
+        platform: "windows",
+        deviceFamily: "Windows",
+      });
+    } finally {
+      client.stop();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("preserves runtime metadata defaults for platforms without canonical aliases", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("freebsd");
+    const client = createClientWithIdentity("device-freebsd", vi.fn(), {
+      clientName: GATEWAY_CLIENT_NAMES.TEST,
+      mode: GATEWAY_CLIENT_MODES.TEST,
+    });
+
+    try {
+      const { connect } = startClientAndConnect({ client });
+      expect(connect.params?.client).toMatchObject({ platform: "freebsd" });
+      expect(connect.params?.client).not.toHaveProperty("deviceFamily");
+    } finally {
+      client.stop();
+      platformSpy.mockRestore();
+    }
   });
 
   it("does not advertise node plugin tools in the initial connect frame", () => {

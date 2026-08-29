@@ -2031,6 +2031,65 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
 
 describe("resolvePinnedClientMetadata", () => {
   it.each([
+    ["win32", "windows", "Windows"],
+    ["darwin", "macos", "Mac"],
+  ])(
+    "accepts equivalent runtime alias %s as %s regardless of client mode",
+    (pairedPlatform, claimedPlatform, claimedDeviceFamily) => {
+      expect(
+        resolvePinnedClientMetadata({
+          clientId: "test",
+          clientMode: "test",
+          claimedPlatform,
+          claimedDeviceFamily,
+          pairedPlatform,
+          pairedDeviceFamily: undefined,
+        }),
+      ).toEqual({
+        platformMismatch: false,
+        deviceFamilyMismatch: false,
+        pinnedPlatform: claimedPlatform,
+        pinnedDeviceFamily: undefined,
+      });
+    },
+  );
+
+  it.each([
+    ["cli", "probe"],
+    ["gateway-client", "backend"],
+  ])("accepts the Windows runtime alias for affected caller %s/%s", (clientId, clientMode) => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId,
+        clientMode,
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "win32",
+        pairedDeviceFamily: undefined,
+      }),
+    ).toMatchObject({
+      platformMismatch: false,
+      deviceFamilyMismatch: false,
+    });
+  });
+
+  it("keeps non-equivalent platform changes approval-bound", () => {
+    expect(
+      resolvePinnedClientMetadata({
+        clientId: "test",
+        clientMode: "test",
+        claimedPlatform: "windows",
+        claimedDeviceFamily: "Windows",
+        pairedPlatform: "linux",
+        pairedDeviceFamily: undefined,
+      }),
+    ).toMatchObject({
+      platformMismatch: true,
+      deviceFamilyMismatch: false,
+    });
+  });
+
+  it.each([
     ["darwin", "macos"],
     ["win32", "windows"],
   ])(

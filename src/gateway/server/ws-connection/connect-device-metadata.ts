@@ -14,6 +14,10 @@ import {
   resolveBootstrapProfileScopesForRole,
   type DeviceBootstrapProfile,
 } from "../../../shared/device-bootstrap-profile.js";
+import {
+  resolveGatewayClientDeviceFamily,
+  resolveGatewayClientPlatform,
+} from "../../../shared/gateway-client-platform.js";
 import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
 import { normalizeDeviceMetadataForAuth } from "../../device-auth.js";
 
@@ -236,6 +240,19 @@ export function resolvePinnedClientMetadata(params: {
   const pairedDeviceFamily = normalizeDeviceMetadataForAuth(params.pairedDeviceFamily);
   const hasPinnedPlatform = pairedPlatform !== "";
   const hasPinnedDeviceFamily = pairedDeviceFamily !== "";
+  const canonicalPairedRuntimePlatform = resolveGatewayClientPlatform(pairedPlatform);
+  const canonicalPairedRuntimeFamily = normalizeDeviceMetadataForAuth(
+    resolveGatewayClientDeviceFamily(pairedPlatform),
+  );
+  // A runtime alias is the same signed device fact. Preserve all non-alias
+  // platform changes as approval-bound mismatches.
+  const legacyRuntimePlatform =
+    !hasPinnedDeviceFamily &&
+    canonicalPairedRuntimePlatform !== pairedPlatform &&
+    claimedPlatform === canonicalPairedRuntimePlatform &&
+    claimedDeviceFamily === canonicalPairedRuntimeFamily
+      ? canonicalPairedRuntimePlatform
+      : undefined;
   const isLegacyNodeHostPlatformPin =
     params.clientId === GATEWAY_CLIENT_IDS.NODE_HOST &&
     params.clientMode === GATEWAY_CLIENT_MODES.NODE &&
@@ -268,19 +285,22 @@ export function resolvePinnedClientMetadata(params: {
   const platformMismatch =
     hasPinnedPlatform &&
     claimedPlatform !== pairedPlatform &&
+    !legacyRuntimePlatform &&
     !isLegacyNodeHostPlatformPin &&
     !isNodeHostUsingMacAppPlatformPin &&
     !isNativeAppPlatformVersionRefresh;
   const deviceFamilyMismatch = hasPinnedDeviceFamily && claimedDeviceFamily !== pairedDeviceFamily;
-  const pinnedPlatform = isLegacyNodeHostPlatformPin
-    ? normalizeLegacyNodeHostPlatformPin(pairedPlatform)
-    : claimedPlatform === pairedPlatform
-      ? params.pairedPlatform
-      : isNodeHostUsingMacAppPlatformPin
+  const pinnedPlatform = legacyRuntimePlatform
+    ? legacyRuntimePlatform
+    : isLegacyNodeHostPlatformPin
+      ? normalizeLegacyNodeHostPlatformPin(pairedPlatform)
+      : claimedPlatform === pairedPlatform
         ? params.pairedPlatform
-        : isNativeAppPlatformVersionRefresh
-          ? params.claimedPlatform
-          : undefined;
+        : isNodeHostUsingMacAppPlatformPin
+          ? params.pairedPlatform
+          : isNativeAppPlatformVersionRefresh
+            ? params.claimedPlatform
+            : undefined;
   return {
     platformMismatch,
     deviceFamilyMismatch,
