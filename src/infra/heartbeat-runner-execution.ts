@@ -113,6 +113,10 @@ const loadHeartbeatRunnerRuntime = createLazyRuntimeModule(
   () => import("./heartbeat-runner.runtime.js"),
 );
 
+const loadSessionArchiveRuntime = createLazyRuntimeModule(
+  () => import("../gateway/session-archive.runtime.js"),
+);
+
 function hasActiveRunForAgent(agentId: string, listSessionKeys: () => readonly string[]): boolean {
   const normalizedAgentId = normalizeAgentId(agentId);
   return listSessionKeys().some((sessionKey) => {
@@ -548,6 +552,14 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
           },
         ]
       : [];
+    // Every isolated wake rolls a fresh session ID under this stable key. Capture
+    // the replaced session before the rollover so its transcript can be archived
+    // afterwards; otherwise each run leaves an unreferenced .jsonl that doctor
+    // reports as an orphan (#131770).
+    const currentIsolatedEntry = loadExactSessionEntry({
+      storePath: isolatedStorePath,
+      sessionKey: isolatedSessionKey,
+    })?.entry;
     const lifecycleResult = await applySessionEntryLifecycleMutation({
       activeSessionKey: isolatedSessionKey,
       storePath: isolatedStorePath,
@@ -580,6 +592,31 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
         err: formatErrorMessage(lifecycleResult.artifactCleanupError),
         sessionKey: staleIsolatedSessionKey,
       });
+    }
+    // The rollover upsert replaced the row in place, so lifecycle artifact
+    // cleanup never saw the previous session as removed. Archive its file-backed
+    // transcript explicitly so no unreferenced .jsonl is left behind (#131770).
+    if (currentIsolatedEntry?.sessionId) {
+      try {
+        const { archiveSessionTranscripts } = await loadSessionArchiveRuntime();
+        archiveSessionTranscripts({
+          sessionId: currentIsolatedEntry.sessionId,
+          storePath: isolatedStorePath,
+          agentId,
+          reason: "deleted",
+          onArchiveError: (error, sourcePath) => {
+            log.warn(
+              `heartbeat: failed to archive previous isolated session transcript ${sourcePath} for session ${currentIsolatedEntry.sessionId}`,
+              { error: String(error), sessionKey: isolatedSessionKey },
+            );
+          },
+        });
+      } catch (err) {
+        log.warn("heartbeat: failed to archive previous isolated session transcript", {
+          err: formatErrorMessage(err),
+          sessionKey: isolatedSessionKey,
+        });
+      }
     }
     runSessionKey = isolatedSessionKey;
     outboundPolicySessionKey = isolatedBaseSessionKey;

@@ -58,7 +58,7 @@ import {
 } from "../infra/state-migrations.legacy-session-store.js";
 import { listConfiguredChannelIdsForReadOnlyScope } from "../plugins/channel-plugin-ids.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
+import { isCronSessionKey, parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { shortenHomePath } from "../utils.js";
 import { repairHeartbeatPoisonedMainSession } from "./doctor-heartbeat-main-session-repair.js";
 import { describeHeartbeatSessionTargetIssues } from "./doctor-heartbeat-session-target.js";
@@ -747,6 +747,35 @@ function isSlashRoutingSessionKey(sessionKey: string): boolean {
   return /^[^:]+:slash:[^:]+(?:$|:)/.test(scoped);
 }
 
+/**
+ * Cron and isolated-heartbeat sessions churn transcripts by design: the cron
+ * reaper archives per-run transcripts after retention, provider-owned runtimes
+ * delete their transcripts on completion, and every isolated heartbeat wake
+ * rolls a fresh session ID under a stable store key. A missing transcript for
+ * these rows never means lost user conversation history, so state integrity
+ * must not flag them (#131770).
+ */
+function isExpectedTransientTranscriptSession(sessionKey: string, entry: SessionEntry): boolean {
+  if (isCronSessionKey(sessionKey)) {
+    return true;
+  }
+  const isolatedBaseSessionKey = entry.heartbeatIsolatedBaseSessionKey;
+  if (typeof isolatedBaseSessionKey !== "string" || !isolatedBaseSessionKey.trim()) {
+    return false;
+  }
+  // Ownership, not activity, decides: the marker identifies a synthetic
+  // isolated session (#131770), and the rollover path stamps
+  // `lastInteractionAt` on every fresh row, so activity timestamps cannot
+  // separate machine churn from user history here. Only rows in the canonical
+  // isolated-key relationship qualify: the stable `<base>:heartbeat` key (or
+  // the agent-qualified sibling of the literal `global` base).
+  const base = isolatedBaseSessionKey.trim();
+  return (
+    sessionKey === `${base}:heartbeat` ||
+    (base === "global" && sessionKey.endsWith(":global:heartbeat"))
+  );
+}
+
 function shouldRequireOAuthDir(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
   if (env.OPENCLAW_OAUTH_DIR?.trim()) {
     return true;
@@ -1355,6 +1384,17 @@ export async function noteStateIntegrity(
     let sqliteNewKeyIndex = 0;
     const recent: Array<{ entry: SessionEntry; order: number; sessionKey: string }> = [];
     const addRecent = (sessionKey: string, entry: SessionEntry, order: number) => {
+      // Only sessions whose transcripts are expected to persist belong in the
+      // recent window. Exclude churn rows (cron, isolated heartbeat) and
+      // slash-routing rows before the five-entry cap so a burst of newer
+      // background rows cannot push an older real session out of the window
+      // and hide its missing transcript (#131770).
+      if (
+        isSlashRoutingSessionKey(sessionKey) ||
+        isExpectedTransientTranscriptSession(sessionKey, entry)
+      ) {
+        return;
+      }
       recent.push({ entry, order, sessionKey });
       recent.sort((left, right) => {
         const leftUpdated = typeof left.entry.updatedAt === "number" ? left.entry.updatedAt : 0;
@@ -1409,9 +1449,11 @@ export async function noteStateIntegrity(
       countLabel,
     });
     if (mergedEntryCount > 0) {
-      const recentTranscriptCandidates = recent
-        .map(({ entry, sessionKey }) => [sessionKey, entry] as const)
-        .filter(([key]) => !isSlashRoutingSessionKey(key));
+      // Slash-routing and transient churn rows are already excluded while the
+      // recent window is collected, before its five-entry cap applies.
+      const recentTranscriptCandidates = recent.map(
+        ({ entry, sessionKey }) => [sessionKey, entry] as const,
+      );
       const missing = recentTranscriptCandidates.filter(([key, entry]) => {
         if (sqliteSessionKeys.has(key)) {
           return false;
