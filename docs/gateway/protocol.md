@@ -563,6 +563,8 @@ methods. Treat this as feature discovery, not a full enumeration of
 
   <Accordion title="Channels and login helpers">
     - `channels.status` returns built-in + bundled channel/plugin status summaries.
+    - `channels.start` (`operator.admin`) starts one channel account runtime without re-authenticating. Params `{ channel, accountId? }`; resolves the default account when `accountId` is omitted. Responds `{ channel, accountId, started }` — `started: false` means the runtime reports it is still stopped after the call. Use it for non-destructive per-account recovery; see [Per-account recovery](/cli/channels#per-account-recovery-non-destructive).
+    - `channels.stop` (`operator.admin`) stops one channel account runtime without clearing auth state, so the next `channels.start` re-registers a fresh listener on the existing pairing. Params `{ channel, accountId? }`; responds `{ channel, accountId, stopped }`. This is the non-destructive counterpart of `channels.logout`, which clears authentication.
     - `channels.logout` logs out a specific channel/account where the channel supports it.
     - `web.login.start` starts a QR/web login flow for the current QR-capable web channel provider.
     - `web.login.wait` waits for that flow to complete and starts the channel on success.
