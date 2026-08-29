@@ -2,11 +2,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 
 const {
   normalizeRoute,
+  parseFenceDelimiter,
   prepareAnchorAuditDocsDir,
   prepareExternalLinkAuditTree,
   prepareMirroredDocsDir,
@@ -25,6 +26,41 @@ describe("docs-link-audit", () => {
       "/plugins/building-plugins",
     );
     expect(normalizeRoute("/plugins/building-plugins?tab=all")).toBe("/plugins/building-plugins");
+  });
+
+  it("parses backtick and tilde fences with their opening length", () => {
+    expect(parseFenceDelimiter("```ts")).toEqual({ marker: "`", length: 3 });
+    expect(parseFenceDelimiter("~~~~md")).toEqual({ marker: "~", length: 4 });
+    expect(parseFenceDelimiter("``short")).toBeNull();
+    expect(parseFenceDelimiter("[text](/route)")).toBeNull();
+  });
+
+  it("ignores links inside tilde and nested fences in the real audit CLI", () => {
+    const tempDirs: string[] = [];
+    const fixtureRoot = makeTempDir(tempDirs, "docs-link-audit-fence-");
+    const docsRoot = path.join(fixtureRoot, "docs");
+    fs.mkdirSync(docsRoot, { recursive: true });
+    fs.writeFileSync(path.join(docsRoot, "docs.json"), '{"navigation":[]}', "utf8");
+    fs.writeFileSync(
+      path.join(docsRoot, "page.md"),
+      "# Page\n\n~~~bash\n[not a real link](/not-a-published-route)\n~~~not-a-closer\n[still not a real link](/still-not-a-published-route)\n~~~\n\n````md\n```text\n[not another real link](/another-not-a-published-route)\n```\n````\n\n[page](/page)\n",
+      "utf8",
+    );
+
+    try {
+      const output: string[] = [];
+      const logSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
+        output.push(args.join(" "));
+      });
+      try {
+        expect(runDocsLinkAuditCli({ args: [], docsDir: docsRoot })).toBe(0);
+        expect(output).toContain("broken_links=0");
+      } finally {
+        logSpy.mockRestore();
+      }
+    } finally {
+      cleanupTempDirs(tempDirs);
+    }
   });
 
   it("prepares every external-link input without exposing code literals", () => {
