@@ -1461,7 +1461,8 @@ describe("image tool implicit imageModel config", () => {
 
         await expectImageToolExecOk(tool, imagePath);
 
-        expect(firstImageRequest(describeImage).timeoutMs).toBe(180_000);
+        expect(firstImageRequest(describeImage).timeoutMs).toBeGreaterThan(179_000);
+        expect(firstImageRequest(describeImage).timeoutMs).toBeLessThanOrEqual(180_000);
       });
     });
   });
@@ -1502,7 +1503,99 @@ describe("image tool implicit imageModel config", () => {
 
         await expectImageToolExecOk(tool, imagePath);
 
-        expect(firstImageRequest(describeImage).timeoutMs).toBe(300_000);
+        expect(firstImageRequest(describeImage).timeoutMs).toBeGreaterThan(299_000);
+        expect(firstImageRequest(describeImage).timeoutMs).toBeLessThanOrEqual(300_000);
+      });
+    });
+  });
+
+  it("uses the longest candidate timeout as one shrinking sequential-image budget", async () => {
+    await withTempWorkspacePng(async ({ workspaceDir, imagePath }) => {
+      await withTempAgentDir(async (agentDir) => {
+        const secondImagePath = path.join(workspaceDir, "second.png");
+        await fs.copyFile(imagePath, secondImagePath);
+        let nowMs = 1_000;
+        vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+        const requestTimeouts: number[] = [];
+        const describeImage = vi.fn(async (params: ImageDescriptionRequest) => {
+          requestTimeouts.push(params.timeoutMs);
+          nowMs += 250;
+          return { text: "ok", model: params.model };
+        });
+        installFastLocalImageProviderStubs({
+          id: "ollama",
+          capabilities: ["image"],
+          describeImage,
+        });
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: {
+              imageModel: {
+                primary: "ollama/gemma4:26b-a4b-it-q4_K_M",
+                fallbacks: ["fallback/vision"],
+              },
+            },
+          },
+          tools: {
+            media: {
+              image: { timeoutSeconds: 1 },
+              models: [
+                {
+                  provider: "ollama",
+                  model: "gemma4:26b-a4b-it-q4_K_M",
+                  capabilities: ["image"],
+                  timeoutSeconds: 2,
+                },
+              ],
+            },
+          },
+        };
+        const tool = createRequiredImageTool({ config: cfg, agentDir, workspaceDir });
+
+        await tool.execute("shrinking-image-budget", {
+          paths: [imagePath, secondImagePath],
+        });
+
+        expect(requestTimeouts).toEqual([2_000, 1_750]);
+      });
+    });
+  });
+
+  it("returns the owner timeout before starting a fallback after the deadline", async () => {
+    await withTempWorkspacePng(async ({ workspaceDir, imagePath }) => {
+      await withTempAgentDir(async (agentDir) => {
+        let nowMs = 1_000;
+        vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+        const primary = vi.fn(async (params: ImageDescriptionRequest) => {
+          nowMs += params.timeoutMs;
+          throw new Error("primary request timed out");
+        });
+        const fallback = vi.fn(async (params: ImageDescriptionRequest) => ({
+          text: "fallback should not start",
+          model: params.model,
+        }));
+        installFastLocalImageProviderStubs(
+          { id: "primary", capabilities: ["image"], describeImage: primary },
+          { id: "fallback", capabilities: ["image"], describeImage: fallback },
+        );
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: {
+              imageModel: {
+                primary: "primary/vision",
+                fallbacks: ["fallback/vision"],
+              },
+            },
+          },
+          tools: { media: { image: { timeoutSeconds: 1 } } },
+        };
+        const tool = createRequiredImageTool({ config: cfg, agentDir, workspaceDir });
+
+        await expect(tool.execute("image-operation-timeout", { path: imagePath })).rejects.toThrow(
+          "Image inspection timed out after 1000ms",
+        );
+        expect(primary).toHaveBeenCalledTimes(1);
+        expect(fallback).not.toHaveBeenCalled();
       });
     });
   });
