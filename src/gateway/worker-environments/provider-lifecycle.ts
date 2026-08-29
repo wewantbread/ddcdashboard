@@ -229,6 +229,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     let lease: WorkerLease;
     let executionMode: WorkerExecutionMode | undefined;
     let enrollmentOperation: ReturnType<typeof nodeProvisioning.createEnrollmentOperation>;
+    let provisioning = record;
     try {
       const profile = requireWorkerProfile(record.profileSnapshot.settings);
       const requestedExecutionMode = record.profileSnapshot.executionMode;
@@ -268,24 +269,27 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           record.environmentId,
           () => {
             authorize?.();
-            return provider.provision(profile, record.provisionOperationId, provisionOptions);
+            if (provisioning.state === "requested") {
+              provisioning = move(provisioning, "provisioning");
+            }
+            return provider.provision(profile, provisioning.provisionOperationId, provisionOptions);
           },
           providerTimeoutMs,
         ),
       );
     } catch (error) {
       if (WorkerProviderError.isCleanupIndeterminate(error)) {
-        return preserveIndeterminateProvisionCleanup(record, error);
+        return preserveIndeterminateProvisionCleanup(provisioning, error);
       }
       const detail = boundedError(error);
       if (
         error instanceof WorkerProviderError ||
         options.isServiceError(error, "invalid_profile")
       ) {
-        move(record, "failed", { lastError: detail });
+        move(provisioning, "failed", { lastError: detail });
         throw serviceError("invalid_profile", `Worker provider rejected profile: ${detail}`);
       }
-      saveError(record, error);
+      saveError(provisioning, error);
       throw serviceError("provider_failure", `Worker provider operation failed: ${detail}`);
     } finally {
       enrollmentOperation?.close();
@@ -306,7 +310,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     );
     if (leaseModeError) {
       return await failBootstrap(
-        record,
+        provisioning,
         lease.leaseId,
         provider,
         leaseModeError,
@@ -315,9 +319,9 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       );
     }
     if (lease.node) {
-      return await nodeProvisioning.finish(record, lease, provider, patch);
+      return await nodeProvisioning.finish(provisioning, lease, provider, patch);
     }
-    const bootstrapping = move(record, "bootstrapping", patch);
+    const bootstrapping = move(provisioning, "bootstrapping", patch);
     let installation = preparedInstallation;
     if (!installation) {
       try {
@@ -356,8 +360,9 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         );
       }
     }
-    const provisioning = record.state === "requested" ? move(record, "provisioning") : record;
-    return finishProvision(provisioning, provider, installation, authorize);
+    // Fresh requests stay cancelable through preparation and provider-queue admission;
+    // finishProvision transitions them only inside the authorized provider callback.
+    return finishProvision(record, provider, installation, authorize);
   };
 
   const cancelRequested = (record: WorkerEnvironmentRecord) =>

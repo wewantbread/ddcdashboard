@@ -104,6 +104,15 @@ describe("worker environment service", () => {
 
     await expect(creation).rejects.toThrow("session dispatch authority closed");
     expect(provision).not.toHaveBeenCalled();
+    const [intent] = support.testState.store.list();
+    expect(intent).toMatchObject({ state: "requested", leaseId: null });
+
+    await workerService.destroy(intent!.environmentId);
+    expect(provision).not.toHaveBeenCalled();
+    expect(support.testState.store.get(intent!.environmentId)).toMatchObject({
+      state: "failed",
+      leaseId: null,
+    });
   });
 
   it("requires explicit placement modes before provider allocation", async () => {
