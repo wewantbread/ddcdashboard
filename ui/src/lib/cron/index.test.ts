@@ -1750,6 +1750,42 @@ describe("cron controller", () => {
     expect(requestPatch(call).failureAlert).toBe(false);
   });
 
+  it.each([
+    { milliseconds: 1, seconds: "0.001", payloadKind: "agentTurn" },
+    { milliseconds: 450, seconds: "0.45", payloadKind: "command" },
+    { milliseconds: 1_001, seconds: "1.001", payloadKind: "agentTurn" },
+    { milliseconds: 1_250, seconds: "1.25", payloadKind: "script" },
+    { milliseconds: 30_000, seconds: "30", payloadKind: "agentTurn" },
+  ] as const)(
+    "preserves $milliseconds-ms stagger and cooldown when editing a $payloadKind job",
+    async ({ milliseconds, seconds, payloadKind }) => {
+      const payload =
+        payloadKind === "command"
+          ? { kind: "command" as const, argv: ["echo", "ok"] }
+          : payloadKind === "script"
+            ? { kind: "script" as const, script: "return true" }
+            : { kind: "agentTurn" as const, message: "work" };
+      const job = createCronJob({
+        id: "job-precise-timing",
+        name: "Precise timing",
+        schedule: { kind: "cron", expr: "0 * * * *", staggerMs: milliseconds },
+        payload,
+        delivery: { mode: "none" },
+        failureAlert: { after: 2, cooldownMs: milliseconds },
+      });
+      const { state, submit } = createCronEditHarness(job);
+
+      expect(state.cronForm.staggerAmount).toBe(seconds);
+      expect(state.cronForm.failureAlertCooldownSeconds).toBe(seconds);
+
+      state.cronForm.name = "Renamed only";
+      const patch = requestPatch(await submit());
+
+      expect(requireRecord(patch.schedule, "schedule").staggerMs).toBe(milliseconds);
+      expect(requireRecord(patch.failureAlert, "failureAlert").cooldownMs).toBe(milliseconds);
+    },
+  );
+
   it("maps cron trigger, stagger, model, thinking, and best effort into form", () => {
     const state = createState();
     const job = createCronJob({

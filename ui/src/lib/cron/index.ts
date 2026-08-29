@@ -925,7 +925,7 @@ function parseStaggerSchedule(
   }
   return {
     scheduleExact: false,
-    staggerAmount: String(Math.max(1, Math.ceil(staggerMs / 1_000))),
+    staggerAmount: everyMsToSecondsString(staggerMs),
     staggerUnit: "seconds",
   };
 }
@@ -1006,7 +1006,7 @@ function jobToForm(job: CronJob, prev: CronFormState): CronFormState {
       failureAlert &&
       typeof failureAlert === "object" &&
       typeof failureAlert.cooldownMs === "number"
-        ? String(Math.floor(failureAlert.cooldownMs / 1000))
+        ? everyMsToSecondsString(failureAlert.cooldownMs)
         : DEFAULT_CRON_FORM.failureAlertCooldownSeconds,
     failureAlertChannel:
       failureAlert && typeof failureAlert === "object"
@@ -1095,11 +1095,10 @@ function buildCronSchedule(form: CronFormState) {
   if (!staggerAmount) {
     return { kind: "cron" as const, expr, tz: form.cronTz.trim() || undefined };
   }
-  const staggerValue = toNumber(staggerAmount, 0);
-  if (staggerValue <= 0) {
+  const staggerMs = parseCronEveryMs(staggerAmount, form.staggerUnit);
+  if (staggerMs === undefined) {
     throw new Error(t("cron.errors.invalidStaggerAmount"));
   }
-  const staggerMs = form.staggerUnit === "minutes" ? staggerValue * 60_000 : staggerValue * 1_000;
   return { kind: "cron" as const, expr, tz: form.cronTz.trim() || undefined, staggerMs };
 }
 
@@ -1174,7 +1173,7 @@ function buildFailureAlert(form: CronFormState, existing?: CronJob["failureAlert
   const cooldownSeconds = cooldownRaw.length > 0 ? toNumber(cooldownRaw, 0) : undefined;
   const cooldownMs =
     cooldownSeconds !== undefined && Number.isFinite(cooldownSeconds) && cooldownSeconds >= 0
-      ? Math.floor(cooldownSeconds * 1000)
+      ? (parseCronEveryMs(cooldownRaw, "seconds") ?? Math.floor(cooldownSeconds * 1000))
       : undefined;
   const deliveryMode = form.failureAlertDeliveryMode;
   const accountId = form.failureAlertAccountId.trim();
