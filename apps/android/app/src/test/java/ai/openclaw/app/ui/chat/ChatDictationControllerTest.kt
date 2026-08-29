@@ -7,6 +7,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -277,6 +278,38 @@ class ChatDictationControllerTest {
       assertEquals(ChatDictationState.Failure(ChatDictationFailure.Network), controller.state.value)
       assertEquals(1, released)
     }
+
+  @Test
+  fun unavailableRecognizerFallsBackToAVoiceNoteInsteadOfShowingTheError() {
+    assertTrue(
+      shouldFallbackDictationToVoiceNote(
+        dictationAvailable = false,
+        transcript = null,
+        state = ChatDictationState.Idle,
+      ),
+    )
+    assertTrue(
+      shouldFallbackDictationToVoiceNote(
+        dictationAvailable = true,
+        transcript = null,
+        state = ChatDictationState.Failure(ChatDictationFailure.Unavailable),
+      ),
+    )
+    assertFalse(
+      shouldFallbackDictationToVoiceNote(
+        dictationAvailable = true,
+        transcript = "hello",
+        state = ChatDictationState.Idle,
+      ),
+    )
+    assertFalse(
+      shouldFallbackDictationToVoiceNote(
+        dictationAvailable = true,
+        transcript = null,
+        state = ChatDictationState.Failure(ChatDictationFailure.NoSpeech),
+      ),
+    )
+  }
 
   @Test
   fun destroyCancelsCaptureAndDestroysThePlatformRecognizer() =
