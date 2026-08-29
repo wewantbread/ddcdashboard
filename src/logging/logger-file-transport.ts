@@ -10,6 +10,7 @@ import { formatTimestamp } from "./timestamps.js";
 // Keep burst memory bounded while one equally bounded batch is in flight.
 const DEFAULT_MAX_QUEUED_RECORDS = 4_096;
 const MAX_ROTATED_LOG_FILES = 5;
+const MAX_TRACKED_APPEND_FAILURE_FILES = 64;
 
 type FileLogQueueEntry = {
   file: string;
@@ -39,7 +40,8 @@ let processExiting = false;
 let processHooksInstalled = false;
 let appendFile: FileLogAppender = appendRegularFile;
 const warnedRotationFiles = new Map<string, number>();
-let warnedAppendFile: string | null = null;
+const warnedAppendFiles = new Set<string>();
+let appendFailureTrackingSaturated = false;
 
 function rotatedLogPath(file: string, index: number): string {
   const ext = path.extname(file);
@@ -104,12 +106,7 @@ function buildDroppedMarker(target: FileLogQueueEntry, count: number): FileLogQu
   };
 }
 
-function warnAboutRotationFailure(entry: FileLogQueueEntry): void {
-  if (warnedRotationFiles.get(entry.file) === entry.maxFileBytes) {
-    return;
-  }
-  warnedRotationFiles.set(entry.file, entry.maxFileBytes);
-  const message = `[openclaw] log file rotation failed; continuing writes file=${entry.file} maxFileBytes=${entry.maxFileBytes}`;
+function writeFileTransportWarning(message: string): void {
   try {
     process.stderr.write(`${formatConsoleDiagnosticLine({ level: "warn", message })}\n`);
   } catch {
@@ -117,16 +114,36 @@ function warnAboutRotationFailure(entry: FileLogQueueEntry): void {
   }
 }
 
-function warnAboutAppendFailure(entry: FileLogQueueEntry): void {
-  if (warnedAppendFile === entry.file) {
+function warnAboutRotationFailure(entry: FileLogQueueEntry): void {
+  if (warnedRotationFiles.get(entry.file) === entry.maxFileBytes) {
     return;
   }
-  warnedAppendFile = entry.file;
+  warnedRotationFiles.set(entry.file, entry.maxFileBytes);
+  const message = `[openclaw] log file rotation failed; continuing writes file=${entry.file} maxFileBytes=${entry.maxFileBytes}`;
+  writeFileTransportWarning(message);
+}
+
+function warnAboutAppendFailure(entry: FileLogQueueEntry): void {
+  if (warnedAppendFiles.has(entry.file)) {
+    return;
+  }
+  if (warnedAppendFiles.size >= MAX_TRACKED_APPEND_FAILURE_FILES) {
+    if (!appendFailureTrackingSaturated) {
+      appendFailureTrackingSaturated = true;
+      writeFileTransportWarning(
+        "[openclaw] log file append failure diagnostics saturated; suppressing new file targets",
+      );
+    }
+    return;
+  }
+  warnedAppendFiles.add(entry.file);
   const message = `[openclaw] log file append failed; record dropped; continuing file=${entry.file}`;
-  try {
-    process.stderr.write(`${formatConsoleDiagnosticLine({ level: "warn", message })}\n`);
-  } catch {
-    // Logging diagnostics must not stop the file queue.
+  writeFileTransportWarning(message);
+}
+
+function clearAppendFailure(entry: FileLogQueueEntry): void {
+  if (warnedAppendFiles.delete(entry.file)) {
+    appendFailureTrackingSaturated = false;
   }
 }
 
@@ -181,9 +198,7 @@ async function writeEntries(entries: FileLogQueueEntry[], generation: number): P
     try {
       await appendFile({ filePath: entry.file, content: entry.payload });
       cursor.bytes += payloadBytes;
-      if (warnedAppendFile === entry.file) {
-        warnedAppendFile = null;
-      }
+      clearAppendFailure(entry);
     } catch {
       // Match the old best-effort transport: a failed append must not stop later records.
       warnAboutAppendFailure(entry);
@@ -213,9 +228,7 @@ function writeEntriesSync(entries: FileLogQueueEntry[]): void {
     try {
       appendRegularFileSync({ filePath: entry.file, content: entry.payload });
       cursor.bytes += payloadBytes;
-      if (warnedAppendFile === entry.file) {
-        warnedAppendFile = null;
-      }
+      clearAppendFailure(entry);
     } catch {
       // Match the old best-effort transport: a failed append must not stop later records.
       warnAboutAppendFailure(entry);
@@ -376,7 +389,8 @@ function resetFileLogTransportForTests(): void {
   appendFile = appendRegularFile;
   maxQueuedRecords = DEFAULT_MAX_QUEUED_RECORDS;
   warnedRotationFiles.clear();
-  warnedAppendFile = null;
+  warnedAppendFiles.clear();
+  appendFailureTrackingSaturated = false;
 }
 
 export const fileLogTransport = {
