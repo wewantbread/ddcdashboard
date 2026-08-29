@@ -96,57 +96,19 @@ describe("version resolution", () => {
     });
   });
 
-  it("captures the runtime commit from loaded build metadata once", async () => {
-    let buildInfoCommit = "abcdef0123456789abcdef0123456789abcdef01";
-    vi.doMock("node:module", async () => {
-      const actual = await vi.importActual<typeof import("node:module")>("node:module");
-      return {
-        createRequire: (moduleUrl: Parameters<typeof actual.createRequire>[0]) => {
-          const realRequire = actual.createRequire(moduleUrl);
-          return Object.assign(
-            (candidate: string) =>
-              candidate.endsWith("build-info.json")
-                ? { commit: buildInfoCommit }
-                : realRequire(candidate),
-            realRequire,
-          );
-        },
-      };
-    });
+  it("captures the runtime commit from startup provenance once", async () => {
+    let startupCommit = "abcdef0";
+    vi.doMock("./infra/git-commit.js", () => ({
+      resolveCommitHash: () => startupCommit,
+    }));
     vi.resetModules();
     try {
       const runtimeVersion = await import("./version.js");
       expect(runtimeVersion.resolveRuntimeServiceCommit()).toBe("abcdef0");
-      buildInfoCommit = "fedcba9876543210fedcba9876543210fedcba98";
+      startupCommit = "fedcba9";
       expect(runtimeVersion.resolveRuntimeServiceCommit()).toBe("abcdef0");
     } finally {
-      vi.doUnmock("node:module");
-      vi.resetModules();
-    }
-  });
-
-  it("rejects malformed loaded build commits", async () => {
-    vi.doMock("node:module", async () => {
-      const actual = await vi.importActual<typeof import("node:module")>("node:module");
-      return {
-        createRequire: (moduleUrl: Parameters<typeof actual.createRequire>[0]) => {
-          const realRequire = actual.createRequire(moduleUrl);
-          return Object.assign(
-            (candidate: string) =>
-              candidate.endsWith("build-info.json")
-                ? { commit: "prefix-abcdef0123456789abcdef0123456789abcdef01-suffix" }
-                : realRequire(candidate),
-            realRequire,
-          );
-        },
-      };
-    });
-    vi.resetModules();
-    try {
-      const runtimeVersion = await import("./version.js");
-      expect(runtimeVersion.resolveRuntimeServiceCommit()).toBeNull();
-    } finally {
-      vi.doUnmock("node:module");
+      vi.doUnmock("./infra/git-commit.js");
       vi.resetModules();
     }
   });

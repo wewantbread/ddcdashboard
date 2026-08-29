@@ -1,6 +1,7 @@
 // Resolves package version metadata for CLI and library callers.
 import { createRequire } from "node:module";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveCommitHash } from "./infra/git-commit.js";
 
 const CORE_PACKAGE_NAME = "openclaw";
 
@@ -54,27 +55,6 @@ function readBuildIdFromJsonCandidates(moduleUrl: string): string | null {
         const buildId = normalizeOptionalString(parsed.buildId);
         if (buildId && buildId.length <= 96) {
           return buildId;
-        }
-      } catch {
-        // ignore missing or unreadable candidate
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function readCommitFromBuildInfoCandidates(moduleUrl: string): string | null {
-  try {
-    const require = createRequire(moduleUrl);
-    for (const candidate of BUILD_INFO_CANDIDATES) {
-      try {
-        // SAFETY: build-info is controlled by the build step; only its optional commit field is read.
-        const parsed = require(candidate) as { commit?: unknown };
-        const commit = normalizeOptionalString(parsed.commit);
-        if (commit && /^[0-9a-f]{40}$/iu.test(commit)) {
-          return commit.slice(0, 7).toLowerCase();
         }
       } catch {
         // ignore missing or unreadable candidate
@@ -174,10 +154,10 @@ export function resolveRuntimeServiceVersion(
   });
 }
 
-// Generated build provenance is immutable for a process. Resolve it once so
-// handshakes never poll the filesystem on the connection hot path.
+// Runtime provenance is immutable for a process. Build metadata covers packaged
+// installs; source checkouts fall back to the Git revision seen at module load.
 const RUNTIME_SERVICE_BUILD_ID = readBuildIdFromBuildInfoForModuleUrl(import.meta.url);
-const RUNTIME_SERVICE_COMMIT = readCommitFromBuildInfoCandidates(import.meta.url);
+const RUNTIME_SERVICE_COMMIT = resolveCommitHash({ moduleUrl: import.meta.url });
 
 export function resolveRuntimeServiceBuildId(): string | null {
   return RUNTIME_SERVICE_BUILD_ID;
