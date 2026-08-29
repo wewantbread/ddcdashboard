@@ -117,6 +117,9 @@ async function runEmbeddedAgentInternal(
   const contextEngineAgentId =
     normalizeOptionalString(paramsInput.sessionTarget?.agentId) ??
     normalizeOptionalString(paramsInput.agentId);
+  const memoryPromptAgentId = normalizeOptionalString(
+    paramsInput.systemAgentTool?.memoryPromptAgentId,
+  );
   const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
   const skillWorkshopProposalMutationBudget = paramsBase.skillWorkshopProposalOnly
     ? (paramsBase.skillWorkshopProposalMutationBudget ?? { remaining: 1 })
@@ -447,6 +450,7 @@ async function runEmbeddedAgentInternal(
           return await executePreparedEmbeddedRun({
             runParams: params,
             contextEngineAgentId,
+            memoryPromptAgentId,
             provider,
             modelId,
             agentDir,

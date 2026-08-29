@@ -232,6 +232,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       : { kind: "runtime-target", sessionTarget: resolvedSessionTarget },
     runtime: {
       contextEngineAgentId: runInput.contextEngineAgentId,
+      memoryPromptAgentId: runInput.memoryPromptAgentId,
       sessionId: sessionPromptState.sessionId,
       sessionFile: sessionPromptState.sessionFile,
       sessionKey: resolvedSessionKey,
