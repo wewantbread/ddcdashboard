@@ -130,11 +130,6 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
     ctx.InboundEventKind !== "room_event" &&
     !state.sendPolicyDenied &&
     params.replyOptions?.forceToolResultProgress === true;
-  const shouldDeliverFastModeAutoProgressDespiteSourceSuppression = () =>
-    state.suppressAutomaticSourceDelivery &&
-    state.sourceReplyDeliveryMode === "message_tool_only" &&
-    ctx.InboundEventKind !== "room_event" &&
-    !state.sendPolicyDenied;
   let finalReplyDeliveryStarted = false;
   const shouldSuppressLateTextOnlyToolProgress = (payload: ReplyPayload) => {
     if (!finalReplyDeliveryStarted) {
@@ -696,7 +691,6 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
     notifySessionMetadataChanges,
     shouldDeliverVerboseProgressDespiteSourceSuppression,
     shouldDeliverForcedToolProgressDespiteSourceSuppression,
-    shouldDeliverFastModeAutoProgressDespiteSourceSuppression,
     shouldSuppressLateTextOnlyToolProgress,
     flushPendingCommentaryProgress,
     noteCommentaryProgress,
