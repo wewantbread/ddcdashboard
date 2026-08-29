@@ -90,10 +90,12 @@ export type EmbeddedRunWaiter = {
 
 export type AbandonedEmbeddedRun = {
   sessionId: string;
+  runId?: string;
   sessionKey?: string;
   sessionFile?: string;
   abandonedAtMs: number;
-  reason: "timeout";
+  reason: "timeout" | "recovering_timeout";
+  recoveryId?: number;
 };
 
 const EMBEDDED_RUN_STATE_KEY = Symbol.for("openclaw.embeddedRunState");

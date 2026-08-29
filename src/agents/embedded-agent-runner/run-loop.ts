@@ -672,6 +672,8 @@ export async function runPreparedEmbeddedLoop(
       return terminalResolution.result;
     }
   } finally {
+    // Successful registration already cleared the marker; earlier exits restore it.
+    contextRecoveryState.restoreTimeoutRecoveryAbandonment();
     if (params.isFinalFallbackAttempt !== false) {
       await maybeEmitFastModeAutoResetBestEffort();
     }

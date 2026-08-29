@@ -2,6 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import { recoverEmbeddedRunTimeout } from "./run/timeout-context-recovery.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
+import {
+  isEmbeddedRunAbandoned,
+  markActiveEmbeddedRunAbandoned,
+  setActiveEmbeddedRun,
+} from "./runs.js";
+import { testing as runsTesting } from "./runs.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   compact: vi.fn(),
@@ -115,6 +121,7 @@ describe("recoverEmbeddedRunTimeout", () => {
     mocks.info.mockReset();
     mocks.postCompactionSideEffects.mockReset();
     mocks.warn.mockReset();
+    runsTesting.resetActiveEmbeddedRuns();
   });
 
   it.each([
@@ -221,6 +228,52 @@ describe("recoverEmbeddedRunTimeout", () => {
       expect.objectContaining({ compacted: false, reason: "Error: engine crashed" }),
       undefined,
     );
+  });
+
+  it("restores terminal abandonment when recovery throws after marking the run", async () => {
+    const handle = {} as Parameters<typeof setActiveEmbeddedRun>[1];
+    setActiveEmbeddedRun("session-1", handle, "agent:main:session-1");
+    expect(
+      markActiveEmbeddedRunAbandoned({
+        sessionId: "session-1",
+        handle,
+        sessionKey: "agent:main:session-1",
+        reason: "timeout",
+      }),
+    ).toBe(true);
+
+    const input = makeInput({
+      runOwnsCompactionAfterHook: vi.fn(async () => {
+        throw new Error("after-hook failed");
+      }),
+    });
+
+    await expect(recoverEmbeddedRunTimeout(input)).rejects.toThrow("after-hook failed");
+    expect(isEmbeddedRunAbandoned({ sessionId: "session-1" })).toBe(true);
+  });
+
+  it("restores terminal abandonment when the next attempt fails before registration", async () => {
+    const handle = {
+      runId: "run-1",
+    } as Parameters<typeof setActiveEmbeddedRun>[1];
+    setActiveEmbeddedRun("session-1", handle, "agent:main:session-1");
+    expect(
+      markActiveEmbeddedRunAbandoned({
+        sessionId: "session-1",
+        handle,
+        sessionKey: "agent:main:session-1",
+        reason: "timeout",
+      }),
+    ).toBe(true);
+
+    const state = createEmbeddedRunContextRecoveryState();
+    expect(await recoverEmbeddedRunTimeout(makeInput({ state }))).toBe(true);
+    expect(isEmbeddedRunAbandoned({ sessionId: "session-1" })).toBe(false);
+
+    // The run loop owns this cleanup after recovery returns, including the
+    // fallible preparation window before the next active run is registered.
+    expect(state.restoreTimeoutRecoveryAbandonment()).toBe(true);
+    expect(isEmbeddedRunAbandoned({ sessionId: "session-1" })).toBe(true);
   });
 
   it("runs post-compaction side effects only for an engine-owned compaction", async () => {
