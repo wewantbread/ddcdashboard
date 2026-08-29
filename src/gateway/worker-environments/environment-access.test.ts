@@ -151,6 +151,40 @@ describe("worker environment service", () => {
     expect(tunnelManager.start).not.toHaveBeenCalled();
   });
 
+  it("does not start a tunnel after dispatch authority closes during build preparation", async () => {
+    const prepared = createDeferred<typeof support.BUNDLE_ARTIFACT>();
+    support.testState.prepareInstallation = vi.fn(async () => await prepared.promise);
+    const environmentId = "worker-revoked-tunnel";
+    support.seedReady(environmentId, undefined, true);
+    const tunnelManager = {
+      status: () => "stopped" as const,
+      start: vi.fn(),
+      stop: vi.fn(async () => {}),
+      stopAll: vi.fn(async () => {}),
+    } as unknown as WorkerTunnelManager;
+    const workerService = support.createService(support.createProvider(), { tunnelManager });
+    let authorized = true;
+
+    const starting = workerService.startTunnel({
+      environmentId,
+      ownerEpoch: 1,
+      authorize: () => {
+        if (!authorized) {
+          throw new Error("session dispatch authority closed");
+        }
+      },
+    });
+    const rejected = expect(starting).rejects.toThrow("session dispatch authority closed");
+    await support.waitForFast(() =>
+      expect(support.testState.prepareInstallation).toHaveBeenCalled(),
+    );
+    authorized = false;
+    prepared.resolve(support.BUNDLE_ARTIFACT);
+
+    await rejected;
+    expect(tunnelManager.start).not.toHaveBeenCalled();
+  });
+
   it("selects a node tunnel from the persisted transport instead of provider id", async () => {
     const tunnelManager = {
       status: () => "stopped" as const,

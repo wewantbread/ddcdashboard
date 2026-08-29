@@ -15,7 +15,7 @@ export function createGatewayNodeWorkerBundleInstaller(options: {
   prepareBundle: () => Promise<WorkerBundleArtifact>;
   transfer: NodeWorkerBundleTransferService;
 }) {
-  return async (params: { deviceId: string; signal?: AbortSignal }) => {
+  return async (params: { deviceId: string; signal?: AbortSignal; authorize?: () => void }) => {
     const transport = options.getTransport();
     if (!transport) {
       throw new Error("Device worker node transport is unavailable");
@@ -27,7 +27,11 @@ export function createGatewayNodeWorkerBundleInstaller(options: {
       throw new Error("Device worker node is not connected with the installer dialect");
     }
     const artifact = await options.prepareBundle();
-    const isAuthorized = () => transport.isCurrent(node);
+    const isAuthorized = () => {
+      params.authorize?.();
+      return transport.isCurrent(node);
+    };
+    isAuthorized();
     const bundlePrewarm =
       (node.workerHost.bundlePrewarm ?? 0) >= WORKER_BUNDLE_PREWARM_VERSION
         ? WORKER_BUNDLE_PREWARM_VERSION

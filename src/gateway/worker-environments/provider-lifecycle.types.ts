@@ -38,9 +38,15 @@ export type WorkerProviderLifecycleInputOptions = {
     profile: WorkerProfile;
     keyRef: SecretRef;
   }) => Promise<WorkerSshIdentity>;
-  ensureNodeWorkerBundle?: (deviceId: string) => Promise<WorkerAdmissionHandshake>;
-  prepareNodeBootstrap?: (record: WorkerEnvironmentRecord) => Promise<void>;
-  prepareNodeEnrollment?: (record: WorkerEnvironmentRecord) => Promise<WorkerNodeEnrollment>;
+  ensureNodeWorkerBundle?: (
+    deviceId: string,
+    authorize?: () => void,
+  ) => Promise<WorkerAdmissionHandshake>;
+  prepareNodeBootstrap?: (record: WorkerEnvironmentRecord, authorize?: () => void) => Promise<void>;
+  prepareNodeEnrollment?: (
+    record: WorkerEnvironmentRecord,
+    authorize?: () => void,
+  ) => Promise<WorkerNodeEnrollment>;
   closeNodeEnrollment?: (enrollment: WorkerNodeEnrollment) => void;
   retireNodeEnrollment?: (record: WorkerEnvironmentRecord) => Promise<void>;
   providerCallTimeoutMs?: number;

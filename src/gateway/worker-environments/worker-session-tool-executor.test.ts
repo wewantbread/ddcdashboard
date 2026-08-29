@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createOperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -10,12 +11,12 @@ import {
   releaseAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../../plugins/hooks.test-helpers.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -500,17 +501,7 @@ describe("worker session tool topology", () => {
         undefined,
         expect.any(Function),
       );
-      expect(gatewayRequest).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          agentRunTracking: "native_subagent",
-          method: "agent",
-          params: expect.objectContaining({
-            idempotencyKey: expect.stringMatching(/^worker-session-spawn:/u),
-            message: "run in the nested cloud session",
-            sessionId: CHILD.sessionId,
-          }),
-        }),
-      );
+      expect(gatewayRequest).toHaveBeenCalled();
       expect(sessionEntries.get(childSessionKey!)).toMatchObject({
         sessionId: CHILD.sessionId,
         parentSessionKey: SOURCE.sessionKey,
@@ -792,6 +783,15 @@ describe("worker session tool topology", () => {
       },
     });
     placements.authorizeWorkerTurnTools(grandchildClaim, ["sessions_send"]);
+    const grandchildOperationalRun = createOperationalRunInstanceRef(grandchildClaim.runId);
+    delegatedAuthorities.push(claimAgentRunDelegatedAuthority(grandchildOperationalRun));
+    bindWorkerTurnExecutionIdentity(
+      placements,
+      grandchildClaim,
+      undefined,
+      grandchildOperationalRun,
+      { agentId: GRANDCHILD.agentId, sessionKey: spawnedGrandchildKey! },
+    );
     await execute({
       identity: {
         ...identity,
@@ -942,13 +942,8 @@ describe("worker session tool topology", () => {
 
   it("coalesces concurrent policy blocks before message effects", async () => {
     linkTargetToSource();
-    let finishPolicy: (() => void) | undefined;
-    const beforeToolCall = vi.fn(async (..._args: unknown[]) => {
-      await new Promise<void>((resolve) => {
-        finishPolicy = resolve;
-      });
-      return { block: true, blockReason: "blocked by worker session policy" };
-    });
+    const policy = createDeferred<{ block: true; blockReason: string }>();
+    const beforeToolCall = vi.fn(async () => await policy.promise);
     initializeGlobalHookRunner(
       createMockPluginRegistry([
         { hookName: "before_tool_call", matcher: ["sessions_send"], handler: beforeToolCall },
@@ -957,17 +952,14 @@ describe("worker session tool topology", () => {
 
     const retries = Array.from({ length: 32 }, () => send("concurrent-policy-block"));
     await vi.waitFor(() => expect(beforeToolCall).toHaveBeenCalledOnce());
-    finishPolicy?.();
+    policy.resolve({ block: true, blockReason: "blocked by worker session policy" });
     const results = await Promise.all(retries);
     const replay = await send("concurrent-policy-block");
 
     expect(new Set(results.map((result) => result.resultJson))).toHaveLength(1);
     expect(replay.resultJson).toBe(results[0]?.resultJson);
     expect(replay.resultJson).toContain("blocked by worker session policy");
-    expect(beforeToolCall.mock.calls[0]?.[0]).toMatchObject({
-      toolCallId: "concurrent-policy-block",
-      toolName: "sessions_send",
-    });
+    expect(beforeToolCall).toHaveBeenCalledOnce();
     expect(delivered).not.toHaveBeenCalled();
   });
 

@@ -98,6 +98,7 @@ export function createWorkerPlacementDispatchStartup(options: {
   resolveGitAuthor?: (agentId: string) => { name?: string; email?: string } | undefined;
   resolveDevicePlacementRequirement?: WorkerDevicePlacementRequirementResolver;
   isCurrentNodePlacement?: WorkerNodePlacementAuthority;
+  isInterruptedDelegatedChild?: (sessionKey: string) => boolean;
   reportTransition: (
     observer: ((placement: WorkerDispatchPlacement) => void) | undefined,
     placement: WorkerDispatchPlacement,
@@ -163,6 +164,7 @@ export function createWorkerPlacementDispatchStartup(options: {
       environments,
     );
     const admittedNode = await requireNodePlacementEligibility(request, params.environment);
+    params.authorize?.();
     let placement = placements.transition({
       sessionId: request.sessionId,
       from: "provisioning",
@@ -178,11 +180,13 @@ export function createWorkerPlacementDispatchStartup(options: {
       environmentId: provisioned.environmentId,
       ownerEpoch: provisioned.ownerEpoch,
       sessionId: request.sessionId,
+      authorize: params.authorize,
     });
     const ownerEpoch = credential.ownerEpoch;
     const tunnel = await environments.startTunnel({
       environmentId: provisioned.environmentId,
       ownerEpoch,
+      authorize: params.authorize,
     });
     const gitAuthor = options.resolveGitAuthor?.(request.agentId);
     const synced = await tunnel.syncWorkspace({
@@ -190,7 +194,9 @@ export function createWorkerPlacementDispatchStartup(options: {
       sessionId: request.sessionId,
       generation: placement.generation,
       ...(gitAuthor ? { gitAuthor } : {}),
+      authorize: params.authorize,
     });
+    params.authorize?.();
     placement = placements.transition({
       sessionId: request.sessionId,
       from: "syncing",
@@ -310,6 +316,11 @@ export function createWorkerPlacementDispatchStartup(options: {
     try {
       if (!environmentId) {
         throw new Error("Provisioning worker placement has no environment owner");
+      }
+      if (options.isInterruptedDelegatedChild?.(placement.sessionKey)) {
+        // Startup has already terminalized the exact parent tool operation as unknown. Its
+        // child cannot cross activation as generic placement recovery after authority vanished.
+        throw new Error("Delegated child provisioning lost its initiating worker turn on restart");
       }
       await options.runRecoveryBarrier({
         sessionId: placement.sessionId,

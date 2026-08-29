@@ -559,6 +559,26 @@ describe("worker environment service", () => {
     expect(provisionCalls).toBe(1);
   });
 
+  it("does not replay provisioning after the provider proves cleanup", async () => {
+    const provision = vi.fn(async () => {
+      throw WorkerProviderError.cleanupComplete(new Error("worker turn authority changed"));
+    });
+    const workerService = support.createService(support.createProvider({ provision }));
+
+    await expect(workerService.create("development", "request-cleaned-up")).rejects.toMatchObject({
+      code: "provider_failure",
+      message: expect.stringContaining("worker turn authority changed"),
+    } satisfies Partial<WorkerEnvironmentServiceError>);
+    const record = expectDefined(support.testState.store.list()[0], "cleaned-up provision record");
+
+    await expect(workerService.destroy(record.environmentId)).resolves.toMatchObject({
+      state: "failed",
+      leaseId: null,
+    });
+    await workerService.reconcileOnce();
+    expect(provision).toHaveBeenCalledOnce();
+  });
+
   it("rejects non-canonical profile ids before persistence", async () => {
     const workerService = support.createService(support.createProvider());
 

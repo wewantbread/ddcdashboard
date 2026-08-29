@@ -53,28 +53,28 @@ export class WorkerSessionToolOutcomeUnknownError extends Error {
 }
 
 export function createWorkerSessionToolGatewayCaller(params: {
-  identity?: WorkerTurnExecutionIdentity;
+  identity: WorkerTurnExecutionIdentity;
   signal?: AbortSignal;
 }): AgentToolGatewayRequestCaller {
   return async (request) => {
     const identity = params.identity;
-    identity?.receiptAuthority();
+    identity.receiptAuthority();
     const gatewayRequest = { ...request, ...(params.signal ? { signal: params.signal } : {}) };
     return await callAgentToolGatewayRequest(
-      identity
-        ? withAgentToolGatewayRuntimeIdentity(gatewayRequest, {
-            kind: "agentRuntime",
-            agentId: identity.agentId,
-            sessionKey: identity.sessionKey,
-            operationalRunInstance: identity.operationalRunInstance,
-            delegatedAuthority: {
-              kind: "worker",
-              ...identity.delegatedAuthority,
-              turnClaim: identity.turnClaim,
-            },
-            executionIdentity: identity.executionIdentityToken,
-          })
-        : gatewayRequest,
+      withAgentToolGatewayRuntimeIdentity(gatewayRequest, {
+        kind: "agentRuntime",
+        agentId: identity.agentId,
+        sessionKey: identity.sessionKey,
+        operationalRunInstance: identity.operationalRunInstance,
+        delegatedAuthority: {
+          kind: "worker",
+          ...identity.delegatedAuthority,
+          turnClaim: identity.turnClaim,
+        },
+        ...(identity.executionIdentityToken
+          ? { executionIdentity: identity.executionIdentityToken }
+          : {}),
+      }),
     );
   };
 }
@@ -84,19 +84,12 @@ export async function runWithWorkerSessionToolExecutionIdentity<T>(params: {
   claim: WorkerSessionToolSource["turnClaim"];
   placements: WorkerSessionPlacementStore;
   resolveGatewayContext: GatewayContextResolver;
-  run: (identity?: WorkerTurnExecutionIdentity) => Promise<T>;
+  run: (identity: WorkerTurnExecutionIdentity) => Promise<T>;
   sessionKey: string;
 }): Promise<T> {
   const capability = getWorkerTurnExecutionIdentityCapability(params.placements, params.claim);
   if (!capability) {
-    return await withGatewayToolCallerIdentity(
-      {
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        gatewayContextResolver: params.resolveGatewayContext,
-      },
-      () => params.run(),
-    );
+    throw new Error(`Session ${params.claim.sessionId} worker turn authority changed`);
   }
   return await capability.run(
     async (identity) =>

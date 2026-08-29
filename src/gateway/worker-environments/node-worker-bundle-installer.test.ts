@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GATEWAY_CLIENT_IDS } from "../../../packages/gateway-protocol/src/client-info.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { NODE_WORKER_BUNDLE_INSTALL_COMMAND } from "../../infra/node-commands.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
 import type {
@@ -44,6 +45,39 @@ function nodeProof(nodeId: string, bundlePrewarm?: 1): NodeWorkerSupervisorNodeP
 }
 
 describe("Gateway node worker bundle installer", () => {
+  it("does not dispatch an install after authority closes during bundle preparation", async () => {
+    const prepared = createDeferred<typeof artifact>();
+    const prepareBundle = vi.fn(async () => await prepared.promise);
+    const invoke = vi.fn<NodeWorkerSupervisorTransport["invoke"]>();
+    const transport: NodeWorkerSupervisorTransport = {
+      hasCurrentRunner: () => false,
+      listCurrentNodes: async () => [node],
+      isCurrent: () => true,
+      invoke,
+    };
+    const ensure = createGatewayNodeWorkerBundleInstaller({
+      gatewayNamespace: "gateway-test",
+      getTransport: () => transport,
+      prepareBundle,
+      transfer: createNodeWorkerBundleTransferService(),
+    });
+    let authorized = true;
+    const installing = ensure({
+      deviceId: node.nodeId,
+      authorize: () => {
+        if (!authorized) {
+          throw new Error("session dispatch authority closed");
+        }
+      },
+    });
+    await vi.waitFor(() => expect(prepareBundle).toHaveBeenCalledOnce());
+    authorized = false;
+    prepared.resolve(artifact);
+
+    await expect(installing).rejects.toThrow("session dispatch authority closed");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("binds install dispatch to the current node proof and exact receipt", async () => {
     const transfer = createNodeWorkerBundleTransferService({
       generateToken: () => "A".repeat(43),

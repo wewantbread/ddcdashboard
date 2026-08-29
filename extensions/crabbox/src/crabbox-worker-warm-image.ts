@@ -21,7 +21,12 @@ import {
 } from "./crabbox-worker-warm-image-store.js";
 
 type CrabboxProfile = ReturnType<typeof parseCrabboxProfile>;
-type LeaseContext = { binary: string; id: string; provider: string };
+type LeaseContext = {
+  assertAuthorized?: () => void;
+  binary: string;
+  id: string;
+  provider: string;
+};
 type AllocationContext = LeaseContext & {
   profile: ReturnType<typeof resolveCrabboxProvisionProfile>["profile"];
   slug: string;
@@ -176,6 +181,7 @@ export function createCrabboxWarmImageManager(dependencies: {
     timeoutMs = WARM_IMAGE_COMMAND_TIMEOUT_MS,
     input?: string,
   ): Promise<string> => {
+    context.assertAuthorized?.();
     const result = await runCrabboxCommand({
       action: action === "scrub" ? action : `checkpoint ${action}`,
       args,
@@ -298,6 +304,7 @@ export function createCrabboxWarmImageManager(dependencies: {
         Date.now() - current.lastUsedAtMs >= WARM_IMAGE_RETENTION_MS &&
         remaining() > 0
       ) {
+        context.assertAuthorized?.();
         await deleteImage(context, key, current, remaining());
       }
     }
@@ -320,6 +327,7 @@ export function createCrabboxWarmImageManager(dependencies: {
       if (remaining <= 0) {
         break;
       }
+      context.assertAuthorized?.();
       await deleteImage(context, key, value, remaining);
     }
     const available = openStore().entries().length < WARM_IMAGE_MAX_ENTRIES;
@@ -368,6 +376,7 @@ export function createCrabboxWarmImageManager(dependencies: {
       if (!sameImage(latest, record) || isRetiringCurrentImage(latest)) {
         return false;
       }
+      context.assertAuthorized?.();
       const fork = parseCheckpointJson(
         await checkpointCommand(
           context,
@@ -390,6 +399,7 @@ export function createCrabboxWarmImageManager(dependencies: {
         ),
         "fork",
       );
+      context.assertAuthorized?.();
       if (
         fork.checkpointId !== record.checkpointId ||
         fork.leaseId !== context.id ||
@@ -407,6 +417,8 @@ export function createCrabboxWarmImageManager(dependencies: {
       );
       return true;
     } catch (error) {
+      // Lost authority must not degrade into a cold allocation fallback.
+      context.assertAuthorized?.();
       warnOnce("fork", error);
       return false;
     }
@@ -572,6 +584,7 @@ export function createCrabboxWarmImageManager(dependencies: {
       // Fork failure before create-intent permits cold warmup on the same fixed lease.
       // After a fork creates its checkpoint-bound intent, warmup fails closed;
       // provisioning surfaces the conflict and provider cleanup stops the partial lease.
+      context.assertAuthorized?.();
       const result = await runCrabboxCommand({
         action: "warmup",
         args: buildCrabboxWarmupArgs(context.profile, context.id, context.slug),
@@ -579,6 +592,7 @@ export function createCrabboxWarmImageManager(dependencies: {
         runCommand: dependencies.runCommand,
         timeoutMs: context.timeoutMs(),
       });
+      context.assertAuthorized?.();
       if (result.termination === "exit" && result.code === 0) {
         return;
       }

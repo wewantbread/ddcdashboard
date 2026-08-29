@@ -30,7 +30,6 @@ const fixture = vi.hoisted(() => {
         sessionKey: "agent:main:dashboard:source",
         operationalRunInstance: { instanceId: "source-instance", runId: claim.runId },
         delegatedAuthority: { claimId: "delegated-claim" },
-        executionIdentityToken: { tokenVersion: 1 },
         receiptAuthority: assertActive,
         turnClaim: claim,
       });
@@ -108,7 +107,9 @@ afterEach(() => resetGlobalHookRunner());
 
 function installPolicy(toolName: "sessions_send" | "sessions_spawn") {
   const handler = vi.fn(() => {
-    const receiptAuthority = getGatewayToolCallerIdentity()?.receiptAuthority;
+    const identity = getGatewayToolCallerIdentity();
+    expect(identity?.executionIdentityToken).toBeUndefined();
+    const receiptAuthority = identity?.receiptAuthority;
     expect(receiptAuthority).toEqual(expect.any(Function));
     receiptAuthority?.();
   });
@@ -148,16 +149,22 @@ function createExecutor(placements: object, overrides: object = {}) {
 
 function terminalPlacements(operationSeed: string, extra: object = {}) {
   let completed: string | undefined;
-  const abandon = vi.fn(() => true);
+  let abandoned = false;
+  const abandon = vi.fn(() => {
+    abandoned = true;
+    return true;
+  });
   return {
     abandon,
     placements: {
       ...extra,
       abandonWorkerSessionToolOperation: abandon,
       beginWorkerSessionToolOperation: () =>
-        completed
-          ? { kind: "completed", resultJson: completed }
-          : { kind: "execute", operationSeed },
+        abandoned
+          ? { kind: "unknown" }
+          : completed
+            ? { kind: "completed", resultJson: completed }
+            : { kind: "execute", operationSeed },
       completeWorkerSessionToolOperation: (operation: { resultJson: string }) => {
         completed = operation.resultJson;
         return true;
@@ -165,6 +172,61 @@ function terminalPlacements(operationSeed: string, extra: object = {}) {
     },
   };
 }
+
+it("allows an audit-disabled send while operational authority remains live", async () => {
+  const beforeToolCall = installPolicy("sessions_send");
+  const store = terminalPlacements("audit-disabled-operation-seed");
+  const execute = createExecutor(store.placements);
+  gatewayDispatch.mockResolvedValue({ ok: true });
+  sendOwner.execute.mockImplementation(async () => {
+    const callGateway = sendOwner.callGateway;
+    if (!callGateway) {
+      throw new Error("missing send Gateway caller");
+    }
+    await callGateway({ method: "agent", params: {} });
+    return { content: [{ type: "text", text: "sent" }] };
+  });
+
+  const result = await execute({
+    identity: requestIdentity(),
+    toolName: "sessions_send",
+    request: {
+      toolCallId: "audit-disabled-authority-live",
+      sessionKey: target.sessionKey,
+      message: "deliver",
+      timeoutSeconds: 0,
+    },
+  } as never);
+
+  expect(result.resultJson).toContain("sent");
+  expect(beforeToolCall).toHaveBeenCalledOnce();
+  expect(gatewayDispatch).toHaveBeenCalledOnce();
+  expect(fixture.run).toHaveBeenCalledOnce();
+});
+
+it("abandons a reserved operation when execution authority already closed", async () => {
+  installPolicy("sessions_send");
+  const store = terminalPlacements("closed-before-entry");
+  const execute = createExecutor(store.placements);
+  fixture.state.active = false;
+
+  const request = {
+    identity: requestIdentity(),
+    toolName: "sessions_send",
+    request: {
+      toolCallId: "closed-before-entry",
+      sessionKey: target.sessionKey,
+      message: "must not deliver",
+    },
+  };
+
+  await expect(execute(request as never)).rejects.toThrow("worker turn authority changed");
+  fixture.state.active = true;
+  const retry = await execute(request as never);
+
+  expect(retry.resultJson).toContain("prior operation outcome is unknown");
+  expect(sendOwner.execute).not.toHaveBeenCalled();
+});
 
 it("fences an allowed send when delegated authority closes before dispatch", async () => {
   const beforeToolCall = installPolicy("sessions_send");

@@ -143,6 +143,7 @@ type WorkerPlacementDispatchOptions = WorkerPlacementReclaimBarriers & {
   resolveGitAuthor?: (agentId: string) => { name?: string; email?: string } | undefined;
   resolveDevicePlacementRequirement?: WorkerDevicePlacementRequirementResolver;
   isCurrentNodePlacement?: WorkerNodePlacementAuthority;
+  isInterruptedDelegatedChild?: (sessionKey: string) => boolean;
 };
 
 function isExactAttachedEnvironment(
@@ -159,7 +160,6 @@ function isExactAttachedEnvironment(
     environment.attachedSessionIds[0] === placement.sessionId,
   );
 }
-
 export function createWorkerPlacementDispatchService(options: WorkerPlacementDispatchOptions) {
   const { environments, placements } = options;
   const failure = createPlacementFailureActions({ environments, placements });
@@ -186,6 +186,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
     resolveGitAuthor: options.resolveGitAuthor,
     resolveDevicePlacementRequirement: options.resolveDevicePlacementRequirement,
     isCurrentNodePlacement: options.isCurrentNodePlacement,
+    isInterruptedDelegatedChild: options.isInterruptedDelegatedChild,
     reportTransition,
   });
 
@@ -200,6 +201,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       : {}),
     resolveWorkspaceResultConflict: options.resolveWorkspaceResultConflict,
     recoverPlacementMoves: () => recoverPlacementMoves(),
+    isInterruptedDelegatedChild: options.isInterruptedDelegatedChild,
     workspaceOperations: options.workspaceOperations,
     ...(options.prepareAcceptedWorkspacePublication
       ? { prepareAcceptedWorkspacePublication: options.prepareAcceptedWorkspacePublication }
@@ -208,7 +210,6 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       ? { publishAcceptedWorkspace: options.publishAcceptedWorkspace }
       : {}),
   });
-
   const dispatch = async (
     request: WorkerPlacementDispatchRequest,
     onTransition?: (placement: WorkerDispatchPlacement) => void,
@@ -725,7 +726,6 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
     resumeProvisioning: startup.resumeProvisioning,
   };
 }
-
 export type WorkerPlacementDispatchService = ReturnType<
   typeof createWorkerPlacementDispatchService
 >;

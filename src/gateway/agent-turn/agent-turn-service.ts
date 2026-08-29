@@ -82,7 +82,13 @@ function replayAgentTurnIfCached(params: {
 }
 
 export function createAgentTurnService(
-  { context, isWebchatConnect }: Pick<GatewayRequestHandlerOptions, "context" | "isWebchatConnect">,
+  {
+    context,
+    isWebchatConnect,
+    assertRuntimeAuthorityCurrent,
+  }: Pick<GatewayRequestHandlerOptions, "context" | "isWebchatConnect"> & {
+    assertRuntimeAuthorityCurrent?: () => void;
+  },
   assertContextCurrent?: () => void,
 ) {
   const startTurn = async ({
@@ -264,6 +270,7 @@ export function createAgentTurnService(
         getCfgForAgent: () => cfgForAgent,
         getSessionPersisted: () => sessionPersistedBeforeGatewayAdmission,
         getSupersededSessionId: () => supersededSessionId,
+        assertRuntimeAuthorityCurrent,
         setAdmittedSessionId: (sessionId) => {
           admittedSessionId = sessionId;
         },
@@ -562,6 +569,7 @@ export function createAgentTurnService(
         abortForLifecycleRotation,
         acquireGatewayWorkAdmission,
         assertGatewayWorkAdmissionAllowed,
+        assertRuntimeAuthorityCurrent,
         hasGatewayAdmissionOutcome: admissionController.hasOutcome,
         respondToGatewayAdmissionOutcome,
         admissionAgentId,

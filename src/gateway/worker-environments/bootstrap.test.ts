@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
@@ -107,6 +109,39 @@ const bootstrapWorker = (
   );
 
 describe("bootstrapWorker", () => {
+  it("does not transfer a bundle after authority closes during SSH preflight", async () => {
+    let authorized = true;
+    const runner = fakeRunner(
+      [result({ stdout: tagged("install", REMOTE_TARBALL) }), result()],
+      (argv, options) => {
+        if (
+          argv[0] === "ssh" &&
+          typeof options.input === "string" &&
+          options.input.includes("expected_receipt=$2")
+        ) {
+          authorized = false;
+        }
+      },
+    );
+
+    await expect(
+      bootstrapWorker(
+        { ssh: SSH, artifact: BUNDLE },
+        {
+          resolveIdentity,
+          runCommand: runner.runCommand,
+          assertCurrent: () => {
+            if (!authorized) {
+              throw new Error("session dispatch authority closed");
+            }
+          },
+        },
+      ),
+    ).rejects.toThrow("session dispatch authority closed");
+
+    expect(runner.calls.map((call) => call.argv[0])).toEqual(["ssh", "ssh"]);
+  });
+
   it("skips a matching installed bundle and uses the pinned host key", async () => {
     let knownHosts = "";
     const runner = fakeRunner(
@@ -518,6 +553,48 @@ describe("bootstrapWorker", () => {
       expect(identityMode).toBe(0o600);
     }
     await expect(fs.stat(identityPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes materialized identity when authority closes before SSH preflight", async () => {
+    const prefix = "openclaw-worker-bootstrap-";
+    const runner = fakeRunner([]);
+    let preparedDirectory = "";
+    let authorityChecks = 0;
+
+    await expect(
+      bootstrapWorker(
+        { ssh: SSH, artifact: BUNDLE },
+        {
+          resolveIdentity: async () => ({ kind: "material", contents: "private-test-key" }),
+          runCommand: runner.runCommand,
+          assertCurrent: () => {
+            authorityChecks += 1;
+            if (authorityChecks < 4) {
+              return;
+            }
+            const created = fsSync
+              .readdirSync(os.tmpdir())
+              .filter(
+                (entry) =>
+                  entry.startsWith(prefix) &&
+                  fsSync.existsSync(path.join(os.tmpdir(), entry, "identity")) &&
+                  fsSync.readFileSync(path.join(os.tmpdir(), entry, "identity"), "utf8") ===
+                    "private-test-key\n",
+              );
+            expect(created).toHaveLength(1);
+            preparedDirectory = path.join(os.tmpdir(), created[0]!);
+            expect(fsSync.readFileSync(path.join(preparedDirectory, "identity"), "utf8")).toBe(
+              "private-test-key\n",
+            );
+            throw new Error("worker turn authority closed");
+          },
+        },
+      ),
+    ).rejects.toThrow("worker turn authority closed");
+
+    expect(runner.calls).toHaveLength(0);
+    expect(preparedDirectory).not.toBe("");
+    expect(fsSync.existsSync(preparedDirectory)).toBe(false);
   });
 
   it("rejects a stale remote receipt instead of synthesizing the expected fields", async () => {

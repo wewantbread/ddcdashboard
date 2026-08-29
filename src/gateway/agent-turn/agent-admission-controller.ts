@@ -44,6 +44,7 @@ export function createAgentAdmissionController(params: {
   getCfgForAgent: () => OpenClawConfig | undefined;
   getSessionPersisted: () => boolean;
   getSupersededSessionId: () => string | undefined;
+  assertRuntimeAuthorityCurrent?: () => void;
   setAdmittedSessionId: (sessionId: string) => void;
 }) {
   let admission: SessionWorkAdmissionLease | undefined;
@@ -70,6 +71,7 @@ export function createAgentAdmissionController(params: {
   };
 
   const assertAllowed = (commitOutcome = true) => {
+    params.assertRuntimeAuthorityCurrent?.();
     const resolvedSessionKey = params.getResolvedSessionKey();
     const requestedSessionKey = params.getRequestedSessionKey();
     const latest = readGatewayDedupeEntry({

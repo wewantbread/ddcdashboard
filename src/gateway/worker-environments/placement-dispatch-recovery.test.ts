@@ -23,6 +23,31 @@ import { createWorkerWorkspaceOperationCoordinator } from "./workspace-operation
 describe("worker placement restart recovery", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
+  it("tears down an active delegated child whose spawn outcome became unknown", async () => {
+    const placements = createWorkerSessionPlacementStore({
+      database: support.testState.stateDb,
+      now: () => 1_000,
+    });
+    const harness = createHarness(placements, {
+      isInterruptedDelegatedChild: (sessionKey) => sessionKey === REQUEST.sessionKey,
+    });
+    await harness.environments.attachSession({
+      environmentId: harness.ready.environmentId,
+      ownerEpoch: harness.ready.ownerEpoch,
+      sessionId: REQUEST.sessionId,
+    });
+    harness.placements.seedActive(harness.attached.ownerEpoch);
+
+    await harness.service.reconcile("startup");
+
+    expect(harness.placements.current()).toMatchObject({
+      state: "failed",
+      recoveryError: expect.stringContaining("lost its initiating worker turn"),
+    });
+    expect(harness.environments.destroy).toHaveBeenCalledWith(harness.ready.environmentId);
+    expect(harness.environments.startTunnel).not.toHaveBeenCalled();
+  });
+
   it.each(["startup", "active"] as const)(
     "fences a destroy-requested attachment during %s recovery even when physical cleanup fails",
     async (mode) => {
@@ -294,6 +319,33 @@ describe("worker placement restart recovery", () => {
     expect(harness.log).toContain("placement:starting");
     expect(harness.log).toContain("placement:active");
     expect(harness.log).not.toContain("activation");
+  });
+
+  it("tears down a delegated child whose parent operation became unknown on restart", async () => {
+    const placements = createWorkerSessionPlacementStore({
+      database: support.testState.stateDb,
+      now: () => 1_000,
+    });
+    const harness = createHarness(placements, {
+      isInterruptedDelegatedChild: (sessionKey) => sessionKey === REQUEST.sessionKey,
+    });
+    const provisioning = harness.placements.seedProvisioning();
+    if (provisioning.state !== "provisioning") {
+      throw new Error("recovery fixture did not produce a provisioning placement");
+    }
+    harness.log.length = 0;
+
+    await harness.service.resumeProvisioning(provisioning, async () => {
+      harness.log.push("environment:reconcile");
+    });
+
+    expect(harness.placements.current()).toMatchObject({
+      state: "failed",
+      recoveryError: expect.stringContaining("lost its initiating worker turn"),
+    });
+    expect(harness.environments.destroy).toHaveBeenCalledWith(provisioning.environmentId);
+    expect(harness.environments.attachSession).not.toHaveBeenCalled();
+    expect(harness.log).not.toContain("recovery-barrier");
   });
 
   it("fences provisioning recovery before attachment when its durable execution mode differs", async () => {

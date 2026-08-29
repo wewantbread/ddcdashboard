@@ -29,7 +29,11 @@ type WorkerNodeProvisioningOptions = Pick<
 };
 
 export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOptions) {
-  const prepare = async (record: WorkerEnvironmentRecord, provider: WorkerProvider) => {
+  const prepare = async (
+    record: WorkerEnvironmentRecord,
+    provider: WorkerProvider,
+    authorize?: () => void,
+  ) => {
     if (
       record.state !== "requested" ||
       !provider.requiresNodeEnrollment ||
@@ -39,8 +43,12 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
     }
     // Preparing the immutable runtime must finish before a fresh paid allocation.
     try {
-      await options.prepareNodeBootstrap(record);
+      authorize?.();
+      await options.prepareNodeBootstrap(record, authorize);
+      authorize?.();
     } catch (error) {
+      // Lost initiating-turn authority must leave the still-requested intent cancelable.
+      authorize?.();
       const current = options.store.get(record.environmentId);
       if (
         current?.state === "requested" &&
@@ -68,7 +76,11 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
     }
   };
 
-  const createEnrollmentOperation = (record: WorkerEnvironmentRecord, provider: WorkerProvider) => {
+  const createEnrollmentOperation = (
+    record: WorkerEnvironmentRecord,
+    provider: WorkerProvider,
+    authorize?: () => void,
+  ) => {
     if (provider.requiresNodeEnrollment !== true) {
       return undefined;
     }
@@ -84,12 +96,14 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
         if (!open || options.isStopping()) {
           throw new Error("Worker provisioning operation is closed");
         }
-        pending ??= prepareNodeEnrollment(record).then((prepared) => {
+        authorize?.();
+        pending ??= prepareNodeEnrollment(record, authorize).then((prepared) => {
           // A provider timeout can close this operation during artifact preparation.
           if (!open || options.isStopping()) {
             options.closeNodeEnrollment?.(prepared);
             throw new Error("Worker provisioning operation is closed");
           }
+          authorize?.();
           enrollment = prepared;
           return prepared;
         });
@@ -109,6 +123,7 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
     lease: NodeLease,
     provider: WorkerProvider,
     patch: { leaseId: string; sharedHost: boolean; desktop: WorkerLease["desktop"] | null },
+    authorize?: () => void,
   ): Promise<WorkerEnvironmentRecord> => {
     const nodePatch = {
       ...patch,
@@ -120,7 +135,9 @@ export function createWorkerNodeProvisioning(options: WorkerNodeProvisioningOpti
       if (!options.ensureNodeWorkerBundle) {
         throw new Error("Device worker bundle installer is unavailable");
       }
-      nodeBuild = await options.ensureNodeWorkerBundle(lease.node.deviceId);
+      authorize?.();
+      nodeBuild = await options.ensureNodeWorkerBundle(lease.node.deviceId, authorize);
+      authorize?.();
     } catch (error) {
       return await options.failBootstrap(record, lease.leaseId, provider, error, nodePatch);
     }

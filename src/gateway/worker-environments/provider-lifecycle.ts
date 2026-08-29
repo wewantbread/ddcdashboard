@@ -255,12 +255,13 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         typeof record.profileSnapshot.machineClass === "string"
           ? record.profileSnapshot.machineClass
           : undefined;
-      enrollmentOperation = nodeProvisioning.createEnrollmentOperation(record, provider);
+      enrollmentOperation = nodeProvisioning.createEnrollmentOperation(record, provider, authorize);
       const provisionOptions =
-        machineClass || executionMode || enrollmentOperation
+        machineClass || executionMode || authorize || enrollmentOperation
           ? {
               ...(machineClass ? { machineClass } : {}),
               ...(executionMode ? { executionMode } : {}),
+              ...(authorize ? { assertAuthorized: authorize } : {}),
               ...(enrollmentOperation ? { beginNodeEnrollment: enrollmentOperation.begin } : {}),
             }
           : undefined;
@@ -319,7 +320,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       );
     }
     if (lease.node) {
-      return await nodeProvisioning.finish(provisioning, lease, provider, patch);
+      return await nodeProvisioning.finish(provisioning, lease, provider, patch, authorize);
     }
     const bootstrapping = move(provisioning, "bootstrapping", patch);
     let installation = preparedInstallation;
@@ -341,7 +342,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     authorize?: () => void,
   ) => {
     let installation: WorkerInstallationArtifact | undefined;
-    await nodeProvisioning.prepare(record, provider);
+    await nodeProvisioning.prepare(record, provider, authorize);
     if (
       record.state === "requested" &&
       record.destroyRequestedAtMs === null &&

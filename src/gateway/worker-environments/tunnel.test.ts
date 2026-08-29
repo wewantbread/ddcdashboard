@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerSshRunner } from "./tunnel-ssh-runner.js";
 import { createWorkerTunnelManager } from "./tunnel.js";
@@ -165,6 +168,46 @@ describe("worker tunnel manager", () => {
     await stopping;
     await expect(starting).rejects.toThrow("Worker tunnel owner is no longer connected");
     expect(manager.status("worker:pending")).toBe("stopped");
+  });
+
+  it("does not materialize identity when authority closes during resolution", async () => {
+    const prefix = "openclaw-worker-workspace-";
+    const fake = fakeRunner();
+    const manager = createWorkerTunnelManager({ runner: fake.runner });
+    let authorized = true;
+
+    await expect(
+      manager.start({
+        environmentId: "worker:revoked-after-prepare",
+        ownerEpoch: 1,
+        bundleHash: "a".repeat(64),
+        ssh: SSH,
+        resolveIdentity: async () => {
+          authorized = false;
+          return { kind: "material", contents: "private-test-key" };
+        },
+        authorize: () => {
+          if (!authorized) {
+            throw new Error("worker turn authority closed");
+          }
+        },
+      }),
+    ).rejects.toThrow("worker turn authority closed");
+
+    expect(fake.runs).toHaveLength(0);
+    expect(fake.starts).toHaveLength(0);
+    expect(
+      fs
+        .readdirSync(os.tmpdir())
+        .filter(
+          (entry) =>
+            entry.startsWith(prefix) &&
+            fs.existsSync(path.join(os.tmpdir(), entry, "identity")) &&
+            fs.readFileSync(path.join(os.tmpdir(), entry, "identity"), "utf8") ===
+              "private-test-key\n",
+        ),
+    ).toEqual([]);
+    expect(manager.status("worker:revoked-after-prepare")).toBe("stopped");
   });
 });
 

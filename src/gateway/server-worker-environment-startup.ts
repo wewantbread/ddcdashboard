@@ -374,7 +374,8 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
         ? deviceRuntime.provider
         : resolveWorkerProvider(params.getPluginRegistry(), providerId),
     prepareInstallation,
-    ensureNodeWorkerBundle: async (deviceId) => await ensureNodeWorkerBundle({ deviceId }),
+    ensureNodeWorkerBundle: async (deviceId, authorize) =>
+      await ensureNodeWorkerBundle({ deviceId, authorize }),
     prepareNodeBootstrap: nodeEnrollment.prepare,
     prepareNodeEnrollment: nodeEnrollment.begin,
     closeNodeEnrollment: nodeEnrollment.close,

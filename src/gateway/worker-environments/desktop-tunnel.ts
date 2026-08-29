@@ -125,6 +125,11 @@ export function createWorkerDesktopTunnels(deps: {
     const start = async (isCurrent: () => boolean): Promise<DesktopAcquireResult> => {
       try {
         prepared = await prepareWorkerSsh({
+          assertCurrent: () => {
+            if (!isCurrent()) {
+              throw new Error("Worker desktop tunnel stopped before connecting");
+            }
+          },
           ssh: request.ssh,
           pinnedHostKey: request.ssh.hostKey,
           resolveIdentity: request.resolveIdentity,
@@ -300,15 +305,22 @@ export function createWorkerDesktopTunnels(deps: {
       if (ownerAdvanced) {
         await fenceReplacedOwners(request.environmentId, request.ownerEpoch);
       }
-      abortController.signal.throwIfAborted();
+      const assertCurrent = () => {
+        abortController.signal.throwIfAborted();
+        if (!sessions.isOwnerEpochCurrent(request.environmentId, request.ownerEpoch)) {
+          throw new Error("Worker desktop app launch owner was replaced");
+        }
+      };
+      assertCurrent();
       const prepared = await prepareWorkerSsh({
+        assertCurrent,
         ssh: request.ssh,
         pinnedHostKey: request.ssh.hostKey,
         resolveIdentity: request.resolveIdentity,
         temporaryDirectoryPrefix: "openclaw-worker-desktop-app-",
       });
       try {
-        abortController.signal.throwIfAborted();
+        assertCurrent();
         const remainingLaunchMs = Math.max(0, APP_LAUNCH_TIMEOUT_MS - (Date.now() - startedAtMs));
         // Launchers are stateful: SSH exit 255 cannot prove the remote app did not start.
         // Use the lifecycle-selected port once so an ambiguous disconnect cannot launch twice.

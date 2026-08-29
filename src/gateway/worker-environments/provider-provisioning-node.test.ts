@@ -14,6 +14,89 @@ import * as support from "./service.test-support.js";
 describe("node worker provider provisioning", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
+  it("rejects deferred node enrollment after dispatch authority closes", async () => {
+    const enrollmentRequested = createDeferredCore();
+    const continueEnrollment = createDeferredCore();
+    const prepareNodeEnrollment = vi.fn();
+    let authorized = true;
+    const provider = support.createProvider({
+      supportedExecutionModes: ["worker-turn"],
+      provisionBeforeInstallation: true,
+      requiresNodeEnrollment: true,
+      provision: async (_profile, _operationId, options) => {
+        enrollmentRequested.resolve();
+        await continueEnrollment.promise;
+        options?.assertAuthorized?.();
+        await options?.beginNodeEnrollment?.();
+        return {
+          leaseId: "cloud-lease-revoked-enrollment",
+          node: { deviceId: "cloud-device-revoked-enrollment" },
+        };
+      },
+    });
+    const workerService = support.createService(provider, { prepareNodeEnrollment });
+
+    const provisioning = workerService.create(
+      "development",
+      "request-revoked-enrollment",
+      undefined,
+      "worker-turn",
+      () => {
+        if (!authorized) {
+          throw new Error("session dispatch authority closed");
+        }
+      },
+    );
+    const rejected = expect(provisioning).rejects.toThrow("session dispatch authority closed");
+    await enrollmentRequested.promise;
+    authorized = false;
+    continueEnrollment.resolve();
+
+    await rejected;
+    expect(prepareNodeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it("tears down a node lease when dispatch authority closes during allocation", async () => {
+    let authorized = true;
+    const ensureNodeWorkerBundle = vi.fn();
+    const destroy = vi.fn(async () => {});
+    const workerService = support.createService(
+      support.createProvider({
+        supportedExecutionModes: ["worker-turn"],
+        provisionBeforeInstallation: true,
+        provision: async () => {
+          authorized = false;
+          return {
+            leaseId: "cloud-lease-revoked-allocation",
+            node: { deviceId: "cloud-device-revoked-allocation" },
+          };
+        },
+        destroy,
+      }),
+      { ensureNodeWorkerBundle },
+    );
+
+    await expect(
+      workerService.create(
+        "development",
+        "request-revoked-allocation",
+        undefined,
+        "worker-turn",
+        () => {
+          if (!authorized) {
+            throw new Error("session dispatch authority closed");
+          }
+        },
+      ),
+    ).rejects.toThrow("Worker node bootstrap failed: session dispatch authority closed");
+
+    expect(ensureNodeWorkerBundle).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledExactlyOnceWith({
+      leaseId: "cloud-lease-revoked-allocation",
+      profile: { region: "test" },
+    });
+  });
+
   it("supplies replay-safe enrollment only to providers that require it", async () => {
     const prepareNodeEnrollment = vi.fn(async (record) => {
       const enrolled = support.testState.store.ensureNodeEnrollment(record.environmentId);

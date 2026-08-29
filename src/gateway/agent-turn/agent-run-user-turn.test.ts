@@ -7,6 +7,8 @@ import type { AgentTurnContext } from "./types.js";
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn(),
   persistSessionTranscriptTurn: vi.fn(),
+  persistedMessages: [] as unknown[],
+  beforeTranscriptCommit: undefined as (() => void) | undefined,
 }));
 
 vi.mock("../session-utils.js", async () => {
@@ -24,8 +26,18 @@ vi.mock("../../config/sessions/session-accessor.js", async () => {
 describe("prepareAgentRunUserTurn", () => {
   beforeEach(() => {
     mocks.loadSessionEntry.mockReset();
+    mocks.persistedMessages.length = 0;
+    mocks.beforeTranscriptCommit = undefined;
     mocks.persistSessionTranscriptTurn.mockReset().mockImplementation(async (scope, options) => {
-      const message = options.messages[0]?.message;
+      const pending = options.messages[0];
+      mocks.beforeTranscriptCommit?.();
+      const message = pending?.prepareMessageAfterIdempotencyCheck
+        ? pending.prepareMessageAfterIdempotencyCheck(pending.message)
+        : pending?.message;
+      if (!message) {
+        return { appendedCount: 0, messages: [], sessionEntry: scope.sessionEntry };
+      }
+      mocks.persistedMessages.push(message);
       return {
         appendedCount: 1,
         messages: [
@@ -93,5 +105,49 @@ describe("prepareAgentRunUserTurn", () => {
       }),
     ).rejects.toThrow("agent turn was not durably admitted");
     expect(mocks.persistSessionTranscriptTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not append the user turn when delegated runtime authority closes at commit", async () => {
+    const sessionKey = "agent:main:worker-child";
+    const admittedSessionId = "worker-child-session";
+    const sessionEntry: SessionEntry = { sessionId: admittedSessionId, updatedAt: 1 };
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      canonicalKey: sessionKey,
+      entry: sessionEntry,
+      store: { [sessionKey]: sessionEntry },
+    });
+    let authorityActive = true;
+    mocks.beforeTranscriptCommit = () => {
+      authorityActive = false;
+    };
+
+    await expect(
+      prepareAgentRunUserTurn({
+        request: { message: "must not outlive the worker turn", idempotencyKey: "closed-run" },
+        cfg: {},
+        sessionEntry,
+        resolvedSessionKey: sessionKey,
+        admittedSessionId,
+        activeSessionAgentId: "main",
+        suppressVisibleSessionEffects: false,
+        requestedPromptPersistenceSuppression: false,
+        canUseInternalRuntimeHandoff: false,
+        message: "must not outlive the worker turn",
+        effectiveTranscriptInputText: "must not outlive the worker turn",
+        images: [],
+        offloadedRefs: [],
+        runId: "closed-run",
+        client: null,
+        context: { logGateway: { warn: vi.fn() } } as unknown as AgentTurnContext,
+        assertRuntimeAuthorityCurrent: () => {
+          if (!authorityActive) {
+            throw new TypeError("agent runtime authority is no longer active");
+          }
+        },
+      }),
+    ).rejects.toThrow("agent runtime authority is no longer active");
+    expect(mocks.persistedMessages).toEqual([]);
   });
 });

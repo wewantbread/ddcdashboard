@@ -175,6 +175,10 @@ class WorkerProvisionCleanupError extends AggregateError {
   }
 }
 
+// Preserve the provider's public error identity while carrying its cleanup proof to the
+// synchronous lifecycle catch; durable recovery must replay only indeterminate operations.
+const workerProvisionCleanupComplete = new WeakSet<Error>();
+
 /** Permanent provider rejection recorded as a terminal worker failure. */
 export class WorkerProviderError extends Error {
   readonly code = "invalid_profile";
@@ -194,6 +198,17 @@ export class WorkerProviderError extends Error {
 
   static isCleanupIndeterminate(error: unknown): error is WorkerProvisionCleanupError {
     return error instanceof WorkerProvisionCleanupError;
+  }
+
+  static cleanupComplete(provisionError: unknown): Error {
+    const error =
+      provisionError instanceof Error ? provisionError : new Error(String(provisionError));
+    workerProvisionCleanupComplete.add(error);
+    return error;
+  }
+
+  static isCleanupComplete(error: unknown): error is Error {
+    return error instanceof Error && workerProvisionCleanupComplete.has(error);
   }
 }
 
@@ -232,6 +247,8 @@ export type WorkerProvider = {
     options?: {
       executionMode?: WorkerExecutionMode;
       machineClass?: string;
+      /** Revalidate the initiating turn immediately before every provider-owned effect. */
+      assertAuthorized?: () => void;
       beginNodeEnrollment?: () => Promise<WorkerNodeEnrollment>;
     },
   ) => Promise<WorkerLease>;

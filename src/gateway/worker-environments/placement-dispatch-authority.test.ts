@@ -56,7 +56,7 @@ describe("worker placement reclaim authority", () => {
     expect(harness.log).not.toContain("environment:create");
   });
 
-  it("forwards dispatch authority into environment provisioning", async () => {
+  it("forwards dispatch authority through provisioning startup", async () => {
     let authorized = true;
     const harness = createTestHarness();
 
@@ -67,6 +67,14 @@ describe("worker placement reclaim authority", () => {
     });
     const authorizeProvision = vi.mocked(harness.environments.create).mock.calls[0]?.[4];
     expect(authorizeProvision).toEqual(expect.any(Function));
+    expect(vi.mocked(harness.environments.attachSession).mock.calls[0]?.[0].authorize).toBe(
+      authorizeProvision,
+    );
+    expect(vi.mocked(harness.environments.startTunnel).mock.calls[0]?.[0].authorize).toBe(
+      authorizeProvision,
+    );
+    const tunnel = await vi.mocked(harness.environments.startTunnel).mock.results[0]?.value;
+    expect(vi.mocked(tunnel.syncWorkspace).mock.calls[0]?.[0].authorize).toBe(authorizeProvision);
 
     authorized = false;
     expect(() => authorizeProvision?.()).toThrow("session dispatch authority closed");
