@@ -204,6 +204,9 @@ enum ExecApprovalsPromptPresenter {
         if let agent = self.sanitizedContextValue(request.agentId) {
             self.addDetailRow(title: "Agent", value: agent, to: contextStack)
         }
+        if let session = self.sanitizedContextValue(request.sessionKey) {
+            self.addDetailRow(title: "Session", value: session, to: contextStack)
+        }
         if let path = self.sanitizedContextValue(request.resolvedPath) {
             self.addDetailRow(title: "Executable", value: path, to: contextStack)
         }
