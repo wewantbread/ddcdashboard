@@ -10,6 +10,7 @@ import {
   loadTranscriptEvents,
   persistSessionTranscriptTurn,
   replaceSessionEntry,
+  replaceSessionEntrySync,
   type SessionTranscriptTurnPersistOptions,
 } from "./session-accessor.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
@@ -133,9 +134,10 @@ describe("first transcript turn initialization", () => {
         messages: [
           {
             message: { role: "user", content: operation.objective },
-            shouldAppend: async () => {
+            shouldAppend: () => {
               if (timing === "during preparation") {
-                await replaceSessionEntry(scope(), competing);
+                // Direct/cross-process writers bypass the process-local queue.
+                replaceSessionEntrySync(scope(), competing);
               }
               return true;
             },
