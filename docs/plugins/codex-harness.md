@@ -1354,14 +1354,14 @@ The `image_generate` tool uses `agents.defaults.mediaModels.image.timeoutMs`
 when the tool call does not provide its own timeout, or a 120 second
 image-generation default otherwise. The media-understanding `view_image` tool
 uses the selected image-capable `tools.media.models[]` entry's `timeoutSeconds`
-or its 60 second media default as each request's cap. Image preparation happens
-before the operation deadline starts. Sequential images and model fallbacks
-share one absolute deadline based on the longest selected request timeout,
-capped at 600 seconds, so later requests receive only the remaining time. On
-timeout, OpenClaw aborts the tool signal where supported and returns a failed
-dynamic-tool response to Codex so the turn can continue instead of leaving the
-session in `processing`. Codex keeps a separate 630 second outer
-`item/tool/call` watchdog so the owner has time to return that structured result.
+or its 60 second media default as each request's cap. Image compression, loading,
+sequential images, and model fallbacks share one absolute deadline based on the
+longest selected request timeout, capped at 600 seconds, so each stage receives
+only the remaining time. On timeout, OpenClaw aborts the tool signal where
+supported and returns a failed dynamic-tool response to Codex so the turn can
+continue instead of leaving the session in `processing`. Codex keeps a separate
+630 second outer `item/tool/call` watchdog so the owner has time to return that
+structured result.
 
 After Codex accepts a turn, and after OpenClaw responds to a turn-scoped
 app-server request, the harness expects Codex to make current-turn progress

@@ -189,7 +189,7 @@ async function describeImagesWithMinimax(params: {
   modelId: string;
   modelBaseUrl?: string;
   prompt: string;
-  timeoutMs?: number;
+  resolveTimeoutMs: () => number | undefined;
   images: Array<{ buffer: Buffer; mime?: string }>;
   allowPrivateNetwork?: boolean;
   request?: ModelProviderRequestTransportOverrides;
@@ -216,7 +216,7 @@ async function describeImagesWithMinimax(params: {
       prompt,
       imageDataUrl: `data:${image.mime ?? "image/jpeg"};base64,${image.buffer.toString("base64")}`,
       modelBaseUrl: params.modelBaseUrl,
-      timeoutMs: params.timeoutMs,
+      timeoutMs: params.resolveTimeoutMs(),
       allowPrivateNetwork: params.allowPrivateNetwork,
       request: params.request,
       signal: params.signal,
@@ -421,6 +421,19 @@ async function describeImagesWithModelInternal(
     ? AbortSignal.any([params.signal, controller.signal])
     : controller.signal;
   const configuredTimeoutMs = resolveImageDescriptionTimeoutMs(params.timeoutMs);
+  const deadlineAtMs =
+    configuredTimeoutMs === undefined ? undefined : startedAtMs + configuredTimeoutMs;
+  const resolveRemainingTimeoutMs = (phase: "setup" | "request") => {
+    const remainingMs = deadlineAtMs === undefined ? undefined : deadlineAtMs - Date.now();
+    if (remainingMs === undefined || remainingMs > 0) {
+      return remainingMs;
+    }
+    throw buildImageDescriptionTimeoutError({
+      phase,
+      timeoutMs: configuredTimeoutMs ?? 0,
+      setupDurationMs: Date.now() - startedAtMs,
+    });
+  };
   const allowPrivateNetwork = resolveConfiguredProviderAllowPrivateNetwork(
     params.cfg,
     params.provider,
@@ -434,9 +447,12 @@ async function describeImagesWithModelInternal(
     const resolved = await withImageDescriptionTimeout({
       controller,
       signal: params.signal,
-      timeoutMs: configuredTimeoutMs,
+      timeoutMs: resolveRemainingTimeoutMs("setup"),
       createTimeoutError: (timeoutMs) =>
-        buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
+        buildImageDescriptionTimeoutError({
+          phase: "setup",
+          timeoutMs: configuredTimeoutMs ?? timeoutMs,
+        }),
       task: resolutionTask,
     });
     runtimeValue = resolved.runtimeValue;
@@ -456,9 +472,12 @@ async function describeImagesWithModelInternal(
     const fallback = await withImageDescriptionTimeout({
       controller,
       signal: params.signal,
-      timeoutMs: configuredTimeoutMs,
+      timeoutMs: resolveRemainingTimeoutMs("setup"),
       createTimeoutError: (timeoutMs) =>
-        buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
+        buildImageDescriptionTimeoutError({
+          phase: "setup",
+          timeoutMs: configuredTimeoutMs ?? timeoutMs,
+        }),
       task: resolveMinimaxVlmFallbackRuntime(params),
     });
     return await describeImagesWithMinimax({
@@ -467,7 +486,7 @@ async function describeImagesWithModelInternal(
       modelId: params.model,
       modelBaseUrl: fallback.modelBaseUrl,
       prompt,
-      timeoutMs: params.timeoutMs,
+      resolveTimeoutMs: () => resolveRemainingTimeoutMs("request"),
       images: params.images,
       allowPrivateNetwork,
       signal: params.signal,
@@ -486,7 +505,7 @@ async function describeImagesWithModelInternal(
         modelId: model.id,
         modelBaseUrl: model.baseUrl,
         prompt,
-        timeoutMs: params.timeoutMs,
+        resolveTimeoutMs: () => resolveRemainingTimeoutMs("request"),
         images: params.images,
         request: getModelProviderRequestTransport(model),
         signal: params.signal,
@@ -519,7 +538,7 @@ async function describeImagesWithModelInternal(
     const completeImage = async (onPayload?: ProviderStreamOptions["onPayload"]) => {
       params.signal?.throwIfAborted();
       const payloadHandler = composeImageDescriptionPayloadHandlers(onPayload, options.onPayload);
-      const timeoutMs = configuredTimeoutMs;
+      const timeoutMs = resolveRemainingTimeoutMs("request");
       const headers = buildImageRequestHeaders(requestModel);
       const streamOptions = {
         apiKey,
@@ -540,7 +559,7 @@ async function describeImagesWithModelInternal(
         createTimeoutError: (requestTimeoutMs) =>
           buildImageDescriptionTimeoutError({
             phase: "request",
-            timeoutMs: requestTimeoutMs,
+            timeoutMs: configuredTimeoutMs ?? requestTimeoutMs,
             setupDurationMs,
           }),
         task,

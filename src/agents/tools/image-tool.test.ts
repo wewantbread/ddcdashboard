@@ -3595,9 +3595,42 @@ describe("image tool run abort", () => {
       );
     });
 
-    expect(spies.describeImages).toHaveBeenCalledWith(
-      expect.objectContaining({ signal: controller.signal }),
-    );
+    const providerSignal = spies.describeImages.mock.calls[0]?.[0].signal;
+    expect(providerSignal).toBeInstanceOf(AbortSignal);
+    controller.abort();
+    expect(providerSignal?.aborted).toBe(true);
+  });
+
+  it("times out delayed image preparation before starting the provider", async () => {
+    vi.stubEnv("MINIMAX_API_KEY", "minimax-test");
+    const loadWebMedia: MockImageLoadWebMedia = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+      return {
+        buffer: Buffer.from(ONE_PIXEL_PNG_B64, "base64"),
+        contentType: "image/png",
+        kind: "image" as const,
+      };
+    });
+    const spies = makeDescribeSpies();
+    installAbortImageDeps(loadWebMedia, spies);
+
+    await withTempAgentDir(async (agentDir) => {
+      const cfg = createMinimaxImageConfig();
+      cfg.tools = { media: { image: { timeoutSeconds: 1 } } };
+      const tool = createRequiredImageTool({ config: cfg, agentDir });
+      const execution = tool.execute("t1", {
+        prompt: "Describe the image.",
+        path: "https://example.test/a.png",
+        model: "minimax/MiniMax-VL-01",
+      });
+      const assertion = expect(execution).rejects.toThrow(
+        "Image inspection timed out after 1000ms",
+      );
+
+      await assertion;
+      expect(spies.describeImage).not.toHaveBeenCalled();
+      expect(spies.describeImages).not.toHaveBeenCalled();
+    });
   });
 
   it("throws before downloading or calling the provider when the run signal is already aborted", async () => {
@@ -3642,7 +3675,8 @@ describe("image tool run abort", () => {
     });
     const loadWebMedia: MockImageLoadWebMedia = vi.fn(async (_url, options) => {
       const downloadSignal = options?.requestInit?.signal;
-      expect(downloadSignal).toBe(controller.signal);
+      expect(downloadSignal).toBeInstanceOf(AbortSignal);
+      expect(downloadSignal?.aborted).toBe(false);
       markDownloadStarted?.();
       return await new Promise<never>((_, reject) => {
         downloadSignal?.addEventListener(

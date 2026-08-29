@@ -4,6 +4,7 @@ import { findCapabilityProviderById } from "../../../packages/media-generation-c
 import { normalizeMediaProviderId } from "../../../packages/media-understanding-common/src/provider-id.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MediaUnderstandingModelConfig } from "../../config/types.tools.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
   DEFAULT_TIMEOUT_SECONDS,
   resolveAutoMediaKeyProviders,
@@ -17,6 +18,7 @@ import {
 import { resolveTimeoutMs } from "../../media-understanding/resolve.js";
 import {
   createProviderOperationDeadline,
+  createProviderOperationTimeoutError,
   resolveProviderOperationTimeoutMs,
 } from "../../media-understanding/shared.js";
 import {
@@ -693,24 +695,12 @@ type ImageSandboxConfig = {
   bridge: SandboxFsBridge;
 };
 
-async function runImagePrompt(params: {
+function createImageToolOperation(params: {
   cfg?: OpenClawConfig;
-  agentId?: string;
-  agentDir: string;
-  authStore?: AuthProfileStore;
   imageModelConfig: ImageModelConfig;
   modelOverride?: string;
-  prompt: string;
-  images: Array<{ buffer: Buffer; mimeType: string }>;
-  workspaceDir?: string;
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
-  signal?: AbortSignal;
-}): Promise<{
-  text: string;
-  provider: string;
-  model: string;
-  attempts: Array<{ provider: string; model: string; error: string }>;
-}> {
+}) {
   const effectiveCfg = applyImageModelConfigDefaults(params.cfg, params.imageModelConfig);
   const providerCfg: OpenClawConfig = effectiveCfg ?? {};
   const preparedProviders =
@@ -720,15 +710,65 @@ async function runImagePrompt(params: {
     providerCfg,
     preparedProviders,
   );
-  // Image preparation is complete; one deadline now owns every sequential and fallback request.
-  const deadline = createProviderOperationDeadline({
-    label: "Image inspection",
-    timeoutMs: resolveImageToolOperationTimeoutMs({
-      cfg: providerCfg,
-      modelOverride: params.modelOverride,
-      providerRegistry,
+  return {
+    effectiveCfg,
+    providerCfg,
+    providerRegistry,
+    deadline: createProviderOperationDeadline({
+      label: "Image inspection",
+      timeoutMs: resolveImageToolOperationTimeoutMs({
+        cfg: providerCfg,
+        modelOverride: params.modelOverride,
+        providerRegistry,
+      }),
     }),
-  });
+  };
+}
+
+type ImageToolOperation = ReturnType<typeof createImageToolOperation>;
+
+async function withImageToolOperationDeadline<T>(
+  operation: ImageToolOperation,
+  parentSignal: AbortSignal | undefined,
+  task: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  parentSignal?.throwIfAborted();
+  const timeoutSignal = AbortSignal.timeout(
+    resolveProviderOperationTimeoutMs({
+      deadline: operation.deadline,
+      defaultTimeoutMs: MAX_IMAGE_TOOL_OPERATION_TIMEOUT_MS,
+    }),
+  );
+  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
+  try {
+    return await racePromiseWithAbortSignal(task(signal), signal);
+  } catch (error) {
+    parentSignal?.throwIfAborted();
+    if (timeoutSignal.aborted) {
+      throw createProviderOperationTimeoutError(operation.deadline);
+    }
+    throw error;
+  }
+}
+
+async function runImagePrompt(params: {
+  agentId?: string;
+  agentDir: string;
+  authStore?: AuthProfileStore;
+  modelOverride?: string;
+  operation: ImageToolOperation;
+  prompt: string;
+  images: Array<{ buffer: Buffer; mimeType: string }>;
+  workspaceDir?: string;
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  signal: AbortSignal;
+}): Promise<{
+  text: string;
+  provider: string;
+  model: string;
+  attempts: Array<{ provider: string; model: string; error: string }>;
+}> {
+  const { deadline, effectiveCfg, providerCfg, providerRegistry } = params.operation;
 
   const result = await runWithImageModelFallback({
     cfg: effectiveCfg,
@@ -754,7 +794,7 @@ async function runImagePrompt(params: {
         const describeImages =
           imageProvider?.describeImages ?? imageToolProviderDeps.describeImagesWithModel;
         // A run cancelled mid-dispatch must not buy another provider call.
-        params.signal?.throwIfAborted();
+        params.signal.throwIfAborted();
         const described = await describeImages({
           images: params.images.map((image, index) => ({
             buffer: image.buffer,
@@ -766,7 +806,7 @@ async function runImagePrompt(params: {
           prompt: params.prompt,
           maxTokens: resolveImageToolMaxTokens(undefined),
           timeoutMs: resolveRequestTimeoutMs(),
-          ...(params.signal ? { signal: params.signal } : {}),
+          signal: params.signal,
           cfg: providerCfg,
           ...(params.agentId ? { agentId: params.agentId } : {}),
           agentDir: params.agentDir,
@@ -786,7 +826,7 @@ async function runImagePrompt(params: {
           throw new Error("Image input disappeared during model execution");
         }
         // A run cancelled mid-dispatch must not buy another provider call.
-        params.signal?.throwIfAborted();
+        params.signal.throwIfAborted();
         const described = await describeImage({
           buffer: image.buffer,
           fileName: "image-1",
@@ -796,7 +836,7 @@ async function runImagePrompt(params: {
           prompt: params.prompt,
           maxTokens: resolveImageToolMaxTokens(undefined),
           timeoutMs: resolveRequestTimeoutMs(),
-          ...(params.signal ? { signal: params.signal } : {}),
+          signal: params.signal,
           cfg: providerCfg,
           ...(params.agentId ? { agentId: params.agentId } : {}),
           agentDir: params.agentDir,
@@ -812,7 +852,7 @@ async function runImagePrompt(params: {
       const parts: string[] = [];
       for (const [index, image] of params.images.entries()) {
         // A run cancelled mid-dispatch must not buy another provider call.
-        params.signal?.throwIfAborted();
+        params.signal.throwIfAborted();
         const described = await describeImage({
           buffer: image.buffer,
           fileName: `image-${index + 1}`,
@@ -822,7 +862,7 @@ async function runImagePrompt(params: {
           prompt: `${params.prompt}\n\nDescribe image ${index + 1} of ${params.images.length}.`,
           maxTokens: resolveImageToolMaxTokens(undefined),
           timeoutMs: resolveRequestTimeoutMs(),
-          ...(params.signal ? { signal: params.signal } : {}),
+          signal: params.signal,
           cfg: providerCfg,
           ...(params.agentId ? { agentId: params.agentId } : {}),
           agentDir: params.agentDir,
@@ -986,8 +1026,8 @@ export function createImageTool(options?: {
         | { kind: "native" }
         | {
             kind: "fallback";
-            imageModelConfig: ImageModelConfig;
             imageCompression: ImageCompressionPolicy;
+            operation: ImageToolOperation;
           };
       if (modelHasVision) {
         imageRoute = { kind: "native" };
@@ -1010,16 +1050,24 @@ export function createImageTool(options?: {
             "No image model is configured. Set agents.defaults.imageModel or configure an image-capable provider.",
           );
         }
-        const imageCompression = await imageToolProviderDeps.resolveImageCompressionPolicy({
+        const operation = createImageToolOperation({
           cfg: options?.config,
           imageModelConfig,
           modelOverride,
-          imageCount: pathInputs.length,
-          agentDir,
-          workspaceDir: options?.workspaceDir,
           preparedModelRuntime: options?.preparedModelRuntime,
         });
-        imageRoute = { kind: "fallback", imageModelConfig, imageCompression };
+        const imageCompression = await withImageToolOperationDeadline(operation, signal, async () =>
+          imageToolProviderDeps.resolveImageCompressionPolicy({
+            cfg: options?.config,
+            imageModelConfig,
+            modelOverride,
+            imageCount: pathInputs.length,
+            agentDir,
+            workspaceDir: options?.workspaceDir,
+            preparedModelRuntime: options?.preparedModelRuntime,
+          }),
+        );
+        imageRoute = { kind: "fallback", imageCompression, operation };
       }
       const imageCompression =
         imageRoute.kind === "fallback" ? imageRoute.imageCompression : undefined;
@@ -1120,34 +1168,39 @@ export function createImageTool(options?: {
         });
         const imageWebMedia = await imageToolProviderDeps.loadImageWebMediaRuntime();
 
-        const media = isDataUrl
-          ? await (async () => {
-              const decoded = decodeDataUrl(resolvedImage, { maxBytes });
-              return await imageWebMedia.optimizeImageBufferForWebMedia({
-                buffer: decoded.buffer,
-                contentType: decoded.mimeType,
-                maxBytes,
-                imageCompression,
-              });
-            })()
-          : sandboxConfig
-            ? await imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
-                maxBytes,
-                sandboxValidated: true,
-                readFile: createSandboxBridgeReadFile({ sandbox: sandboxConfig }),
-                imageCompression,
-              })
-            : await imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
-                maxBytes,
-                localRoots: mediaLocalRoots,
-                inboundRoots: mediaInboundRoots,
-                ssrfPolicy: remoteMediaSsrfPolicy,
-                ...(isHttpUrl ? { readIdleTimeoutMs: REMOTE_MEDIA_READ_IDLE_TIMEOUT_MS } : {}),
-                // Forward the run abort signal into the fetch layer so an abort
-                // mid-download disconnects the in-flight socket.
-                ...(signal ? { requestInit: { signal } } : {}),
-                imageCompression,
-              });
+        const loadMedia = async (preparationSignal?: AbortSignal) =>
+          isDataUrl
+            ? (async () => {
+                const decoded = decodeDataUrl(resolvedImage, { maxBytes });
+                return await imageWebMedia.optimizeImageBufferForWebMedia({
+                  buffer: decoded.buffer,
+                  contentType: decoded.mimeType,
+                  maxBytes,
+                  imageCompression,
+                });
+              })()
+            : sandboxConfig
+              ? imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
+                  maxBytes,
+                  sandboxValidated: true,
+                  readFile: createSandboxBridgeReadFile({ sandbox: sandboxConfig }),
+                  imageCompression,
+                })
+              : imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
+                  maxBytes,
+                  localRoots: mediaLocalRoots,
+                  inboundRoots: mediaInboundRoots,
+                  ssrfPolicy: remoteMediaSsrfPolicy,
+                  ...(isHttpUrl ? { readIdleTimeoutMs: REMOTE_MEDIA_READ_IDLE_TIMEOUT_MS } : {}),
+                  // Forward the operation signal into the fetch layer so an abort
+                  // mid-download disconnects the in-flight socket.
+                  ...(preparationSignal ? { requestInit: { signal: preparationSignal } } : {}),
+                  imageCompression,
+                });
+        const media =
+          imageRoute.kind === "fallback"
+            ? await withImageToolOperationDeadline(imageRoute.operation, signal, loadMedia)
+            : await loadMedia(signal);
         if (media.kind !== "image") {
           throw new Error(`Unsupported media type: ${media.kind}`);
         }
@@ -1174,19 +1227,23 @@ export function createImageTool(options?: {
       // Do not issue a paid vision-provider call for an already-aborted run.
       signal?.throwIfAborted();
       // Text-only runs delegate image understanding to the configured fallback model.
-      const result = await runImagePrompt({
+      const result = await withImageToolOperationDeadline(
+        imageRoute.operation,
         signal,
-        cfg: options?.config,
-        agentId: options?.agentId,
-        agentDir,
-        authStore: options?.authProfileStore,
-        imageModelConfig: imageRoute.imageModelConfig,
-        modelOverride,
-        prompt: promptRaw,
-        images: loadedImages.map((img) => ({ buffer: img.buffer, mimeType: img.mimeType })),
-        workspaceDir: options?.workspaceDir,
-        preparedModelRuntime: options?.preparedModelRuntime,
-      });
+        async (operationSignal) =>
+          runImagePrompt({
+            agentId: options?.agentId,
+            agentDir,
+            authStore: options?.authProfileStore,
+            modelOverride,
+            operation: imageRoute.operation,
+            prompt: promptRaw,
+            images: loadedImages.map((img) => ({ buffer: img.buffer, mimeType: img.mimeType })),
+            workspaceDir: options?.workspaceDir,
+            preparedModelRuntime: options?.preparedModelRuntime,
+            signal: operationSignal,
+          }),
+      );
 
       return buildTextToolResult(result, buildImageToolReferenceDetails(loadedImages));
     },
