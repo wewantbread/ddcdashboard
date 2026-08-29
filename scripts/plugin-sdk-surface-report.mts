@@ -327,7 +327,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared bounded HTTP rejection transport replaces plugin-local close policies.
       // +1: prepared model-provider builder preserves the stable builder's return contract.
       // +1: canonical SecretRef default-alias predicate for plugin binding parity.
-      4353,
+      // +3: SDK-owned command-status projection types for plugin status consumers (#76759).
+      4356,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
