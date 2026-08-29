@@ -61,6 +61,7 @@ function replayAgentTurnIfCached(params: {
     const cachedAgentId = normalizeOptionalString(cached.payload.agentId);
     const cachedRuntime = asOptionalRecord(cached.payload.runtime);
     const admissionPending = typeof cached.payload.reservationId === "string";
+    const cachedAdmitted = cached.payload.admitted === true;
     params.io.emitAcceptance(
       [
         true,
@@ -71,6 +72,7 @@ function replayAgentTurnIfCached(params: {
           ...(cachedAgentId ? { agentId: cachedAgentId } : {}),
           ...(cachedRuntime ? { runtime: cachedRuntime } : {}),
           ...(admissionPending ? { admissionPending: true } : {}),
+          ...(cachedAdmitted ? { admitted: true } : {}),
         },
         undefined,
       ],

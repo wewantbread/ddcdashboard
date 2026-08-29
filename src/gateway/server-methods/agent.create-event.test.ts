@@ -32,6 +32,19 @@ const agentIngressMocks = vi.hoisted(() => ({
   agentCommandFromIngress: vi.fn(async () => ({ ok: true })),
 }));
 
+const preparedRuntimeMocks = vi.hoisted(() => ({
+  loadContextReplyDispatchRuntime: vi.fn(async ({ agentId }: { agentId: string }) => ({
+    agentId,
+    agentDir: configMocks.workspaceDir,
+    config: configMocks.getRuntimeConfig(),
+    pluginGeneration: { pluginMetadataSnapshot: {} },
+    workspaceDir: configMocks.workspaceDir,
+  })),
+  loadModuleReplyDispatchRuntime: vi.fn(async () => {
+    throw new Error("agent admission must use the live Gateway context");
+  }),
+}));
+
 vi.mock("../../config/config.js", () => ({
   getRuntimeConfig: configMocks.getRuntimeConfig,
 }));
@@ -46,13 +59,7 @@ vi.mock("../../agents/prepared-model-runtime.js", () => ({
     release: vi.fn(),
     snapshot: {},
   })),
-  loadPublishedGatewayReplyDispatchRuntime: vi.fn(async ({ agentId }: { agentId: string }) => ({
-    agentId,
-    agentDir: configMocks.workspaceDir,
-    config: configMocks.getRuntimeConfig(),
-    pluginGeneration: { pluginMetadataSnapshot: {} },
-    workspaceDir: configMocks.workspaceDir,
-  })),
+  loadPublishedGatewayReplyDispatchRuntime: preparedRuntimeMocks.loadModuleReplyDispatchRuntime,
 }));
 
 vi.mock("../../runtime.js", () => ({
@@ -113,6 +120,8 @@ describe("agent handler session create events", () => {
           addChatRun: vi.fn(),
           registerToolEventRecipient: vi.fn(),
           getRuntimeConfig: configMocks.getRuntimeConfig,
+          loadPublishedGatewayReplyDispatchRuntime:
+            preparedRuntimeMocks.loadContextReplyDispatchRuntime,
           getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
           broadcastToConnIds,
         } as never,
@@ -130,6 +139,11 @@ describe("agent handler session create events", () => {
     expect(responseCall?.[1]?.runId).toBe("idem-agent-create-event");
     expect(responseCall?.[2]).toBeUndefined();
     expect(responseCall?.[3]?.runId).toBe("idem-agent-create-event");
+    expect(preparedRuntimeMocks.loadContextReplyDispatchRuntime).toHaveBeenCalledWith({
+      agentId: "main",
+      abortSignal: expect.any(AbortSignal),
+    });
+    expect(preparedRuntimeMocks.loadModuleReplyDispatchRuntime).not.toHaveBeenCalled();
     await vi.waitFor(
       () => {
         const call = firstMockCall(broadcastToConnIds) as

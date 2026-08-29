@@ -109,6 +109,12 @@ export function resolveSettledTurnFinalizationRequest(input: {
   if (!input.settledTurnFinalizationAvailable) {
     return null;
   }
+  if (input.attempt.runtimeContinuationRetained === true && input.attempt.yieldDetected === true) {
+    // The native child owns the next visible turn only after sessions_yield
+    // successfully retained its delivery relay. Acceptance alone is replay
+    // evidence and must not suppress required-reply recovery.
+    return null;
+  }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
   const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
   const silentToolResultReplyPayload = resolveSilentToolResultReplyPayload({
@@ -324,7 +330,6 @@ export async function resolveEmbeddedRunTerminal(input: {
     );
     return { action: "retry" };
   }
-  const availableTerminalToolPresentation = input.readTerminalToolPresentation();
   if (
     !nextReasoningOnlyRetryInstruction &&
     nextEmptyResponseRetryInstruction &&
@@ -363,7 +368,7 @@ export async function resolveEmbeddedRunTerminal(input: {
     !input.replayState.hadPotentialSideEffects,
   );
   const terminalToolPresentation = incompleteTurnFallbackSafe
-    ? availableTerminalToolPresentation
+    ? input.readTerminalToolPresentation()
     : undefined;
   if (
     !emptyAssistantReplyIsSilent &&
@@ -583,9 +588,11 @@ function completeEmbeddedRun(
   });
   input.runParams.onSuccessfulAuthProfile?.(input.authProfileId);
   const replayInvalid = input.resolveReplayInvalid(null);
-  const yieldHasContinuation =
-    input.attempt.yieldDetected && hasYieldContinuationEvidence(input.attempt);
-  const livenessState = input.attempt.yieldDetected
+  // Starting a native child is not enough to retain its delivery relay. The
+  // harness grants retention only after sessions_yield completes successfully.
+  const yielded = input.attempt.yieldDetected === true;
+  const yieldHasContinuation = yielded && hasYieldContinuationEvidence(input.attempt);
+  const livenessState = yielded
     ? "paused"
     : resolveRunLivenessState({
         payloadCount: input.payloadCount,
@@ -596,7 +603,7 @@ function completeEmbeddedRun(
       });
   const stopReason = input.attempt.clientToolCalls
     ? "tool_calls"
-    : input.attempt.yieldDetected
+    : yielded
       ? "end_turn"
       : (input.attemptAssistant?.stopReason as string | undefined);
   // The truncation notice belongs to exactly the turns this fix newly delivers:
@@ -621,14 +628,14 @@ function completeEmbeddedRun(
       ? isTruncatedPartialReply
         ? [...input.payloadsForTerminalPath, { text: TRUNCATED_REPLY_NOTICE_TEXT }]
         : input.payloadsForTerminalPath
-      : input.attempt.yieldDetected && !yieldHasContinuation
+      : yielded && !yieldHasContinuation
         ? [{ text: YIELD_DIAGNOSTIC_TEXT }]
         : input.payloadsForTerminalPath;
   input.setTerminalLifecycleMeta({
     replayInvalid,
     livenessState,
     stopReason,
-    yielded: input.attempt.yieldDetected === true,
+    yielded,
   });
   return {
     action: "complete",
@@ -648,7 +655,7 @@ function completeEmbeddedRun(
         replayInvalid,
         livenessState,
         agentHarnessResultClassification: input.attempt.agentHarnessResultClassification,
-        ...(input.attempt.yieldDetected ? { yielded: true } : {}),
+        ...(yielded ? { yielded: true } : {}),
         ...(input.attempt.yieldAcknowledgment
           ? { yieldAcknowledgment: input.attempt.yieldAcknowledgment }
           : {}),
@@ -725,5 +732,7 @@ export function copyAttemptDeliveryState(attempt: EmbeddedRunAttemptResult) {
     heartbeatToolResponse: attempt.heartbeatToolResponse,
     successfulCronAdds: attempt.successfulCronAdds,
     acceptedSessionSpawns: attempt.acceptedSessionSpawns,
+    runtimeContinuationStarted: attempt.runtimeContinuationStarted,
+    runtimeContinuationRetained: attempt.runtimeContinuationRetained,
   };
 }

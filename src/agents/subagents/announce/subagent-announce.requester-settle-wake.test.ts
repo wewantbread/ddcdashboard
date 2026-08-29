@@ -4,16 +4,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
+import {
+  createRequesterSettleWakeBatchHarness,
+  makeSettledChild,
+  REQUESTER,
+  requesterSettleKey,
+} from "./subagent-announce.requester-settle-wake.test-support.js";
 
 const deliverSpy = vi.fn(
-  async (
-    _params: Record<string, unknown>,
-  ): Promise<{
-    delivered: boolean;
-    path: string;
-    disposition?: "ambiguous" | "permanent_failure" | "intentional_non_delivery";
-    reason?: string;
-  }> => ({
+  async (_params: Record<string, unknown>): Promise<SubagentAnnounceDeliveryResult> => ({
     delivered: true,
     path: "direct",
   }),
@@ -69,83 +68,14 @@ vi.mock("../spawn/subagent-depth.js", () => ({
     sessionKey.split(":subagent:").length - 1,
 }));
 
-import {
-  maybeWakeRequesterAfterAllChildrenSettled,
-  type RequesterSettleWakeBatchState,
-} from "./subagent-announce.requester-settle-wake.js";
-
-const REQUESTER = "agent:main:main";
-const requesterSettleKey = (suffix: string) =>
-  `announce:requester-settle:main:${REQUESTER}:${suffix}`;
-
-type SettledChildOverrides = Omit<Partial<SubagentRunRecord>, "execution"> & {
-  startedAt?: number;
-  endedAt?: number;
-  outcome?: SubagentRunRecord["execution"]["outcome"];
-  execution?: SubagentRunRecord["execution"];
-};
-
-function makeSettledChild(overrides: SettledChildOverrides): SubagentRunRecord {
-  const runId = overrides.runId ?? "run-child";
-  const { startedAt = 2_000, endedAt = 3_000, outcome, execution, ...recordOverrides } = overrides;
-  return {
-    runId,
-    childSessionKey: overrides.childSessionKey ?? `agent:main:subagent:${runId}`,
-    requesterSessionKey: REQUESTER,
-    requesterDisplayKey: "main",
-    task: "investigate",
-    cleanup: "keep",
-    createdAt: 1_000,
-    execution: execution ?? { status: "terminal", startedAt, endedAt, outcome },
-    expectsCompletionMessage: true,
-    delivery: { status: "delivered" },
-    requesterSettleWake: { status: "pending", attemptCount: 0 },
-    ...recordOverrides,
-  };
-}
-
-const transitionBatchSpy = vi.fn();
-const completeBatchSpy = vi.fn();
+import { maybeWakeRequesterAfterAllChildrenSettled } from "./subagent-announce.requester-settle-wake.js";
 
 function listedRequesterRuns(): SubagentRunRecord[] {
   return registryRuntimeMock.listSubagentRunsForRequester(REQUESTER) as SubagentRunRecord[];
 }
 
-function transitionBatch(runIds: readonly string[], state: RequesterSettleWakeBatchState): void {
-  transitionBatchSpy(runIds, state);
-  const selected = new Set(runIds);
-  for (const entry of listedRequesterRuns()) {
-    if (selected.has(entry.runId) && entry.requesterSettleWake) {
-      entry.requesterSettleWake = {
-        ...state,
-        ...(entry.requesterSettleWake.retireAfterSettle ? { retireAfterSettle: true } : {}),
-      };
-    }
-  }
-}
-
-function completeBatch(
-  runIds: readonly string[],
-  rearmGeneration?: number,
-  outcome?: SubagentAnnounceDeliveryResult,
-): void {
-  if (outcome) {
-    completeBatchSpy(runIds, rearmGeneration, outcome);
-  } else if (rearmGeneration === undefined) {
-    completeBatchSpy(runIds);
-  } else {
-    completeBatchSpy(runIds, rearmGeneration);
-  }
-  const selected = new Set(runIds);
-  for (const entry of listedRequesterRuns()) {
-    if (
-      selected.has(entry.runId) &&
-      entry.requesterSettleWake?.rearmGeneration === rearmGeneration
-    ) {
-      entry.requesterSettleWake = undefined;
-    }
-  }
-}
+const { transitionBatchSpy, completeBatchSpy, transitionBatch, completeBatch } =
+  createRequesterSettleWakeBatchHarness(listedRequesterRuns);
 
 function wakeParams(
   overrides?: Partial<Parameters<typeof maybeWakeRequesterAfterAllChildrenSettled>[0]>,
@@ -440,8 +370,9 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).toHaveBeenCalledOnce();
     expect(deliveredCallArg().requireVisibleReply).toBe(true);
     const message = String(deliveredCallArg().triggerMessage);
-    expect(message).not.toContain("NO_REPLY");
-    expect(message).toContain("original user request still requires your visible final answer");
+    expect(message).toContain("create the next required subagent(s) and call sessions_yield again");
+    expect(message).toContain("do not send a final answer while required work remains");
+    expect(message).not.toContain("Do not keep waiting or call sessions_yield again");
     expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
     expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
       delivered: true,
@@ -532,8 +463,8 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).toHaveBeenCalledOnce();
     expect(deliveredCallArg().requireVisibleReply).toBe(true);
     const message = String(deliveredCallArg().triggerMessage);
-    expect(message).not.toContain("NO_REPLY");
-    expect(message).toContain("original user request still requires your visible final answer");
+    expect(message).toContain("continue the original request from this resumed turn");
+    expect(message).toContain("Otherwise send a truthful user-facing update");
     expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
     expect(completeBatchSpy).toHaveBeenCalledWith(["run-b"], 1, {
       delivered: true,
@@ -672,7 +603,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
-  it("retains a yielded wake after a silent final and retries its visible reply", async () => {
+  it("retains a yielded wake when neither a visible reply nor continuation is proven", async () => {
     const child = makeSettledChild({
       runId: "run-b",
       delivery: { status: "delivered" },
@@ -697,6 +628,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       await expect(
         maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
       ).resolves.toBe(false);
+      expect(deliveredCallArg().requireVisibleReply).toBe(true);
       expect(completeBatchSpy).not.toHaveBeenCalled();
       expect(child.requesterSettleWake).toMatchObject({
         status: "pending",
@@ -724,12 +656,29 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
-  it("replays an ambiguous transport failure with the same idempotency key", async () => {
+  it.each([
+    {
+      label: "ambiguous transport failure",
+      prepare: () => deliverSpy.mockRejectedValueOnce(new Error("connection lost after admission")),
+      expectedState: { replayCount: 1, lastError: "connection lost after admission" },
+    },
+    {
+      label: "authoritative in-flight result",
+      prepare: () =>
+        deliverSpy.mockResolvedValueOnce({
+          delivered: false,
+          path: "direct",
+          reason: "completion_handoff_pending",
+          error: "requester agent run is still in flight",
+          disposition: "retryable",
+        }),
+      expectedState: { lastError: "requester agent run is still in flight" },
+    },
+  ])("replays an $label with the same idempotency key", async ({ prepare, expectedState }) => {
     const firstChild = makeSettledChild({ runId: "run-a" });
     const secondChild = makeSettledChild({ runId: "run-b" });
-    const children = [firstChild, secondChild];
-    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
-    deliverSpy.mockRejectedValueOnce(new Error("connection lost after admission"));
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([firstChild, secondChild]);
+    prepare();
 
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -740,16 +689,14 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
       expect(firstChild.requesterSettleWake).toMatchObject({
         status: "dispatching",
         attemptCount: 1,
-        replayCount: 1,
         nextAttemptAt: 30_000,
-        lastError: "connection lost after admission",
+        ...expectedState,
       });
 
       await vi.advanceTimersByTimeAsync(30_000);
       expect(
         await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: secondChild })),
       ).toBe(true);
-      expect(deliverSpy).toHaveBeenCalledTimes(2);
       expect(deliverSpy.mock.calls.map(([arg]) => arg.directIdempotencyKey)).toEqual([
         requesterSettleKey("run-a,run-b"),
         requesterSettleKey("run-a,run-b"),
@@ -972,6 +919,47 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
         expect(completeBatchSpy).toHaveBeenCalledOnce();
         expect(deliverSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps an admitted handoff pending beyond the local descendant deferral cap", async () => {
+      const child = makeSettledChild({
+        runId: "run-admitted",
+        delivery: { status: "pending" },
+        requesterSettleWake: {
+          status: "dispatching",
+          attemptCount: 1,
+          batchRunIds: ["run-admitted"],
+          requesterYieldBatch: true,
+          rearmGeneration: 1,
+          deferralCount: 9,
+        },
+      });
+      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
+      deliverSpy.mockResolvedValueOnce({
+        delivered: false,
+        path: "direct",
+        reason: "completion_handoff_pending",
+        error: "requester agent run is still in flight",
+        disposition: "retryable",
+        handoffAdmitted: true,
+      });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        await expect(
+          maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
+        ).resolves.toBe(false);
+        expect(completeBatchSpy).not.toHaveBeenCalled();
+        expect(child.requesterSettleWake).toMatchObject({
+          status: "dispatching",
+          attemptCount: 1,
+          deferralCount: 9,
+          nextAttemptAt: 30_000,
+        });
       } finally {
         vi.useRealTimers();
       }

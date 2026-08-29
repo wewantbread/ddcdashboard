@@ -35,6 +35,8 @@ export type SubagentAnnounceDeliveryResult = {
   enqueuedAt?: number;
   /** Direct completion that already sent the yielded requester's visible final. */
   requesterVisibleFinalDelivered?: true;
+  /** The Gateway admitted the pending requester handoff and owns its terminal deadline. */
+  handoffAdmitted?: true;
   reason?: SubagentAnnounceDeliveryFailureReason;
   error?: string;
   // Stops fallback delivery when ownership changed or another terminal result
@@ -157,7 +159,8 @@ export async function runSubagentAnnounceDispatch(params: {
     primaryDirect.disposition === "session_queued" ||
     primaryDirect.disposition === "intentional_non_delivery" ||
     primaryDirect.disposition === "ambiguous" ||
-    primaryDirect.disposition === "permanent_failure"
+    primaryDirect.disposition === "permanent_failure" ||
+    primaryDirect.reason === "completion_handoff_pending"
   ) {
     return withPhases(primaryDirect);
   }

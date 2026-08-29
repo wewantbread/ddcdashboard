@@ -4,7 +4,6 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
-import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import {
@@ -13,6 +12,12 @@ import {
   resolveEmbeddedRunTerminal,
   resolveSettledTurnFinalizationRequest,
 } from "./terminal-resolution.js";
+import {
+  emptyAssistant,
+  makeTerminalInput,
+  type TerminalInput,
+  type TerminalInputOverrides,
+} from "./terminal-resolution.test-support.js";
 import { createEmbeddedRunTerminalRetryState } from "./terminal-retry-state.js";
 
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
@@ -21,92 +26,6 @@ const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
-
-type TerminalInput = Parameters<typeof resolveEmbeddedRunTerminal>[0];
-type TerminalInputOverrides = Omit<Partial<TerminalInput>, "runParams"> & {
-  runParams?: Partial<TerminalInput["runParams"]>;
-};
-
-function emptyAssistant(overrides: Parameters<typeof buildEmbeddedRunnerAssistant>[0] = {}) {
-  return buildEmbeddedRunnerAssistant({
-    content: [{ type: "text", text: "" }],
-    ...overrides,
-  });
-}
-
-function makeTerminalInput(overrides: TerminalInputOverrides = {}): TerminalInput {
-  const assistant = overrides.attemptAssistant ?? emptyAssistant();
-  const attempt =
-    overrides.attempt ??
-    makeEmbeddedRunnerAttempt({
-      assistantTexts: [],
-      lastAssistant: assistant,
-      currentAttemptAssistant: assistant,
-      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
-    });
-  const profileStore = { version: 1, profiles: {} } as never;
-  const runParams = {
-    sessionId: "session:terminal-resolution",
-    sessionKey: "agent:main:terminal-resolution",
-    runId: "run:terminal-resolution",
-    agentDir: "/tmp/openclaw-terminal-resolution",
-    workspaceDir: "/tmp/openclaw-terminal-resolution",
-    ...overrides.runParams,
-  } as TerminalInput["runParams"];
-  const base = {
-    runParams,
-    retryState: createEmbeddedRunTerminalRetryState(),
-    attempt,
-    attemptAssistant: attempt.currentAttemptAssistant ?? attempt.lastAssistant,
-    activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
-    modelApi: "openai-responses",
-    executionContract: undefined,
-    terminalState: resolveEmbeddedRunAttemptTerminalState({
-      attempt,
-      assistant: attempt.currentAttemptAssistant ?? attempt.lastAssistant,
-    }),
-    payloadsWithToolMedia: [],
-    recoveredFinalAssistantPayloadsAfterPromptTimeout: undefined,
-    finalAssistantVisibleText: undefined,
-    finalAssistantRawText: undefined,
-    agentMeta: {} as never,
-    attemptToolSummary: undefined,
-    failureSignal: undefined,
-    maxReasoningOnlyRetryAttempts: 2,
-    maxEmptyResponseRetryAttempts: 1,
-    attemptCompactionCount: 0,
-    replayState: { ...attempt.replayMetadata, replayInvalid: false },
-    activePromptPersisted: true,
-    activateInternalPrompt: vi.fn(),
-    setSuppressNextUserMessagePersistence: vi.fn(),
-    armPostCompactionGuard: vi.fn(),
-    readTerminalToolPresentation: () => undefined,
-    resolveReplayInvalid: () => false,
-    setTerminalLifecycleMeta: vi.fn(),
-    maybeMarkAuthProfileFailure: vi.fn(async () => undefined),
-    assistantProfileFailureReason: null,
-    startedAtMs: Date.now(),
-    provider: "openai",
-    modelId: "gpt-5.6-luna",
-    modelTransportId: "gpt-5.6-luna",
-    modelTransportApi: "openai-responses",
-    requestTransportOverrides: "none",
-    authProfileId: undefined,
-    profileFailureStore: profileStore,
-    attemptAuthProfileStore: profileStore,
-    apiKeyInfo: null,
-    agentHarnessId: "builtin-openclaw",
-    settledTurnFinalizationOutcome: "not-attempted",
-    pluginHarnessOwnsTransport: false,
-    pluginHarnessOwnsAuthBootstrap: false,
-    reportedModelRef: { provider: "openai", model: "gpt-5.6-luna" },
-    traceAttempts: [],
-    traceAttemptUsesFallback: () => false,
-    thinkLevel: "off",
-    contextRecoveryState: createEmbeddedRunContextRecoveryState(),
-  } satisfies TerminalInput;
-  return { ...base, ...overrides, runParams };
-}
 
 async function resolveTerminalText(overrides: TerminalInputOverrides): Promise<string | undefined> {
   const resolved = await resolveEmbeddedRunTerminal(makeTerminalInput(overrides));
@@ -278,6 +197,116 @@ describe("terminal resolution", () => {
     await expect(resolveEmbeddedRunTerminal(input)).resolves.toEqual({ action: "retry" });
     expect(input.retryState.emptyResponseAttempts).toBe(1);
     expect(activateInternalPrompt).toHaveBeenCalledWith(EMPTY_RESPONSE_RETRY_INSTRUCTION);
+  });
+
+  it("completes a runtime-owned native continuation as yielded without retrying", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      yieldDetected: true,
+      runtimeContinuationStarted: true,
+      runtimeContinuationRetained: true,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+    const activateInternalPrompt = vi.fn();
+    const setTerminalLifecycleMeta = vi.fn();
+
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({ attempt, activateInternalPrompt, setTerminalLifecycleMeta }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    expect(activateInternalPrompt).not.toHaveBeenCalled();
+    expect(setTerminalLifecycleMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ livenessState: "paused", stopReason: "end_turn", yielded: true }),
+    );
+    if (resolved.action === "complete") {
+      expect(resolved.result.payloads).toBeUndefined();
+      expect(resolved.result.runtimeContinuationStarted).toBe(true);
+      expect(resolved.result.runtimeContinuationRetained).toBe(true);
+      expect(resolved.result.meta.yielded).toBe(true);
+    }
+  });
+
+  it("preserves an explicit runtime-owned yield with only supplemental payload lanes", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      yieldDetected: true,
+      runtimeContinuationStarted: true,
+      runtimeContinuationRetained: true,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(
+      makeTerminalInput({
+        attempt,
+        payloadsWithToolMedia: [
+          { text: "Private reasoning.", isReasoning: true },
+          { text: "Still working.", isCommentary: true },
+        ],
+      }),
+    );
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action === "complete") {
+      expect(resolved.result.meta).toMatchObject({
+        livenessState: "paused",
+        stopReason: "end_turn",
+        yielded: true,
+      });
+    }
+  });
+
+  it("does not infer a retained yield from a native child start alone", async () => {
+    const assistant = emptyAssistant({ stopReason: "aborted" });
+    const attempt = makeEmbeddedRunnerAttempt({
+      terminal: { kind: "timeout", phase: "prompt", source: "external" },
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      runtimeContinuationStarted: true,
+      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(makeTerminalInput({ attempt }));
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action === "complete") {
+      expect(resolved.result.meta.yielded).toBeUndefined();
+      expect(resolved.result.runtimeContinuationStarted).toBe(true);
+    }
+  });
+
+  it("surfaces an incomplete reply when a native child started without a retained yield", async () => {
+    const assistant = emptyAssistant();
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      runtimeContinuationStarted: true,
+      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(makeTerminalInput({ attempt }));
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action === "complete") {
+      expect(resolved.result.payloads).toEqual([
+        {
+          text: "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.",
+          isError: true,
+        },
+      ]);
+      expect(resolved.result.meta.yielded).toBeUndefined();
+      expect(resolved.result.runtimeContinuationStarted).toBe(true);
+    }
   });
 
   it("retries an empty final turn after Anthropic server compaction", async () => {
@@ -699,6 +728,62 @@ describe("terminal resolution", () => {
 
     expect(request("required")).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
     expect(request("optional")).toBeNull();
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-native-continuation",
+          runId: "run:settled-native-continuation",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt: { ...attempt, runtimeContinuationStarted: true },
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-retained-native-continuation",
+          runId: "run:settled-retained-native-continuation",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt: { ...attempt, runtimeContinuationStarted: true, yieldDetected: true },
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBe(SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION);
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: {
+          sessionId: "session:settled-retained-native-continuation",
+          runId: "run:settled-retained-native-continuation",
+          terminalReplyExpectation: "required",
+        } as never,
+        attempt: {
+          ...attempt,
+          runtimeContinuationStarted: true,
+          runtimeContinuationRetained: true,
+          yieldDetected: true,
+        },
+        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
+        modelApi: "openai-responses",
+        executionContract: undefined,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBeNull();
     expect(
       resolveSettledTurnFinalizationRequest({
         runParams: {

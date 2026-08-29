@@ -57,10 +57,17 @@ type NativeSubagentMonitorClient = Pick<
 >;
 
 type ParentOwner = {
+  ownerToken: symbol;
   turnId?: string;
   claimDirectChild?: (threadId: string) => (() => void) | undefined;
   rejectPendingDirectChild?: (threadId: string, reason: string) => void;
   onDirectChildAccepted?: () => void;
+};
+
+type NativeSubagentMonitorRegistration = {
+  bindTurn: (turnId: string) => void;
+  hasPendingCompletionHandoff: () => boolean;
+  unregister: () => void;
 };
 
 type ParentState = {
@@ -88,6 +95,7 @@ type DirectSpawnEvidence = {
 type ChildState = {
   childThreadId: string;
   parentThreadId: string;
+  ownerToken?: symbol;
   readonly agentId?: string;
   agentPathKeys: Set<string>;
   assistantMessagesByTurn: Map<string, ChildAssistantMessages>;
@@ -205,7 +213,7 @@ function registerMonitor(params: {
   claimDirectChild?: (threadId: string) => (() => void) | undefined;
   rejectPendingDirectChild?: (threadId: string, reason: string) => void;
   onDirectChildAccepted?: () => void;
-}): { bindTurn: (turnId: string) => void; unregister: () => void } {
+}): NativeSubagentMonitorRegistration {
   let monitor = monitors.get(params.client);
   if (!monitor) {
     // Native start/completion can race; serialize each child so only its
@@ -376,7 +384,7 @@ class Monitor {
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => void } {
+  }): NativeSubagentMonitorRegistration {
     const parentThreadId = params.parentThreadId.trim();
     if (!parentThreadId) {
       throw new Error("Codex native subagent monitor requires a parent thread id");
@@ -404,8 +412,9 @@ class Monitor {
     state.requesterSessionKey ??= params.requesterSessionKey;
     state.taskRuntimeScope ??= params.taskRuntimeScope;
     state.agentId ??= params.agentId;
-    const owner = Symbol("codex-native-subagent-owner");
-    state.owners.set(owner, {
+    const ownerToken = Symbol("codex-native-subagent-owner");
+    state.owners.set(ownerToken, {
+      ownerToken,
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
@@ -432,7 +441,7 @@ class Monitor {
         if (!turnId || this.parentStates.get(parentThreadId) !== registeredState) {
           return;
         }
-        const current = registeredState.owners.get(owner);
+        const current = registeredState.owners.get(ownerToken);
         if (
           !current ||
           [...registeredState.owners.values()].some(
@@ -446,6 +455,13 @@ class Monitor {
         this.drainPendingDirectSpawnEvidence(registeredState, current, turnId);
         this.clearUnconsumablePendingDirectSpawnEvidence();
       },
+      hasPendingCompletionHandoff: () =>
+        registered &&
+        this.parentStates.get(parentThreadId) === registeredState &&
+        [...this.childStates.values()].some(
+          (childState) =>
+            childState.ownerToken === ownerToken && Boolean(childState.pendingCompletion),
+        ),
       unregister: () => {
         if (!registered) {
           return;
@@ -453,8 +469,8 @@ class Monitor {
         registered = false;
         const current = this.parentStates.get(parentThreadId);
         if (current === registeredState) {
-          const turnId = current.owners.get(owner)?.turnId;
-          current.owners.delete(owner);
+          const turnId = current.owners.get(ownerToken)?.turnId;
+          current.owners.delete(ownerToken);
           if (turnId) {
             current.turnIds.delete(turnId);
           }
@@ -1404,6 +1420,7 @@ class Monitor {
     childThreadIdInput: string,
     options: {
       agentPath?: string;
+      ownerToken?: symbol;
       claimDirectChild?: (threadId: string) => (() => void) | undefined;
     } = {},
   ): ChildState | undefined {
@@ -1440,6 +1457,7 @@ class Monitor {
       childState = {
         childThreadId,
         parentThreadId,
+        ownerToken: options.ownerToken,
         agentId: state.agentId,
         agentPathKeys: new Set<string>(),
         assistantMessagesByTurn: new Map<string, ChildAssistantMessages>(),
@@ -1460,6 +1478,7 @@ class Monitor {
         },
       );
     }
+    childState.ownerToken ??= options.ownerToken;
     if (
       options.claimDirectChild &&
       !childState.terminal &&
@@ -1498,6 +1517,7 @@ class Monitor {
   ): ChildState | undefined {
     const childState = this.registerChildThread(state, evidence.childThreadId, {
       ...(evidence.agentPath === undefined ? {} : { agentPath: evidence.agentPath }),
+      ownerToken: owner?.ownerToken,
       ...(owner?.claimDirectChild ? { claimDirectChild: owner.claimDirectChild } : {}),
     });
     if (!owner) {
@@ -1549,6 +1569,7 @@ class Monitor {
       if (evidence.parentThreadId === state.parentThreadId) {
         const childState = this.registerChildThread(state, evidence.childThreadId, {
           ...(evidence.agentPath === undefined ? {} : { agentPath: evidence.agentPath }),
+          ownerToken: owner.ownerToken,
           claimDirectChild: owner.claimDirectChild,
         });
         if (childState) {

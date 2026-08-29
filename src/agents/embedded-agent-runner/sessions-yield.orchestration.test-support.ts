@@ -143,6 +143,7 @@ describe("sessions_yield orchestration", () => {
           yieldDetected: true,
           assistantTexts: [],
           runtimeContinuationStarted: true,
+          runtimeContinuationRetained: true,
         }),
       );
 

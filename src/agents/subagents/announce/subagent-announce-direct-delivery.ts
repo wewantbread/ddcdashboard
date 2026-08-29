@@ -20,6 +20,7 @@ import {
 import {
   getAgentCommandDeliveryFailure,
   getGatewayAgentResult,
+  hasAcceptedSessionSpawnEvidence,
   hasCommittedOutboundDeliveryEvidence,
   hasPayloadOutcomeSendEvidence,
 } from "../../embedded-agent-runner/delivery-evidence.js";
@@ -176,6 +177,7 @@ export async function sendSubagentAnnounceDirectly(params: {
     const agentMediatedCompletion =
       params.expectsCompletionMessage && isAgentMediatedCompletionSourceTool(sourceToolId);
     const completionRouteRequiresMessageToolDelivery =
+      !params.requesterIsSubagent &&
       params.expectsCompletionMessage &&
       completionRequiresMessageToolDelivery({
         cfg,
@@ -234,11 +236,17 @@ export async function sendSubagentAnnounceDirectly(params: {
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
     // Synthetic requester-settle turns must not inherit a tool-only mode that suppresses the final.
-    const completionSourceReplyDeliveryMode = requiresMessageToolDelivery
-      ? "message_tool_only"
-      : params.requireVisibleReply && deliveryTarget.deliver
-        ? "automatic"
-        : undefined;
+    const sessionOnlySubagentCompletion =
+      params.expectsCompletionMessage &&
+      isSubagentCompletion &&
+      !params.requesterIsSubagent &&
+      !deliveryTarget.deliver;
+    const completionSourceReplyDeliveryMode =
+      requiresMessageToolDelivery || sessionOnlySubagentCompletion
+        ? "message_tool_only"
+        : params.requireVisibleReply && deliveryTarget.deliver
+          ? "automatic"
+          : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
     const requesterQueueSettings = resolveQueueSettings({
       cfg,
@@ -416,11 +424,42 @@ export async function sendSubagentAnnounceDirectly(params: {
       throw err;
     }
 
-    const directAnnounceStillPending = isGatewayAgentRunPending(directAnnounceResponse);
-    if (directAnnounceStillPending) {
+    if (isGatewayAgentRunPending(directAnnounceResponse)) {
+      const directAnnounceStatus = directAnnounceResponse.status;
+      if (
+        !params.requireVisibleReply &&
+        params.expectsCompletionMessage &&
+        directAnnounceStatus === "in_flight" &&
+        directAnnounceResponse.admitted !== true
+      ) {
+        // A pre-admission reservation blocks duplicate dispatch but does not own
+        // delivery yet. Avoid fallback injection while retaining the durable retry.
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "completion_handoff_pending",
+          error: "requester agent admission is still pending",
+          disposition: "retryable",
+        };
+      }
+      // An admitted ordinary completion handoff already owns the prompt;
+      // fallback steering would inject it twice. Settle wakes still need terminal evidence on replay.
+      if (
+        !params.requireVisibleReply &&
+        (params.expectsCompletionMessage || directAnnounceStatus === "accepted")
+      ) {
+        return {
+          delivered: true,
+          path: "direct",
+        };
+      }
       return {
-        delivered: true,
+        delivered: false,
         path: "direct",
+        reason: "completion_handoff_pending",
+        error: "requester agent run is still in flight",
+        disposition: "retryable",
+        ...(directAnnounceResponse.admitted === true ? { handoffAdmitted: true } : {}),
       };
     }
 
@@ -429,6 +468,17 @@ export async function sendSubagentAnnounceDirectly(params: {
       directAnnounceResult &&
       hasMessagingToolDeliveryToSource(directAnnounceResult, deliveryTarget),
     );
+    const hasYieldedContinuation = Boolean(
+      directAnnounceResult &&
+      directAnnounceResult.meta?.yielded === true &&
+      (directAnnounceResult.runtimeContinuationRetained === true ||
+        hasAcceptedSessionSpawnEvidence(directAnnounceResult.acceptedSessionSpawns)),
+    );
+    if (hasYieldedContinuation) {
+      // The runtime owns the accepted next wave. This wake is complete even
+      // though the resumed requester correctly withheld its terminal reply.
+      return { delivered: true, path: "direct" };
+    }
     const directDeliveryFailure =
       (shouldDeliverAgentFinal || requiresMessageToolDelivery) && directAnnounceResult
         ? getAgentCommandDeliveryFailure(directAnnounceResult)
@@ -483,6 +533,24 @@ export async function sendSubagentAnnounceDirectly(params: {
         return textDelivery;
       }
       if (hasRequiredSubagentNoOutputCompletion && !hasCompletionSideEffect) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "visible_reply_missing",
+          error: "completion agent did not produce a visible reply",
+        };
+      }
+    }
+    if (sessionOnlySubagentCompletion && !hasMessagingToolDelivery) {
+      if (hasVisibleNonSilentGatewayPayload) {
+        return {
+          delivered: false,
+          path: "direct",
+          reason: "message_tool_delivery_missing",
+          error: "completion agent did not use the message tool for message-tool-only delivery",
+        };
+      }
+      if (!hasCompletionSideEffect) {
         return {
           delivered: false,
           path: "direct",

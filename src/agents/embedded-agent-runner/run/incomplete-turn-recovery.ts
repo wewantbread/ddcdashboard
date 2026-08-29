@@ -98,6 +98,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.attempt.terminal.kind === "failed" ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
+    params.attempt.runtimeContinuationStarted ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
     hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
@@ -349,7 +350,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
     hasAsyncActivity(attempt.toolMetas) ||
     hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
     attempt.clientToolCalls ||
-    attempt.yieldDetected ||
+    (attempt.yieldDetected && attempt.runtimeContinuationRetained === true) ||
     attempt.didSendDeterministicApprovalPrompt
   ) {
     return null;

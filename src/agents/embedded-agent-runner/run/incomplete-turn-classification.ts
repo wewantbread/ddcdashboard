@@ -16,6 +16,8 @@ export type IncompleteTurnAttempt = Pick<
   | "clientToolCalls"
   | "currentAttemptAssistant"
   | "yieldDetected"
+  | "runtimeContinuationStarted"
+  | "runtimeContinuationRetained"
   | "didSendDeterministicApprovalPrompt"
   | "heartbeatToolResponse"
   | "toolMediaUrls"

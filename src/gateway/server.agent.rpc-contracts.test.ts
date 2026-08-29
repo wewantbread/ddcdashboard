@@ -18,6 +18,7 @@ type AgentResponse = {
   id?: string;
   ok?: boolean;
   payload?: {
+    admitted?: boolean;
     runId?: string;
     status?: string;
     result?: {
@@ -140,6 +141,7 @@ describe("gateway agent RPC contracts", () => {
       id: "agent-contract",
       ok: true,
       payload: {
+        admitted: true,
         runId: idempotencyKey,
         status: "accepted",
       },

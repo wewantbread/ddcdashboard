@@ -270,6 +270,10 @@ export type EmbeddedAgentRunResult = {
   messagingToolSourceReplyPayloads?: MessagingToolSourceReplyPayload[];
   // Child sessions successfully accepted by sessions_spawn during the run.
   acceptedSessionSpawns?: AcceptedSessionSpawn[];
+  // True when the runtime accepted a native continuation that owns the next requester turn.
+  runtimeContinuationStarted?: boolean;
+  // True only after the runtime retained that native continuation across foreground cleanup.
+  runtimeContinuationRetained?: boolean;
   // Structured heartbeat outcome recorded by the heartbeat response tool.
   heartbeatToolResponse?: HeartbeatToolResponse;
   // Count of successful cron.add tool calls in this run.

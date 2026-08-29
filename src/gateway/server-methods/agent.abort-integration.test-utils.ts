@@ -2576,7 +2576,7 @@ describe("gateway agent handler chat.abort integration", () => {
     expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
     expect(duplicateRespond).toHaveBeenCalledWith(
       true,
-      { runId, status: "in_flight", agentId: "main" },
+      { runId, status: "in_flight", admitted: true, agentId: "main" },
       undefined,
       {
         cached: true,
@@ -2643,6 +2643,7 @@ describe("gateway agent handler chat.abort integration", () => {
     expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
       runId,
       status: "accepted",
+      admitted: true,
       sessionKey: "agent:main:main",
     });
 
@@ -2660,7 +2661,13 @@ describe("gateway agent handler chat.abort integration", () => {
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expect(duplicateRespond).toHaveBeenCalledWith(
       true,
-      { runId, status: "in_flight", sessionKey: "agent:main:main", agentId: "main" },
+      {
+        runId,
+        status: "in_flight",
+        admitted: true,
+        sessionKey: "agent:main:main",
+        agentId: "main",
+      },
       undefined,
       {
         cached: true,

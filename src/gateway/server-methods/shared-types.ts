@@ -282,6 +282,21 @@ type GatewayKernelContext = {
     readOnly?: boolean;
     workspaceDir?: string;
   }) => Promise<GatewayModelCatalogSnapshot>;
+  /** Gateway-owned lookup, kept on the live context across plugin module graphs. */
+  loadPublishedGatewayReplyDispatchRuntime?: (params: {
+    agentId: string;
+    abortSignal?: AbortSignal;
+  }) => Promise<
+    | {
+        agentId: string;
+        agentDir: string;
+        workspaceDir: string;
+        config: OpenClawConfig;
+        /** Opaque host-owned generation, decoded only at the admission boundary. */
+        pluginGeneration: object;
+      }
+    | undefined
+  >;
   readPreparedGatewayModelCatalog?: (params?: {
     agentId?: string;
     agentDir?: string;

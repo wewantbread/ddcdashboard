@@ -1382,6 +1382,35 @@ describe("CodexNativeSubagentMonitor", () => {
     monitor.dispose();
   });
 
+  it("scopes pending completion handoff to its owning registration", async () => {
+    const client = createClient();
+    const runtime = createRuntime();
+    const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
+    const first = registerParent(monitor);
+    const second = registerParent(monitor);
+    first.bindTurn("turn-first");
+    second.bindTurn("turn-second");
+
+    await client.notify({
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-first",
+        item: directSpawnItem("v1", "parent-thread", "child-first"),
+      },
+    });
+    await client.notify(
+      nativeCompletionNotification({ agentPath: "child-first", result: "first result" }),
+    );
+
+    expect(first.hasPendingCompletionHandoff()).toBe(true);
+    expect(second.hasPendingCompletionHandoff()).toBe(false);
+
+    first.unregister();
+    second.unregister();
+    client.close();
+  });
+
   it("keeps collab completion as progress while app-server recovery is authoritative", async () => {
     const client = createClient();
     const runtime = createRuntime();

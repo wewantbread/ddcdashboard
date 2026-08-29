@@ -113,6 +113,8 @@ type AgentCommandDeliveryResult = {
   messagingToolSentTargets?: MessagingToolSend[];
   didSendDeterministicApprovalPrompt?: true;
   acceptedSessionSpawns?: NonNullable<RunResult["acceptedSessionSpawns"]>;
+  runtimeContinuationStarted?: true;
+  runtimeContinuationRetained?: true;
   successfulCronAdds?: number;
   deliverySucceeded?: boolean;
   deliveryStatus?: AgentCommandDeliveryStatus;
@@ -235,6 +237,12 @@ function buildDeliveryResult(params: {
       : {}),
     ...(hasNonEmptyArray(params.result.acceptedSessionSpawns)
       ? { acceptedSessionSpawns: params.result.acceptedSessionSpawns }
+      : {}),
+    ...(params.result.runtimeContinuationStarted === true
+      ? { runtimeContinuationStarted: true }
+      : {}),
+    ...(params.result.runtimeContinuationRetained === true
+      ? { runtimeContinuationRetained: true }
       : {}),
     ...(hasSuccessfulCronAdds ? { successfulCronAdds } : {}),
     ...(params.deliverySucceeded !== undefined

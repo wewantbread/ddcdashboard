@@ -16,7 +16,6 @@ import {
 import { resolvePersistedOverrideModelRef } from "../../agents/model-selection.js";
 import {
   acquireAgentRunPreparedModelRuntime,
-  loadPublishedGatewayReplyDispatchRuntime,
   type PreparedModelRuntimeLease,
   type PreparedReplyDispatchRuntime,
 } from "../../agents/prepared-model-runtime.js";
@@ -82,7 +81,7 @@ export type PreparedAgentRunDispatch = {
   resolvedThreadId?: string | number;
   dispatchTaskTrackingMode: Exclude<GatewayAgentTaskTrackingMode, "plugin_subagent">;
   preparedModelRuntimeLease: PreparedModelRuntimeLease;
-  replyDispatchRuntime: PreparedReplyDispatchRuntime;
+  replyDispatchRuntime: Pick<PreparedReplyDispatchRuntime, "config" | "pluginGeneration">;
   unpersistedOffloadedRefs: OffloadedRef[];
   userTurn: PreparedAgentRunUserTurn;
   workspaceOverride?: string;
@@ -296,9 +295,18 @@ export async function prepareAgentRunDispatch(params: {
   const existingRunAbort = params.context.chatAbortControllers.get(params.runId);
   if (!activeRunAbort.registered && existingRunAbort) {
     activeGatewayWorkAdmission.release();
-    params.markAgentRunAccepted(existingRunAbort.kind === "agent");
+    const existingAgentRunAdmitted = existingRunAbort.kind === "agent";
+    params.markAgentRunAccepted(existingAgentRunAdmitted);
     params.io.emitAcceptance(
-      [true, { runId: params.runId, status: "in_flight" as const }, undefined],
+      [
+        true,
+        {
+          runId: params.runId,
+          status: "in_flight" as const,
+          ...(existingAgentRunAdmitted ? { admitted: true } : {}),
+        },
+        undefined,
+      ],
       {
         cached: true,
         runId: params.runId,
@@ -375,9 +383,11 @@ export async function prepareAgentRunDispatch(params: {
     cleanupPreaccept(true);
     return false;
   };
-  let replyDispatchRuntime: PreparedReplyDispatchRuntime;
+  let replyDispatchRuntime: PreparedAgentRunDispatch["replyDispatchRuntime"];
   try {
-    const publishedRuntime = await loadPublishedGatewayReplyDispatchRuntime({
+    // Detached plugin callbacks can execute from a second OpenClaw module graph. Resolve the
+    // publication through the live Gateway context so admission always reaches its owner.
+    const publishedRuntime = await params.context.loadPublishedGatewayReplyDispatchRuntime?.({
       agentId: params.activeSessionAgentId,
       abortSignal: activeRunAbort.controller.signal,
     });
@@ -387,18 +397,21 @@ export async function prepareAgentRunDispatch(params: {
     if (!publishedRuntime) {
       throw new Error(`published reply runtime missing for ${params.activeSessionAgentId}`);
     }
-    replyDispatchRuntime = publishedRuntime;
+    const pluginGeneration =
+      // SAFETY: the live Gateway publishes this exact prepared generation type.
+      publishedRuntime.pluginGeneration as PreparedReplyDispatchRuntime["pluginGeneration"];
+    replyDispatchRuntime = { config: publishedRuntime.config, pluginGeneration };
     preparedModelRuntimeLease = await acquireAgentRunPreparedModelRuntime(
       {
-        config: replyDispatchRuntime.config,
-        agentId: replyDispatchRuntime.agentId,
-        agentDir: replyDispatchRuntime.agentDir,
+        config: publishedRuntime.config,
+        agentId: publishedRuntime.agentId,
+        agentDir: publishedRuntime.agentDir,
         allowGatewaySubagentBinding: true,
-        workspaceDir: workspaceOverride ?? replyDispatchRuntime.workspaceDir,
+        workspaceDir: workspaceOverride ?? publishedRuntime.workspaceDir,
       },
       {
         catalogMode: "static",
-        pluginGeneration: replyDispatchRuntime.pluginGeneration,
+        pluginGeneration,
         abortSignal: activeRunAbort.controller.signal,
       },
     );
@@ -583,6 +596,7 @@ export async function prepareAgentRunDispatch(params: {
     sessionKey: params.resolvedSessionKey,
     agentId: params.activeSessionAgentId,
     status: "accepted" as const,
+    admitted: true as const,
     acceptedAt: Date.now(),
     ...(taskTrackingMode === "plugin_subagent" ? { runtime: resolvedRuntime } : {}),
   };
@@ -595,6 +609,9 @@ export async function prepareAgentRunDispatch(params: {
       ok: true,
       payload: {
         ...accepted,
+        // A reservation uses the same accepted-shaped dedupe record before this
+        // boundary. Persist the admission fact so replays transfer prompt ownership.
+        admitted: true,
         controlUiVisible: !params.suppressVisibleSessionEffects,
         dedupeKeys: params.agentDedupeKeys,
         ownerConnId: params.ownerConnId,

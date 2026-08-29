@@ -237,4 +237,19 @@ describe("overflow loop owner policies", () => {
       } as never).didSendDeterministicApprovalPrompt,
     ).toBe(true);
   });
+
+  it("preserves runtime-owned continuation evidence for delivery", () => {
+    expect(
+      copyAttemptDeliveryState({
+        runtimeContinuationStarted: true,
+        runtimeContinuationRetained: true,
+        messagingToolSentTexts: [],
+        messagingToolSentMediaUrls: [],
+        messagingToolSentTargets: [],
+      } as never),
+    ).toMatchObject({
+      runtimeContinuationStarted: true,
+      runtimeContinuationRetained: true,
+    });
+  });
 });
