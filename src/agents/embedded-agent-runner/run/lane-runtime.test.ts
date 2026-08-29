@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("embedded run lane priority", () => {
-  it("runs a foreground user turn before queued restart recovery", async () => {
+  it("runs a foreground user turn before queued restart recovery and inter-session work", async () => {
     const lane = "test:restart-recovery-priority";
     setCommandLaneConcurrency(lane, 1);
     let releaseBlocker: () => void = () => {};
@@ -37,6 +37,18 @@ describe("embedded run lane priority", () => {
         }),
       },
     );
+    const interSession = enqueueCommandInLane(
+      lane,
+      async () => {
+        order.push("inter-session");
+      },
+      {
+        priority: resolveEmbeddedRunSessionQueuePriority("user", {
+          kind: "inter_session",
+          sourceTool: "sessions_send",
+        }),
+      },
+    );
     const foreground = enqueueCommandInLane(
       lane,
       async () => {
@@ -46,9 +58,9 @@ describe("embedded run lane priority", () => {
     );
 
     releaseBlocker();
-    await Promise.all([blocker, foreground, restartRecovery]);
+    await Promise.all([blocker, foreground, restartRecovery, interSession]);
 
-    expect(order).toEqual(["foreground-user", "restart-recovery"]);
+    expect(order).toEqual(["foreground-user", "restart-recovery", "inter-session"]);
   });
 });
 

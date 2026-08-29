@@ -61,7 +61,10 @@ export function resolveEmbeddedRunSessionQueuePriority(
   trigger: RunEmbeddedAgentParams["trigger"],
   inputProvenance?: RunEmbeddedAgentParams["inputProvenance"],
 ): CommandQueueEnqueueOptions["priority"] {
-  if (isMainSessionRestartRecoveryInputProvenance(inputProvenance)) {
+  if (
+    inputProvenance?.kind === "inter_session" ||
+    isMainSessionRestartRecoveryInputProvenance(inputProvenance)
+  ) {
     return "background";
   }
   switch (trigger) {
