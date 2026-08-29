@@ -264,6 +264,9 @@ class ChatController internal constructor(
   )
 
   private val pendingSettingsMutations = ConcurrentHashMap<SessionSettingsKey, CompletableDeferred<Boolean>>()
+  private val _pendingSessionSettingsKeys = MutableStateFlow<Set<String>>(emptySet())
+  val pendingSessionSettingsKeys: StateFlow<Set<String>> =
+    _pendingSessionSettingsKeys.asStateFlow()
   private val settingsMutationRevisions = mutableMapOf<ChatCacheScope?, Long>()
   private val activeSessionRefreshesByScope = mutableMapOf<ChatCacheScope?, Int>()
 
@@ -280,6 +283,23 @@ class ChatController internal constructor(
   private val thinkingRequestSequence = AtomicLong(0)
   private val latestThinkingIntents = ConcurrentHashMap<SessionSettingsKey, ThinkingIntent>()
   private val latestAcceptedThinkingStates = ConcurrentHashMap<SessionSettingsKey, AcceptedThinkingState>()
+
+  private data class FastModeIntent(
+    val requestId: Long,
+    val requested: ChatFastMode?,
+  )
+
+  private data class FastModeState(
+    val fastMode: ChatFastMode?,
+    val effectiveFastMode: ChatFastMode?,
+    val hasFastModeMetadata: Boolean,
+    val hasEffectiveFastModeMetadata: Boolean,
+  )
+
+  private val fastModeRequestSequence = AtomicLong(0)
+  private val latestFastModeIntents = ConcurrentHashMap<SessionSettingsKey, FastModeIntent>()
+  private val latestAcceptedFastModeStates =
+    ConcurrentHashMap<SessionSettingsKey, FastModeState>()
   private val _sessionKey = MutableStateFlow("main")
   val sessionKey: StateFlow<String> = _sessionKey.asStateFlow()
 
@@ -2235,6 +2255,50 @@ class ChatController internal constructor(
     scope.launch { fetchChatMetadata(requestSequence) }
   }
 
+  /** Updates or clears the explicit Fast Mode override for future runs in one session. */
+  fun setSessionFastMode(
+    sessionKey: String,
+    enabled: Boolean,
+    clearOverride: Boolean = false,
+  ) {
+    val requested =
+      if (clearOverride) {
+        null
+      } else if (enabled) {
+        ChatFastMode.On
+      } else {
+        ChatFastMode.Off
+      }
+    val key = normalizeRequestedSessionKey(sessionKey)
+    val entry = _sessions.value.firstOrNull { it.key == key }
+    if (clearOverride && entry?.fastMode == null) return
+    if (!clearOverride && entry?.fastMode == requested && entry?.effectiveFastMode == requested) return
+    val settingsKey = sessionSettingsKey(key)
+    val queuedMutation = enqueueSessionSettingsMutation(settingsKey)
+    latestAcceptedFastModeStates.putIfAbsent(settingsKey, entry.fastModeState())
+    val intent =
+      FastModeIntent(
+        requestId = fastModeRequestSequence.incrementAndGet(),
+        requested = requested,
+      )
+    latestFastModeIntents[settingsKey] = intent
+    applyFastModeState(
+      key = key,
+      settingsKey = settingsKey,
+      state =
+        FastModeState(
+          fastMode = requested,
+          effectiveFastMode = requested,
+          hasFastModeMetadata = true,
+          hasEffectiveFastModeMetadata = true,
+        ),
+      createIfMissing = false,
+    )
+    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+      setSessionFastModeAwait(key, settingsKey, intent, queuedMutation)
+    }
+  }
+
   /** Persists the normalized thinking level used for subsequent chat sends. */
   fun setThinkingLevel(thinkingLevel: String) {
     val normalized = normalizeThinking(thinkingLevel)
@@ -2273,6 +2337,56 @@ class ChatController internal constructor(
         intent = intent,
         queuedMutation = queuedMutation,
       )
+    }
+  }
+
+  /** Patches permissions for future runs without blocking the Compose caller. */
+  fun setSessionPermissionMode(
+    sessionKey: String,
+    permissionMode: ChatPermissionMode?,
+  ) {
+    // Queue synchronously with other session settings so an immediate send cannot overtake it.
+    scope.launch(start = CoroutineStart.UNDISPATCHED) {
+      setSessionPermissionModeAwait(sessionKey = sessionKey, permissionMode = permissionMode)
+    }
+  }
+
+  internal suspend fun setSessionPermissionModeAwait(
+    sessionKey: String,
+    permissionMode: ChatPermissionMode?,
+  ): Boolean {
+    val key = normalizeRequestedSessionKey(sessionKey)
+    val settingsKey = sessionSettingsKey(key)
+    return runSessionSettingsMutation(settingsKey) { requestLease ->
+      if (settingsKey == sessionSettingsKey(key)) updateErrorText(null)
+      try {
+        val lease = requestLease ?: throw GatewayRequestNotEnqueued("not connected")
+        val params =
+          buildJsonObject {
+            put("key", JsonPrimitive(key))
+            settingsKey.ownerAgentId?.let { put("agentId", JsonPrimitive(it)) }
+            put(
+              "permissionMode",
+              permissionMode?.wireValue?.let(::JsonPrimitive) ?: JsonNull,
+            )
+          }
+        lease.request("sessions.patch", params.toString())
+        applyAcceptedPermissionPatch(
+          key = key,
+          settingsKey = settingsKey,
+          permissionMode = permissionMode,
+        )
+        true
+      } catch (err: CancellationException) {
+        throw err
+      } catch (err: Throwable) {
+        if (settingsKey == sessionSettingsKey(key)) {
+          updateLocalizedErrorText(
+            err.message?.let(::verbatimText) ?: nativeText("Could not update permissions."),
+          )
+        }
+        false
+      }
     }
   }
 
@@ -2329,6 +2443,48 @@ class ChatController internal constructor(
       }
     }
   }
+
+  private suspend fun setSessionFastModeAwait(
+    sessionKey: String,
+    settingsKey: SessionSettingsKey,
+    intent: FastModeIntent,
+    queuedMutation: QueuedSessionSettingsMutation,
+  ): Boolean =
+    runSessionSettingsMutation(queuedMutation) { requestLease ->
+      val rollbackState =
+        latestAcceptedFastModeStates[settingsKey]
+          ?: _sessions.value.firstOrNull { it.key == sessionKey }.fastModeState()
+      if (settingsKey == sessionSettingsKey(sessionKey)) updateErrorText(null)
+      try {
+        val lease = requestLease ?: throw GatewayRequestNotEnqueued("not connected")
+        val params =
+          buildJsonObject {
+            put("key", JsonPrimitive(sessionKey))
+            settingsKey.ownerAgentId?.let { put("agentId", JsonPrimitive(it)) }
+            put("fastMode", intent.requested?.toWireJson() ?: JsonNull)
+          }
+        val response = lease.request("sessions.patch", params.toString())
+        applyAcceptedFastModePatch(
+          key = sessionKey,
+          settingsKey = settingsKey,
+          requested = intent.requested,
+          intent = intent,
+          resolution = parseSessionSettingsPatchResolution(response),
+        )
+        true
+      } catch (err: CancellationException) {
+        rollbackFastModeIntent(sessionKey, settingsKey, intent, rollbackState)
+        throw err
+      } catch (err: Throwable) {
+        rollbackFastModeIntent(sessionKey, settingsKey, intent, rollbackState)
+        if (settingsKey == sessionSettingsKey(sessionKey)) {
+          updateLocalizedErrorText(
+            err.message?.let(::verbatimText) ?: nativeText("Could not update fast mode."),
+          )
+        }
+        false
+      }
+    }
 
   private suspend fun setSessionThinkingLevelAwait(
     sessionKey: String,
@@ -2408,6 +2564,7 @@ class ChatController internal constructor(
     return synchronized(gatewayScopeApplyLock) {
       val previous = pendingSettingsMutations.put(settingsKey, pending)
       incrementSettingsMutationRevision(settingsKey.gatewayScope)
+      publishPendingSessionSettingsKeys()
       QueuedSessionSettingsMutation(
         settingsKey = settingsKey,
         requestLease = requestLease,
@@ -2445,7 +2602,10 @@ class ChatController internal constructor(
           // drain, refreshed session metadata is authoritative rollback state.
           latestAcceptedThinkingStates.remove(settingsKey)
           latestThinkingIntents.remove(settingsKey)
+          latestAcceptedFastModeStates.remove(settingsKey)
+          latestFastModeIntents.remove(settingsKey)
         }
+        publishPendingSessionSettingsKeys()
         pruneSettingsMutationRevision(settingsKey.gatewayScope)
       }
       // Publish only after registry cleanup so a resumed scope waiter cannot
@@ -2466,6 +2626,10 @@ class ChatController internal constructor(
   private fun settingsMutationRevision(gatewayScope: ChatCacheScope?): Long = settingsMutationRevisions[gatewayScope] ?: 0L
 
   private fun hasPendingSessionSettings(gatewayScope: ChatCacheScope?): Boolean = pendingSettingsMutations.keys.any { it.gatewayScope == gatewayScope }
+
+  private fun publishPendingSessionSettingsKeys() {
+    _pendingSessionSettingsKeys.value = pendingSettingsMutations.keys.mapTo(linkedSetOf()) { it.sessionKey }
+  }
 
   private fun pruneSettingsMutationRevision(gatewayScope: ChatCacheScope?) {
     // A drained revision only matters while an in-flight list request can
@@ -6844,6 +7008,8 @@ class ChatController internal constructor(
     val model: String?,
     val thinkingLevel: String?,
     val thinkingLevels: List<ChatThinkingLevelOption>?,
+    val fastMode: ChatFastMode?,
+    val effectiveFastMode: ChatFastMode?,
   )
 
   private fun parseSessions(jsonString: String): SessionListResult {
@@ -6920,6 +7086,7 @@ class ChatController internal constructor(
           ?.let { runCatching { json.decodeFromJsonElement<SessionObserverDigest>(it) }.getOrNull() },
       hasObserverDigestMetadata = "observerDigest" in obj,
       lastActivityAt = obj["lastActivityAt"].asLongOrNull(),
+      inputTokens = obj["inputTokens"].asLongOrNull(),
       totalTokens = obj["totalTokens"].asLongOrNull(),
       totalTokensFresh = obj["totalTokensFresh"].asBooleanOrNull(),
       modelProvider = obj["modelProvider"].asStringOrNull()?.trim(),
@@ -6927,7 +7094,14 @@ class ChatController internal constructor(
       thinkingLevel = obj["thinkingLevel"].asStringOrNull()?.trim(),
       thinkingLevels = parseThinkingLevels(obj["thinkingLevels"]),
       thinkingDefault = obj["thinkingDefault"].asStringOrNull()?.trim(),
+      permissionMode = ChatPermissionMode.fromWireValue(obj["permissionMode"].asStringOrNull()),
+      hasPermissionModeMetadata = "permissionMode" in obj,
+      fastMode = ChatFastMode.fromWireValue(obj["fastMode"].asStringOrNull()),
+      effectiveFastMode = ChatFastMode.fromWireValue(obj["effectiveFastMode"].asStringOrNull()),
+      hasFastModeMetadata = "fastMode" in obj,
+      hasEffectiveFastModeMetadata = "effectiveFastMode" in obj,
       contextTokens = obj["contextTokens"].asLongOrNull(),
+      estimatedCostUsd = obj["estimatedCostUsd"].asJsonNumberOrNull()?.takeIf { it.isFinite() && it >= 0.0 },
       hasContextUsageMetadata =
         "totalTokens" in obj ||
           "totalTokensFresh" in obj ||
@@ -6953,6 +7127,10 @@ class ChatController internal constructor(
       endedAt = obj["endedAt"].asLongOrNull(),
       runtimeMs = obj["runtimeMs"].asLongOrNull(),
       outputTokens = obj["outputTokens"].asLongOrNull(),
+      hasSessionUsageMetadata =
+        "inputTokens" in obj ||
+          "outputTokens" in obj ||
+          "estimatedCostUsd" in obj,
       hasRunMetadata =
         "status" in obj ||
           "lastRunError" in obj ||
@@ -6982,6 +7160,8 @@ class ChatController internal constructor(
       model = resolved["model"].asStringOrNull()?.trim(),
       thinkingLevel = resolved["thinkingLevel"].asStringOrNull()?.trim(),
       thinkingLevels = parseThinkingLevels(resolved["thinkingLevels"]),
+      fastMode = ChatFastMode.fromWireValue(resolved["fastMode"].asStringOrNull()),
+      effectiveFastMode = ChatFastMode.fromWireValue(resolved["effectiveFastMode"].asStringOrNull()),
     )
   }
 
@@ -6995,6 +7175,95 @@ class ChatController internal constructor(
         val label = obj["label"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: id
         ChatThinkingLevelOption(id = id, label = label)
       }.distinctBy { it.id }
+  }
+
+  private fun applyAcceptedFastModePatch(
+    key: String,
+    settingsKey: SessionSettingsKey,
+    requested: ChatFastMode?,
+    intent: FastModeIntent,
+    resolution: SessionSettingsPatchResolution?,
+  ) {
+    val acceptedOverride = resolution?.fastMode ?: requested
+    val acceptedEffective = resolution?.effectiveFastMode ?: acceptedOverride
+    val acceptedState =
+      FastModeState(
+        fastMode = acceptedOverride,
+        effectiveFastMode = acceptedEffective,
+        hasFastModeMetadata = true,
+        hasEffectiveFastModeMetadata = true,
+      )
+    latestAcceptedFastModeStates[settingsKey] = acceptedState
+    if (latestFastModeIntents[settingsKey]?.requestId == intent.requestId) {
+      applyFastModeState(key, settingsKey, acceptedState, createIfMissing = true)
+    }
+    latestFastModeIntents.remove(settingsKey, intent)
+  }
+
+  private fun rollbackFastModeIntent(
+    key: String,
+    settingsKey: SessionSettingsKey,
+    intent: FastModeIntent,
+    rollbackState: FastModeState,
+  ) {
+    if (latestFastModeIntents[settingsKey]?.requestId == intent.requestId) {
+      applyFastModeState(key, settingsKey, rollbackState, createIfMissing = false)
+    }
+    latestFastModeIntents.remove(settingsKey, intent)
+  }
+
+  private fun applyFastModeState(
+    key: String,
+    settingsKey: SessionSettingsKey,
+    state: FastModeState,
+    createIfMissing: Boolean,
+  ) {
+    if (settingsKey != sessionSettingsKey(key)) return
+    val current = _sessions.value
+    val index = current.indexOfFirst { it.key == key }
+    if (index < 0 && !createIfMissing) return
+    val applied =
+      (current.getOrNull(index) ?: ChatSessionEntry(key = key, updatedAtMs = null)).copy(
+        fastMode = state.fastMode,
+        effectiveFastMode = state.effectiveFastMode,
+        hasFastModeMetadata = state.hasFastModeMetadata,
+        hasEffectiveFastModeMetadata = state.hasEffectiveFastModeMetadata,
+      )
+    _sessions.value =
+      if (index >= 0) {
+        current.toMutableList().also { it[index] = applied }
+      } else {
+        listOf(applied) + current
+      }
+  }
+
+  private fun ChatSessionEntry?.fastModeState(): FastModeState =
+    FastModeState(
+      fastMode = this?.fastMode,
+      effectiveFastMode = this?.effectiveFastMode,
+      hasFastModeMetadata = this?.hasFastModeMetadata == true,
+      hasEffectiveFastModeMetadata = this?.hasEffectiveFastModeMetadata == true,
+    )
+
+  private fun applyAcceptedPermissionPatch(
+    key: String,
+    settingsKey: SessionSettingsKey,
+    permissionMode: ChatPermissionMode?,
+  ) {
+    if (settingsKey != sessionSettingsKey(key)) return
+    val current = _sessions.value
+    val index = current.indexOfFirst { it.key == key }
+    val applied =
+      (current.getOrNull(index) ?: ChatSessionEntry(key = key, updatedAtMs = null)).copy(
+        permissionMode = permissionMode,
+        hasPermissionModeMetadata = true,
+      )
+    _sessions.value =
+      if (index >= 0) {
+        current.toMutableList().also { it[index] = applied }
+      } else {
+        listOf(applied) + current
+      }
   }
 
   private fun applyAcceptedModelPatch(
@@ -7846,6 +8115,7 @@ internal fun mergeChatSessionEntry(
   replaceActiveRunIds: Boolean = false,
 ): ChatSessionEntry {
   val preserveExistingContextUsage = preserveExistingContextUsageWithoutTotal && next.totalTokens == null
+  val replaceSessionUsage = next.hasSessionUsageMetadata
   val hasActiveRun = if (next.hasActiveRunMetadata) next.hasActiveRun else existing.hasActiveRun
   val activeRunIds =
     if (replaceActiveRunIds || next.hasActiveRunIdsMetadata) next.activeRunIds else existing.activeRunIds
@@ -7889,6 +8159,7 @@ internal fun mergeChatSessionEntry(
     observerDigest = observerDigest,
     hasObserverDigestMetadata = existing.hasObserverDigestMetadata || next.hasObserverDigestMetadata,
     lastActivityAt = next.lastActivityAt ?: existing.lastActivityAt,
+    inputTokens = if (replaceSessionUsage) next.inputTokens else existing.inputTokens,
     totalTokens =
       when {
         preserveExistingContextUsage -> existing.totalTokens
@@ -7906,12 +8177,24 @@ internal fun mergeChatSessionEntry(
     thinkingLevel = next.thinkingLevel ?: existing.thinkingLevel,
     thinkingLevels = next.thinkingLevels ?: existing.thinkingLevels,
     thinkingDefault = next.thinkingDefault ?: existing.thinkingDefault,
+    permissionMode =
+      if (next.hasPermissionModeMetadata) next.permissionMode else existing.permissionMode,
+    hasPermissionModeMetadata =
+      existing.hasPermissionModeMetadata || next.hasPermissionModeMetadata,
+    fastMode = if (next.hasFastModeMetadata) next.fastMode else existing.fastMode,
+    effectiveFastMode =
+      if (next.hasEffectiveFastModeMetadata) next.effectiveFastMode else existing.effectiveFastMode,
+    hasFastModeMetadata = existing.hasFastModeMetadata || next.hasFastModeMetadata,
+    hasEffectiveFastModeMetadata =
+      existing.hasEffectiveFastModeMetadata || next.hasEffectiveFastModeMetadata,
     contextTokens =
       when {
         preserveExistingContextUsage -> next.contextTokens ?: existing.contextTokens
         next.hasContextUsageMetadata -> next.contextTokens
         else -> null
       },
+    estimatedCostUsd =
+      if (replaceSessionUsage) next.estimatedCostUsd else existing.estimatedCostUsd,
     hasContextUsageMetadata =
       when {
         preserveExistingContextUsage -> existing.hasContextUsageMetadata || next.contextTokens != null
@@ -7939,7 +8222,10 @@ internal fun mergeChatSessionEntry(
     startedAt = if (next.hasRunMetadata) next.startedAt else existing.startedAt,
     endedAt = if (next.hasRunMetadata) next.endedAt else existing.endedAt,
     runtimeMs = if (next.hasRunMetadata) next.runtimeMs else existing.runtimeMs,
-    outputTokens = if (next.hasRunMetadata) next.outputTokens else existing.outputTokens,
+    outputTokens =
+      if (replaceSessionUsage) next.outputTokens else existing.outputTokens,
+    hasSessionUsageMetadata =
+      if (replaceSessionUsage) next.hasSessionUsageMetadata else existing.hasSessionUsageMetadata,
     hasRunMetadata = existing.hasRunMetadata || next.hasRunMetadata,
   )
 }

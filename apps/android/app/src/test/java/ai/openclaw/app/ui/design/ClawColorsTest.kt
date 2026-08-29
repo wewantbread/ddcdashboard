@@ -1,5 +1,6 @@
 package ai.openclaw.app.ui.design
 
+import ai.openclaw.app.AppearanceThemeFamily
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.lerp
@@ -11,6 +12,17 @@ import org.junit.Assert.assertSame
 import org.junit.Test
 
 class ClawColorsTest {
+  @Test
+  fun officialThemeFamiliesExposeTheirDarkPreviewPaletteAndParseWireValues() {
+    for (family in AppearanceThemeFamily.entries) {
+      val colors = clawColorsForTheme(dark = true, family = family, accentArgb = null)
+      assertEquals(Color(family.previewCanvasArgb), colors.canvas)
+      assertEquals(Color(family.previewAccentArgb), colors.accent)
+      assertEquals(family, AppearanceThemeFamily.fromRawValue(family.rawValue.uppercase()))
+    }
+    assertEquals(AppearanceThemeFamily.Claw, AppearanceThemeFamily.fromRawValue("unknown"))
+  }
+
   @Test
   fun sessionColorsAdaptToThemeAndUnsetNamesHaveNoIndicator() {
     val light = clawColorsForTheme(dark = false, accentArgb = null)
@@ -30,8 +42,8 @@ class ClawColorsTest {
   fun nullAccentPreservesHardcodedDarkAndLightPalettes() {
     val expectedAccents =
       mapOf(
-        true to Triple(Color(0xFF6EA8FF), Color(0xFF1A2A44), Color(0xFF5B93E8)),
-        false to Triple(Color(0xFF1B5ACB), Color(0xFFEAF2FF), Color(0xFF174CA9)),
+        true to Triple(Color(0xFFFF5C5C), Color(0x1AFF5C5C), Color(0xFFD13C3C)),
+        false to Triple(Color(0xFFC23434), Color(0x1AC23434), Color(0xFFA32C2C)),
       )
 
     for ((dark, expected) in expectedAccents) {
@@ -60,8 +72,12 @@ class ClawColorsTest {
       assertNotEquals(base.accentSoft, colors.accentSoft)
       assertNotEquals(base.accentBorder, colors.accentBorder)
       assertEquals(
+        accent.copy(alpha = if (dark) 0.12f else 0.15f).compositeOver(base.canvas),
+        colors.userMessageSurface,
+      )
+      assertEquals(
         base.copy(accent = colors.accent, accentSoft = colors.accentSoft, accentBorder = colors.accentBorder),
-        colors,
+        colors.copy(userMessageSurface = base.userMessageSurface),
       )
     }
   }

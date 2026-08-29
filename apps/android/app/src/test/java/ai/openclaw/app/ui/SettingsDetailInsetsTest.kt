@@ -44,6 +44,9 @@ class SettingsDetailInsetsTest {
   @get:Rule
   val composeRule = createComposeRule()
 
+  // Mirrors the bottom inset SettingsDetailFrame reserves below its scroll viewport.
+  private val settingsFrameBottomPadding = 4.dp
+
   @Test
   fun keyboardInsetsResizeSettingsWithoutNavigation() = verifyInsets(NavigationSuiteType.None)
 
@@ -107,7 +110,7 @@ class SettingsDetailInsetsTest {
       val remainingBottom = (maxOf(navigationBottom, imeBottom) - ancestorBottom) / density
       assertEquals(
         "$navigationType must consume the remaining bottom inset (IME=$imeBottom)",
-        host.bottom.value - remainingBottom - 6.dp.value,
+        host.bottom.value - remainingBottom - settingsFrameBottomPadding.value,
         viewport.bottom.value,
         1f / density,
       )

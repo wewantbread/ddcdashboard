@@ -428,6 +428,21 @@ class SettingsScreensTest {
     assertTrue(discoveredRows > addPanel && discoveredRows < pairedPanel)
   }
 
+  @Test
+  fun appearanceScreenUsesDirectControlsWithoutRedundantSummaryPanel() {
+    val source = settingsScreensSource()
+    val screenStart = source.indexOf("private fun AppearanceSettingsScreen(")
+    val screenEnd = source.indexOf("@Composable", screenStart + 1)
+    assertTrue(screenStart >= 0 && screenEnd > screenStart)
+    val screenBody = source.substring(screenStart, screenEnd)
+
+    assertFalse(screenBody.contains("SettingsMetricPanel("))
+    assertTrue(screenBody.contains("nativeString(\"Theme family\")"))
+    assertTrue(screenBody.contains("nativeString(\"Color mode\")"))
+    assertTrue(screenBody.contains("nativeString(\"Accent color\")"))
+    assertTrue(screenBody.contains("nativeString(\"App language\")"))
+  }
+
   private fun settingsScreensSource(): String {
     val candidates =
       listOf(

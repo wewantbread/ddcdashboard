@@ -35,6 +35,24 @@ data class GatewayCredentials(
     )
 }
 
+internal val defaultSidebarPageOrder = listOf("settings", "work", "home", "skills", "threads")
+internal val defaultSidebarVisiblePages = defaultSidebarPageOrder
+
+internal fun sanitizeSidebarPageOrder(pageIds: List<String>): List<String> {
+  val knownIds = defaultSidebarPageOrder.toSet()
+  val supplied =
+    pageIds.map(String::trim).filter { it in knownIds }.distinct()
+  return supplied + defaultSidebarPageOrder.filterNot(supplied::contains)
+}
+
+internal fun sanitizeSidebarVisiblePages(pageIds: List<String>): List<String> {
+  val knownIds = defaultSidebarPageOrder.toSet()
+  val supplied = pageIds.map(String::trim).filter { it in knownIds }.distinct()
+  // The sidebar UI refuses to unpin its final page. An empty persisted set can
+  // therefore only come from corrupt or external state and recovers to defaults.
+  return supplied.ifEmpty { defaultSidebarVisiblePages }
+}
+
 /**
  * Reactive settings facade for Android node preferences and encrypted gateway credentials.
  */
@@ -70,9 +88,15 @@ class SecurePrefs(
     private const val voiceWakeEnabledKey = "voiceWake.enabled"
     private const val voiceWakeWordsKey = "voiceWake.triggerWords"
     private const val appearanceThemeModeKey = "appearance.themeMode"
+    private const val appearanceThemeFamilyKey = "appearance.themeFamily"
+    private const val appearanceAccentArgbKey = "appearance.accentArgb"
+    private const val appearancePendingSyncKeysKey = "appearance.pendingSyncKeys"
     private const val chatModelFavoritesKey = "chat.modelFavorites"
     private const val chatModelRecentsKey = "chat.modelRecents"
     private const val sessionCustomGroupsKey = "sessions.customGroups"
+    private const val sidebarPageOrderKey = "sidebar.pageOrder"
+    private const val sidebarVisiblePagesKey = "sidebar.visiblePages"
+    private val appearanceSyncKeys = setOf("ui.theme", "ui.themeMode", "ui.accent")
     private const val maxChatModelRecents = 5
     private const val gatewayCustomHeadersKeyPrefix = "gateway.customHeaders."
   }
@@ -225,6 +249,19 @@ class SecurePrefs(
     MutableStateFlow(AppearanceThemeMode.fromRawValue(plainPrefs.getString(appearanceThemeModeKey, null)))
   val appearanceThemeMode: StateFlow<AppearanceThemeMode> = _appearanceThemeMode
 
+  private val _appearanceThemeFamily =
+    MutableStateFlow(AppearanceThemeFamily.fromRawValue(plainPrefs.getString(appearanceThemeFamilyKey, null)))
+  val appearanceThemeFamily: StateFlow<AppearanceThemeFamily> = _appearanceThemeFamily
+
+  private val _appearanceAccentArgb = MutableStateFlow(plainPrefs.takeIf { it.contains(appearanceAccentArgbKey) }?.getLong(appearanceAccentArgbKey, 0L))
+  val appearanceAccentArgb: StateFlow<Long?> = _appearanceAccentArgb
+  private var appearancePendingSyncKeys: Set<String> =
+    plainPrefs
+      .getStringSet(appearancePendingSyncKeysKey, emptySet())
+      .orEmpty()
+      .filterTo(linkedSetOf(), appearanceSyncKeys::contains)
+  private val appearancePreferenceRevisions = appearanceSyncKeys.associateWith { 0L }.toMutableMap()
+
   private val _modelFavorites = MutableStateFlow(loadChatModelRefs(chatModelFavoritesKey))
   val modelFavorites: StateFlow<List<String>> = _modelFavorites
 
@@ -235,6 +272,12 @@ class SecurePrefs(
   // persist server-side via the session category field (mirrors web localStorage).
   private val _sessionCustomGroups = MutableStateFlow(loadChatModelRefs(sessionCustomGroupsKey))
   val sessionCustomGroups: StateFlow<List<String>> = _sessionCustomGroups
+
+  private val _sidebarPageOrder = MutableStateFlow(loadSidebarPageOrder())
+  val sidebarPageOrder: StateFlow<List<String>> = _sidebarPageOrder
+
+  private val _sidebarVisiblePages = MutableStateFlow(loadSidebarVisiblePages())
+  val sidebarVisiblePages: StateFlow<List<String>> = _sidebarVisiblePages
 
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
@@ -688,9 +731,97 @@ class SecurePrefs(
     return VoiceWakePreferences.sanitizeTriggerWords(decoded.orEmpty())
   }
 
-  fun setAppearanceThemeMode(mode: AppearanceThemeMode) {
-    plainPrefs.edit { putString(appearanceThemeModeKey, mode.rawValue) }
+  @Synchronized
+  fun setAppearanceThemeMode(
+    mode: AppearanceThemeMode,
+    pendingSync: Boolean = false,
+  ) {
+    val nextPending = pendingAppearanceSyncKeys("ui.themeMode", pendingSync)
+    plainPrefs.edit {
+      putString(appearanceThemeModeKey, mode.rawValue)
+      if (pendingSync) putStringSet(appearancePendingSyncKeysKey, nextPending)
+    }
+    if (pendingSync) {
+      appearancePendingSyncKeys = nextPending
+      incrementAppearancePreferenceRevision("ui.themeMode")
+    }
     _appearanceThemeMode.value = mode
+  }
+
+  @Synchronized
+  fun setAppearanceThemeFamily(
+    family: AppearanceThemeFamily,
+    pendingSync: Boolean = false,
+  ) {
+    val nextPending = pendingAppearanceSyncKeys("ui.theme", pendingSync)
+    plainPrefs.edit {
+      putString(appearanceThemeFamilyKey, family.rawValue)
+      if (pendingSync) putStringSet(appearancePendingSyncKeysKey, nextPending)
+    }
+    if (pendingSync) {
+      appearancePendingSyncKeys = nextPending
+      incrementAppearancePreferenceRevision("ui.theme")
+    }
+    _appearanceThemeFamily.value = family
+  }
+
+  @Synchronized
+  fun setAppearanceAccentArgb(
+    argb: Long?,
+    pendingSync: Boolean = false,
+  ) {
+    val nextPending = pendingAppearanceSyncKeys("ui.accent", pendingSync)
+    plainPrefs.edit {
+      if (argb == null) {
+        remove(appearanceAccentArgbKey)
+      } else {
+        putLong(appearanceAccentArgbKey, argb)
+      }
+      if (pendingSync) putStringSet(appearancePendingSyncKeysKey, nextPending)
+    }
+    if (pendingSync) {
+      appearancePendingSyncKeys = nextPending
+      incrementAppearancePreferenceRevision("ui.accent")
+    }
+    _appearanceAccentArgb.value = argb
+  }
+
+  @Synchronized
+  internal fun pendingAppearancePreferenceEntries(): Map<String, String?> =
+    buildMap {
+      if ("ui.theme" in appearancePendingSyncKeys) put("ui.theme", _appearanceThemeFamily.value.rawValue)
+      if ("ui.themeMode" in appearancePendingSyncKeys) put("ui.themeMode", _appearanceThemeMode.value.rawValue)
+      if ("ui.accent" in appearancePendingSyncKeys) put("ui.accent", appearanceAccentPreferenceValue(_appearanceAccentArgb.value))
+    }
+
+  @Synchronized
+  internal fun clearPendingAppearancePreference(
+    key: String,
+    expectedValue: String?,
+  ) {
+    if (key !in appearancePendingSyncKeys) return
+    val currentValue = pendingAppearancePreferenceEntries()[key]
+    if (currentValue != expectedValue) return
+    appearancePendingSyncKeys = appearancePendingSyncKeys - key
+    plainPrefs.edit {
+      if (appearancePendingSyncKeys.isEmpty()) {
+        remove(appearancePendingSyncKeysKey)
+      } else {
+        putStringSet(appearancePendingSyncKeysKey, appearancePendingSyncKeys)
+      }
+    }
+  }
+
+  @Synchronized
+  internal fun appearancePreferenceRevision(key: String): Long = appearancePreferenceRevisions[key] ?: 0L
+
+  private fun pendingAppearanceSyncKeys(
+    key: String,
+    pendingSync: Boolean,
+  ): Set<String> = if (pendingSync) appearancePendingSyncKeys + key else appearancePendingSyncKeys
+
+  private fun incrementAppearancePreferenceRevision(key: String) {
+    appearancePreferenceRevisions[key] = (appearancePreferenceRevisions[key] ?: 0L) + 1L
   }
 
   fun toggleModelFavorite(ref: String) {
@@ -718,6 +849,18 @@ class SecurePrefs(
     val sanitized = groups.map(String::trim).filter { it.isNotEmpty() }.distinct()
     persistChatModelRefs(sessionCustomGroupsKey, sanitized)
     _sessionCustomGroups.value = sanitized
+  }
+
+  fun setSidebarPageOrder(pageIds: List<String>) {
+    val sanitized = sanitizeSidebarPageOrder(pageIds)
+    persistChatModelRefs(sidebarPageOrderKey, sanitized)
+    _sidebarPageOrder.value = sanitized
+  }
+
+  fun setSidebarVisiblePages(pageIds: List<String>) {
+    val sanitized = sanitizeSidebarVisiblePages(pageIds)
+    persistChatModelRefs(sidebarVisiblePagesKey, sanitized)
+    _sidebarVisiblePages.value = sanitized
   }
 
   private fun persistChatModelRefs(
@@ -772,6 +915,15 @@ class SecurePrefs(
     plainPrefs.edit { putBoolean(cameraEnabledKey, migratedValue) }
     return migratedValue
   }
+
+  private fun loadSidebarPageOrder(): List<String> = sanitizeSidebarPageOrder(loadChatModelRefs(sidebarPageOrderKey))
+
+  private fun loadSidebarVisiblePages(): List<String> =
+    if (!plainPrefs.contains(sidebarVisiblePagesKey)) {
+      defaultSidebarVisiblePages
+    } else {
+      sanitizeSidebarVisiblePages(loadChatModelRefs(sidebarVisiblePagesKey))
+    }
 
   private fun loadChatModelRefs(key: String): List<String> {
     val raw = plainPrefs.getString(key, null)?.trim()

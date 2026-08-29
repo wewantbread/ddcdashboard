@@ -105,6 +105,49 @@ class SecurePrefsTest {
   }
 
   @Test
+  fun sidebarPageOrderIsSanitizedReactiveAndPersisted() {
+    val context = RuntimeEnvironment.getApplication()
+    context
+      .getSharedPreferences("openclaw.node", Context.MODE_PRIVATE)
+      .edit()
+      .clear()
+      .commit()
+    val prefs = testPrefs(context)
+
+    assertEquals(defaultSidebarPageOrder, prefs.sidebarPageOrder.value)
+
+    prefs.setSidebarPageOrder(listOf("threads", "home", "threads", "unknown"))
+
+    val expected = listOf("threads", "home", "settings", "work", "skills")
+    assertEquals(expected, prefs.sidebarPageOrder.value)
+    assertEquals(expected, testPrefs(context).sidebarPageOrder.value)
+    assertEquals(
+      defaultSidebarPageOrder,
+      sanitizeSidebarPageOrder(listOf("unknown", "unknown")),
+    )
+  }
+
+  @Test
+  fun sidebarVisiblePagesDefaultToEveryCurrentDestinationAndPersistAValidatedSubset() {
+    val context = RuntimeEnvironment.getApplication()
+    context
+      .getSharedPreferences("openclaw.node", Context.MODE_PRIVATE)
+      .edit()
+      .clear()
+      .commit()
+    val prefs = testPrefs(context)
+
+    assertEquals(defaultSidebarVisiblePages, prefs.sidebarVisiblePages.value)
+
+    prefs.setSidebarVisiblePages(listOf("threads", "home", "threads", "unknown"))
+
+    val expected = listOf("threads", "home")
+    assertEquals(expected, prefs.sidebarVisiblePages.value)
+    assertEquals(expected, testPrefs(context).sidebarVisiblePages.value)
+    assertEquals(defaultSidebarVisiblePages, sanitizeSidebarVisiblePages(listOf("unknown")))
+  }
+
+  @Test
   fun cameraAndAudioInputPreferencesDefaultAndPersist() {
     val context = RuntimeEnvironment.getApplication()
     val plainPrefs = context.getSharedPreferences("openclaw.node", Context.MODE_PRIVATE)
@@ -283,6 +326,59 @@ class SecurePrefsTest {
     assertEquals(AppearanceThemeMode.Light, prefs.appearanceThemeMode.value)
     assertEquals("light", plainPrefs.getString("appearance.themeMode", null))
     assertEquals(AppearanceThemeMode.Light, SecurePrefs(context, securePrefs).appearanceThemeMode.value)
+  }
+
+  @Test
+  fun appearanceThemeFamilyAndAccentPersistAndCanResetToThemeDefault() {
+    val context = RuntimeEnvironment.getApplication()
+    val plainPrefs = context.getSharedPreferences("openclaw.node", Context.MODE_PRIVATE)
+    plainPrefs.edit().clear().commit()
+    val securePrefs = context.getSharedPreferences("secure-prefs-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+    val prefs = SecurePrefs(context, securePrefs)
+
+    prefs.setAppearanceThemeFamily(AppearanceThemeFamily.Tide)
+    prefs.setAppearanceAccentArgb(0xFF5A9BEFL)
+
+    assertEquals(AppearanceThemeFamily.Tide, prefs.appearanceThemeFamily.value)
+    assertEquals(0xFF5A9BEFL, prefs.appearanceAccentArgb.value)
+    val restored = SecurePrefs(context, securePrefs)
+    assertEquals(AppearanceThemeFamily.Tide, restored.appearanceThemeFamily.value)
+    assertEquals(0xFF5A9BEFL, restored.appearanceAccentArgb.value)
+
+    prefs.setAppearanceAccentArgb(null)
+
+    assertEquals(null, prefs.appearanceAccentArgb.value)
+    assertFalse(plainPrefs.contains("appearance.accentArgb"))
+    assertEquals(null, SecurePrefs(context, securePrefs).appearanceAccentArgb.value)
+  }
+
+  @Test
+  fun pendingAppearanceSyncSurvivesRestartAndClearsOnlyTheMatchingValue() {
+    val context = RuntimeEnvironment.getApplication()
+    context
+      .getSharedPreferences("openclaw.node", Context.MODE_PRIVATE)
+      .edit()
+      .clear()
+      .commit()
+    val securePrefs = context.getSharedPreferences("secure-prefs-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+    val prefs = SecurePrefs(context, securePrefs)
+
+    prefs.setAppearanceThemeFamily(AppearanceThemeFamily.Tide, pendingSync = true)
+    prefs.setAppearanceAccentArgb(null, pendingSync = true)
+
+    val restored = SecurePrefs(context, securePrefs)
+    assertEquals(
+      mapOf("ui.theme" to "tide", "ui.accent" to null),
+      restored.pendingAppearancePreferenceEntries(),
+    )
+    restored.clearPendingAppearancePreference("ui.theme", expectedValue = "claw")
+    assertTrue("ui.theme" in restored.pendingAppearancePreferenceEntries())
+
+    restored.clearPendingAppearancePreference("ui.theme", expectedValue = "tide")
+    restored.clearPendingAppearancePreference("ui.accent", expectedValue = null)
+
+    assertTrue(restored.pendingAppearancePreferenceEntries().isEmpty())
+    assertTrue(SecurePrefs(context, securePrefs).pendingAppearancePreferenceEntries().isEmpty())
   }
 
   @Test

@@ -304,6 +304,52 @@ data class ChatThinkingLevelSelection(
   val isGatewayProvided: Boolean,
 )
 
+/** Gateway wire values accepted by sessions.patch and returned as effectiveFastMode. */
+enum class ChatFastMode {
+  Off,
+  On,
+  Automatic,
+  ;
+
+  val isEnabled: Boolean
+    get() = this != Off
+
+  companion object {
+    internal fun fromWireValue(value: String?): ChatFastMode? =
+      when (value?.trim()?.lowercase(Locale.US)) {
+        "false", "off" -> Off
+        "true", "on" -> On
+        "auto", "automatic" -> Automatic
+        else -> null
+      }
+  }
+}
+
+internal fun ChatFastMode.toWireJson(): JsonPrimitive =
+  when (this) {
+    ChatFastMode.Off -> JsonPrimitive(false)
+    ChatFastMode.On -> JsonPrimitive(true)
+    ChatFastMode.Automatic -> JsonPrimitive("auto")
+  }
+
+/** Gateway wire values for the permissions applied to new runs in a session. */
+enum class ChatPermissionMode(
+  val wireValue: String,
+) {
+  ReadOnly("read-only"),
+  Guarded("guarded"),
+  Workspace("workspace"),
+  Full("full"),
+  ;
+
+  companion object {
+    internal fun fromWireValue(value: String?): ChatPermissionMode? =
+      entries.firstOrNull { mode ->
+        mode.wireValue == value?.trim()?.lowercase(Locale.US)
+      }
+  }
+}
+
 internal val defaultChatThinkingLevelSelection =
   ChatThinkingLevelSelection(
     options =
@@ -355,6 +401,7 @@ data class ChatSessionEntry(
   val observerDigest: SessionObserverDigest? = null,
   val hasObserverDigestMetadata: Boolean = observerDigest != null,
   val lastActivityAt: Long? = null,
+  val inputTokens: Long? = null,
   val totalTokens: Long? = null,
   val totalTokensFresh: Boolean? = null,
   val modelProvider: String? = null,
@@ -362,7 +409,14 @@ data class ChatSessionEntry(
   val thinkingLevel: String? = null,
   val thinkingLevels: List<ChatThinkingLevelOption>? = null,
   val thinkingDefault: String? = null,
+  val permissionMode: ChatPermissionMode? = null,
+  val hasPermissionModeMetadata: Boolean = permissionMode != null,
+  val fastMode: ChatFastMode? = null,
+  val effectiveFastMode: ChatFastMode? = null,
+  val hasFastModeMetadata: Boolean = fastMode != null,
+  val hasEffectiveFastModeMetadata: Boolean = effectiveFastMode != null,
   val contextTokens: Long? = null,
+  val estimatedCostUsd: Double? = null,
   val hasContextUsageMetadata: Boolean = totalTokens != null || totalTokensFresh != null || contextTokens != null,
   val hasActiveRun: Boolean? = null,
   val activeRunIds: List<String>? = null,
@@ -382,6 +436,8 @@ data class ChatSessionEntry(
   val endedAt: Long? = null,
   val runtimeMs: Long? = null,
   val outputTokens: Long? = null,
+  val hasSessionUsageMetadata: Boolean =
+    inputTokens != null || outputTokens != null || estimatedCostUsd != null,
   val hasRunMetadata: Boolean =
     status != null || startedAt != null || endedAt != null || runtimeMs != null || outputTokens != null,
 )

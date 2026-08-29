@@ -430,11 +430,11 @@ internal fun ChatComposerMicButton(
           },
         ),
     shape = CircleShape,
-    color = if (dictationActive) ClawTheme.colors.primary else ClawTheme.colors.surfaceRaised,
+    color = ClawTheme.colors.surfaceRaised.copy(alpha = 0f),
     contentColor =
       when {
-        dictationActive -> ClawTheme.colors.primaryText
-        dictationEnabled || voiceNoteEnabled -> ClawTheme.colors.text
+        dictationActive -> ClawTheme.colors.textMuted
+        dictationEnabled || voiceNoteEnabled -> ClawTheme.colors.textMuted
         else -> ClawTheme.colors.textSubtle
       },
   ) {
@@ -442,7 +442,7 @@ internal fun ChatComposerMicButton(
       Icon(
         imageVector = if (dictationActive) Icons.Default.Stop else Icons.Default.Mic,
         contentDescription = null,
-        modifier = Modifier.size(18.dp),
+        modifier = Modifier.size(17.dp),
       )
     }
   }
