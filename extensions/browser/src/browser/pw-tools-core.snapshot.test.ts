@@ -218,6 +218,68 @@ describe("pw-tools-core aria snapshot storage", () => {
     expect(storeRoleRefsForTarget).not.toHaveBeenCalled();
   });
 
+  it("returns selector no-match snapshots without collecting URLs", async () => {
+    const ariaSnapshot = vi.fn(async () => {
+      throw new Error("ariaSnapshot should not run for a selector with no matches");
+    });
+    const locator = {
+      count: vi.fn(async () => 0),
+      ariaSnapshot,
+    };
+    const page = {
+      locator: vi.fn(() => locator),
+      mainFrame: vi.fn(() => ({ id: "main-frame" })),
+      on: vi.fn(),
+      off: vi.fn(),
+      evaluate: vi.fn(async () => [{ text: "link", url: "https://example.test" }]),
+    };
+    getPageForTargetId.mockResolvedValue(page);
+
+    const mod = await import("./pw-tools-core.snapshot.js");
+    const result = await mod.snapshotRoleViaPlaywright({
+      cdpUrl: "http://127.0.0.1:9222",
+      targetId: "tab-1",
+      selector: "#missing",
+      urls: true,
+    });
+
+    expect(result.snapshot).toBe("(empty)");
+    expect(result.snapshot).not.toContain("Links:");
+    expect(locator.count).toHaveBeenCalledOnce();
+    expect(ariaSnapshot).not.toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("keeps URLs for valid snapshots whose depth filter removes every ref", async () => {
+    const locator = {
+      count: vi.fn(async () => 1),
+      ariaSnapshot: vi.fn(async () => '- main:\n  - link "Docs"'),
+    };
+    const page = {
+      locator: vi.fn(() => locator),
+      mainFrame: vi.fn(() => ({ id: "main-frame" })),
+      on: vi.fn(),
+      off: vi.fn(),
+      evaluate: vi.fn(async () => [{ text: "Docs", url: "https://example.test/docs" }]),
+    };
+    getPageForTargetId.mockResolvedValue(page);
+
+    const mod = await import("./pw-tools-core.snapshot.js");
+    const result = await mod.snapshotRoleViaPlaywright({
+      cdpUrl: "http://127.0.0.1:9222",
+      targetId: "tab-1",
+      selector: "main",
+      options: { maxDepth: 0 },
+      urls: true,
+    });
+
+    expect(result.refs).toEqual({});
+    expect(result.snapshot).toContain("- main:");
+    expect(result.snapshot).toContain("https://example.test/docs");
+    expect(locator.count).toHaveBeenCalledOnce();
+    expect(page.evaluate).toHaveBeenCalledOnce();
+  });
+
   it("stores frame-scoped refs with the exact captured frame", async () => {
     const ariaSnapshot = vi.fn(async () => '- button "Save"');
     const frame = { id: "frame-1", locator: vi.fn(() => ({ ariaSnapshot })) };
