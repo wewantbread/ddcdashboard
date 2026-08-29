@@ -18,6 +18,7 @@ import {
   resolveExistingAgentSessionStoreTargetsSync,
   resolveSessionStorePathCore,
   runSessionsCleanup,
+  serializeSessionCleanupResult,
   SessionsCleanupPartialError,
   type SessionEntry,
 } from "../../config/sessions.js";

@@ -1,11 +1,11 @@
 // Partial-failure response handling for the sessions.cleanup Gateway handler.
 // Split from sessions-read.ts to keep that module under the oxlint max-lines budget.
 
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import {
   buildSessionsCleanupPartialResult,
   SessionsCleanupPartialError,
 } from "../../config/sessions.js";
-import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/index.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type { GatewayRequestHandlers } from "./types.js";
 

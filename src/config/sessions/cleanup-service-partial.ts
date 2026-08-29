@@ -1,13 +1,11 @@
 // Partial-failure types and serialization for sessions cleanup.
 // Split from cleanup-service.ts to keep that module under the oxlint max-lines budget.
 
-import type {
-  ResolvedSessionMaintenanceConfig,
-  SessionCleanupSummary,
-  SessionsCleanupResult,
-} from "./cleanup-service.js";
+import type { SessionCleanupSummary, SessionsCleanupResult } from "./cleanup-service.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import type { ResolvedSessionMaintenanceConfig } from "./store-maintenance.js";
 import type { SessionStoreTarget } from "./targets.js";
+import type { SessionEntry } from "./types.js";
 
 export type SessionsCleanupPartialErrorDetail = {
   failingAgentId: string;
@@ -25,7 +23,7 @@ export class SessionsCleanupPartialError extends Error {
   readonly mode: ResolvedSessionMaintenanceConfig["mode"];
   readonly previewResults: Array<{
     summary: SessionCleanupSummary;
-    beforeStore: Record<string, unknown>;
+    beforeStore: Record<string, SessionEntry>;
     missingKeys: Set<string>;
     modelRunPrunedKeys: Set<string>;
     archivedKeys?: Set<string>;
