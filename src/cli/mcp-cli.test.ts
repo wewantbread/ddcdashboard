@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { setConfiguredMcpServer } from "../agents/mcp-config-mutation.js";
 import { withTempHome } from "../config/home-env.test-harness.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   cleanupMcpCliTestState,
   createWorkspace,
@@ -59,6 +60,29 @@ describe("mcp cli", () => {
       mockLog.mockClear();
       await runMcpCommand(["mcp", "show", "context7", "--json"]);
       expect(JSON.parse(lastLogLine())).toEqual({ command: "uvx", args: ["context7-mcp@2"] });
+    });
+  });
+
+  it("rejects mixed command and URL transports before writing configuration", async () => {
+    await withTempHome("openclaw-cli-mcp-home-", async (home) => {
+      const workspaceDir = await createWorkspace();
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      vi.spyOn(process, "cwd").mockReturnValue(workspaceDir);
+
+      try {
+        await expect(
+          runMcpCommand([
+            "mcp",
+            "set",
+            "mixed",
+            '{"command":"node","url":"https://mcp.example.com/mcp"}',
+          ]),
+        ).rejects.toThrow("__exit__:1");
+        expect(lastErrorLine()).toContain('cannot define both a non-empty "command" and "url"');
+        await expect(fs.readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        closeOpenClawStateDatabaseForTest();
+      }
     });
   });
 
