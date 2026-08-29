@@ -3633,6 +3633,62 @@ describe("image tool run abort", () => {
     });
   });
 
+  it("times out stalled media runtime initialization before starting the provider", async () => {
+    vi.stubEnv("MINIMAX_API_KEY", "minimax-test");
+    const spies = makeDescribeSpies();
+    installImageUnderstandingProviderDeps([minimaxProvider, moonshotProvider], {
+      loadImageWebMediaRuntime: () => new Promise<never>(() => {}),
+      describeImageWithModel: spies.describeImage,
+      describeImagesWithModel: spies.describeImages,
+    });
+
+    await withTempAgentDir(async (agentDir) => {
+      const cfg = createMinimaxImageConfig();
+      cfg.tools = { media: { image: { timeoutSeconds: 1 } } };
+      const tool = createRequiredImageTool({ config: cfg, agentDir });
+
+      await expect(
+        tool.execute("stalled-runtime", {
+          path: `data:image/png;base64,${ONE_PIXEL_PNG_B64}`,
+          model: "minimax/MiniMax-VL-01",
+        }),
+      ).rejects.toThrow("Image inspection timed out after 1000ms");
+      expect(spies.describeImage).not.toHaveBeenCalled();
+      expect(spies.describeImages).not.toHaveBeenCalled();
+    });
+  });
+
+  it("times out stalled sandbox reference access before loading media", async () => {
+    vi.stubEnv("MINIMAX_API_KEY", "minimax-test");
+    const loadWebMedia: MockImageLoadWebMedia = vi.fn();
+    const spies = makeDescribeSpies();
+    installAbortImageDeps(loadWebMedia, spies);
+
+    await withTempSandboxState(async ({ agentDir, sandboxRoot }) => {
+      const bridge = {
+        ...createHostSandboxFsBridge(sandboxRoot),
+        stat: () => new Promise<never>(() => {}),
+      };
+      const cfg = createMinimaxImageConfig();
+      cfg.tools = { media: { image: { timeoutSeconds: 1 } } };
+      const tool = createRequiredImageTool({
+        config: cfg,
+        agentDir,
+        sandbox: { root: sandboxRoot, bridge },
+      });
+
+      await expect(
+        tool.execute("stalled-reference", {
+          path: "@/Users/operator/.openclaw/media/inbound/photo.png",
+          model: "minimax/MiniMax-VL-01",
+        }),
+      ).rejects.toThrow("Image inspection timed out after 1000ms");
+      expect(loadWebMedia).not.toHaveBeenCalled();
+      expect(spies.describeImage).not.toHaveBeenCalled();
+      expect(spies.describeImages).not.toHaveBeenCalled();
+    });
+  });
+
   it("throws before downloading or calling the provider when the run signal is already aborted", async () => {
     vi.stubEnv("MINIMAX_API_KEY", "minimax-test");
     const loadWebMedia: MockImageLoadWebMedia = vi.fn(async () => ({

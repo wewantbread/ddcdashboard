@@ -666,30 +666,6 @@ function resolveImageToolTimeoutMs(params: {
   );
 }
 
-function resolveImageToolOperationTimeoutMs(params: {
-  cfg: OpenClawConfig;
-  modelOverride?: string;
-  providerRegistry: Map<string, MediaUnderstandingProvider>;
-}): number {
-  return Math.min(
-    MAX_IMAGE_TOOL_OPERATION_TIMEOUT_MS,
-    Math.max(
-      ...resolveImageFallbackCandidates({
-        cfg: params.cfg,
-        defaultProvider: resolveImageFallbackDefaultProvider(params.cfg),
-        modelOverride: params.modelOverride,
-      }).map(({ provider, model }) =>
-        resolveImageToolTimeoutMs({
-          cfg: params.cfg,
-          provider,
-          model,
-          providerRegistry: params.providerRegistry,
-        }),
-      ),
-    ),
-  );
-}
-
 type ImageSandboxConfig = {
   root: string;
   bridge: SandboxFsBridge;
@@ -700,7 +676,9 @@ function createImageToolOperation(params: {
   imageModelConfig: ImageModelConfig;
   modelOverride?: string;
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   const effectiveCfg = applyImageModelConfigDefaults(params.cfg, params.imageModelConfig);
   const providerCfg: OpenClawConfig = effectiveCfg ?? {};
   const preparedProviders =
@@ -710,18 +688,28 @@ function createImageToolOperation(params: {
     providerCfg,
     preparedProviders,
   );
+  const timeoutMs = Math.min(
+    MAX_IMAGE_TOOL_OPERATION_TIMEOUT_MS,
+    Math.max(
+      ...resolveImageFallbackCandidates({
+        cfg: providerCfg,
+        defaultProvider: resolveImageFallbackDefaultProvider(providerCfg),
+        modelOverride: params.modelOverride,
+      }).map(({ provider, model }) =>
+        resolveImageToolTimeoutMs({ cfg: providerCfg, provider, model, providerRegistry }),
+      ),
+    ),
+  );
+  const deadline = createProviderOperationDeadline({ label: "Image inspection", timeoutMs });
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   return {
     effectiveCfg,
     providerCfg,
     providerRegistry,
-    deadline: createProviderOperationDeadline({
-      label: "Image inspection",
-      timeoutMs: resolveImageToolOperationTimeoutMs({
-        cfg: providerCfg,
-        modelOverride: params.modelOverride,
-        providerRegistry,
-      }),
-    }),
+    deadline,
+    parentSignal: params.signal,
+    signal: params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal,
+    timeoutSignal,
   };
 }
 
@@ -729,22 +717,13 @@ type ImageToolOperation = ReturnType<typeof createImageToolOperation>;
 
 async function withImageToolOperationDeadline<T>(
   operation: ImageToolOperation,
-  parentSignal: AbortSignal | undefined,
   task: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  parentSignal?.throwIfAborted();
-  const timeoutSignal = AbortSignal.timeout(
-    resolveProviderOperationTimeoutMs({
-      deadline: operation.deadline,
-      defaultTimeoutMs: MAX_IMAGE_TOOL_OPERATION_TIMEOUT_MS,
-    }),
-  );
-  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
   try {
-    return await racePromiseWithAbortSignal(task(signal), signal);
+    return await racePromiseWithAbortSignal(task(operation.signal), operation.signal);
   } catch (error) {
-    parentSignal?.throwIfAborted();
-    if (timeoutSignal.aborted) {
+    operation.parentSignal?.throwIfAborted();
+    if (operation.timeoutSignal.aborted) {
       throw createProviderOperationTimeoutError(operation.deadline);
     }
     throw error;
@@ -1055,8 +1034,9 @@ export function createImageTool(options?: {
           imageModelConfig,
           modelOverride,
           preparedModelRuntime: options?.preparedModelRuntime,
+          signal,
         });
-        const imageCompression = await withImageToolOperationDeadline(operation, signal, async () =>
+        const imageCompression = await withImageToolOperationDeadline(operation, async () =>
           imageToolProviderDeps.resolveImageCompressionPolicy({
             cfg: options?.config,
             imageModelConfig,
@@ -1144,33 +1124,34 @@ export function createImageTool(options?: {
           }
           return normalizedRef;
         })();
-        const {
-          resolvedPath,
-          localRoots: mediaLocalRoots,
-          rewrittenFrom,
-        } = await resolveMediaToolReferenceAccess({
-          input: resolvedImage,
-          isDataUrl,
-          workspaceDir: options?.workspaceDir,
-          sandbox: sandboxConfig,
-          rootOptions: {
+        const prepareMedia = async (preparationSignal?: AbortSignal) => {
+          const {
+            resolvedPath,
+            localRoots: mediaLocalRoots,
+            rewrittenFrom,
+          } = await resolveMediaToolReferenceAccess({
+            input: resolvedImage,
+            isDataUrl,
+            workspaceDir: options?.workspaceDir,
+            sandbox: sandboxConfig,
+            rootOptions: {
+              workspaceOnly: options?.fsPolicy?.workspaceOnly === true,
+              cfg: options?.config,
+              channelId: options?.agentChannel ?? options?.currentChannelId,
+              accountId: options?.agentAccountId,
+            },
+          });
+          preparationSignal?.throwIfAborted();
+          const mediaInboundRoots = resolveMediaToolInboundRoots({
             workspaceOnly: options?.fsPolicy?.workspaceOnly === true,
             cfg: options?.config,
             channelId: options?.agentChannel ?? options?.currentChannelId,
             accountId: options?.agentAccountId,
-          },
-        });
-        const mediaInboundRoots = resolveMediaToolInboundRoots({
-          workspaceOnly: options?.fsPolicy?.workspaceOnly === true,
-          cfg: options?.config,
-          channelId: options?.agentChannel ?? options?.currentChannelId,
-          accountId: options?.agentAccountId,
-        });
-        const imageWebMedia = await imageToolProviderDeps.loadImageWebMediaRuntime();
-
-        const loadMedia = async (preparationSignal?: AbortSignal) =>
-          isDataUrl
-            ? (async () => {
+          });
+          const imageWebMedia = await imageToolProviderDeps.loadImageWebMediaRuntime();
+          preparationSignal?.throwIfAborted();
+          const media = isDataUrl
+            ? await (async () => {
                 const decoded = decodeDataUrl(resolvedImage, { maxBytes });
                 return await imageWebMedia.optimizeImageBufferForWebMedia({
                   buffer: decoded.buffer,
@@ -1180,13 +1161,13 @@ export function createImageTool(options?: {
                 });
               })()
             : sandboxConfig
-              ? imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
+              ? await imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
                   maxBytes,
                   sandboxValidated: true,
                   readFile: createSandboxBridgeReadFile({ sandbox: sandboxConfig }),
                   imageCompression,
                 })
-              : imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
+              : await imageWebMedia.loadWebMedia(resolvedPath ?? resolvedImage, {
                   maxBytes,
                   localRoots: mediaLocalRoots,
                   inboundRoots: mediaInboundRoots,
@@ -1197,10 +1178,12 @@ export function createImageTool(options?: {
                   ...(preparationSignal ? { requestInit: { signal: preparationSignal } } : {}),
                   imageCompression,
                 });
-        const media =
+          return { media, rewrittenFrom };
+        };
+        const { media, rewrittenFrom } =
           imageRoute.kind === "fallback"
-            ? await withImageToolOperationDeadline(imageRoute.operation, signal, loadMedia)
-            : await loadMedia(signal);
+            ? await withImageToolOperationDeadline(imageRoute.operation, prepareMedia)
+            : await prepareMedia(signal);
         if (media.kind !== "image") {
           throw new Error(`Unsupported media type: ${media.kind}`);
         }
@@ -1229,7 +1212,6 @@ export function createImageTool(options?: {
       // Text-only runs delegate image understanding to the configured fallback model.
       const result = await withImageToolOperationDeadline(
         imageRoute.operation,
-        signal,
         async (operationSignal) =>
           runImagePrompt({
             agentId: options?.agentId,
