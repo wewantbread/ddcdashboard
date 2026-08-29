@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(),
   loadSnapshot: vi.fn(),
   prepareSnapshot: vi.fn(),
+  prepareScopedLiveCatalog: vi.fn(),
   prepareScopedCatalog: vi.fn(),
   isFullCatalog: vi.fn(),
   releaseSnapshot: vi.fn(),
@@ -55,9 +56,15 @@ vi.mock("./prepared-model-runtime.full-catalog.js", () => ({
 }));
 
 vi.mock("./prepared-model-runtime.scoped-catalog.js", () => ({
+  prepareScopedReadOnlyLiveModelCatalog: (...args: unknown[]) =>
+    mocks.prepareScopedLiveCatalog(...args),
   prepareScopedReadOnlyModelCatalog: (...args: unknown[]) => mocks.prepareScopedCatalog(...args),
 }));
 
+import {
+  loadGatewayModelCatalogSnapshot,
+  loadPreparedGatewayModelCatalogSnapshot,
+} from "../gateway/server-model-catalog.js";
 import { PreparedModelCatalogConfigReplacedError } from "./prepared-model-catalog.errors.js";
 import {
   getPublishedPreparedModelCatalogOwnerSnapshot,
@@ -69,8 +76,11 @@ import {
   loadPublishedPreparedModelCatalogOwnerSnapshot,
 } from "./prepared-model-catalog.js";
 import {
+  getPreparedModelRuntimeAuthMaterializations,
   getPreparedModelRuntimeAuthStore,
   setPreparedModelFullCatalogAuth,
+  setPreparedModelRuntimeAuthLoader,
+  setPreparedModelRuntimeAuthMaterializations,
   setPreparedModelRuntimeAuthStore,
 } from "./prepared-model-runtime-auth.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.js";
@@ -99,6 +109,7 @@ describe("prepared model catalog access", () => {
     mocks.getSnapshot.mockReset();
     mocks.loadSnapshot.mockReset();
     mocks.prepareSnapshot.mockReset();
+    mocks.prepareScopedLiveCatalog.mockReset();
     mocks.prepareScopedCatalog.mockReset();
     mocks.isFullCatalog.mockReset();
     mocks.releaseSnapshot.mockReset();
@@ -189,6 +200,7 @@ describe("prepared model catalog access", () => {
       }),
       ["anthropic"],
     );
+    expect(mocks.prepareScopedLiveCatalog).not.toHaveBeenCalled();
   });
 
   it("keeps read-only catalog reads on configured facts and materializes full reads once", async () => {
@@ -277,6 +289,155 @@ describe("prepared model catalog access", () => {
       expect(mocks.acquireSnapshot).not.toHaveBeenCalled();
     },
   );
+
+  it("projects provider-scoped live discovery through the published owner", async () => {
+    const scopedCatalog = {
+      entries: [{ provider: "anthropic", id: "claude-opus", name: "Claude Opus" }],
+      routeVariants: [],
+    };
+    const { authStore, ...committedFacts } = fullSnapshot;
+    const committedSnapshot = {
+      ...committedFacts,
+      agentDir: "/tmp/prepared-model-catalog-agent",
+      config: { agents: { defaults: { model: "anthropic/claude-opus" } } },
+      workspaceDir: "/tmp/prepared-model-catalog-workspace",
+    };
+    setPreparedModelRuntimeAuthStore(committedSnapshot, authStore);
+    const refreshedAuthStore = {
+      version: 1 as const,
+      profiles: {
+        "anthropic:runtime": {
+          type: "api_key" as const,
+          provider: "anthropic",
+          key: "runtime-key", // pragma: allowlist secret
+        },
+      },
+    };
+    const loadAuth = vi.fn(async () => ({
+      authModes: { anthropic: "api_key" as const },
+      authStore: refreshedAuthStore,
+    }));
+    setPreparedModelRuntimeAuthLoader(committedSnapshot, loadAuth);
+    const materializations = [
+      {
+        provider: "anthropic",
+        modelId: "claude-opus",
+        modelApi: "anthropic-messages",
+        modelBaseUrl: "https://api.anthropic.com",
+        requestTransportOverrides: "none" as const,
+        authMode: "api_key",
+        runtimeOwnerId: "anthropic:runtime",
+      },
+    ];
+    setPreparedModelRuntimeAuthMaterializations(committedSnapshot, materializations);
+    mocks.getSnapshot.mockReturnValue(committedSnapshot);
+    mocks.prepareSnapshot.mockResolvedValue(committedSnapshot);
+    mocks.isFullCatalog.mockReturnValue(false);
+    mocks.prepareScopedLiveCatalog.mockResolvedValue(scopedCatalog);
+
+    const projected = await loadPublishedPreparedModelCatalogOwnerSnapshot({
+      providerDiscoveryProviderIds: ["anthropic"],
+      readOnly: true,
+      scopedLiveProviderDiscovery: true,
+    });
+    expect(projected).toEqual({ ...committedSnapshot, modelCatalog: scopedCatalog });
+    expect(projected).not.toHaveProperty("authStore");
+    expect(getPreparedModelRuntimeAuthStore(projected)).toBe(authStore);
+    expect(getPreparedModelRuntimeAuthMaterializations(projected)).toBe(materializations);
+    await expect(
+      loadGatewayModelCatalogSnapshot({
+        getConfig: () => committedSnapshot.config,
+        loadPublishedPreparedModelCatalogOwnerSnapshot: async () => projected,
+        providerDiscoveryProviderIds: ["anthropic"],
+        readOnly: true,
+        scopedLiveProviderDiscovery: true,
+      }),
+    ).resolves.toMatchObject({ entries: scopedCatalog.entries });
+    await expect(
+      loadPreparedGatewayModelCatalogSnapshot({
+        getConfig: () => committedSnapshot.config,
+        loadPublishedPreparedModelCatalogOwnerSnapshot: async () => projected,
+        refreshAuth: true,
+      }),
+    ).resolves.toMatchObject({
+      authModes: { anthropic: "api_key" },
+      authStore: refreshedAuthStore,
+      authMaterializations: materializations,
+    });
+    expect(loadAuth).toHaveBeenCalledOnce();
+    expect(mocks.prepareScopedLiveCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDir: committedSnapshot.agentDir,
+        config: committedSnapshot.config,
+        readOnly: true,
+        workspaceDir: committedSnapshot.workspaceDir,
+      }),
+      ["anthropic"],
+    );
+    expect(mocks.prepareScopedCatalog).not.toHaveBeenCalled();
+  });
+
+  it("retries scoped discovery when publication replaces its owner", async () => {
+    const authStore = { version: 1 as const, profiles: {} };
+    const firstSnapshot = {
+      ...fullSnapshot,
+      agentDir: "/tmp/prepared-model-catalog-agent",
+      workspaceDir: "/tmp/prepared-model-catalog-workspace",
+    };
+    const replacementSnapshot = {
+      ...firstSnapshot,
+      modelCatalog: {
+        entries: [{ provider: "anthropic", id: "replacement-static", name: "Replacement" }],
+        routeVariants: [],
+      },
+    };
+    setPreparedModelRuntimeAuthStore(firstSnapshot, authStore);
+    setPreparedModelRuntimeAuthStore(replacementSnapshot, authStore);
+    let published = firstSnapshot;
+    mocks.getSnapshot.mockImplementation(() => published);
+    mocks.prepareSnapshot.mockImplementation(async () => published);
+    mocks.isFullCatalog.mockReturnValue(false);
+    mocks.prepareScopedLiveCatalog
+      .mockImplementationOnce(async () => {
+        published = replacementSnapshot;
+        return {
+          entries: [{ provider: "anthropic", id: "retired", name: "Retired" }],
+          routeVariants: [],
+        };
+      })
+      .mockResolvedValueOnce({
+        entries: [{ provider: "anthropic", id: "current", name: "Current" }],
+        routeVariants: [],
+      });
+
+    const projected = await loadPublishedPreparedModelCatalogOwnerSnapshot({
+      providerDiscoveryProviderIds: ["anthropic"],
+      readOnly: true,
+      scopedLiveProviderDiscovery: true,
+    });
+
+    expect(projected.modelCatalog.entries).toEqual([
+      { provider: "anthropic", id: "current", name: "Current" },
+    ]);
+    expect(mocks.prepareScopedLiveCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not project scoped discovery from a retired fallback lease", async () => {
+    mocks.prepareSnapshot.mockRejectedValue(new PreparedModelRuntimeOwnerNotPublishedError());
+    mocks.loadSnapshot.mockResolvedValue(fullSnapshot);
+
+    await expect(
+      loadPreparedModelCatalogOwnerSnapshot({
+        providerDiscoveryProviderIds: ["anthropic"],
+        readOnly: true,
+        scopedLiveProviderDiscovery: true,
+      }),
+    ).resolves.toBe(fullSnapshot);
+
+    expect(mocks.releaseSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.prepareScopedLiveCatalog).not.toHaveBeenCalled();
+    expect(mocks.prepareScopedCatalog).not.toHaveBeenCalled();
+  });
 
   it("restores the unique configured agent identity for a published replacement owner", async () => {
     const committedSnapshot = {
