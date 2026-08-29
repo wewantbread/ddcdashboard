@@ -396,4 +396,143 @@ describe("doctor Skill Workshop SQLite migration", () => {
     ]);
     await expect(fs.access(path.join(ambiguousDir, "proposal.json"))).resolves.toBeUndefined();
   });
+
+  it("quarantines a non-empty legacy directory missing proposal.json so Doctor converges", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-workshop-missing-json-");
+    const proposalId = "missing-json-workshop-20260829-1234567890";
+    const proposalDir = path.join(testState.stateDir, "skill-workshop", "proposals", proposalId);
+    // Leftover review artifact without the required proposal.json / PROPOSAL.md.
+    await fs.mkdir(path.join(proposalDir, "references"), { recursive: true });
+    await fs.writeFile(
+      path.join(proposalDir, "references", "proof.md"),
+      "# Orphan proof\n",
+      "utf8",
+    );
+
+    const result = await migrateLegacySkillWorkshopProposals({
+      config: {
+        agents: {
+          entries: {
+            main: { default: true, workspace: workspaceDir },
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ detected: 1, migrated: 0, warnings: [] });
+    expect(result.changes.join("\n")).toContain(
+      `Quarantined incomplete Skill Workshop proposal ${proposalId}`,
+    );
+    // The source is out of active discovery (no repeat warning on the next run).
+    await expect(fs.access(proposalDir)).rejects.toThrow();
+    // Remaining artifacts are preserved under the Doctor recovery archive.
+    await expect(
+      fs.access(
+        path.join(
+          testState.stateDir,
+          "skill-workshop",
+          "recovery",
+          "proposals",
+          proposalId,
+          "references",
+          "proof.md",
+        ),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("quarantines a legacy directory with proposal.json but no PROPOSAL.md", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-workshop-missing-draft-");
+    const proposalId = "missing-draft-workshop-20260829-1234567890";
+    const proposalDir = path.join(testState.stateDir, "skill-workshop", "proposals", proposalId);
+    const targetDir = path.join(workspaceDir, "skills", "missing-draft");
+    const now = "2026-08-29T00:00:00.000Z";
+    const record: SkillProposalRecord = {
+      schema: SKILL_WORKSHOP_SCHEMA,
+      id: proposalId,
+      kind: "create",
+      status: "pending",
+      title: "Create Missing Draft",
+      description: "Proposal whose PROPOSAL.md was removed",
+      createdAt: now,
+      updatedAt: now,
+      createdBy: "cli",
+      origin: { agentId: "main", runId: "missing-draft-run" },
+      originRunIds: ["missing-draft-run"],
+      originRunMutationCounts: { "missing-draft-run": 1 },
+      proposedVersion: "v1",
+      draftFile: "PROPOSAL.md",
+      draftHash: hashSkillProposalContent("# Missing Draft\n"),
+      supportFiles: [],
+      target: {
+        skillName: "Missing Draft",
+        skillKey: "missing-draft",
+        skillDir: targetDir,
+        skillFile: path.join(targetDir, "SKILL.md"),
+        source: "openclaw-workspace",
+      },
+      scan: {
+        state: "clean",
+        scannedAt: now,
+        critical: 0,
+        warn: 0,
+        info: 0,
+        findings: [],
+      },
+    };
+    await fs.mkdir(proposalDir, { recursive: true });
+    await fs.writeFile(path.join(proposalDir, "proposal.json"), JSON.stringify(record), "utf8");
+
+    const result = await migrateLegacySkillWorkshopProposals({
+      config: {
+        agents: {
+          entries: {
+            main: { default: true, workspace: workspaceDir },
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ detected: 1, migrated: 0, warnings: [] });
+    expect(result.changes.join("\n")).toContain(
+      `Quarantined incomplete Skill Workshop proposal ${proposalId}`,
+    );
+    await expect(fs.access(proposalDir)).rejects.toThrow();
+    // The metadata JSON sidecar is preserved for manual recovery.
+    await expect(
+      fs.access(
+        path.join(
+          testState.stateDir,
+          "skill-workshop",
+          "recovery",
+          "proposals",
+          proposalId,
+          "proposal.json",
+        ),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("removes an empty orphaned legacy proposal directory directly", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-workshop-empty-dir-");
+    const proposalId = "empty-dir-workshop-20260829-1234567890";
+    const proposalDir = path.join(testState.stateDir, "skill-workshop", "proposals", proposalId);
+    await fs.mkdir(proposalDir, { recursive: true });
+
+    const result = await migrateLegacySkillWorkshopProposals({
+      config: {
+        agents: {
+          entries: {
+            main: { default: true, workspace: workspaceDir },
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ detected: 1, migrated: 0, warnings: [] });
+    expect(result.changes.join("\n")).toContain(
+      `Removed empty legacy Skill Workshop proposal directory ${proposalId}`,
+    );
+    await expect(fs.access(proposalDir)).rejects.toThrow();
+  });
 });

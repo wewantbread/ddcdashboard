@@ -1,4 +1,5 @@
 /** Doctor-owned migration of Skill Workshop proposal metadata into shared SQLite. */
+import fs from "node:fs/promises";
 import path from "node:path";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveStateDir } from "../config/paths.js";
@@ -20,6 +21,12 @@ import type { SkillProposalRecord, SkillProposalRollback } from "../skills/works
 const WORKSHOP_DIR = "skill-workshop";
 const PROPOSALS_DIR = `${WORKSHOP_DIR}/proposals`;
 const MANIFEST_PATH = `${WORKSHOP_DIR}/proposals.json`;
+// Doctor-owned recovery archive for orphaned or incomplete legacy proposal
+// directories that cannot be imported. Relocating them out of active discovery
+// lets Doctor converge instead of retrying the same impossible migration on
+// every run, while preserving any remaining artifacts for manual recovery.
+const RECOVERY_DIR = `${WORKSHOP_DIR}/recovery`;
+const RECOVERY_PROPOSALS_DIR = `${RECOVERY_DIR}/proposals`;
 const MAX_RECORD_BYTES = 1024 * 1024;
 // Legacy rollback JSON can expand control characters sixfold across 1 MiB of
 // SKILL.md plus 64 existing 256 KiB support targets.
@@ -175,6 +182,44 @@ async function migrateProposal(params: {
   return result;
 }
 
+type OrphanDisposition = "removed-empty" | "quarantined";
+
+/**
+ * Reconcile a confirmed-incomplete legacy proposal directory that cannot be
+ * imported so Doctor converges on the next run. Empty directories are removed
+ * directly; non-empty directories are relocated into the Doctor-owned recovery
+ * archive under the state directory, preserving any remaining artifacts.
+ */
+async function reconcileIncompleteProposal(params: {
+  proposalId: string;
+  proposalDir: string;
+  stateDir: string;
+}): Promise<OrphanDisposition> {
+  const stateRoot = await root(params.stateDir);
+  const entries = await stateRoot.list(params.proposalDir, { withFileTypes: true });
+  if (entries.length === 0) {
+    await stateRoot.remove(params.proposalDir);
+    return "removed-empty";
+  }
+  const recoveryProposalsDir = path.join(params.stateDir, RECOVERY_PROPOSALS_DIR);
+  await fs.mkdir(recoveryProposalsDir, { recursive: true });
+  // The recovery archive is Doctor-owned: clear any stale quarantine of the same
+  // proposal before moving the current one, then atomically relocate the whole
+  // tree so no artifact is dropped. removePathWithinRoot expects a root-relative
+  // path, not an absolute one.
+  const destination = path.join(recoveryProposalsDir, params.proposalId);
+  const destinationRelative = `${RECOVERY_PROPOSALS_DIR}/${params.proposalId}`;
+  await removePathWithinRoot({ rootDir: params.stateDir, relativePath: destinationRelative }).catch(
+    (error: unknown) => {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    },
+  );
+  await fs.rename(path.join(params.stateDir, params.proposalDir), destination);
+  return "quarantined";
+}
+
 /** Import verified legacy proposal sidecars, then remove only the imported JSON metadata. */
 export async function migrateLegacySkillWorkshopProposals(params: {
   config: OpenClawConfig;
@@ -215,8 +260,10 @@ export async function migrateLegacySkillWorkshopProposals(params: {
     .map((entry) => entry.name)
     .toSorted((left, right) => left.localeCompare(right));
   const warnings: string[] = [];
+  const changes: string[] = [];
   let migrated = 0;
   for (const proposalId of proposalIds) {
+    const proposalDir = `${PROPOSALS_DIR}/${proposalId}`;
     try {
       await migrateProposal({
         config: params.config,
@@ -225,13 +272,33 @@ export async function migrateLegacySkillWorkshopProposals(params: {
         stateRoot,
       });
       migrated += 1;
+      continue;
     } catch (error) {
-      if (isMissingPathError(error)) {
-        if (await readSkillProposal(proposalId, { env }, {}, { reconcile: false })) {
-          continue;
-        }
+      if (!isMissingPathError(error)) {
+        warnings.push(`Failed to migrate Skill Workshop proposal ${proposalId}: ${String(error)}`);
+        continue;
       }
-      warnings.push(`Failed to migrate Skill Workshop proposal ${proposalId}: ${String(error)}`);
+      if (await readSkillProposal(proposalId, { env }, {}, { reconcile: false })) {
+        continue;
+      }
+      try {
+        const disposition = await reconcileIncompleteProposal({
+          proposalId,
+          proposalDir,
+          stateDir,
+        });
+        changes.push(
+          disposition === "removed-empty"
+            ? `Removed empty legacy Skill Workshop proposal directory ${proposalId}.`
+            : `Quarantined incomplete Skill Workshop proposal ${proposalId} to ${RECOVERY_PROPOSALS_DIR}/${proposalId} for manual recovery.`,
+        );
+      } catch (reconcileError) {
+        warnings.push(
+          `Could not quarantine incomplete Skill Workshop proposal ${proposalId}: ${String(
+            reconcileError,
+          )}. Manually move ${proposalDir} to ${RECOVERY_PROPOSALS_DIR} to recover it.`,
+        );
+      }
     }
   }
   await removePathWithinRoot({ rootDir: stateDir, relativePath: MANIFEST_PATH }).catch(
@@ -241,13 +308,12 @@ export async function migrateLegacySkillWorkshopProposals(params: {
       }
     },
   );
+  const migrationChange =
+    migrated > 0
+      ? `Migrated ${migrated} Skill Workshop proposal${migrated === 1 ? "" : "s"} into shared SQLite.`
+      : null;
   return {
-    changes:
-      migrated > 0
-        ? [
-            `Migrated ${migrated} Skill Workshop proposal${migrated === 1 ? "" : "s"} into shared SQLite.`,
-          ]
-        : [],
+    changes: migrationChange ? [migrationChange, ...changes] : changes,
     warnings,
     detected: proposalIds.length,
     migrated,
