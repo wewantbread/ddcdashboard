@@ -625,6 +625,9 @@ export function createHookRunner(
             left: acc.reason,
             right: next.reason,
           }),
+          ...(acc.forceRevision === true || next.forceRevision === true
+            ? { forceRevision: true }
+            : {}),
           ...(retry ? { retry } : {}),
         },
         retryCandidates,
@@ -638,6 +641,7 @@ export function createHookRunner(
       return {
         action: "revise",
         reason: next.reason,
+        ...(next.forceRevision === true ? { forceRevision: true } : {}),
         ...(retry ? { retry } : {}),
       };
     }
