@@ -54,6 +54,7 @@ type DiscoveredModel = {
   id: string;
   name?: string;
   provider: string;
+  profileId?: string;
   api?: ModelCatalogEntry["api"];
   contextWindow?: number;
   contextTokens?: number;
@@ -112,9 +113,10 @@ export function canonicalizePreparedModelCatalogProvider(
   return normalizedProvider;
 }
 
-function catalogEntryDedupeKey(provider: string, id: string): string {
+function catalogEntryDedupeKey(provider: string, id: string, profileId?: string): string {
   const normalizedProvider = normalizeProviderId(provider);
-  return normalizeLowercaseStringOrEmpty(modelKey(normalizedProvider, id));
+  const baseKey = modelKey(normalizedProvider, id);
+  return normalizeLowercaseStringOrEmpty(profileId ? `${baseKey}@${profileId}` : baseKey);
 }
 
 function mergeCatalogCompat(
@@ -280,10 +282,13 @@ function mergeCatalogEntries(
   },
 ): void {
   const indexByKey = new Map(
-    models.map((entry, index) => [catalogEntryDedupeKey(entry.provider, entry.id), index]),
+    models.map((entry, index) => [
+      catalogEntryDedupeKey(entry.provider, entry.id, entry.profileId),
+      index,
+    ]),
   );
   for (const entry of entries) {
-    const key = catalogEntryDedupeKey(entry.provider, entry.id);
+    const key = catalogEntryDedupeKey(entry.provider, entry.id, entry.profileId);
     const existingIndex = indexByKey.get(key);
     if (existingIndex === undefined) {
       models.push(entry);
@@ -519,6 +524,7 @@ export async function buildPreparedModelCatalogSnapshot(
         input,
         ...(modelParams ? { params: modelParams } : {}),
         compat,
+        ...(entry.profileId ? { profileId: entry.profileId } : {}),
       } satisfies ModelCatalogEntry;
       models.push(model);
     }
