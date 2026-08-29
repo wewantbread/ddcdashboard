@@ -73,7 +73,6 @@ async function maybeSendDiscordWebhookText(params: {
   threadId?: string | number | null;
   accountId?: string | null;
   identity?: OutboundIdentity;
-  replyToId?: string | null;
   onPlatformSendDispatch?: () => Promise<void>;
 }): Promise<{ messageId: string; channelId: string } | null> {
   if (params.threadId == null) {
@@ -103,7 +102,6 @@ async function maybeSendDiscordWebhookText(params: {
     accountId: binding.accountId,
     threadId: binding.threadId,
     cfg: params.cfg,
-    replyTo: params.replyToId ?? undefined,
     username: persona.username,
     avatarUrl: persona.avatarUrl,
     onPlatformSendDispatch: params.onPlatformSendDispatch,
@@ -186,7 +184,8 @@ export const discordOutbound: ChannelOutboundAdapter = {
   ...createAttachedChannelResultAdapter({
     channel: "discord",
     sendText: async (ctx) => {
-      if (!ctx.silent) {
+      // Execute Webhook cannot create native replies; those require the bot message endpoint.
+      if (!ctx.silent && !ctx.replyToId) {
         let webhookSelected = false;
         try {
           const webhookResult = await maybeSendDiscordWebhookText({
@@ -195,7 +194,6 @@ export const discordOutbound: ChannelOutboundAdapter = {
             threadId: ctx.threadId,
             accountId: ctx.accountId,
             identity: ctx.identity,
-            replyToId: ctx.replyToId,
             onPlatformSendDispatch: ctx.onPlatformSendDispatch
               ? async () => {
                   webhookSelected = true;
