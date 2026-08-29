@@ -57,7 +57,10 @@ export async function settleAgentFallbackCycle(params: {
       ? cycle.runAbortSignal?.reason
       : createAgentRunRestartAbortError();
   }
-  if (isReplyOperationUserAbort(turn.replyOperation)) {
+  if (
+    isReplyOperationUserAbort(turn.replyOperation) &&
+    fallbackResult.acceptedTerminalCommitted !== true
+  ) {
     settledLifecycleTerminal?.emit("end", runResult, terminalMetadata);
     await drainPendingToolTasks({ tasks: turn.pendingToolTasks, onTimeout: logVerbose });
     return { kind: "final", payload: { text: SILENT_REPLY_TOKEN } };
