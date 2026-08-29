@@ -2,7 +2,6 @@ import { kindFromMime, normalizeMimeType } from "@openclaw/media-core/mime";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 // DashScope-compatible video provider adapts DashScope-style generation APIs.
-import { readResponseWithLimit } from "../infra/http-body.js";
 import { resolveGeneratedMediaMaxBytes } from "../media/configured-max-bytes.js";
 import {
   assertOkOrThrowHttpError,
@@ -11,6 +10,7 @@ import {
   executeProviderOperationWithRetry,
   fetchWithTimeoutGuarded,
   postJsonRequest,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   resolveProviderOperationTimeoutMs,
   waitProviderOperationPollInterval,
@@ -630,8 +630,10 @@ export async function downloadDashscopeGeneratedVideos(params: {
         }
       } catch (error) {
         // Header rejection happens before the body reader, so explicitly cancel
-        // unread streams before their guarded dispatcher and timeout release.
-        await result.response.body?.cancel(error).catch(() => undefined);
+        // unread streams before their guarded dispatcher and timeout release. A
+        // debug-capture clone can keep the tee open, so waiting for that cancel
+        // would hang before the rejected response is released.
+        void result.response.body?.cancel(error).catch(() => undefined);
         throw error;
       }
 
@@ -645,19 +647,23 @@ export async function downloadDashscopeGeneratedVideos(params: {
         );
       } catch (error) {
         // The body reader normally owns cancellation. If deadline resolution
-        // fails first, cancel here before release clears the guarded abort.
-        await result.response.body?.cancel(error).catch(() => undefined);
+        // fails first, cancel here before release clears the guarded abort, and
+        // do not wait on it for the same debug-capture tee reason.
+        void result.response.body?.cancel(error).catch(() => undefined);
         throw error;
       }
-      buffer = await readResponseWithLimit(result.response, params.maxBytes, {
-        chunkTimeoutMs: downloadTimeoutMs,
-        onOverflow: ({ maxBytes }) =>
-          new Error(`${params.providerLabel} generated video download exceeds ${maxBytes} bytes`),
-        onIdleTimeout: ({ chunkTimeoutMs }) =>
-          new Error(
-            `${params.providerLabel} generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
-          ),
-      });
+      buffer = Buffer.from(
+        await readProviderBinaryResponse(result.response, downloadLabel, "video", {
+          maxBytes: params.maxBytes,
+          chunkTimeoutMs: downloadTimeoutMs,
+          onOverflow: ({ maxBytes }) =>
+            new Error(`${params.providerLabel} generated video download exceeds ${maxBytes} bytes`),
+          onIdleTimeout: ({ chunkTimeoutMs }) =>
+            new Error(
+              `${params.providerLabel} generated video download stalled: no data received for ${chunkTimeoutMs}ms`,
+            ),
+        }),
+      );
       mimeType = result.response.headers.get("content-type")?.trim() || "video/mp4";
     } finally {
       await result.release();

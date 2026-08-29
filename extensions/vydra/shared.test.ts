@@ -204,4 +204,40 @@ describe("downloadVydraAsset", () => {
     expect(result).toBeInstanceOf(Error);
     expect(result).toMatchObject({ message: "broken success body" });
   });
+
+  it.each([
+    { name: "JSON error", contentType: "application/json", body: '{"error":"denied"}' },
+    { name: "problem JSON", contentType: "application/problem+json", body: '{"title":"denied"}' },
+    { name: "HTML", contentType: "text/html; charset=utf-8", body: "<html>sign in</html>" },
+    { name: "empty video", contentType: "video/mp4", body: "" },
+  ])("rejects a successful $name response as a downloaded video", async ({ contentType, body }) => {
+    await expect(
+      downloadVydraAsset({
+        url: "https://cdn.vydra.example/generated/test.mp4",
+        kind: "video",
+        timeoutMs: 250,
+        fetchFn: async () =>
+          new Response(body, { status: 200, headers: { "content-type": contentType } }),
+        maxBytes: 1024 * 1024,
+        requestPolicy: requestPolicyFor("https://cdn.vydra.example"),
+      }),
+    ).rejects.toThrow("Vydra video download: malformed video response");
+  });
+
+  it("labels malformed download rejections with the requested media kind", async () => {
+    await expect(
+      downloadVydraAsset({
+        url: "https://cdn.vydra.example/generated/test.png",
+        kind: "image",
+        timeoutMs: 250,
+        fetchFn: async () =>
+          new Response('{"error":"denied"}', {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        maxBytes: 1024 * 1024,
+        requestPolicy: requestPolicyFor("https://cdn.vydra.example"),
+      }),
+    ).rejects.toThrow("Vydra image download: malformed image response");
+  });
 });

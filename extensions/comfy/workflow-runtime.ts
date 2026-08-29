@@ -13,11 +13,11 @@ import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runt
 import {
   assertOkOrThrowHttpError,
   normalizeBaseUrl,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   redactProviderResponseErrorText,
   resolveProviderHttpRequestConfig,
 } from "openclaw/plugin-sdk/provider-http";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   normalizeSecretInputString,
   resolveConfiguredSecretInputString,
@@ -626,6 +626,7 @@ async function downloadOutputFile(params: {
     auditContext,
   });
 
+  const downloadLabel = `Comfy ${params.capability} output download`;
   try {
     await assertOkOrThrowHttpError(firstResponse.response, "Comfy output download failed", {
       requestHeaders: params.headers,
@@ -633,16 +634,16 @@ async function downloadOutputFile(params: {
     const mimeType =
       normalizeOptionalString(firstResponse.response.headers.get("content-type")) ||
       "application/octet-stream";
-    return {
-      buffer: await readResponseWithLimit(firstResponse.response, params.maxBytes, {
+    const buffer = Buffer.from(
+      await readProviderBinaryResponse(firstResponse.response, downloadLabel, params.capability, {
+        maxBytes: params.maxBytes,
         chunkTimeoutMs: params.timeoutMs,
-        onOverflow: ({ maxBytes }) =>
-          new Error(`Comfy ${params.capability} output download exceeds ${maxBytes} bytes`),
+        onOverflow: ({ maxBytes }) => new Error(`${downloadLabel} exceeds ${maxBytes} bytes`),
         onIdleTimeout: ({ chunkTimeoutMs }) =>
-          new Error(`Comfy ${params.capability} output download stalled after ${chunkTimeoutMs}ms`),
+          new Error(`${downloadLabel} stalled after ${chunkTimeoutMs}ms`),
       }),
-      mimeType,
-    };
+    );
+    return { buffer, mimeType };
   } finally {
     await firstResponse.release();
   }

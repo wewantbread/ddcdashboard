@@ -6,10 +6,10 @@ import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import {
   assertOkOrThrowHttpError,
   createProviderOperationDeadline,
+  readProviderBinaryResponse,
   readProviderJsonResponse,
   type ProviderOperationDeadline,
 } from "openclaw/plugin-sdk/provider-http";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import {
   fetchWithSsrFGuard,
   type SsrFPolicy,
@@ -209,12 +209,15 @@ async function downloadFalVideo(
     let exceededMaxBytes = false;
     let buffer: Buffer;
     try {
-      buffer = await readResponseWithLimit(response, maxBytes, {
-        onOverflow: ({ maxBytes: maxBytesLocal }) => {
-          exceededMaxBytes = true;
-          return new Error(`fal generated video download exceeds ${maxBytesLocal} bytes`);
-        },
-      });
+      buffer = Buffer.from(
+        await readProviderBinaryResponse(response, "fal generated video download", "video", {
+          maxBytes,
+          onOverflow: ({ maxBytes: maxBytesLocal }) => {
+            exceededMaxBytes = true;
+            return new Error(`fal generated video download exceeds ${maxBytesLocal} bytes`);
+          },
+        }),
+      );
     } catch (error) {
       if (exceededMaxBytes) {
         return {
