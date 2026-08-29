@@ -687,6 +687,9 @@ export class ExtensionRunner {
     ) => Promise<TResult | undefined>,
     ctx?: ExtensionContext,
   ): Promise<TResult | undefined> {
+    if (!this.hasHandlers(eventType)) {
+      return undefined;
+    }
     let handlerContext = ctx;
     for (const ext of this.extensions) {
       for (const handler of ext.handlers.get(eventType) ?? []) {
