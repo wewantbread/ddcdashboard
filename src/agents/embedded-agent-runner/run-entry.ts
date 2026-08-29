@@ -125,6 +125,8 @@ type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
   sessionOverride: RunEntrySessionOverride;
   abortSignal?: AbortSignal;
   onFallbackStep?: (step: ModelFallbackStepFields) => void | Promise<void>;
+  /** Runs once after the successful winner is accepted, before post-turn context commit. */
+  onAcceptedTerminal?: () => void | (() => void) | Promise<void | (() => void)>;
   runCandidate: (provider: string, model: string, options: RunEntryCandidateOptions) => Promise<T>;
 };
 
@@ -550,25 +552,35 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
       behavior: params.behavior,
       runId: params.identity.runId,
     });
-    if (fallbackResult.result.turnAttempt) {
-      if (
-        canAdvanceContextEngineTurn({
-          result,
-          fallbackOutcome: settledResult.outcome,
-          terminal,
-        })
-      ) {
-        await finalizeAcceptedContextEngineTurn({
-          facts: fallbackResult.result.turnAttempt,
-          lease: contextEngineLogicalTurnLease,
-        });
-      } else {
-        discardContextEngineTurnAttemptIntent({
-          facts: fallbackResult.result.turnAttempt,
-          lease: contextEngineLogicalTurnLease,
-        });
+    const acceptedTerminal = canAdvanceContextEngineTurn({
+      result,
+      fallbackOutcome: settledResult.outcome,
+      terminal,
+    });
+    let releaseAcceptedTerminalWork: (() => void) | undefined;
+    if (acceptedTerminal && !params.abortSignal?.aborted) {
+      const acceptedTerminalWork = await params.onAcceptedTerminal?.();
+      if (typeof acceptedTerminalWork === "function") {
+        releaseAcceptedTerminalWork = acceptedTerminalWork;
       }
-      unsettledContextEngineTurnAttempt = undefined;
+    }
+    try {
+      if (fallbackResult.result.turnAttempt) {
+        if (acceptedTerminal) {
+          await finalizeAcceptedContextEngineTurn({
+            facts: fallbackResult.result.turnAttempt,
+            lease: contextEngineLogicalTurnLease,
+          });
+        } else {
+          discardContextEngineTurnAttemptIntent({
+            facts: fallbackResult.result.turnAttempt,
+            lease: contextEngineLogicalTurnLease,
+          });
+        }
+        unsettledContextEngineTurnAttempt = undefined;
+      }
+    } finally {
+      releaseAcceptedTerminalWork?.();
     }
     let sessionOverrideSettled = false;
     const settleSessionOverride = async () => {
