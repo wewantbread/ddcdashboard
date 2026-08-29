@@ -217,6 +217,40 @@ describe("feishuPlugin security", () => {
       allowFromPath: "channels.feishu.accounts.ops.",
     });
   });
+
+  it("preserves the authored account key in audit paths after normalized lookup", () => {
+    const cfg = {
+      channels: {
+        feishu: {
+          accounts: {
+            " Ops ": {
+              appId: "cli_ops",
+              appSecret: "secret_ops",
+              dmPolicy: "open",
+              allowFrom: ["*"],
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const resolveDmPolicy = feishuPlugin.security?.resolveDmPolicy;
+    if (!resolveDmPolicy) {
+      throw new Error("feishu security.resolveDmPolicy unavailable");
+    }
+
+    const result = resolveDmPolicy({
+      cfg,
+      accountId: "ops",
+      account: feishuPlugin.config.resolveAccount(cfg, "ops"),
+    });
+
+    expect(result).toMatchObject({
+      policy: "open",
+      allowFrom: ["*"],
+      policyPath: "channels.feishu.accounts. Ops .dmPolicy",
+      allowFromPath: "channels.feishu.accounts. Ops .",
+    });
+  });
 });
 
 describe("feishuPlugin config", () => {

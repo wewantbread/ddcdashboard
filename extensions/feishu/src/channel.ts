@@ -1,6 +1,6 @@
 // Feishu plugin module implements channel behavior.
 import { describeAccountSnapshot } from "openclaw/plugin-sdk/account-helpers";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-resolution";
+import { DEFAULT_ACCOUNT_ID, resolveAccountEntry } from "openclaw/plugin-sdk/account-resolution";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { formatAllowFromLowercase } from "openclaw/plugin-sdk/allow-from";
 import { createActionGate, ToolAuthorizationError } from "openclaw/plugin-sdk/channel-actions";
@@ -1080,14 +1080,26 @@ function resolveFeishuDmFieldBasePath(params: {
   const accountId = params.accountId?.trim() || DEFAULT_ACCOUNT_ID;
   const channelConfig: unknown = params.cfg.channels?.feishu;
   const accounts = isRecord(channelConfig) ? channelConfig.accounts : undefined;
-  const accountConfig = isRecord(accounts) ? accounts[accountId] : undefined;
-  if (isRecord(accountConfig) && accountConfig[params.field] !== undefined) {
-    return `channels.feishu.accounts.${accountId}.`;
+  const accountConfig = isRecord(accounts) ? resolveAccountEntry(accounts, accountId) : undefined;
+  // Reuse canonical account selection, then recover its authored key so diagnostic paths point
+  // at the actual config entry rather than the normalized runtime id.
+  const configAccountId =
+    isRecord(accounts) && isRecord(accountConfig)
+      ? Object.keys(accounts).find((key) => accounts[key] === accountConfig)
+      : undefined;
+  if (
+    configAccountId !== undefined &&
+    isRecord(accountConfig) &&
+    accountConfig[params.field] !== undefined
+  ) {
+    return `channels.feishu.accounts.${configAccountId}.`;
   }
   if (isRecord(channelConfig) && channelConfig[params.field] !== undefined) {
     return "channels.feishu.";
   }
-  return isRecord(accountConfig) ? `channels.feishu.accounts.${accountId}.` : "channels.feishu.";
+  return configAccountId !== undefined
+    ? `channels.feishu.accounts.${configAccountId}.`
+    : "channels.feishu.";
 }
 
 const resolveFeishuDmPolicy = (params: Parameters<typeof resolveFeishuDmPolicyBase>[0]) => {
