@@ -21,12 +21,30 @@ final class TalkOverlayController {
     }
 
     var model = Model()
-    private var window: NSPanel?
+    /// Readable so a test can assert the panel's real alpha and ordering after an interrupted
+    /// dismissal. Only this file assigns it.
+    private(set) var window: NSPanel?
     private var hostingView: NSHostingView<TalkOverlayView>?
     private let screenInset: CGFloat = 0
+    /// Identifies the desired visibility currently being animated towards. Rotating it on every
+    /// present and dismiss lets a completion tell whether it still owns the panel.
+    @ObservationIgnored private var transitionID = UUID()
+
+    /// What a finished dismissal animation should do, given the transition it started for.
+    enum DismissalOutcome: Equatable {
+        /// Still the newest intent, so the panel goes away.
+        case hide
+        /// A newer present replaced it mid-fade and now owns the panel.
+        case superseded
+    }
+
+    static func evaluateDismissal(current: UUID, dismissal: UUID) -> DismissalOutcome {
+        current == dismissal ? .hide : .superseded
+    }
 
     func present() {
         self.ensureWindow()
+        self.transitionID = UUID()
         self.hostingView?.rootView = TalkOverlayView(controller: self)
         let target = self.targetFrame()
         let isFirst = !self.model.isVisible
@@ -36,6 +54,9 @@ final class TalkOverlayController {
             isFirstPresent: isFirst,
             target: target)
         { window in
+            // A dismissal that this present superseded may have faded the panel partway out,
+            // and this path does not animate it back in the way a first present does.
+            window.alphaValue = 1
             window.setFrame(target, display: true)
             window.orderFrontRegardless()
         }
@@ -47,10 +68,24 @@ final class TalkOverlayController {
             return
         }
 
-        OverlayPanelFactory.animateDismiss(window: window) {
+        // Give up visibility now rather than when the fade ends, so a present arriving during
+        // the animation takes the first-present path and animates the panel back in itself.
+        self.model.isVisible = false
+        let dismissalID = UUID()
+        self.transitionID = dismissalID
+
+        OverlayPanelFactory.animateDismiss(window: window) { [weak self] in
             Task { @MainActor in
+                guard let self else { return }
+                guard Self.evaluateDismissal(
+                    current: self.transitionID,
+                    dismissal: dismissalID) == .hide
+                else {
+                    // A newer present owns the panel. Hiding it here is what left Talk enabled
+                    // with nothing on screen.
+                    return
+                }
                 window.orderOut(nil)
-                self.model.isVisible = false
             }
         }
     }
