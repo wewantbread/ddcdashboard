@@ -286,10 +286,12 @@ type SessionBoundaryAttempt = Pick<
   | "userTurnTranscriptRecorder"
 > & {
   model?: {
+    id?: string;
     api?: string;
     baseUrl?: string;
     provider?: string;
   };
+  modelId?: string;
   provider?: string;
 };
 
@@ -379,7 +381,16 @@ export function prepareEmbeddedAttemptSessionBoundary(input: {
   if (typeof activeSession.agent.convertToLlm === "function") {
     const baseConvertToLlm = activeSession.agent.convertToLlm.bind(activeSession.agent);
     const shouldRelocate = shouldRelocateRuntimeContextCarrierToTail({
-      model: attempt.model,
+      model: attempt.model
+        ? {
+            id: attempt.model.id ?? attempt.modelId,
+            api: attempt.model.api,
+            baseUrl: attempt.model.baseUrl,
+            provider: attempt.model.provider,
+          }
+        : attempt.modelId
+          ? { id: attempt.modelId }
+          : undefined,
       provider: attempt.provider,
     });
     activeSession.agent.convertToLlm = async (messages) => {

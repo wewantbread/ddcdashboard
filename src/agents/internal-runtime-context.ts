@@ -1,9 +1,10 @@
-import { escapeRegExp } from "../shared/regexp.js";
 /**
  * Internal runtime-context delimiter and stripping helpers.
  * Protects runtime-generated prompt blocks from user text and removes old
  * context formats before replaying or comparing messages.
  */
+import { isCloudModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+import { escapeRegExp } from "../shared/regexp.js";
 import { isLocalProviderBaseUrl } from "./model-provider-local.js";
 
 /** Opening delimiter for protected OpenClaw runtime context blocks. */
@@ -394,6 +395,7 @@ export function relocateCurrentRuntimeContextCarrierToTail<T>(messages: T[]): T[
 export type RuntimeContextCarrierPlacementParams = {
   provider?: string;
   model?: {
+    id?: string;
     api?: string;
     baseUrl?: string;
     provider?: string;
@@ -414,6 +416,10 @@ export function shouldRelocateRuntimeContextCarrierToTail(
   }
   const input: RuntimeContextCarrierPlacementParams =
     typeof params === "string" ? { provider: params } : params;
+
+  if (isCloudModelRef(input.model?.id)) {
+    return true;
+  }
 
   const modelApi = input.model?.api?.trim().toLowerCase();
   if (modelApi === "ollama") {

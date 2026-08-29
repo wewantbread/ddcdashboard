@@ -281,6 +281,31 @@ describe("shouldRelocateRuntimeContextCarrierToTail", () => {
     ).toBe(false);
   });
 
+  it("returns true for Ollama cloud models (*:cloud) even with api: ollama or local baseUrl", () => {
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama",
+        model: { id: "kimi-k2.5:cloud", api: "ollama", baseUrl: "http://127.0.0.1:11434" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama",
+        model: {
+          id: "ollama/gpt-oss:120b-cloud",
+          api: "ollama",
+          baseUrl: "http://localhost:11434",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama-proxy",
+        model: { id: "minimax-m3:cloud", baseUrl: "http://192.168.1.100:11434" },
+      }),
+    ).toBe(true);
+  });
+
   it("returns true for cloud providers or unspecified provider", () => {
     expect(shouldRelocateRuntimeContextCarrierToTail("anthropic")).toBe(true);
     expect(shouldRelocateRuntimeContextCarrierToTail("openai")).toBe(true);
