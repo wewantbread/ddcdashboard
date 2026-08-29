@@ -34,8 +34,13 @@ describe("scpFile", () => {
         "host:/remote/path",
         "/local/path",
       ],
-      { maxOutputBytes: { stdout: 1, stderr: SCP_STDERR_TAIL_CHARS * 4 } },
+      {
+        signal: undefined,
+        killProcessTree: true,
+        maxOutputBytes: { stdout: 1, stderr: SCP_STDERR_TAIL_CHARS * 4 },
+      },
     );
+    expect(runCommandWithTimeoutMock.mock.calls[0]?.[1]).not.toHaveProperty("timeoutMs");
   });
 
   it("surfaces UTF-16 safe scp stderr when transfer fails with emoji at tail boundary", async () => {

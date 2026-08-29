@@ -481,6 +481,7 @@ export async function gatherDispatchRequest(
         sessionKey: acpDispatchSessionKey,
         workspaceDir,
         remoteMediaMode: "cache",
+        abortSignal: getPreDispatchAbortSignal(),
       }),
     );
     if (staged) {

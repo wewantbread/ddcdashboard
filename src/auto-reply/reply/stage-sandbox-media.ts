@@ -46,6 +46,7 @@ export async function stageSandboxMedia(params: {
   sessionKey?: string;
   workspaceDir: string;
   remoteMediaMode?: "sandbox-or-cache" | "cache";
+  abortSignal?: AbortSignal;
 }): Promise<StageSandboxMediaResult> {
   const { ctx, sessionCtx, cfg, sessionKey, workspaceDir } = params;
   const media = normalizeMediaFacts(ctx.media);
@@ -56,6 +57,7 @@ export async function stageSandboxMedia(params: {
   if (pathEntries.length === 0 || !sessionKey) {
     return EMPTY_STAGE_RESULT;
   }
+  params.abortSignal?.throwIfAborted();
 
   const forceRemoteCache = ctx.MediaRemoteHost && params.remoteMediaMode === "cache";
   const sandbox = forceRemoteCache
@@ -122,6 +124,7 @@ export async function stageSandboxMedia(params: {
           rootDir: effectiveWorkspaceDir,
           relativeDestPath: relativeDest,
           maxBytes: SANDBOX_MEDIA_MAX_BYTES,
+          abortSignal: params.abortSignal,
         });
       } else {
         const copySource = await fs.realpath(source.physicalPath).catch(() => source.physicalPath);
@@ -133,6 +136,7 @@ export async function stageSandboxMedia(params: {
         });
       }
     } catch (err) {
+      params.abortSignal?.throwIfAborted();
       if (err instanceof FsSafeError && err.code === "too-large") {
         console.warn(`Inbound media staging skipped for ${fileName}: ${err.message}`);
       } else {
@@ -140,6 +144,7 @@ export async function stageSandboxMedia(params: {
       }
       continue;
     }
+    params.abortSignal?.throwIfAborted();
 
     // For sandbox use relative path, for remote cache use absolute path
     const stagedPath = stageIntoSandboxMediaDir ? toPosixRelativePath(relativeDest) : dest;
@@ -269,13 +274,14 @@ async function stageRemoteFileIntoRoot(params: {
   rootDir: string;
   relativeDestPath: string;
   maxBytes?: number;
+  abortSignal?: AbortSignal;
 }): Promise<void> {
   const tmpRoot = resolvePreferredOpenClawTmpDir();
   await fs.mkdir(tmpRoot, { recursive: true });
   const tmpDir = await fs.mkdtemp(path.join(tmpRoot, "stage-sandbox-media-"));
   const tmpPath = path.join(tmpDir, "download");
   try {
-    await scpFile(params.remoteHost, params.remotePath, tmpPath);
+    await scpFile(params.remoteHost, params.remotePath, tmpPath, params.abortSignal);
     await stageLocalFileIntoRoot({
       sourcePath: tmpPath,
       rootDir: params.rootDir,
@@ -367,7 +373,13 @@ function allocateStagedFileName(source: string, usedNames: Set<string>): string 
   return fileName;
 }
 
-async function scpFile(remoteHost: string, remotePath: string, localPath: string): Promise<void> {
+async function scpFile(
+  remoteHost: string,
+  remotePath: string,
+  localPath: string,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  abortSignal?.throwIfAborted();
   const safeRemoteHost = normalizeScpRemoteHost(remoteHost);
   if (!safeRemoteHost) {
     throw new Error("invalid remote host for SCP");
@@ -388,11 +400,14 @@ async function scpFile(remoteHost: string, remotePath: string, localPath: string
       localPath,
     ],
     {
+      signal: abortSignal,
+      killProcessTree: true,
       // Four UTF-8 bytes per code point preserves enough data for the existing
       // UTF-16 diagnostic tail contract without retaining unbounded stderr.
       maxOutputBytes: { stdout: 1, stderr: SCP_STDERR_TAIL_CHARS * 4 },
     },
   );
+  abortSignal?.throwIfAborted();
   if (result.code !== 0) {
     const stderr = appendScpStderrTail("", result.stderr).trim();
     throw new Error(`scp failed (${result.code}): ${stderr}`);
