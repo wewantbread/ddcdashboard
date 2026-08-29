@@ -40,7 +40,7 @@ function summary(storePath: string): SessionCleanupSummary {
   return {
     agentId: "work",
     storePath,
-    mode: "reset",
+    mode: "enforce",
     dryRun: false,
     beforeCount: 5,
     afterCount: 2,
@@ -49,7 +49,7 @@ function summary(storePath: string): SessionCleanupSummary {
     modelRunPruned: 0,
     pruned: 3,
     capped: 0,
-    unreferencedArtifacts: { scanned: 0, pruned: 0, orphaned: 0 },
+    unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
     diskBudget: null,
     wouldMutate: true,
   };
@@ -60,14 +60,15 @@ describe("runLocalSessionsCleanup partial-failure accumulation", () => {
     const okSummary = summary("/tmp/openclaw-store-ok");
     const failSummary = summary("/tmp/openclaw-store-fail");
     runSessionsCleanup
-      .mockResolvedValueOnce({ mode: "reset", previewResults: [], appliedSummaries: [okSummary] })
+      .mockResolvedValueOnce({ mode: "enforce", previewResults: [], appliedSummaries: [okSummary] })
       .mockRejectedValueOnce(
         new SessionsCleanupPartialError({
-          mode: "reset",
+          mode: "enforce",
           previewResults: [],
           appliedSummaries: [failSummary],
           failingTarget: { agentId: "work", storePath: "/tmp/openclaw-store-fail" },
           lifecycleCommitted: false,
+          cause: new Error("injected lifecycle failure"),
         }),
       );
 

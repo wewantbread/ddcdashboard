@@ -843,4 +843,46 @@ describe("sessionsCleanupCommand", () => {
     expect(process.exitCode).toBe(1);
     process.exitCode = prevExit;
   });
+
+  it("exits nonzero when a single-target Gateway partial failure carries a scalar summary with partialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayPartialError = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 3,
+        afterCount: 1,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 2,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: true,
+        applied: true,
+        appliedCount: 1,
+        partialError: {
+          failingAgentId: "work",
+          failingStorePath: "/resolved/work-sessions.work.sqlite",
+          message: "disk budget overage",
+        },
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayPartialError);
+
+    const { runtime, logs } = makeRuntime();
+    await sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime);
+
+    expect(process.exitCode).toBe(1);
+    expect(logs).toHaveLength(1);
+    const parsed = JSON.parse(logs[0] ?? "{}");
+    expect(parsed.agentId).toBe("main");
+    expect(parsed.partialError).toMatchObject({ failingAgentId: "work" });
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
+  });
 });

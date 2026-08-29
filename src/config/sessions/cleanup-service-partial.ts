@@ -35,6 +35,10 @@ export type SessionCleanupSummary = {
   wouldMutate: boolean;
   applied?: true;
   appliedCount?: number;
+  // Present when this otherwise-successful store summary was rejected as part of a
+  // partial Gateway response. Kept on the scalar summary so single-target
+  // delegations still signal failure (the CLI marks nonzero exit on this field).
+  partialError?: SessionsCleanupPartialErrorDetail;
 };
 
 export type SessionsCleanupResult =
@@ -107,7 +111,9 @@ export function serializeSessionCleanupResult(params: {
   if (!params.allAgents && summaries.length === 1) {
     const single = summaries[0];
     if (single) {
-      return single;
+      return params.partialError
+        ? { ...single, partialError: resolvePartialErrorDetail(params.partialError) }
+        : single;
     }
   }
   return {
@@ -116,19 +122,24 @@ export function serializeSessionCleanupResult(params: {
     dryRun: params.dryRun,
     stores: summaries,
     ...(params.partialError
-      ? {
-          partialError: {
-            failingAgentId: params.partialError.failingAgentId,
-            failingStorePath: resolveSqliteTargetFromSessionStorePath(
-              params.partialError.failingStorePath,
-              { agentId: params.partialError.failingAgentId },
-            ).path,
-            message: params.partialError.message,
-            ...(params.partialError.lifecycleCommitted !== undefined
-              ? { lifecycleCommitted: params.partialError.lifecycleCommitted }
-              : {}),
-          },
-        }
+      ? { partialError: resolvePartialErrorDetail(params.partialError) }
+      : {}),
+  };
+}
+
+// Resolves the failing store path to its canonical SQLite target path so the
+// serialized error matches the per-store summaries the CLI renders.
+function resolvePartialErrorDetail(
+  partialError: SessionsCleanupPartialErrorDetail,
+): SessionsCleanupPartialErrorDetail {
+  return {
+    failingAgentId: partialError.failingAgentId,
+    failingStorePath: resolveSqliteTargetFromSessionStorePath(partialError.failingStorePath, {
+      agentId: partialError.failingAgentId,
+    }).path,
+    message: partialError.message,
+    ...(partialError.lifecycleCommitted !== undefined
+      ? { lifecycleCommitted: partialError.lifecycleCommitted }
       : {}),
   };
 }
@@ -162,6 +173,7 @@ export function isSessionsCleanupResult(value: unknown): value is SessionsCleanu
   if (!value || typeof value !== "object") {
     return false;
   }
+  // SAFETY: Gateway error details arrive as `unknown`; only the closed shape below is validated.
   const record = value as Record<string, unknown>;
   if (record.allAgents === true) {
     if (
@@ -171,21 +183,36 @@ export function isSessionsCleanupResult(value: unknown): value is SessionsCleanu
     ) {
       return false;
     }
-    if (record.partialError !== undefined) {
-      const detail = record.partialError as Record<string, unknown>;
-      if (
-        typeof detail.failingAgentId !== "string" ||
-        typeof detail.failingStorePath !== "string" ||
-        typeof detail.message !== "string"
-      ) {
-        return false;
-      }
+    if (record.partialError !== undefined && !isValidPartialErrorDetail(record.partialError)) {
+      return false;
     }
     return true;
   }
+  if (
+    typeof record.agentId !== "string" ||
+    typeof record.storePath !== "string" ||
+    typeof record.mode !== "string"
+  ) {
+    return false;
+  }
+  if (record.partialError !== undefined && !isValidPartialErrorDetail(record.partialError)) {
+    return false;
+  }
+  return true;
+}
+
+// Validates the closed partial-error detail shape. Rejects null/non-object values
+// so a malformed `{ partialError: null }` Gateway detail is treated as invalid
+// rather than throwing when its properties are dereferenced.
+function isValidPartialErrorDetail(value: unknown): value is SessionsCleanupPartialErrorDetail {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  // SAFETY: untyped Gateway detail; only string fields are trusted below.
+  const detail = value as Record<string, unknown>;
   return (
-    typeof record.agentId === "string" &&
-    typeof record.storePath === "string" &&
-    typeof record.mode === "string"
+    typeof detail.failingAgentId === "string" &&
+    typeof detail.failingStorePath === "string" &&
+    typeof detail.message === "string"
   );
 }

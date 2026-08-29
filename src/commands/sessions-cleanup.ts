@@ -295,6 +295,7 @@ function asGatewayPartialCleanupResult(error: unknown): SessionsCleanupResult | 
   // Gateway error envelopes are untyped; validate the closed SessionsCleanupResult shape
   // before rendering. Nonconforming or older responses return null so the caller rethrows
   // the original error instead of rendering a garbage partial result.
+  // SAFETY: error envelopes are untyped `unknown`; only the validated `details` field is read.
   const details = (error as { details?: unknown }).details;
   if (!isSessionsCleanupResult(details)) {
     return null;

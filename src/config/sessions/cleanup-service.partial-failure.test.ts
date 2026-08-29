@@ -205,7 +205,7 @@ describe("serializeSessionCleanupResult single-store shape", () => {
   const summary: SessionCleanupSummary = {
     agentId: "work",
     storePath: "/tmp/openclaw-test-store",
-    mode: "reset",
+    mode: "enforce",
     dryRun: false,
     beforeCount: 5,
     afterCount: 2,
@@ -214,14 +214,14 @@ describe("serializeSessionCleanupResult single-store shape", () => {
     modelRunPruned: 0,
     pruned: 3,
     capped: 0,
-    unreferencedArtifacts: { scanned: 0, pruned: 0, orphaned: 0 },
+    unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
     diskBudget: null,
     wouldMutate: true,
   };
 
-  it("returns a scalar summary for a single target without allAgents even on partial error", () => {
+  it("returns a scalar summary but keeps the partialError marker for a single target", () => {
     const serialized = serializeSessionCleanupResult({
-      mode: "reset",
+      mode: "enforce",
       dryRun: false,
       allAgents: false,
       summaries: [summary],
@@ -232,14 +232,30 @@ describe("serializeSessionCleanupResult single-store shape", () => {
       },
     });
     expect((serialized as { allAgents?: boolean }).allAgents).toBeUndefined();
+    expect((serialized as { partialError?: unknown }).partialError).toMatchObject({
+      failingAgentId: "work",
+      message: "boom",
+    });
+    const scalar = serialized as SessionCleanupSummary;
+    expect(scalar.agentId).toBe("work");
+    expect(scalar.storePath).toContain("openclaw-test-store");
+  });
+
+  it("returns a bare scalar summary without a partialError marker on success", () => {
+    const serialized = serializeSessionCleanupResult({
+      mode: "enforce",
+      dryRun: false,
+      allAgents: false,
+      summaries: [summary],
+    });
+    expect((serialized as { allAgents?: boolean }).allAgents).toBeUndefined();
     expect((serialized as { partialError?: unknown }).partialError).toBeUndefined();
-    expect(serialized.agentId).toBe("work");
-    expect(serialized.storePath).toContain("openclaw-test-store");
+    expect((serialized as SessionCleanupSummary).agentId).toBe("work");
   });
 
   it("returns the allAgents envelope when allAgents is true", () => {
     const serialized = serializeSessionCleanupResult({
-      mode: "reset",
+      mode: "enforce",
       dryRun: false,
       allAgents: true,
       summaries: [summary],
@@ -267,7 +283,7 @@ describe("isSessionsCleanupResult closed-shape guard", () => {
     expect(
       isSessionsCleanupResult({
         allAgents: true,
-        mode: "reset",
+        mode: "enforce",
         dryRun: false,
         stores: [{ agentId: "work", storePath: "/s", mode: "reset" }],
         partialError: { failingAgentId: "work", failingStorePath: "/s", message: "boom" },
@@ -279,7 +295,7 @@ describe("isSessionsCleanupResult closed-shape guard", () => {
     expect(
       isSessionsCleanupResult({
         allAgents: true,
-        mode: "reset",
+        mode: "enforce",
         dryRun: false,
         stores: [],
         partialError: { failingAgentId: 1 },
@@ -294,5 +310,35 @@ describe("isSessionsCleanupResult closed-shape guard", () => {
   it("rejects non-objects", () => {
     expect(isSessionsCleanupResult(null)).toBe(false);
     expect(isSessionsCleanupResult("nope")).toBe(false);
+  });
+
+  it("accepts a scalar summary carrying a partialError marker", () => {
+    expect(
+      isSessionsCleanupResult({
+        agentId: "work",
+        storePath: "/s",
+        mode: "enforce",
+        partialError: { failingAgentId: "work", failingStorePath: "/s", message: "boom" },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a scalar summary whose partialError is null or malformed", () => {
+    expect(
+      isSessionsCleanupResult({
+        agentId: "work",
+        storePath: "/s",
+        mode: "enforce",
+        partialError: null,
+      }),
+    ).toBe(false);
+    expect(
+      isSessionsCleanupResult({
+        agentId: "work",
+        storePath: "/s",
+        mode: "enforce",
+        partialError: { failingAgentId: 1 },
+      }),
+    ).toBe(false);
   });
 });
