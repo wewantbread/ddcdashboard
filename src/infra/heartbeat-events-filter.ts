@@ -1,6 +1,6 @@
 // Filters heartbeat event text before it is added to prompts.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS,
   isHeartbeatAcknowledgementText,
@@ -8,6 +8,8 @@ import {
 import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 
 const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
+const MAX_SYSTEM_EVENT_PROMPT_CHARS = 8_000;
+const MAX_HEARTBEAT_EVENT_PROMPT_CHARS = 16_000;
 const STRUCTURED_EXEC_COMPLETION_EVENT_RE =
   /^exec (completed|failed) \(([a-z0-9_-]{1,64}), (code -?\d+|signal [^)]+)\)(?: :: ([\s\S]*))?$/i;
 
@@ -77,7 +79,7 @@ function formatExecEventPromptText(pendingEvents: string[]): {
 // Build a dynamic prompt for cron events by embedding the actual event content.
 // This ensures the model sees the reminder text directly instead of relying on
 // "shown in the system messages above" which may not be visible in context.
-export function buildCronEventPrompt(
+function buildCronEventPrompt(
   pendingEvents: string[],
   opts?: {
     deliverToUser?: boolean;
@@ -109,7 +111,7 @@ export function buildCronEventPrompt(
   );
 }
 
-export function buildExecEventPrompt(
+function buildExecEventPrompt(
   pendingEvents: string[],
   opts?: { deliverToUser?: boolean; useHeartbeatResponseTool?: boolean },
 ): string {
@@ -157,9 +159,111 @@ export function buildExecEventPrompt(
   );
 }
 
+/** Compose every event class inspected by one heartbeat into a single model turn. */
+export function buildHeartbeatEventPrompt(params: {
+  execEvents?: readonly string[];
+  cronEvents?: readonly string[];
+  genericEvents?: readonly string[];
+  deliverToUser?: boolean;
+  useHeartbeatResponseTool?: boolean;
+}): string {
+  const opts = {
+    deliverToUser: params.deliverToUser,
+    useHeartbeatResponseTool: params.useHeartbeatResponseTool,
+  };
+  const sections: string[] = [];
+  if (params.execEvents?.length) {
+    sections.push(buildExecEventPrompt([...params.execEvents], opts));
+  }
+  if (params.cronEvents?.length) {
+    sections.push(buildCronEventPrompt([...params.cronEvents], opts));
+  }
+  if (params.genericEvents?.length) {
+    sections.push(buildSystemEventPrompt([...params.genericEvents], opts));
+  }
+  if (sections.length === 0) {
+    return buildSystemEventPrompt([], opts);
+  }
+  if (sections.length === 1) {
+    const [onlySection] = sections;
+    if (!onlySection) {
+      return buildSystemEventPrompt([], opts);
+    }
+    return truncateHeartbeatEventPromptSection(onlySection, MAX_HEARTBEAT_EVENT_PROMPT_CHARS);
+  }
+  const header =
+    "Multiple heartbeat events were triggered. Assess each event and handle every event shown below.";
+  const separator = "\n\n";
+  const sectionBudget = Math.max(
+    1,
+    Math.floor(
+      (MAX_HEARTBEAT_EVENT_PROMPT_CHARS - header.length - separator.length * sections.length) /
+        sections.length,
+    ),
+  );
+  return [
+    header,
+    ...sections.map((section) => truncateHeartbeatEventPromptSection(section, sectionBudget)),
+  ].join(separator);
+}
+
+function truncateHeartbeatEventPromptSection(section: string, maxChars: number): string {
+  if (section.length <= maxChars) {
+    return section;
+  }
+  const marker = "\n\n[truncated]\n\n";
+  const bodyBudget = Math.max(0, maxChars - marker.length);
+  const headBudget = Math.ceil(bodyBudget * 0.7);
+  const tailBudget = bodyBudget - headBudget;
+  const tail = tailBudget > 0 ? sliceUtf16Safe(section, -tailBudget) : "";
+  return `${truncateUtf16Safe(section, headBudget)}${marker}${tail}`;
+}
+
+/** Build a heartbeat prompt for system events that are not owned by exec or cron. */
+function buildSystemEventPrompt(
+  pendingEvents: string[],
+  opts?: { deliverToUser?: boolean; useHeartbeatResponseTool?: boolean },
+): string {
+  const deliverToUser = opts?.deliverToUser ?? true;
+  const useHeartbeatResponseTool = opts?.useHeartbeatResponseTool ?? false;
+  const rawEventText = pendingEvents
+    .map(compactSystemEvent)
+    .filter((event): event is string => event !== null)
+    .join("\n");
+  const eventText =
+    rawEventText.length > MAX_SYSTEM_EVENT_PROMPT_CHARS
+      ? `${truncateUtf16Safe(rawEventText, MAX_SYSTEM_EVENT_PROMPT_CHARS)}\n\n[truncated]`
+      : rawEventText;
+  if (!eventText) {
+    const completionInstruction = useHeartbeatResponseTool
+      ? HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS
+      : `Reply ${SILENT_REPLY_TOKEN} only.`;
+    return `A system event was triggered, but no event content was found. ${completionInstruction}`;
+  }
+  const completionInstruction = useHeartbeatResponseTool
+    ? HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS
+    : `reply ${SILENT_REPLY_TOKEN} when nothing needs user-facing follow-up`;
+  if (!deliverToUser) {
+    return (
+      "A system event was triggered. The event details are:\n\n" +
+      eventText +
+      "\n\nHandle this event internally. Do not relay it to the user unless explicitly requested. " +
+      completionInstruction +
+      "."
+    );
+  }
+  return (
+    "A system event was triggered. The event details are:\n\n" +
+    eventText +
+    "\n\nAssess whether this event needs user-facing follow-up. If it does, explain it helpfully; otherwise " +
+    completionInstruction +
+    "."
+  );
+}
+
 const HEARTBEAT_OK_PREFIX = normalizeLowercaseStringOrEmpty(HEARTBEAT_TOKEN);
 
-function isHeartbeatNoiseEvent(evt: string): boolean {
+export function isHeartbeatNoiseEvent(evt: string): boolean {
   const lower = normalizeLowercaseStringOrEmpty(evt);
   if (!lower) {
     return false;
@@ -171,6 +275,27 @@ function isHeartbeatNoiseEvent(evt: string): boolean {
     lower.includes("heartbeat poll") ||
     lower.includes("heartbeat wake")
   );
+}
+
+export function compactSystemEvent(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const lower = normalizeLowercaseStringOrEmpty(trimmed);
+  if (lower.includes("reason periodic")) {
+    return null;
+  }
+  if (lower.startsWith("read heartbeat.md")) {
+    return null;
+  }
+  if (lower.includes("heartbeat poll") || lower.includes("heartbeat wake")) {
+    return null;
+  }
+  if (trimmed.startsWith("Node:")) {
+    return trimmed.replace(/ · last input [^·]+/i, "").trim();
+  }
+  return trimmed;
 }
 
 export function isExecCompletionEvent(evt: string): boolean {

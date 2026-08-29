@@ -10,7 +10,7 @@ import {
   formatZonedTimestamp,
   resolveTimezone,
 } from "../../infra/format-time/format-datetime.ts";
-import { isExecCompletionEvent } from "../../infra/heartbeat-events-filter.js";
+import { compactSystemEvent, isExecCompletionEvent } from "../../infra/heartbeat-events-filter.js";
 // Records system-level session events for restarts, forks, and resets.
 import { selectAgentSystemEvents } from "../../infra/system-event-ownership.js";
 import {
@@ -38,28 +38,6 @@ function selectGenericSystemEvents(
       !isExecCompletionEvent(event.text) &&
       !(options?.suppressHeartbeatOwnedEvents === true && isCronContextSystemEvent(event)),
   );
-}
-
-function compactSystemEvent(line: string): string | null {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const lower = normalizeLowercaseStringOrEmpty(trimmed);
-  if (lower.includes("reason periodic")) {
-    return null;
-  }
-  // Keep retired heartbeat prompts out of replayed legacy system events.
-  if (lower.startsWith("read heartbeat.md")) {
-    return null;
-  }
-  if (lower.includes("heartbeat poll") || lower.includes("heartbeat wake")) {
-    return null;
-  }
-  if (trimmed.startsWith("Node:")) {
-    return trimmed.replace(/ · last input [^·]+/i, "").trim();
-  }
-  return trimmed;
 }
 
 function resolveSystemEventTimezone(cfg: OpenClawConfig) {
