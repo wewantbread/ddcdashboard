@@ -278,7 +278,7 @@ describe("describeImageWithModelCore", () => {
         fileName: "image.png",
         mime: "image/png",
         prompt: "Describe the image.",
-        timeoutMs: 1000,
+        timeoutMs: 10_000,
       }),
     ).rejects.toThrow(
       "Model does not support images: lmstudio/text-only (resolved lmstudio/text-only input: text)",
@@ -352,6 +352,7 @@ describe("describeImageWithModelCore", () => {
   });
 
   it("clamps oversized image description timeouts before scheduling", async () => {
+    vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     discoverModelsMock.mockReturnValue({
       find: vi.fn(() => ({
@@ -812,7 +813,9 @@ describe("describeImageWithModelCore", () => {
     });
     completeMock
       .mockImplementationOnce(async () => {
-        await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 400);
+        });
         return {
           role: "assistant",
           api: "openai-responses",

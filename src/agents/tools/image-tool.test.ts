@@ -3604,7 +3604,9 @@ describe("image tool run abort", () => {
   it("times out delayed image preparation before starting the provider", async () => {
     vi.stubEnv("MINIMAX_API_KEY", "minimax-test");
     const loadWebMedia: MockImageLoadWebMedia = vi.fn(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1_100);
+      });
       return {
         buffer: Buffer.from(ONE_PIXEL_PNG_B64, "base64"),
         contentType: "image/png",
