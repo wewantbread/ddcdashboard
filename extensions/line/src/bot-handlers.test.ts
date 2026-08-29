@@ -86,69 +86,14 @@ vi.mock("openclaw/plugin-sdk/runtime-env", () => ({
   danger: (text: string) => text,
   logVerbose: () => {},
 }));
-vi.mock("openclaw/plugin-sdk/reply-history", () => ({
-  DEFAULT_GROUP_HISTORY_LIMIT: 20,
-  createChannelHistoryWindow: ({ historyMap }: { historyMap: Map<string, HistoryEntry[]> }) => ({
-    record: ({
-      historyKey,
-      limit,
-      entry,
-    }: {
-      historyKey: string;
-      limit: number;
-      entry: HistoryEntry;
-    }) => {
-      const existing = historyMap.get(historyKey) ?? [];
-      historyMap.set(historyKey, [...existing, entry].slice(-limit));
-    },
-    buildInboundHistory: ({ historyKey, limit }: { historyKey: string; limit: number }) => {
-      if (limit <= 0) {
-        return undefined;
-      }
-      return (historyMap.get(historyKey) ?? []).slice(-limit);
-    },
-    clear: ({ historyKey }: { historyKey: string }) => {
-      historyMap.delete(historyKey);
-    },
-  }),
-  buildInboundHistoryFromMap: ({
-    historyMap,
-    historyKey,
-    limit,
-  }: {
-    historyMap: Map<string, HistoryEntry[]>;
-    historyKey: string;
-    limit: number;
-  }) => {
-    if (limit <= 0) {
-      return undefined;
-    }
-    return (historyMap.get(historyKey) ?? []).slice(-limit);
-  },
-  clearHistoryEntriesIfEnabled: ({
-    historyMap,
-    historyKey,
-  }: {
-    historyMap: Map<string, HistoryEntry[]>;
-    historyKey: string;
-  }) => {
-    historyMap.delete(historyKey);
-  },
-  recordPendingHistoryEntryIfEnabled: ({
-    historyMap,
-    historyKey,
-    limit,
-    entry,
-  }: {
-    historyMap: Map<string, HistoryEntry[]>;
-    historyKey: string;
-    limit: number;
-    entry: HistoryEntry;
-  }) => {
-    const existing = historyMap.get(historyKey) ?? [];
-    historyMap.set(historyKey, [...existing, entry].slice(-limit));
-  },
-}));
+vi.mock("openclaw/plugin-sdk/reply-history", async () => {
+  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/reply-history")>(
+    "openclaw/plugin-sdk/reply-history",
+  );
+  // Only the window size is fixed for these tests; the recording and
+  // retention semantics under test are the real ones.
+  return { ...actual, DEFAULT_GROUP_HISTORY_LIMIT: 20 };
+});
 vi.mock("openclaw/plugin-sdk/routing", () => ({
   resolveAgentRoute: () => ({ agentId: "default" }),
 }));
@@ -189,21 +134,27 @@ const { buildLineMessageContextMock, buildLinePostbackContextMock } = vi.hoisted
   buildLinePostbackContextMock: vi.fn(async () => null as unknown),
 }));
 
-vi.mock("./bot-message-context.js", () => ({
-  buildLineMessageContext: buildLineMessageContextMock,
-  buildLinePostbackContext: buildLinePostbackContextMock,
-  getLineSourceInfo: (source: {
-    type?: string;
-    userId?: string;
-    groupId?: string;
-    roomId?: string;
-  }) => ({
-    userId: source.userId,
-    groupId: source.type === "group" ? source.groupId : undefined,
-    roomId: source.type === "room" ? source.roomId : undefined,
-    isGroup: source.type === "group" || source.type === "room",
-  }),
-}));
+vi.mock("./bot-message-context.js", async () => {
+  const actual = await vi.importActual<typeof import("./bot-message-context.js")>(
+    "./bot-message-context.js",
+  );
+  return {
+    extractNativeMediaKind: actual.extractNativeMediaKind,
+    buildLineMessageContext: buildLineMessageContextMock,
+    buildLinePostbackContext: buildLinePostbackContextMock,
+    getLineSourceInfo: (source: {
+      type?: string;
+      userId?: string;
+      groupId?: string;
+      roomId?: string;
+    }) => ({
+      userId: source.userId,
+      groupId: source.type === "group" ? source.groupId : undefined,
+      roomId: source.type === "room" ? source.roomId : undefined,
+      isGroup: source.type === "group" || source.type === "room",
+    }),
+  };
+});
 
 let handleLineWebhookEvents: typeof import("./bot-handlers.js").handleLineWebhookEvents;
 // Loaded through the same registry epoch as the module under test so both share
@@ -1542,8 +1493,12 @@ describe("handleLineWebhookEvents", () => {
     expect(processMessage).not.toHaveBeenCalled();
   });
 
-  it("allows non-text group messages through when requireMention is set (cannot detect mention)", async () => {
-    // Image message -- LINE only carries mention metadata on text messages.
+  it("gates an unaddressed group image and keeps it for the turn that asks about it", async () => {
+    // An image cannot carry a mention object, so it never addresses the bot on
+    // its own. It still has to survive as context: the member who posts a photo
+    // and then addresses the bot about it must be answered about that photo.
+    const groupHistories = new Map<string, HistoryEntry[]>();
+    const processMessage = vi.fn();
     const event = createTestMessageEvent({
       message: {
         id: "m-mention-img",
@@ -1555,7 +1510,120 @@ describe("handleLineWebhookEvents", () => {
       webhookEventId: "evt-mention-img",
     });
 
-    await expectRequireMentionGroupMessageProcessed(event);
+    downloadLineMediaMock.mockResolvedValueOnce({
+      path: "/tmp/line-media.bin",
+      contentType: "image/jpeg",
+      size: 1024,
+    });
+
+    await handleLineWebhookEvents(
+      [event],
+      createLineWebhookTestContext({
+        processMessage,
+        groupPolicy: "open",
+        requireMention: true,
+        groupHistories,
+      }),
+    );
+
+    expect(processMessage).not.toHaveBeenCalled();
+    const recorded = groupHistories.get("group-1") ?? [];
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.messageId).toBe("m-mention-img");
+    expect(recorded[0]?.media).toEqual([
+      expect.objectContaining({ path: "/tmp/line-media.bin", kind: "image" }),
+    ]);
+  });
+
+  it("records an unaddressed group image once when its attachment cannot be fetched", async () => {
+    // The entry is recorded before the download resolves, so a rejected fetch
+    // must not reject the event: the drain would replay it and record twice.
+    const groupHistories = new Map<string, HistoryEntry[]>();
+    const processMessage = vi.fn();
+    const event = createTestMessageEvent({
+      message: {
+        id: "m-gated-img-fail",
+        type: "image",
+        contentProvider: { type: "line" },
+        quoteToken: "q-gated-img-fail",
+      },
+      source: { type: "group", groupId: "group-1", userId: "user-img" },
+      webhookEventId: "evt-gated-img-fail",
+    });
+    // A retryable failure is the one that matters: it rejects the event on the
+    // answered path, and the gated path must not inherit that replay.
+    downloadLineMediaMock.mockRejectedValueOnce(
+      new MediaFetchError("http_error", "still preparing (HTTP 202)", { status: 202 }),
+    );
+
+    await handleLineWebhookEvents(
+      [event],
+      createLineWebhookTestContext({
+        processMessage,
+        groupPolicy: "open",
+        requireMention: true,
+        groupHistories,
+      }),
+    );
+
+    expect(processMessage).not.toHaveBeenCalled();
+    const recorded = groupHistories.get("group-1") ?? [];
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.media).toBeUndefined();
+  });
+
+  it("hands a gated attachment to the mention that follows it", async () => {
+    const groupHistories = new Map<string, HistoryEntry[]>();
+    const processMessage = vi.fn();
+    const context = createLineWebhookTestContext({
+      processMessage,
+      groupPolicy: "open",
+      requireMention: true,
+      groupHistories,
+    });
+    downloadLineMediaMock.mockResolvedValue({
+      path: "/tmp/line-media.bin",
+      contentType: "image/jpeg",
+      size: 1024,
+    });
+
+    await handleLineWebhookEvents(
+      [
+        createTestMessageEvent({
+          message: {
+            id: "m-gated-photo",
+            type: "image",
+            contentProvider: { type: "line" },
+            quoteToken: "q-gated-photo",
+          },
+          source: { type: "group", groupId: "group-1", userId: "user-img" },
+          webhookEventId: "evt-gated-photo",
+        }),
+      ],
+      context,
+    );
+    await handleLineWebhookEvents(
+      [
+        createTestMessageEvent({
+          message: {
+            id: "m-ask",
+            type: "text",
+            text: "@bot what is in it?",
+            mention: { mentionees: [{ index: 0, length: 4, type: "user", isSelf: true }] },
+          } as unknown as MessageEvent["message"],
+          source: { type: "group", groupId: "group-1", userId: "user-img" },
+          webhookEventId: "evt-ask",
+        }),
+      ],
+      context,
+    );
+
+    expect(processMessage).toHaveBeenCalledTimes(1);
+    const history = buildLineMessageContextMock.mock.calls.at(-1)?.[0]?.inboundHistory ?? [];
+    expect(history).toHaveLength(1);
+    expect(history[0]?.media).toEqual([
+      expect.objectContaining({ path: "/tmp/line-media.bin", kind: "image" }),
+    ]);
   });
 
   it("does not bypass mention gating when non-bot mention is present with control command", async () => {

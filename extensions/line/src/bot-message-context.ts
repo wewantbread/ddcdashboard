@@ -219,7 +219,7 @@ function extractMessageText(message: MessageEvent["message"]): string {
   return "";
 }
 
-function extractNativeMediaKind(
+export function extractNativeMediaKind(
   message: MessageEvent["message"],
 ): ChannelInboundMediaInput["kind"] | undefined {
   switch (message.type) {
