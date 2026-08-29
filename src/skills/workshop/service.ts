@@ -346,7 +346,7 @@ async function withPendingSkillProposalMutation<T>(
     | "proposalId"
     | "workspaceDir"
   >,
-  action: "applied" | "quarantined" | "rejected" | "revised",
+  action: "quarantined" | "rejected" | "revised",
   fn: (read: SkillProposalReadResult) => Promise<T>,
 ): Promise<T> {
   const recoveryReadOptions = input.config ? { config: input.config } : undefined;
@@ -377,7 +377,10 @@ async function withPendingSkillProposalMutation<T>(
         );
       }
       assertExpectedRevisionHash(read.revisionHash, input.expectedRevisionHash);
-      if (hashSkillProposalContent(read.content) !== read.record.draftHash) {
+      if (
+        action === "revised" &&
+        hashSkillProposalContent(read.content) !== read.record.draftHash
+      ) {
         throw new Error("Proposal draft changed without updating proposal metadata.");
       }
       return await fn(read);
