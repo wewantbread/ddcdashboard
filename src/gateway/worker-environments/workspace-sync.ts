@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { withTimeout } from "../../infra/fs-safe.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { CommandOptions, SpawnResult } from "../../process/exec.js";
 import { type PreparedWorkerSsh, runWorkerSshCandidates, workerSshCommandOptions } from "./ssh.js";
 import type {
@@ -18,12 +17,13 @@ import {
   createAcceptedWorkspacePublisherFactory,
   recoverAcceptedWorkspacePublication,
 } from "./workspace-accepted-sync.js";
-import { registerWorkspaceReconcileReporter } from "./workspace-finalize.js";
+import { runInstrumentedWorkspaceReconcile } from "./workspace-finalize.js";
 import {
-  createWorkspaceReconcileMetrics,
   MAX_WORKSPACE_HASH_MEMO_BYTES,
   measureLocalWorkspaceReconciliation,
+  pruneWorkspaceHashMemo,
   withWorkspaceHashMemo,
+  type WorkspaceHashMemo,
   type WorkspaceReconcileMetrics,
 } from "./workspace-hash-memo.js";
 import { MAX_WORKSPACE_MANIFEST_BYTES } from "./workspace-inventory-limits.js";
@@ -51,6 +51,7 @@ import {
   parseRemoteWorkspaceSetup,
   probeWorkspaceGitMode,
   readTransferredManifest,
+  resolveWorkerWorkspaceGitAuthor,
   resolveRemoteWorkspaceManifest,
   stableWorkerPathComponent,
   validateWorkspaceSyncRequest,
@@ -63,10 +64,10 @@ import {
   type WorkerWorkspaceActionsOptions,
 } from "./workspace-sync-helpers.js";
 import {
-  createGitTransferList,
+  createWorkspaceGitTransferList,
   filterExistingGitTransferList,
-  runLocalCommandToFile,
-} from "./workspace-sync-local.js";
+  runWorkspaceInventoryCommandToFile,
+} from "./workspace-sync-inventory.js";
 import {
   REMOTE_GIT_WORKSPACE_RETRY_RESET_JS,
   REMOTE_GIT_WORKSPACE_SETUP_SCRIPT,
@@ -83,7 +84,6 @@ const REMOTE_WORKSPACE_ROOT = ".openclaw-worker/workspaces";
 const REMOTE_GIT_PACK_NAME = ".openclaw-base.pack";
 const GIT_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 const INBOUND_RSYNC_BW_LIMIT_KIB = 65_536;
-const workspaceSyncLog = createSubsystemLogger("gateway/worker-workspace");
 
 /** Binds workspace commands and synchronization to one connected tunnel owner. */
 export function createWorkerWorkspaceActions(
@@ -156,6 +156,7 @@ export function createWorkerWorkspaceActions(
       command.signal,
     );
     signal.throwIfAborted();
+    command.assertCurrent?.();
     const remainingCommandTimeoutMs = () => Math.max(0, deadlineMs - Date.now());
     const commandOptions = (remainingTimeoutMs: number): CommandOptions => {
       const base = workerSshCommandOptions({
@@ -180,13 +181,22 @@ export function createWorkerWorkspaceActions(
     return await runWorkerSshCandidates(
       prepared,
       remainingCommandTimeoutMs(),
-      async (port, remainingTimeoutMs) =>
-        await runTask(
+      async (port, remainingTimeoutMs) => {
+        command.assertCurrent?.();
+        return await runTask(
           workerWorkspaceSshArgv(prepared, command.argv, port),
           commandOptions(remainingTimeoutMs),
-        ),
+        );
+      },
     );
   };
+
+  // Stat-identity keys self-invalidate when files change, so this memo safely
+  // outlives one reconciliation. Owning it here scopes it to the connected
+  // tunnel owner: one placement epoch, dropped with the tunnel entry. Remote
+  // (`worker:`) entries round-trip through each memo-v1 capture; without this
+  // owner every turn re-hashes the full tree on both sides.
+  const placementHashMemo: WorkspaceHashMemo = new Map();
 
   const quiesceWorkspace = createWorkerWorkspaceQuiescence({
     ownerSignal: options.ownerSignal,
@@ -253,7 +263,7 @@ export function createWorkerWorkspaceActions(
           throw new Error("Worker workspace git base is not a commit id");
         }
 
-        gitTransferListPath = await createGitTransferList({
+        gitTransferListPath = await createWorkspaceGitTransferList({
           gitRoot,
           temporaryDirectory: path.join(temporaryDirectory, "transfer"),
           signal: options.ownerSignal,
@@ -262,7 +272,7 @@ export function createWorkerWorkspaceActions(
 
         const objectListPath = path.join(temporaryDirectory, "base-objects");
         const packPath = path.join(temporaryDirectory, "base.pack");
-        await runLocalCommandToFile({
+        await runWorkspaceInventoryCommandToFile({
           argv: [
             "git",
             "-C",
@@ -277,7 +287,7 @@ export function createWorkerWorkspaceActions(
           timeoutMs: WORKSPACE_TIMEOUT_MS,
         });
         await fs.appendFile(objectListPath, `${baseCommit}\n`);
-        await runLocalCommandToFile({
+        await runWorkspaceInventoryCommandToFile({
           argv: ["git", "-C", gitRoot, "pack-objects", "--stdout"],
           inputPath: objectListPath,
           outputPath: packPath,
@@ -298,20 +308,15 @@ export function createWorkerWorkspaceActions(
         if (!success(packTransfer)) {
           throw workspaceSyncError(packTransfer);
         }
-        const [detectedAuthorName, detectedAuthorEmail] = await Promise.all(
-          ["user.name", "user.email"].map(async (key) => {
-            const result = await runTask(
-              ["git", "-C", gitRoot, "config", "--get", key],
-              workerSshCommandOptions({
-                timeoutMs: REMOTE_SETUP_TIMEOUT_MS,
-                signal: options.ownerSignal,
-              }),
-            );
-            return success(result) ? result.stdout.trim() : "";
-          }),
+        const author = await resolveWorkerWorkspaceGitAuthor(request, async (argv) =>
+          runTask(
+            argv,
+            workerSshCommandOptions({
+              timeoutMs: REMOTE_SETUP_TIMEOUT_MS,
+              signal: options.ownerSignal,
+            }),
+          ),
         );
-        const authorName = request.gitAuthor?.name ?? detectedAuthorName;
-        const authorEmail = request.gitAuthor?.email ?? detectedAuthorEmail;
         const seeded = await runWorkspaceCommand({
           transportRetry: "never",
           argv: [
@@ -321,8 +326,8 @@ export function createWorkerWorkspaceActions(
             remoteWorkspaceDir,
             path.posix.join(remoteWorkspaceDir, REMOTE_GIT_PACK_NAME),
             baseCommit,
-            authorName ?? "",
-            authorEmail ?? "",
+            author.name,
+            author.email,
           ],
           input: REMOTE_GIT_WORKSPACE_SETUP_SCRIPT,
         });
@@ -446,7 +451,8 @@ export function createWorkerWorkspaceActions(
       await recoverWorkerWorkspaceReconciliation({ root: request.localPath, journal: pending });
       request.journal.abort();
     }
-    const hashMemo = new Map<string, string>();
+    pruneWorkspaceHashMemo(placementHashMemo);
+    const hashMemo = placementHashMemo;
     const runLocalReconciliation = <T>(operation: () => Promise<T>): Promise<T> =>
       measureLocalWorkspaceReconciliation(metrics, () =>
         withWorkspaceHashMemo(hashMemo, operation, metrics.gateway),
@@ -672,27 +678,10 @@ export function createWorkerWorkspaceActions(
     }
   };
 
-  const reconcileWorkspaceImpl = async (
+  const reconcileWorkspaceImpl = (
     request: WorkerWorkspaceReconcileRequest,
-  ): Promise<WorkerWorkspaceReconcileResult> => {
-    const metrics = createWorkspaceReconcileMetrics();
-    const startedAt = performance.now();
-    const report = (outcome: "failed" | "succeeded") => {
-      workspaceSyncLog.debug("worker workspace reconcile completed", {
-        outcome,
-        durationMs: performance.now() - startedAt,
-        ...metrics,
-      });
-    };
-    try {
-      const reconciliation = await reconcileWorkspaceRun(request, metrics);
-      registerWorkspaceReconcileReporter(reconciliation, report);
-      return reconciliation;
-    } catch (error) {
-      report("failed");
-      throw error;
-    }
-  };
+  ): Promise<WorkerWorkspaceReconcileResult> =>
+    runInstrumentedWorkspaceReconcile((metrics) => reconcileWorkspaceRun(request, metrics));
 
   return {
     quiesceWorkspace,

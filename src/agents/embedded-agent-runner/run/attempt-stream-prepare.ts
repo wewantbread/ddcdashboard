@@ -19,6 +19,7 @@ import {
   buildAgentHookContextIdentityFields,
 } from "../../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
+import { raceWithAbortSignal } from "../../agent-tools.abort.js";
 import { recordStructuredReplayTrustForToolCall } from "../../agent-tools.before-tool-call.js";
 import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
 import { cancelPendingAgentQuestionForSession } from "../../harness/gateway-question.js";
@@ -54,6 +55,10 @@ import {
   steerActiveSessionWithOptionalDeliveryWait,
 } from "./attempt-queue-message.js";
 import type { EmbeddedAttemptClientToolCallSlot } from "./attempt-result.js";
+import {
+  createEmbeddedAttemptDeferredLifecycleOwner,
+  type EmbeddedAttemptDeferredLifecycleOwner,
+} from "./deferred-lifecycle-owner.js";
 import {
   resolveFinalAssistantRawText,
   resolveFinalAssistantVisibleText,
@@ -97,8 +102,12 @@ export function prepareEmbeddedAttemptStream(input: {
   builtinToolNames: ReadonlySet<string>;
   coreBuiltinToolNames?: ReadonlySet<string>;
   replaySafeToolNames: ReadonlySet<string>;
+  codeModeExecToolNames?: ReadonlySet<string>;
   sideEffectToolOwners?: ReadonlyMap<string, string>;
   diagnosticOwner: DiagnosticEmbeddedRunOwner;
+  trajectoryRecorder?: Parameters<
+    typeof createEmbeddedAttemptDeferredLifecycleOwner
+  >[0]["trajectoryRecorder"];
 }) {
   const attempt = input.attempt;
   const hookRunner = input.hookRunner;
@@ -254,6 +263,7 @@ export function prepareEmbeddedAttemptStream(input: {
   // Terminal callbacks run after queue construction; keep the queue in this
   // phase so active-run clearing and subscription teardown share one owner.
   const getQueueHandle = (): AttemptStreamQueueHandle => queueHandle;
+  let deferredLifecycleOwner: EmbeddedAttemptDeferredLifecycleOwner | undefined;
   const subscription = subscribeEmbeddedAgentSession({
     session: input.activeSession,
     runId: attempt.runId,
@@ -293,6 +303,9 @@ export function prepareEmbeddedAttemptStream(input: {
         ? AGENT_RUN_RESTART_ABORT_STOP_REASON
         : undefined,
     onBeforeLifecycleTerminal: () => {
+      if (deferredLifecycleOwner) {
+        return;
+      }
       if (
         requiresCompletionRequiredAsyncTaskWait({
           sessionKey: attempt.sessionKey,
@@ -329,12 +342,16 @@ export function prepareEmbeddedAttemptStream(input: {
     builtinToolNames: input.builtinToolNames,
     coreBuiltinToolNames: input.coreBuiltinToolNames,
     replaySafeToolNames: input.replaySafeToolNames,
+    ...(input.codeModeExecToolNames ? { codeModeExecToolNames: input.codeModeExecToolNames } : {}),
     ...(input.sideEffectToolOwners ? { sideEffectToolOwners: input.sideEffectToolOwners } : {}),
     internalEvents: attempt.internalEvents,
   });
   toolMetasForTerminal = subscription.toolMetas;
 
   const toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor = async (toolParams) => {
+    const runSignal = input.runAbortController.signal;
+    const signal = AbortSignal.any([toolParams.signal ?? runSignal, runSignal]);
+    const yieldRunSignal = toolParams.toolName === "sessions_yield" ? runSignal : undefined;
     try {
       if (toolParams.source === "openclaw" && toolParams.sourceName === "core") {
         recordStructuredReplayTrustForToolCall(
@@ -343,46 +360,52 @@ export function prepareEmbeddedAttemptStream(input: {
           attempt.runId,
         );
       }
-      const result = await subscription.runToolLifecycle({
+      const lifecycle = subscription.runToolLifecycle({
         toolName: toolParams.toolName,
         toolCallId: toolParams.toolCallId,
         args: toolParams.input,
-        replaySafe: input.isReplaySafeTool(toolParams.tool),
+        replaySafe: toolParams.replaySafe ?? input.isReplaySafeTool(toolParams.tool),
         hideFromChannelProgress:
           "hideFromChannelProgress" in toolParams.tool &&
           toolParams.tool.hideFromChannelProgress === true,
-        execute: async (onImplementationStart) => {
-          const signal = toolParams.signal ?? input.runAbortController.signal;
-          const preparer = getInternalToolExecutionPreparer(toolParams.tool);
-          if (!preparer) {
-            onImplementationStart();
-            return await toolParams.tool.execute(
-              toolParams.toolCallId,
-              toolParams.input,
-              signal,
-              toolParams.onUpdate,
-              undefined as never,
-            );
-          }
-          const prepared = await preparer({
-            toolCallId: toolParams.toolCallId,
-            args: toolParams.input,
-            signal,
-            onUpdate: toolParams.onUpdate,
-          });
-          try {
-            if (prepared.kind === "immediate") {
-              if (prepared.outcome.kind === "error") {
-                throw prepared.outcome.error;
+        execute: (onImplementationStart) =>
+          raceWithAbortSignal(
+            (async () => {
+              signal.throwIfAborted();
+              const preparer = getInternalToolExecutionPreparer(toolParams.tool);
+              if (!preparer) {
+                onImplementationStart();
+                return await toolParams.tool.execute(
+                  toolParams.toolCallId,
+                  toolParams.input,
+                  signal,
+                  toolParams.onUpdate,
+                  undefined as never,
+                );
               }
-              return prepared.outcome.result;
-            }
-            return await prepared.execute(onImplementationStart);
-          } finally {
-            prepared.dispose();
-          }
-        },
+              const prepared = await preparer({
+                toolCallId: toolParams.toolCallId,
+                args: toolParams.input,
+                signal,
+                onUpdate: toolParams.onUpdate,
+              });
+              try {
+                if (prepared.kind === "immediate") {
+                  if (prepared.outcome.kind === "error") {
+                    throw prepared.outcome.error;
+                  }
+                  return prepared.outcome.result;
+                }
+                return await prepared.execute(onImplementationStart);
+              } finally {
+                prepared.dispose();
+              }
+            })(),
+            signal,
+            yieldRunSignal,
+          ),
       });
+      const result = await raceWithAbortSignal(lifecycle, signal, yieldRunSignal);
       // Settlement persists every queued projection. Validate the final result
       // first so a rejected hidden-tool value never enters session history.
       const acceptedResult = await toolParams.acceptResultBeforeProjection(result);
@@ -428,6 +451,7 @@ export function prepareEmbeddedAttemptStream(input: {
     }
     externalAbortAccepted = true;
     input.markExternalAbort();
+    attempt.onDeferredLifecycleAbort?.(reason);
     attempt.onAttemptAbort?.();
     const abortReason =
       reason === "restart"
@@ -468,6 +492,7 @@ export function prepareEmbeddedAttemptStream(input: {
     runId: attempt.runId,
     diagnosticOwner: input.diagnosticOwner,
     closeDiagnostics: () => closeDiagnosticEmbeddedRunOwner(input.diagnosticOwner),
+    startedAtMs: attempt.startedAtMs,
     ...(attempt.toolAuthorityFingerprint
       ? { toolAuthorityFingerprint: attempt.toolAuthorityFingerprint }
       : {}),
@@ -506,10 +531,31 @@ export function prepareEmbeddedAttemptStream(input: {
     attempt.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(attempt.runId),
   );
   setActiveEmbeddedRun(attempt.sessionId, queueHandle, attempt.sessionKey, attempt.sessionFile);
+  if (attempt.deferTerminalLifecycle && attempt.onDeferredLifecycleOwner) {
+    deferredLifecycleOwner = createEmbeddedAttemptDeferredLifecycleOwner({
+      runId: attempt.runId,
+      sessionId: attempt.sessionId,
+      trajectoryRecorder: input.trajectoryRecorder ?? null,
+      clearActiveRun: () =>
+        clearActiveEmbeddedRun(
+          attempt.sessionId,
+          queueHandle,
+          attempt.sessionKey,
+          attempt.sessionFile,
+        ),
+    });
+    try {
+      attempt.onDeferredLifecycleOwner(deferredLifecycleOwner);
+    } catch (error) {
+      deferredLifecycleOwner.discard();
+      throw error;
+    }
+  }
 
   return {
     subscription,
     queueHandle,
+    deferredLifecycleOwner,
     toolSearchCatalogExecutor,
     getBeforeAgentFinalizeRevisionReason: () => beforeAgentFinalizeRevisionReason,
     getBeforeAgentFinalizeRevisionEntryId: () => beforeAgentFinalizeRevisionEntryId,

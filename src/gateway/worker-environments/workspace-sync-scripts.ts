@@ -11,12 +11,7 @@ import {
   REMOTE_WORKSPACE_MANIFEST_REGISTRY_JS,
 } from "./workspace-manifest-remote-script.js";
 import { MAX_RECONCILIATION_ENTRIES } from "./workspace-manifest.js";
-import {
-  DERIVED_WORKSPACE_DIRECTORY_NAMES,
-  DERIVED_WORKSPACE_FILE_NAMES,
-  DERIVED_WORKSPACE_FILE_SUFFIXES,
-  isDerivedWorkspacePath,
-} from "./workspace-path-exclusions.js";
+import { WORKSPACE_PATH_EXCLUSIONS_JS } from "./workspace-path-exclusions.js";
 export { REMOTE_WORKSPACE_ACCEPTED_TRANSACTION_JS } from "./workspace-accepted-remote-script.js";
 export { REMOTE_GIT_WORKSPACE_RETRY_RESET_JS } from "./workspace-mutation-remote-script.js";
 export { REMOTE_WORKSPACE_SETUP_SCRIPT } from "./workspace-sync-setup-script.js";
@@ -73,10 +68,7 @@ export const REMOTE_WORKSPACE_MANIFEST_JS = String.raw`const crypto = require("n
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const DERIVED_WORKSPACE_DIRECTORY_NAMES = ${JSON.stringify(DERIVED_WORKSPACE_DIRECTORY_NAMES)};
-const DERIVED_WORKSPACE_FILE_NAMES = ${JSON.stringify(DERIVED_WORKSPACE_FILE_NAMES)};
-const DERIVED_WORKSPACE_FILE_SUFFIXES = ${JSON.stringify(DERIVED_WORKSPACE_FILE_SUFFIXES)};
-const isDerivedWorkspacePath = ${isDerivedWorkspacePath.toString()};
+${WORKSPACE_PATH_EXCLUSIONS_JS}
 const workspaceStatIdentity = ${workspaceStatIdentity.toString()};
 const MAX_RECONCILIATION_ENTRIES = ${MAX_RECONCILIATION_ENTRIES};
 const MAX_HASH_MEMO_BYTES = ${MAX_WORKSPACE_HASH_MEMO_BYTES};
@@ -416,6 +408,38 @@ async function readPublishedManifest() {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
+function preserveWindowsFileModes(entries, manifestRoot) {
+  if (process.platform !== "win32" || priorManifestDigests.length === 0) return;
+  const modes = new Map();
+  for (const digest of priorManifestDigests) {
+    if (!/^[a-f0-9]{64}$/.test(digest)) fail("invalid prior workspace manifest digest");
+    const raw = readManifestFile(path.join(manifestRoot, digest + ".json"));
+    if (crypto.createHash("sha256").update(raw).digest("hex") !== digest) {
+      fail("prior workspace manifest digest mismatch");
+    }
+    const prior = JSON.parse(raw);
+    if (
+      !prior ||
+      prior.version !== 1 ||
+      !Array.isArray(prior.entries) ||
+      prior.entries.length > MAX_WORKSPACE_INVENTORY_ENTRIES
+    ) {
+      fail("invalid prior workspace manifest");
+    }
+    for (const entry of prior.entries) {
+      if (entry.type === "file" && !modes.has(entry.path)) {
+        if (entry.mode !== 0o644 && entry.mode !== 0o755) {
+          fail("invalid prior workspace file mode");
+        }
+        modes.set(entry.path, entry.mode);
+      }
+    }
+  }
+  // Windows cannot persist POSIX execute bits; the authenticated prior manifest owns them.
+  for (const entry of entries) {
+    if (entry.type === "file" && modes.has(entry.path)) entry.mode = modes.get(entry.path);
+  }
+}
 async function main() {
   const workerRoot = path.join(process.env.HOME, ".openclaw-worker");
   const manifestRoot = path.join(workerRoot, "manifests");
@@ -444,6 +468,7 @@ async function main() {
   const entries = [...entriesByPath.values()];
   assertSerializedManifestBudget(requestedBaseCommit, entries);
   await hashFiles(entries);
+  preserveWindowsFileModes(entries, manifestRoot);
   const baseCommit = requestedBaseCommit;
   const manifest = serializeManifest(baseCommit, entries);
   const digest = publishManifest(manifestRoot, manifest);
