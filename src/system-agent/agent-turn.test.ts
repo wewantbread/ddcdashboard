@@ -228,6 +228,7 @@ describe("runSystemAgentTurn", () => {
     const fixture = await createSystemAgentVerifiedInferenceTestFixture(config);
     const first = createSystemAgentSession(fixture.binding);
     const second = createSystemAgentSession(fixture.binding);
+    const abortSignal = new AbortController().signal;
     const deps = {
       ...fixture.deps,
       readConfigFileSnapshot: vi.fn(async () => configSnapshot(config)) as never,
@@ -239,6 +240,7 @@ describe("runSystemAgentTurn", () => {
         overview,
         surface: "gateway",
         approvalArmed: false,
+        abortSignal,
         session: first,
       },
       deps,
@@ -262,9 +264,29 @@ describe("runSystemAgentTurn", () => {
       mocks.runEmbeddedAgent.mock.calls[1]?.[0]?.sessionFile,
       "missing second embedded transcript path",
     );
+    const firstSessionKey = requireValue(
+      mocks.runEmbeddedAgent.mock.calls[0]?.[0]?.sessionKey,
+      "missing first embedded session key",
+    );
+    const secondSessionKey = requireValue(
+      mocks.runEmbeddedAgent.mock.calls[1]?.[0]?.sessionKey,
+      "missing second embedded session key",
+    );
     expect(firstPath).toBe(`in-memory:${first.sessionId}`);
     expect(secondPath).toBe(`in-memory:${second.sessionId}`);
     expect(firstPath).not.toBe(secondPath);
+    expect(firstSessionKey).toBe(`agent:openclaw:${first.sessionId}`);
+    expect(secondSessionKey).toBe(`agent:openclaw:${second.sessionId}`);
+    expect(firstSessionKey).not.toBe(secondSessionKey);
+    expect(mocks.runEmbeddedAgent.mock.calls[0]?.[0]?.abortSignal).toBe(abortSignal);
+    expect(mocks.runEmbeddedAgent.mock.calls[0]?.[0]?.sandboxSessionKey).toBe(
+      "agent:openclaw:main",
+    );
+    expect(mocks.runEmbeddedAgent.mock.calls[1]?.[0]?.sandboxSessionKey).toBe(
+      "agent:openclaw:main",
+    );
+    expect(first.bindingSessionKey).toBeNull();
+    expect(second.bindingSessionKey).toBeNull();
     expect(first.sessionManager).not.toBe(second.sessionManager);
     await cleanupSystemAgentSession(first);
     expect(first.sessionManager).toBeUndefined();
@@ -295,6 +317,7 @@ describe("runSystemAgentTurn", () => {
       payloads: [],
     }));
     const { session, deps } = await createVerifiedSession(config);
+    const abortSignal = new AbortController().signal;
 
     await runSystemAgentTurnWithDeps(
       {
@@ -302,6 +325,7 @@ describe("runSystemAgentTurn", () => {
         overview: { defaultModel: "claude-cli/claude-opus-4-8" } as never,
         surface: "gateway",
         approvalArmed: false,
+        abortSignal,
         session,
       },
       {
@@ -320,8 +344,10 @@ describe("runSystemAgentTurn", () => {
       model: "claude-opus-4-8",
       agentDir,
       authProfileId: "claude-cli:ops",
+      abortSignal,
       agentId: "openclaw",
-      sessionKey: "agent:openclaw:main",
+      sessionKey: `agent:openclaw:${session.sessionId}`,
+      runtimePolicySessionKey: "agent:openclaw:main",
       sessionId: session.sessionId,
       workspaceDir: path.join(stateDir, "openclaw", "workspace"),
       sessionFile: `in-memory:${session.sessionId}`,
@@ -812,7 +838,8 @@ describe("runSystemAgentTurn", () => {
       authProfileIdSource: "user",
       agentHarnessRuntimeOverride: "codex",
       agentId: "openclaw",
-      sessionKey: "agent:openclaw:main",
+      sessionKey: `agent:openclaw:${session.sessionId}`,
+      sandboxSessionKey: "agent:openclaw:main",
       sessionId: session.sessionId,
       workspaceDir: path.join(stateDir, "openclaw", "workspace"),
       sessionFile: `in-memory:${session.sessionId}`,

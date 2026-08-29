@@ -147,6 +147,8 @@ type GatewaySystemAgentSession = {
       proposalHash: string,
     ) => Promise<unknown>;
     dispose: () => Promise<void>;
+    beginDisposalForGatewayShutdown: () => Promise<void>;
+    finishDisposalForGatewayShutdown: () => Promise<void>;
   };
   welcome: string;
   welcomeQuestion?: SystemAgentChatQuestion;

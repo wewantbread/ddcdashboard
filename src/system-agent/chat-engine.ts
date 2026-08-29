@@ -3,6 +3,7 @@ import type {
   SystemAgentWizardCancel,
   WizardAnswer,
 } from "../../packages/gateway-protocol/src/index.js";
+import { createAgentRunDirectAbortError } from "../agents/run-termination.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   cleanupSystemAgentSession,
@@ -72,6 +73,11 @@ export class SystemAgentChatEngine {
   private readonly router: ChatTurnRouter;
   private verifiedInference: SystemAgentVerifiedInferenceBinding;
   private turnQueue: Promise<unknown> = Promise.resolve();
+  private turnDrain: Promise<void> | undefined;
+  private disposal: Promise<void> | undefined;
+  private sessionCleanup: Promise<void> | undefined;
+  private disposed = false;
+  private readonly turnAbort = new AbortController();
 
   constructor(
     private readonly options: SystemAgentChatEngineOptions,
@@ -87,11 +93,12 @@ export class SystemAgentChatEngine {
       surface: options.surface,
       beforePersistentApply: async (runtime) => {
         await this.requirePersistentApplyInference(runtime);
+        this.turnAbort.signal.throwIfAborted();
       },
       dependencies: internals.wizardDependencies,
     });
     this.router = new ChatTurnRouter(
-      options,
+      { ...options, abortSignal: this.turnAbort.signal },
       { executeOperation: internals.executeOperation },
       this.agentSession,
       this.wizard,
@@ -120,15 +127,13 @@ export class SystemAgentChatEngine {
     decision: "allow-once" | "allow-always" | "deny" | null,
     proposalHash: string,
   ): Promise<SystemAgentChatReply | null> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       const reply = await this.router.resolveOperatorApproval(decision, proposalHash);
       if (reply?.text) {
         this.history.push({ role: "assistant", text: reply.text });
       }
       return reply;
     });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
   }
 
   noteAssistantMessage(text: string): void {
@@ -153,8 +158,21 @@ export class SystemAgentChatEngine {
   }
 
   async dispose(): Promise<void> {
-    this.wizard.dispose();
-    await cleanupSystemAgentSession(this.agentSession);
+    this.disposal ??= this.beginDisposal().then(async () => await this.finalizeDisposal());
+    await this.disposal;
+  }
+
+  /** Abort accepted work without starting binding cleanup during Gateway harness teardown. */
+  beginDisposalForGatewayShutdown(): Promise<void> {
+    return this.beginDisposal();
+  }
+
+  /** Finish binding cleanup at the shutdown phase selected by the Gateway owner. */
+  async finishDisposalForGatewayShutdown(): Promise<void> {
+    // Never let binding cleanup overtake work that ignored cancellation. The
+    // Gateway bounds this drain and skips finalization when it does not settle.
+    await this.beginDisposal();
+    await this.finalizeDisposal();
   }
 
   /**
@@ -167,7 +185,7 @@ export class SystemAgentChatEngine {
   }
 
   async handle(text: string, options?: SystemAgentChatTurnOptions): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       await this.requireVerifiedInference();
       const sensitiveTurn = this.wizard.sensitiveInputPending;
       const reply = await this.router.resolveTurn(text, options);
@@ -176,27 +194,52 @@ export class SystemAgentChatEngine {
         sensitiveTurn ? "<redacted secret>" : redactSensitiveCommandText(text),
       );
     });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
   }
 
   async answerWizard(answer: WizardAnswer): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
+    return await this.enqueueTurn(async () => {
       await this.requireVerifiedInference();
       const result = await this.router.answerWizard(this.wizard.answer(answer));
       return this.completeTurn({ text: result.text, action: "none" }, result.userHistoryText);
     });
+  }
+
+  async cancelWizard(cancel: SystemAgentWizardCancel): Promise<SystemAgentChatReply> {
+    return await this.enqueueTurn(async () => {
+      const result = await this.router.answerWizard(this.wizard.cancel(cancel));
+      return this.completeTurn({ text: result.text, action: "none" }, result.userHistoryText);
+    });
+  }
+
+  private async enqueueTurn<T>(run: () => Promise<T>): Promise<T> {
+    if (this.disposed) {
+      throw new Error("System-agent chat engine is disposed");
+    }
+    const turn = this.turnQueue.then(async () => {
+      this.turnAbort.signal.throwIfAborted();
+      const result = await run();
+      this.turnAbort.signal.throwIfAborted();
+      return result;
+    });
     this.turnQueue = turn.catch(() => undefined);
     return await turn;
   }
 
-  async cancelWizard(cancel: SystemAgentWizardCancel): Promise<SystemAgentChatReply> {
-    const turn = this.turnQueue.then(async () => {
-      const result = await this.router.answerWizard(this.wizard.cancel(cancel));
-      return this.completeTurn({ text: result.text, action: "none" }, result.userHistoryText);
-    });
-    this.turnQueue = turn.catch(() => undefined);
-    return await turn;
+  private beginDisposal(): Promise<void> {
+    if (!this.turnDrain) {
+      this.disposed = true;
+      this.turnAbort.abort(createAgentRunDirectAbortError());
+      this.turnDrain = this.turnQueue.then(() => undefined);
+    }
+    return this.turnDrain;
+  }
+
+  private async finalizeDisposal(): Promise<void> {
+    this.sessionCleanup ??= (async () => {
+      this.wizard.dispose();
+      await cleanupSystemAgentSession(this.agentSession);
+    })();
+    await this.sessionCleanup;
   }
 
   private completeTurn(reply: SystemAgentChatReply, userHistoryText: string): SystemAgentChatReply {

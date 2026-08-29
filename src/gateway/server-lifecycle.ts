@@ -39,6 +39,8 @@ import {
 } from "./server/health-state.js";
 import { broadcastPresenceSnapshot } from "./server/presence-events.js";
 import { createSessionViewerPresenceDeclarations } from "./session-viewer-presence.js";
+import { beginGatewaySystemAgentSessionDisposal } from "./system-agent-session-disposal.js";
+import { beginGatewaySystemAgentTaskShutdown } from "./system-agent-task-lifecycle.js";
 
 type GatewayRuntimePreparation = Awaited<ReturnType<typeof prepareGatewayKernelState>>;
 type GatewayLogger = ReturnType<typeof createSubsystemLogger>;
@@ -91,6 +93,7 @@ export async function prepareGatewayLifecycle(params: {
     bindDeviceNodeControl,
     bindWorkerNodeDesktopControl,
     workerPlacementRuntime,
+    systemAgentSessions,
     lifecycle,
   } = runtime;
   const subscribeSessionMessageEvents: GatewayRequestContext["subscribeSessionMessageEvents"] = (
@@ -543,6 +546,10 @@ export async function prepareGatewayLifecycle(params: {
           shutdownRuntime.drainRetainedOpenAiEmbeddingProviders,
         stopGmailWatcher: shutdownRuntime.stopGmailWatcher,
         disposeAllCodeModeRuns: shutdownRuntime.disposeAllCodeModeRuns,
+        beginSystemAgentTaskShutdown: () =>
+          beginGatewaySystemAgentTaskShutdown(systemAgentSessions),
+        beginSystemAgentSessionDisposal: () =>
+          beginGatewaySystemAgentSessionDisposal(systemAgentSessions),
         closeProviderTransportDispatcherPool: shutdownRuntime.closeProviderTransportDispatcherPool,
       })(optsValue);
     } finally {

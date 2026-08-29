@@ -6,10 +6,11 @@ import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.j
 import { extractAgentRunText, type AgentRunResultView } from "../agents/agent-run-result.js";
 import { resolveCliBackendConfig, type ResolvedCliBackend } from "../agents/cli-backends.js";
 import { normalizeCliModel } from "../agents/cli-runner/helpers.js";
+import { captureAgentHarnessSessionDeletions } from "../agents/harness/session-deletion.js";
 import { SessionManager } from "../agents/sessions/index.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { CliSessionBinding } from "../config/sessions.js";
-import { buildAgentMainSessionKey } from "../routing/session-key.js";
+import { buildAgentMainSessionKey, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { SYSTEM_AGENT_ID } from "./agent-id.js";
 import { SYSTEM_AGENT_SYSTEM_PROMPT } from "./assistant-prompts.js";
 import { SystemAgentInferenceUnavailableError } from "./inference-error.js";
@@ -52,6 +53,7 @@ export type SystemAgentTurnRunner = (params: {
   input: string;
   overview: SystemAgentOverview;
   surface: "cli" | "gateway";
+  abortSignal?: AbortSignal;
   /** Host-verified: the user's current message is an explicit approval. */
   approvalArmed: boolean;
   /** Delegated sessions can only resolve approvals in the operator UI. */
@@ -61,6 +63,8 @@ export type SystemAgentTurnRunner = (params: {
 
 export type SystemAgentSession = {
   sessionId: string;
+  /** Actual native binding key; null after an embedded run uses its physical session target. */
+  bindingSessionKey?: string | null;
   /** Exact live-tested inference owner for this ephemeral conversation. */
   verifiedInference: SystemAgentVerifiedInferenceBinding;
   /** Host-owned pending-proposal fingerprint; see system-agent-tool.ts. */
@@ -122,6 +126,29 @@ async function ensureSystemAgentDirs(): Promise<{ workspaceDir: string }> {
 }
 
 export async function cleanupSystemAgentSession(session: SystemAgentSession): Promise<void> {
+  const sessionKey = toAgentStoreSessionKey({
+    agentId: SYSTEM_AGENT_ID,
+    requestKey: session.sessionId,
+  });
+  // The conversation UUID owns an ephemeral native binding. Delete that row with
+  // the engine so reset and eviction cannot accumulate unreachable bindings.
+  const prepareDeletion = captureAgentHarnessSessionDeletions();
+  const bindingSessionKey = session.bindingSessionKey;
+  await prepareDeletion?.(
+    [
+      {
+        agentId: SYSTEM_AGENT_ID,
+        sessionId: session.sessionId,
+        sessionKey,
+        ...(bindingSessionKey !== undefined ? { bindingSessionKey } : {}),
+      },
+    ],
+    async (prepared) => {
+      for (const mutation of prepared.get(sessionKey) ?? []) {
+        mutation.commit();
+      }
+    },
+  );
   delete session.cliSession;
   delete session.sessionManager;
 }
@@ -304,8 +331,13 @@ async function runSystemAgentTurnWithDeps(
   }
 
   const runId = `openclaw-turn-${randomUUID()}`;
-  const sessionManager = params.session.sessionManager ?? SessionManager.inMemory(workspaceDir);
-  params.session.sessionManager = sessionManager;
+  const sessionId = params.session.sessionId;
+  const sessionKey = toAgentStoreSessionKey({ agentId: SYSTEM_AGENT_ID, requestKey: sessionId });
+  const policySessionKey = buildAgentMainSessionKey({ agentId: SYSTEM_AGENT_ID });
+  if (plan.runner === "embedded") {
+    params.session.bindingSessionKey = null;
+  }
+  const sessionManager = (params.session.sessionManager ??= SessionManager.inMemory(workspaceDir));
   const preparedRunAdmission = prepareSystemAgentRunAdmission(
     plan.runConfig,
     runId,
@@ -313,11 +345,11 @@ async function runSystemAgentTurnWithDeps(
     "system-agent.turn",
   );
   const shared = {
-    sessionId: params.session.sessionId,
-    sessionKey: buildAgentMainSessionKey({ agentId: SYSTEM_AGENT_ID }),
+    sessionId,
+    sessionKey,
     agentId: SYSTEM_AGENT_ID,
     trigger: "manual" as const,
-    sessionFile: `in-memory:${params.session.sessionId}`,
+    sessionFile: `in-memory:${sessionId}`,
     sessionManager,
     workspaceDir,
     config: plan.runConfig,
@@ -328,6 +360,7 @@ async function runSystemAgentTurnWithDeps(
     messageChannel: "openclaw",
     messageProvider: "openclaw",
     disableTrajectory: true,
+    ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
   };
   // Directives are per-turn: the tool records at most one interactive handoff
   // and the engine executes it after the reply.
@@ -371,6 +404,7 @@ async function runSystemAgentTurnWithDeps(
           systemAgentTool,
           ...(cliToolAvailability ? { cliToolAvailability } : {}),
           ...(previousBinding ? { cliSessionBinding: previousBinding } : {}),
+          runtimePolicySessionKey: policySessionKey,
           disableCliLiveSession: true,
           cleanupCliLiveSessionOnRunEnd: true,
         })) as EmbeddedRunResult;
@@ -405,6 +439,7 @@ async function runSystemAgentTurnWithDeps(
         model: plan.model,
         agentDir: plan.agentDir,
         agentHarnessRuntimeOverride: plan.agentHarnessRuntimeOverride,
+        sandboxSessionKey: policySessionKey,
         ...(expectedAgentHarnessRuntimeArtifact ? { expectedAgentHarnessRuntimeArtifact } : {}),
         ...(plan.authProfileId
           ? { authProfileId: plan.authProfileId, authProfileIdSource: "user" as const }

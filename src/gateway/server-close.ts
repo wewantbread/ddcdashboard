@@ -39,6 +39,7 @@ import {
 import type { MediaCleanupStopResult } from "./server-media-cleanup-lifecycle.js";
 import { clearSessionTypingState } from "./server-methods/session-typing-state.js";
 import type { GatewayMaintenanceHandles } from "./server-runtime-services.js";
+import type { GatewaySystemAgentSessionDisposal } from "./system-agent-session-disposal.js";
 
 const shutdownLog = createSubsystemLogger("gateway/shutdown");
 const GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS = 5_000;
@@ -51,6 +52,7 @@ const HTTP_CLOSE_FORCE_WAIT_MS = 5_000;
 const MCP_RUNTIME_CLOSE_GRACE_MS = 5_000;
 const LSP_RUNTIME_CLOSE_GRACE_MS = 5_000;
 const EMBEDDING_PROVIDER_CLOSE_GRACE_MS = 5_000;
+const SYSTEM_AGENT_SESSION_CLOSE_GRACE_MS = 5_000;
 const AGENT_HARNESS_CLOSE_GRACE_MS = 5_000;
 const RESTART_REPLY_DRAIN_POLL_MS = 100;
 const RESTART_REPLY_POST_ABORT_DRAIN_TIMEOUT_MS = 1_000;
@@ -541,6 +543,8 @@ async function triggerGatewayLifecycleHookWithTimeout(params: {
 async function disposeRuntimeWithShutdownGrace(params: {
   label:
     | "plugin-services"
+    | "system-agent-tasks"
+    | "system-agent-sessions"
     | "agent-harnesses"
     | "bundle-mcp"
     | "bundle-lsp"
@@ -548,21 +552,25 @@ async function disposeRuntimeWithShutdownGrace(params: {
   dispose: () => Promise<void>;
   graceMs: number;
   warnings: string[];
-}): Promise<void> {
+}): Promise<"completed" | "failed" | "timed-out"> {
   const disposePromise = Promise.resolve()
     .then(params.dispose)
+    .then(() => "completed" as const)
     .catch((err: unknown) => {
       shutdownLog.warn(`${params.label} runtime disposal failed during shutdown: ${String(err)}`);
       recordShutdownWarning(params.warnings, params.label);
+      return "failed" as const;
     });
   const disposeTimeout = createTimeoutRace(params.graceMs, () => {
     shutdownLog.warn(
       `${params.label} runtime disposal exceeded ${params.graceMs}ms; continuing shutdown`,
     );
     recordShutdownWarning(params.warnings, params.label);
+    return "timed-out" as const;
   });
-  await Promise.race([disposePromise, disposeTimeout.promise]);
+  const result = await Promise.race([disposePromise, disposeTimeout.promise]);
   disposeTimeout.clear();
+  return result;
 }
 
 export async function runGatewayClosePrelude(params: {
@@ -679,6 +687,8 @@ export function createGatewayCloseHandler(
     drainRetainedOpenAiEmbeddingProviders: () => Promise<void>;
     stopGmailWatcher: () => Promise<void>;
     disposeAllCodeModeRuns: () => Promise<void> | void;
+    beginSystemAgentTaskShutdown: () => Promise<void>;
+    beginSystemAgentSessionDisposal: () => GatewaySystemAgentSessionDisposal;
     closeProviderTransportDispatcherPool: () => Promise<void>;
     cron: { stop: () => void; stopAndDrain?: () => Promise<void> };
     heartbeatRunner: HeartbeatRunner;
@@ -864,12 +874,45 @@ export function createGatewayCloseHandler(
         }
       });
       await shutdownStep("code-mode-runs", () => params.disposeAllCodeModeRuns(), warnings);
-      await disposeRuntimeWithShutdownGrace({
-        label: "agent-harnesses",
-        dispose: disposeRegisteredAgentHarnesses,
-        graceMs: AGENT_HARNESS_CLOSE_GRACE_MS,
-        warnings,
-      });
+      const systemAgentTaskDrain = params.beginSystemAgentTaskShutdown();
+      const systemAgentDisposal = params.beginSystemAgentSessionDisposal();
+      const [systemAgentTaskDrainResult, systemAgentDisposalResult] = await Promise.all([
+        disposeRuntimeWithShutdownGrace({
+          label: "system-agent-tasks",
+          dispose: async () => await systemAgentTaskDrain,
+          graceMs: SYSTEM_AGENT_SESSION_CLOSE_GRACE_MS,
+          warnings,
+        }),
+        disposeRuntimeWithShutdownGrace({
+          label: "system-agent-sessions",
+          dispose: async () => await systemAgentDisposal.drain,
+          graceMs: SYSTEM_AGENT_SESSION_CLOSE_GRACE_MS,
+          warnings,
+        }),
+      ]);
+      const agentHarnessDisposalResult =
+        systemAgentTaskDrainResult === "completed"
+          ? await disposeRuntimeWithShutdownGrace({
+              label: "agent-harnesses",
+              dispose: disposeRegisteredAgentHarnesses,
+              graceMs: AGENT_HARNESS_CLOSE_GRACE_MS,
+              warnings,
+            })
+          : "timed-out";
+      if (
+        systemAgentTaskDrainResult === "completed" &&
+        systemAgentDisposalResult === "completed" &&
+        agentHarnessDisposalResult === "completed"
+      ) {
+        // Harness disposal closes native clients first. Binding deletion remains
+        // valid without them and can therefore be bounded without racing teardown.
+        await disposeRuntimeWithShutdownGrace({
+          label: "system-agent-sessions",
+          dispose: systemAgentDisposal.finish,
+          graceMs: SYSTEM_AGENT_SESSION_CLOSE_GRACE_MS,
+          warnings,
+        });
+      }
       await shutdownStep("ai-session-resources", () => cleanupSessionResources(), warnings);
       await shutdownStep(
         "provider-transport-dispatchers",
