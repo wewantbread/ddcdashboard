@@ -1099,3 +1099,49 @@ describe.sequential("TUI PTY harness", () => {
     TEST_TIMEOUT_MS,
   );
 });
+
+it(
+  "clears only the visible conversation and restores it from session history",
+  async () => {
+    const clearFixture = await startTuiFixture();
+    const prompt = "live reply dedupe proof: clear view";
+    const reply = "TUI_LIVE_SECOND";
+    try {
+      await clearFixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS * 2);
+      await clearFixture.run.write(`${prompt}\r`, { delay: false });
+      await clearFixture.run.waitForOutput(reply);
+      const before = await readFixtureLog(clearFixture.logPath);
+      const historyLoadsBefore = countFixtureCalls(before, "loadHistory");
+
+      await clearFixture.run.write("/clear-view\r", { delay: false });
+      const clearedRows = await waitForSynchronizedFrameRows(
+        clearFixture.run,
+        (frame) => frame.some((row) => row.includes("view cleared; session history is unchanged")),
+        STARTUP_TIMEOUT_MS,
+      );
+      expect(clearedRows.some((row) => row.includes(prompt) || row.includes(reply))).toBe(false);
+      const afterClear = await readFixtureLog(clearFixture.logPath);
+      expect(countFixtureMessages(afterClear, "/clear-view")).toBe(0);
+      expect(countFixtureCalls(afterClear, "resetSession")).toBe(0);
+
+      await clearFixture.run.write("\x14", { delay: false });
+      await expect
+        .poll(async () => {
+          const entries = await readFixtureLog(clearFixture.logPath);
+          return countFixtureCalls(entries, "loadHistory");
+        })
+        .toBeGreaterThan(historyLoadsBefore);
+      const restoredRows = await waitForSynchronizedFrameRows(
+        clearFixture.run,
+        (frame) =>
+          frame.some((row) => row.includes(prompt)) && frame.some((row) => row.includes(reply)),
+        STARTUP_TIMEOUT_MS,
+      );
+      expect(restoredRows.some((row) => row.includes(prompt))).toBe(true);
+      expect(restoredRows.some((row) => row.includes(reply))).toBe(true);
+    } finally {
+      await clearFixture.cleanup();
+    }
+  },
+  STARTUP_TEST_TIMEOUT_MS * 2,
+);

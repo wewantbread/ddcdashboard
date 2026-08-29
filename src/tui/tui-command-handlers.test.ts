@@ -166,6 +166,7 @@ function createHarness(params?: {
     pendingSystemNotices.set(runId, text);
   });
   const dismissPendingSystem = vi.fn((runId: string) => pendingSystemNotices.delete(runId));
+  const clearAll = vi.fn();
   const clearTools = vi.fn();
   const reserveAssistantSlot = vi.fn();
   const requestRender = vi.fn();
@@ -239,6 +240,7 @@ function createHarness(params?: {
       addSystem,
       addPendingSystem,
       dismissPendingSystem,
+      clearAll,
       clearTools,
       reserveAssistantSlot,
     } as never,
@@ -296,6 +298,7 @@ function createHarness(params?: {
     addPendingSystem,
     dismissPendingSystem,
     pendingSystemNotices,
+    clearAll,
     clearTools,
     reserveAssistantSlot,
     requestRender,
@@ -317,6 +320,35 @@ function createHarness(params?: {
 }
 
 describe("tui command handlers", () => {
+  it("clears only the visible chat log for /clear-view while idle", async () => {
+    const { handleCommand, clearAll, addSystem, sendChat, resetSession } = createHarness();
+
+    await handleCommand("/clear-view");
+
+    expect(clearAll).toHaveBeenCalledTimes(1);
+    expect(addSystem).toHaveBeenCalledWith("view cleared; session history is unchanged");
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(resetSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { activeChatRunId: "run-active", label: "an active run" },
+    {
+      pendingSubmit: { state: "admitting", draft: { runId: "run-pending", text: "pending" } },
+      label: "a pending send",
+    },
+    { activityStatus: "finishing context", label: "a finishing run" },
+  ])("preserves the visible chat log for /clear-view during $label", async (runState) => {
+    const { label: _label, ...params } = runState;
+    const { handleCommand, clearAll, addSystem, sendChat } = createHarness(params);
+
+    await handleCommand("/clear-view");
+
+    expect(clearAll).not.toHaveBeenCalled();
+    expect(addSystem).toHaveBeenCalledWith("abort or wait for the current run before /clear-view");
+    expect(sendChat).not.toHaveBeenCalled();
+  });
+
   it("does not open the agent picker from a cached roster after refresh failure", async () => {
     const refreshAgents = vi
       .fn()

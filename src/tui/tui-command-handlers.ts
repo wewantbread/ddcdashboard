@@ -838,6 +838,14 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         finishSessionTransition();
       }
     },
+    "clear-view": () => {
+      if (hasUnsafeSessionRollover()) {
+        chatLog.addSystem("abort or wait for the current run before /clear-view");
+        return;
+      }
+      chatLog.clearAll();
+      chatLog.addSystem("view cleared; session history is unchanged");
+    },
     abort: async () => await abortActive(),
     stop: async () => {
       // Queued client runs can terminalize before the followup executes, so
