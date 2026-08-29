@@ -645,10 +645,11 @@ describe("buildExecApprovalPendingToolResult", () => {
     });
 
   it("resolves terminal no-route approvals inline", async () => {
+    // When no approval delivery route is available, fail closed by denying execution
     await expect(createRoute(null)).resolves.toMatchObject({
       kind: "inline",
-      preResolvedDecision: null,
-      state: { approvedByAsk: false, deniedReason: "approval-timeout" },
+      preResolvedDecision: "deny",
+      state: { approvedByAsk: false, deniedReason: "user-denied" },
     });
   });
 
@@ -661,6 +662,8 @@ describe("buildExecApprovalPendingToolResult", () => {
   });
 
   it("applies strict approval ordering to an inline route", async () => {
+    // When requiresExplicitApproval is true and no delivery route is available,
+    // fail closed by denying execution rather than proceeding without approval
     await expect(
       createExecApprovalRequestRoute({
         warnings: [],
@@ -676,7 +679,8 @@ describe("buildExecApprovalPendingToolResult", () => {
       }),
     ).resolves.toMatchObject({
       kind: "inline",
-      state: { approvedByAsk: false, deniedReason: "approval-timeout" },
+      preResolvedDecision: "deny",
+      state: { approvedByAsk: false, deniedReason: "user-denied" },
     });
   });
 
