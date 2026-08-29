@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
+import { walkMemoryWikiDirectory } from "./bounded-walk.js";
 import { lintMemoryWikiVault } from "./lint.js";
 import {
   renderWikiMarkdown,
@@ -18,6 +19,14 @@ vi.mock("openclaw/plugin-sdk/security-runtime", async (importOriginal) => {
   return {
     ...actual,
     replaceFileAtomic: vi.fn(actual.replaceFileAtomic),
+  };
+});
+
+vi.mock("./bounded-walk.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bounded-walk.js")>();
+  return {
+    ...actual,
+    walkMemoryWikiDirectory: vi.fn(actual.walkMemoryWikiDirectory),
   };
 });
 
@@ -448,6 +457,77 @@ describe("lintMemoryWikiVault", () => {
     const result = await lintMemoryWikiVault(config);
 
     expect(result.issues.filter((issue) => issue.code === "broken-wikilink")).toEqual([]);
+  });
+
+  it("resolves vault-wide path targets without accepting missing targets", async () => {
+    const { rootDir, config } = await createVault({
+      prefix: "memory-wiki-lint-vault-wide-links-",
+      config: {
+        vault: { renderMode: "obsidian" },
+      },
+    });
+    await Promise.all(
+      ["sources", "syntheses", "people", ".git", "node_modules/example"].map((dir) =>
+        fs.mkdir(path.join(rootDir, dir), { recursive: true }),
+      ),
+    );
+
+    await fs.writeFile(
+      path.join(rootDir, "sources", "references.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.references",
+          title: "References",
+        },
+        body: [
+          "# References",
+          "",
+          "[[syntheses/summary]]",
+          "[[people/ada-lovelace]]",
+          "[[.git/private]]",
+          "[[node_modules/example/private]]",
+          "[[missing-page]]",
+        ].join("\n"),
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(rootDir, "syntheses", "summary.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "synthesis",
+          id: "synthesis.summary",
+          title: "Summary",
+          sourceIds: ["source.references"],
+        },
+        body: "# Summary\n",
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(rootDir, "people", "ada-lovelace.md"), "# Ada Lovelace\n", "utf8");
+    await Promise.all([
+      fs.writeFile(path.join(rootDir, ".git", "private.md"), "# Git metadata\n", "utf8"),
+      fs.writeFile(
+        path.join(rootDir, "node_modules", "example", "private.md"),
+        "# Dependency metadata\n",
+        "utf8",
+      ),
+    ]);
+
+    const walkCallOffset = vi.mocked(walkMemoryWikiDirectory).mock.calls.length;
+    const result = await lintMemoryWikiVault(config);
+    const lintWalkCalls = vi.mocked(walkMemoryWikiDirectory).mock.calls.slice(walkCallOffset);
+    const brokenTargets = result.issues
+      .filter((issue) => issue.code === "broken-wikilink")
+      .map((issue) => issue.message);
+
+    expect(brokenTargets).toEqual([
+      "Broken wikilink target `.git/private`.",
+      "Broken wikilink target `node_modules/example/private`.",
+      "Broken wikilink target `missing-page`.",
+    ]);
+    expect(lintWalkCalls.some(([, relativePath]) => relativePath === "")).toBe(false);
   });
 
   it("keeps path target matching case-sensitive", async () => {

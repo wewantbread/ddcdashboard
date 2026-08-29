@@ -1,12 +1,14 @@
 // Memory Wiki plugin module implements lint behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { root as createFsSafeRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   replaceManagedMarkdownBlock,
   withTrailingNewline,
 } from "openclaw/plugin-sdk/memory-host-markdown";
 import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isMemoryWikiRepositoryOrDependencyPath } from "./bounded-walk.js";
 import {
   assessPageFreshness,
   buildClaimContradictionClusters,
@@ -190,13 +192,83 @@ function hasValidWikiLinkTarget(index: WikiLinkTargetIndex, rawTarget: string): 
   );
 }
 
-function collectBrokenLinkIssues(pages: WikiPageSummary[]): MemoryWikiLintIssue[] {
+const MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES = new Set([".openclaw-wiki", "_attachments"]);
+const NON_TARGET_PATH_ERROR_CODES = new Set([
+  "device-path",
+  "invalid-path",
+  "not-file",
+  "not-found",
+  "outside-workspace",
+  "path-mismatch",
+  "symlink",
+]);
+
+async function hasVaultMarkdownPathTarget(
+  vaultRoot: Awaited<ReturnType<typeof createFsSafeRoot>>,
+  rawTarget: string,
+): Promise<boolean> {
+  if (!isLintPathStyleTarget(rawTarget)) {
+    return false;
+  }
+  const normalized = normalizeLintPathTarget(rawTarget);
+  const segments = normalized.split("/").filter(Boolean);
+  if (
+    !normalized ||
+    /^[a-zA-Z]:($|\/)/.test(normalized) ||
+    segments.includes("..") ||
+    isMemoryWikiRepositoryOrDependencyPath(normalized) ||
+    segments.some((segment) => MEMORY_WIKI_LINT_INTERNAL_DIRECTORIES.has(segment))
+  ) {
+    return false;
+  }
+  try {
+    const opened = await vaultRoot.open(`${normalized}.md`, {
+      hardlinks: "allow",
+      symlinks: "reject",
+    });
+    await opened.handle.close();
+    return true;
+  } catch (error) {
+    const code =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+        ? error.code
+        : undefined;
+    if (code && NON_TARGET_PATH_ERROR_CODES.has(code)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function collectBrokenLinkIssues(
+  rootDir: string,
+  pages: WikiPageSummary[],
+): Promise<MemoryWikiLintIssue[]> {
   const validTargets = buildWikiLinkTargetIndex(pages);
+  const vaultRoot = await createFsSafeRoot(rootDir, {
+    hardlinks: "allow",
+    mkdir: false,
+    symlinks: "reject",
+  });
+  const directPathTargets = new Map<string, Promise<boolean>>();
 
   const issues: MemoryWikiLintIssue[] = [];
   for (const page of pages) {
     for (const linkTarget of page.linkTargets) {
-      if (!hasValidWikiLinkTarget(validTargets, linkTarget)) {
+      let valid = hasValidWikiLinkTarget(validTargets, linkTarget);
+      if (!valid && isLintPathStyleTarget(linkTarget)) {
+        const cacheKey = normalizeLintPathTarget(linkTarget);
+        let pending = directPathTargets.get(cacheKey);
+        if (!pending) {
+          pending = hasVaultMarkdownPathTarget(vaultRoot, linkTarget);
+          directPathTargets.set(cacheKey, pending);
+        }
+        valid = await pending;
+      }
+      if (!valid) {
         issues.push({
           severity: "warning",
           category: "links",
@@ -210,10 +282,11 @@ function collectBrokenLinkIssues(pages: WikiPageSummary[]): MemoryWikiLintIssue[
   return issues;
 }
 
-function collectPageIssues(
+async function collectPageIssues(
+  rootDir: string,
   pages: WikiPageSummary[],
   managedImportedSourcePagePaths: Set<string>,
-): MemoryWikiLintIssue[] {
+): Promise<MemoryWikiLintIssue[]> {
   const issues: MemoryWikiLintIssue[] = [];
   const pagesById = new Map<string, WikiPageSummary[]>();
   const claimHealth = collectWikiClaimHealth(pages);
@@ -410,7 +483,7 @@ function collectPageIssues(
     }
   }
 
-  issues.push(...collectBrokenLinkIssues(pages));
+  issues.push(...(await collectBrokenLinkIssues(rootDir, pages)));
   return issues.toSorted((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -533,7 +606,11 @@ export async function lintMemoryWikiVault(
         message: `Frontmatter failed to parse: ${error.message}`,
       }),
     ),
-    ...collectPageIssues(compileResult.pages, managedImportedSourcePagePaths),
+    ...(await collectPageIssues(
+      config.vault.path,
+      compileResult.pages,
+      managedImportedSourcePagePaths,
+    )),
   ].toSorted((left, right) => left.path.localeCompare(right.path));
   const issuesByCategory = buildIssuesByCategory(issues);
   const reportPath = await writeLintReport(config.vault.path, issues);

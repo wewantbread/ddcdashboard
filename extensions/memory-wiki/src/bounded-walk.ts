@@ -6,6 +6,7 @@ import {
 
 const MEMORY_WIKI_WALK_MAX_DEPTH = 128;
 const MEMORY_WIKI_WALK_MAX_ENTRIES = 20_000;
+const MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES = new Set([".git", "node_modules"]);
 
 type MemoryWikiWalkLimits = {
   maxDepth?: number;
@@ -13,6 +14,16 @@ type MemoryWikiWalkLimits = {
   entryFilter?: RootWalkOptions["entryFilter"];
   onDirectoryError?: RootWalkOptions["onDirectoryError"];
 };
+
+export function isMemoryWikiRepositoryOrDependencyPath(relativePath: string): boolean {
+  return relativePath
+    .split(/[\\/]/)
+    .some((segment) => MEMORY_WIKI_REPOSITORY_OR_DEPENDENCY_DIRECTORIES.has(segment));
+}
+
+export function isMemoryWikiRepositoryOrDependencyDirectory(entry: RootWalkEntry): boolean {
+  return entry.kind === "directory" && isMemoryWikiRepositoryOrDependencyPath(entry.relativePath);
+}
 
 export async function walkMemoryWikiDirectory(
   rootDir: string,
