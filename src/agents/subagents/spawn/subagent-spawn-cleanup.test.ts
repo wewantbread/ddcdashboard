@@ -53,28 +53,38 @@ describe("subagent spawn cleanup identity", () => {
     });
   });
 
-  it("does not delete after chat.abort confirms the matching run", async () => {
-    const callGateway = vi.fn(async () => ({
-      ok: true,
-      aborted: true,
-      runIds: ["gateway-run"],
-    }));
+  it("guards session deletion after chat.abort confirms the matching run", async () => {
+    const callGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["gateway-run"] })
+      .mockResolvedValueOnce({ deleted: true });
 
     await terminateAcceptedCollectorRun({
       childSessionKey: "agent:main:subagent:child",
       gatewayRunId: "gateway-run",
       expectedSessionId: "session-id",
       expectedLifecycleRevision: "session-revision",
+      releaseSessionAfterAbort: true,
       callGateway,
     });
 
-    expect(callGateway).toHaveBeenCalledOnce();
+    expect(callGateway).toHaveBeenNthCalledWith(2, {
+      method: "sessions.delete",
+      params: {
+        key: "agent:main:subagent:child",
+        emitLifecycleHooks: false,
+        deleteTranscript: true,
+        expectedSessionId: "session-id",
+        expectedLifecycleRevision: "session-revision",
+      },
+      timeoutMs: 60_000,
+    });
   });
 
   it("stops cleanup when guarded deletion observes a successor lifecycle", async () => {
     const callGateway = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["different-run"] })
+      .mockResolvedValueOnce({ ok: true, aborted: true, runIds: ["gateway-run"] })
       .mockRejectedValueOnce(sessionChangedError());
 
     await expect(
@@ -83,9 +93,10 @@ describe("subagent spawn cleanup identity", () => {
         gatewayRunId: "gateway-run",
         expectedSessionId: "session-id",
         expectedLifecycleRevision: "session-revision",
+        releaseSessionAfterAbort: true,
         callGateway,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("changed");
 
     expect(callGateway).toHaveBeenCalledTimes(2);
   });

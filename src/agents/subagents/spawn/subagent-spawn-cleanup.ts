@@ -109,28 +109,36 @@ export async function cleanupFailedSpawnBeforeAgentStart(params: {
   };
 }
 
+export type AcceptedRunCleanupOwnership = "released" | "changed";
+
 export async function terminateAcceptedCollectorRun(params: {
   childSessionKey: string;
   gatewayRunId: string;
   expectedSessionId?: string;
   expectedLifecycleRevision?: string;
+  releaseSessionAfterAbort?: boolean;
   callGateway?: GatewayCall;
   timeoutMs?: number;
-}): Promise<void> {
+}): Promise<AcceptedRunCleanupOwnership> {
   const call = params.callGateway ?? callSubagentGateway;
   const timeoutMs = params.timeoutMs ?? SUBAGENT_CONTROL_GATEWAY_TIMEOUT_MS;
+  let ownership: AcceptedRunCleanupOwnership = "released";
+  let runAborted = false;
   await retrySubagentCleanup(async () => {
-    try {
-      const response = await call({
-        method: "chat.abort",
-        params: { sessionKey: params.childSessionKey, runId: params.gatewayRunId },
-        timeoutMs,
-      });
-      if (isMatchingAbortResponse(response, params.gatewayRunId)) {
-        return true;
+    if (!runAborted) {
+      try {
+        const response = await call({
+          method: "chat.abort",
+          params: { sessionKey: params.childSessionKey, runId: params.gatewayRunId },
+          timeoutMs,
+        });
+        runAborted = isMatchingAbortResponse(response, params.gatewayRunId);
+      } catch {
+        // Fall through to exact-session deletion.
       }
-    } catch {
-      // Fall through to exact-session deletion.
+    }
+    if (runAborted && params.releaseSessionAfterAbort !== true) {
+      return true;
     }
     const cleanup = await requestProvisionalSessionCleanup(params.childSessionKey, {
       deleteTranscript: true,
@@ -140,6 +148,8 @@ export async function terminateAcceptedCollectorRun(params: {
       timeoutMs,
     });
     // A changed lifecycle proves the accepted run no longer owns this session.
+    ownership = cleanup === "changed" ? "changed" : ownership;
     return cleanup !== "failed";
   });
+  return ownership;
 }

@@ -2,7 +2,6 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { AcpTurnAttachment } from "../../../acp/control-plane/manager.types.js";
-import type { AcpSpawnRuntimeCloseHandle } from "../../../acp/control-plane/spawn.js";
 import { cleanupFailedAcpSpawn } from "../../../acp/control-plane/spawn.js";
 import { isAcpEnabledByPolicy, resolveAcpAgentPolicyError } from "../../../acp/policy.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
@@ -136,6 +135,7 @@ type SpawnAcpContext = {
   agentGroupSpace?: string | null;
   /** Trusted provider role ids for the requester in this group turn. */
   agentMemberRoleIds?: string[];
+  signal?: AbortSignal;
   sandboxed?: boolean;
   inheritedToolAllowlist?: string[];
   inheritedToolDenylist?: string[];
@@ -445,9 +445,9 @@ export async function spawnAcpDirect(
     preparedBinding = prepared.binding;
   }
 
-  let sessionCreated = false;
+  let sessionOwnership: "absent" | "owned" | "released" | "changed" = "absent";
   let childCreationEntry: SessionEntry | undefined;
-  let initializedRuntime: AcpSpawnRuntimeCloseHandle | undefined;
+  let initializedSession: AcpSpawnInitializedRuntime | undefined;
   const childIdem = crypto.randomUUID();
   const parentAgentId = parentSessionKey
     ? resolveAgentIdFromSessionKey(parentSessionKey, requesterAgentId)
@@ -469,7 +469,6 @@ export async function spawnAcpDirect(
   const parentEventRouting = parentSessionKey
     ? resolveEventSessionRoutingPolicy({ cfg, sessionKey: parentSessionKey })
     : undefined;
-  const gatewayAttachments = toGatewayImageAttachments(params.attachments);
   const ownership = resolveSubagentSpawnOwnership({
     cfg,
     agentSessionKey: ctx.agentSessionKey,
@@ -490,13 +489,9 @@ export async function spawnAcpDirect(
     deliveryPlan?: AcpSpawnBootstrapDeliveryPlan;
     parentRelay?: AcpSpawnParentRelayHandle;
   };
+  const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId });
   const adapter: SpawnBackendAdapter<AcpBackendState> = {
     async initialize() {
-      const creationStamp = buildSessionCreationStamp({
-        via: "spawn",
-        actor: { type: "agent", id: requesterAgentId },
-      });
-      const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId });
       const childSessionPatch = admission.childSessionPatch
         ? {
             spawnDepth: admission.childSessionPatch.spawnDepth,
@@ -510,7 +505,10 @@ export async function spawnAcpDirect(
         (await upsertSessionEntryCore(
           { storePath, sessionKey },
           {
-            ...creationStamp,
+            ...buildSessionCreationStamp({
+              via: "spawn",
+              actor: { type: "agent", id: requesterAgentId },
+            }),
             spawnedBy: requesterInternalKey,
             completionOwnerSessionKey: ownership.completionRequesterSessionKey,
             // Navigation parent is stamped at creation so the durable tree edge
@@ -523,8 +521,8 @@ export async function spawnAcpDirect(
             ...(params.label ? { label: params.label } : {}),
           },
         )) ?? undefined;
-      sessionCreated = true;
-      const initializedSession = await initializeAcpSpawnRuntime({
+      sessionOwnership = "owned";
+      initializedSession = await initializeAcpSpawnRuntime({
         cfg,
         sessionKey,
         targetAgentId,
@@ -535,7 +533,6 @@ export async function spawnAcpDirect(
         modelExplicit: runtimeOptionsResult.modelExplicit,
         cwd: runtimeCwd,
       });
-      initializedRuntime = initializedSession.runtimeCloseHandle;
       const binding = preparedBinding
         ? (
             await bindPreparedAcpThread({
@@ -596,7 +593,7 @@ export async function spawnAcpDirect(
         childIdem,
         runTimeoutSeconds,
         label: params.label,
-        attachments: gatewayAttachments,
+        attachments: toGatewayImageAttachments(params.attachments),
         lineage: {
           enabled: isExecutionIdentityCollectionEnabled(cfg),
           backend: "acp",
@@ -611,9 +608,9 @@ export async function spawnAcpDirect(
           inheritedToolDenylist: ctx.inheritedToolDenylist,
         },
         parentExecutionIdentityToken: readParentExecutionIdentity(ctx),
-        participantStorePath: resolveSessionStorePathCore(cfg.session?.store, {
-          agentId: targetAgentId,
-        }),
+        initializedSession: state.initializedSession,
+        onAcceptedRunTermination: (cleanupOwnership) => (sessionOwnership = cleanupOwnership),
+        signal: ctx.signal,
       });
       const runId = readGatewayRunId(response) ?? childIdem;
       if (state.parentRelay && runId !== childIdem && parentSessionKey) {
@@ -638,12 +635,15 @@ export async function spawnAcpDirect(
     },
     async cleanupOnFailure({ state }) {
       state?.parentRelay?.dispose();
+      if (sessionOwnership === "released" || sessionOwnership === "changed") {
+        return;
+      }
       await cleanupFailedAcpSpawn({
         cfg,
         sessionKey,
-        shouldDeleteSession: sessionCreated,
+        shouldDeleteSession: sessionOwnership === "owned",
         deleteTranscript: true,
-        runtimeCloseHandle: initializedRuntime,
+        runtimeCloseHandle: initializedSession?.runtimeCloseHandle,
       });
     },
   };

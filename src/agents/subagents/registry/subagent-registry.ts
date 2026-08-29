@@ -356,7 +356,7 @@ const subagentRestorer = createSubagentRegistryRestorer({
       expectedLifecycleRevision,
       timeoutMs,
       callGateway: subagentRegistryDeps.callGateway,
-    }),
+    }).then(() => undefined),
   cleanupCollectorLaunchResources: contextCleanup.cleanupCollectorLaunchResources,
   settleFailedQueuedSubagentLaunch: (runId, error) =>
     subagentRunManager.settleFailedQueuedSubagentLaunch(runId, error),

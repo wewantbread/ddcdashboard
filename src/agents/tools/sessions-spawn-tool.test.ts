@@ -1942,6 +1942,7 @@ describe("sessions_spawn tool", () => {
 
   it("routes to ACP runtime when runtime=acp", async () => {
     registerAcpBackendForTest();
+    const controller = new AbortController();
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",
       requesterAgentIdOverride: "main",
@@ -1956,15 +1957,19 @@ describe("sessions_spawn tool", () => {
 
     const { result, work } = await captureSessionDecisionWork(
       async () =>
-        await tool.execute("call-2", {
-          runtime: "acp",
-          task: "investigate the failing CI run",
-          agentId: "codex",
-          cwd: "/workspace",
-          thread: true,
-          mode: "session",
-          streamTo: "parent",
-        }),
+        await tool.execute(
+          "call-2",
+          {
+            runtime: "acp",
+            task: "investigate the failing CI run",
+            agentId: "codex",
+            cwd: "/workspace",
+            thread: true,
+            mode: "session",
+            streamTo: "parent",
+          },
+          controller.signal,
+        ),
     );
 
     expectDetailFields(result.details, {
@@ -1988,6 +1993,7 @@ describe("sessions_spawn tool", () => {
     expect(spawnContext.currentMessagingTarget).toBe("channel:source");
     expect(spawnContext.currentChannelId).toBe("source-native");
     expect(spawnContext.currentMessageId).toBe("message-789");
+    expect(spawnContext.signal).toBe(controller.signal);
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
     expect(work).toHaveLength(1);
     expect(work[0]).toMatchObject({
