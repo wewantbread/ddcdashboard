@@ -23,6 +23,7 @@ import {
 } from "./legacy-config-migrations.runtime.retired-media.js";
 import { LEGACY_CONFIG_MIGRATION_RUNTIME_MEMORY_QMD } from "./legacy-config-migrations.runtime.retired-memory-qmd.js";
 import { migrateTierEvalTranche } from "./legacy-config-migrations.runtime.tier-eval.js";
+import { migrateWhatsAppAckSettings } from "./legacy-config-migrations.runtime.whatsapp-ack.js";
 import { visitChannelEntries } from "./legacy-config-record-shared.js";
 
 const rule = (
@@ -324,63 +325,7 @@ function migrateFinalLayoutKills(raw: Record<string, unknown>, changes: string[]
     }
   });
 
-  let messages = getRecord(raw.messages);
-  const statusReactions = getRecord(messages?.statusReactions);
-  if (statusReactions && Object.hasOwn(statusReactions, "emojis")) {
-    delete statusReactions.emojis;
-    changes.push("Removed messages.statusReactions.emojis; curated defaults now apply.");
-  }
-  if (messages && Object.hasOwn(messages, "removeAckAfterReply")) {
-    delete messages.removeAckAfterReply;
-    changes.push("Removed messages.removeAckAfterReply; acknowledgements are retained.");
-  }
-
-  visitChannelEntries(raw, "whatsapp", (entry, path) => {
-    moveKey(entry, "messagePrefix", "responsePrefix", path, changes);
-    const ack = getRecord(entry.ackReaction);
-    if (!ack) {
-      return;
-    }
-    messages ??= ensureRecord(raw, "messages");
-    if (messages.ackReaction === undefined) {
-      const legacyAgents = getRecord(raw.agents)?.list;
-      const agentEntries = Array.isArray(legacyAgents)
-        ? legacyAgents.filter((value): value is Record<string, unknown> =>
-            Boolean(getRecord(value)),
-          )
-        : [];
-      const defaultAgent =
-        agentEntries.find((value) => getRecord(value)?.default === true) ?? agentEntries[0];
-      const identityEmoji = getRecord(getRecord(defaultAgent)?.identity)?.emoji;
-      messages.ackReaction =
-        typeof ack.emoji === "string"
-          ? ack.emoji
-          : typeof identityEmoji === "string"
-            ? identityEmoji
-            : "👀";
-    }
-    if (messages.ackReactionScope === undefined) {
-      const direct = ack.direct !== false;
-      const group = ack.group ?? "mentions";
-      const scope =
-        direct && group === "always"
-          ? "all"
-          : direct && group === "never"
-            ? "direct"
-            : !direct && group === "always"
-              ? "group-all"
-              : !direct && group === "mentions"
-                ? "group-mentions"
-                : !direct && group === "never"
-                  ? "off"
-                  : undefined;
-      if (scope) {
-        messages.ackReactionScope = scope;
-      }
-    }
-    delete entry.ackReaction;
-    changes.push(`Moved translatable ${path}.ackReaction settings to messages ack settings.`);
-  });
+  migrateWhatsAppAckSettings(raw, changes);
 
   visitChannelEntries(raw, "slack", (entry, path) => {
     const socketMode = getRecord(entry.socketMode);
