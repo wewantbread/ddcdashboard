@@ -151,12 +151,11 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
     // Object.assign minus __proto__: a parsed own enumerable __proto__ would
     // replace this Error's prototype, so it is skipped to block prototype hijack.
+    // Object.assign reads every source descriptor before its target write, so the
+    // skipped key still observes (and propagates) a throwing descriptor trap.
     for (const key of Reflect.ownKeys(value)) {
-      if (key === "__proto__") {
-        continue;
-      }
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !descriptor.enumerable) {
+      if (key === "__proto__" || descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
       if (!Reflect.set(error, key, Reflect.get(value, key))) {
@@ -183,10 +182,9 @@ export function toStructuredErrorObject(value: unknown): Error {
   try {
     const detailKeys = Reflect.ownKeys(value).filter(
       (key) =>
+        Reflect.getOwnPropertyDescriptor(value, key)?.enumerable === true &&
         (typeof key !== "string" ||
-          (!STRUCTURED_ERROR_OWNED_FIELDS.has(key) &&
-            !STRUCTURED_ERROR_PROTOTYPE_FIELDS.has(key))) &&
-        Reflect.getOwnPropertyDescriptor(value, key)?.enumerable,
+          (!STRUCTURED_ERROR_OWNED_FIELDS.has(key) && !STRUCTURED_ERROR_PROTOTYPE_FIELDS.has(key))),
     );
     for (const key of detailKeys) {
       try {

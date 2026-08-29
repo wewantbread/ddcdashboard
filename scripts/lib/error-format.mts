@@ -31,11 +31,8 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
     // (error-coercion.ts) and packages/retry (index.ts): skipping own `__proto__`
     // blocks the prototype-setter hijack; Reflect.set keeps Object.assign semantics.
     for (const key of Reflect.ownKeys(value)) {
-      if (key === "__proto__") {
-        continue;
-      }
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !descriptor.enumerable) {
+      if (key === "__proto__" || descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
       if (!Reflect.set(error, key, Reflect.get(value, key))) {

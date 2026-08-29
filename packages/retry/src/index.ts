@@ -251,11 +251,8 @@ export function toRetryError(value: unknown, fallbackMessage = "Non-Error thrown
     // replace this Error's prototype, so it is skipped to block prototype hijack.
     // Inlined rather than shared with toErrorObject because retry is zero-dependency.
     for (const key of Reflect.ownKeys(value)) {
-      if (key === "__proto__") {
-        continue;
-      }
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !descriptor.enumerable) {
+      if (key === "__proto__" || descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
       if (!Reflect.set(error, key, Reflect.get(value, key))) {

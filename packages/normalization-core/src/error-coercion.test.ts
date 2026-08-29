@@ -117,6 +117,28 @@ describe("toErrorObject", () => {
     expect(({} as { tag?: unknown }).tag).toBeUndefined();
   });
 
+  it("propagates a descriptor trap observed through the skipped __proto__ key", () => {
+    // Object.assign reads every source descriptor before its target write, so
+    // the skipped __proto__ key must still observe its descriptor trap rather
+    // than being exempted before the read.
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => ["__proto__", "code"],
+        getOwnPropertyDescriptor: (_target, key) => {
+          if (key === "__proto__") {
+            throw new Error("descriptor trap");
+          }
+          return { enumerable: true, configurable: true };
+        },
+        get: (target, key, receiver) =>
+          key === "code" ? "EIO" : Reflect.get(target, key, receiver),
+      },
+    );
+
+    expect(() => toErrorObject(hostile, "request failed")).toThrow("descriptor trap");
+  });
+
   it("preserves harmless constructor/prototype diagnostic fields", () => {
     // defineProperty copies constructor/prototype as own data fields that shadow
     // but never replace [[Prototype]]; only __proto__ is the prototype-setter key,
@@ -389,6 +411,36 @@ describe("toStructuredErrorObject", () => {
       expect(error).not.toHaveProperty("code");
       expect(error).not.toHaveProperty("status");
     }
+  });
+
+  it("falls back to the cause when a skipped field's descriptor trap rejects", () => {
+    // The isolation contract treats a rejecting descriptor uniformly: a trap on
+    // the skipped __proto__ key falls back to the cause exactly like any other
+    // enumeration failure instead of being exempted before the read.
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => ["__proto__", "code"],
+        getOwnPropertyDescriptor: (_target, key) => {
+          if (key === "__proto__") {
+            throw new Error("descriptor trap");
+          }
+          return { enumerable: true, configurable: true };
+        },
+        get: (target, key, receiver) =>
+          key === "code" ? "EIO" : Reflect.get(target, key, receiver),
+      },
+    );
+
+    const error = toStructuredErrorObject(hostile);
+
+    expect(error).toMatchObject({ name: "Error", message: "[object Object]" });
+    expect(error.cause).toBe(hostile);
+    expect(Object.getPrototypeOf(error)).toBe(Error.prototype);
+    expect(Object.hasOwn(error, "__proto__")).toBe(false);
+    // Reading the skipped key's descriptor must happen before the exemption, so
+    // the rejection isolates the whole copy instead of leaving "code" behind.
+    expect(Object.hasOwn(error, "code")).toBe(false);
   });
 
   it("protects Error-owned and prototype-mutating fields without reading them", () => {

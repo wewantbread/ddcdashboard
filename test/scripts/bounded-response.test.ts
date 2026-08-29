@@ -201,6 +201,28 @@ describe("scripts toLintErrorObject", () => {
     expect(({} as { tag?: unknown }).tag).toBeUndefined();
   });
 
+  it("propagates a descriptor trap observed through the skipped __proto__ key", () => {
+    // Object.assign reads every source descriptor before its target write, so
+    // the skipped __proto__ key must still observe its descriptor trap rather
+    // than being exempted before the read.
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => ["__proto__", "code"],
+        getOwnPropertyDescriptor: (_target, key) => {
+          if (key === "__proto__") {
+            throw new Error("descriptor trap");
+          }
+          return { enumerable: true, configurable: true };
+        },
+        get: (target, key, receiver) =>
+          key === "code" ? "EIO" : Reflect.get(target, key, receiver),
+      },
+    );
+
+    expect(() => toLintErrorObject(hostile, "fallback")).toThrow("descriptor trap");
+  });
+
   it("preserves harmless constructor/prototype diagnostic fields", () => {
     const payload = () =>
       JSON.parse(
