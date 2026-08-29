@@ -1740,10 +1740,27 @@ describe("update-cli", () => {
 
       await updateCommand({ yes: true, json: true, restart });
 
-      if (kind === "package") {
-        expectPackageInstallSpec("openclaw@9999.0.0");
+      if (restart) {
+        expect(runGatewayUpdate).not.toHaveBeenCalled();
+        expect(packageInstallCommandCall()).toBeUndefined();
+        expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+        expect(getErrorOutput()).toContain(
+          "Gateway service inspection is unavailable. Refusing to mutate code",
+        );
+        expect(getErrorOutput()).toContain("gateway status --deep");
+        expect(lastWriteJsonCall()).not.toMatchObject({ status: "ok" });
       } else {
-        expect(runGatewayUpdate).toHaveBeenCalledOnce();
+        if (kind === "package") {
+          expectPackageInstallSpec("openclaw@9999.0.0");
+        } else {
+          expect(runGatewayUpdate).toHaveBeenCalledOnce();
+        }
+        expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+        expect(getErrorOutput()).toContain(
+          "Gateway service management skipped: inspection is unavailable",
+        );
+        expect(getErrorOutput()).toContain("gateway status --deep");
+        expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
       }
       expectNoSideEffects(
         serviceStop,
@@ -1754,15 +1771,25 @@ describe("update-cli", () => {
         prepareRestartScript,
         runRestartScript,
       );
-      expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
-      expect(getErrorOutput()).toContain(
-        "Gateway service management skipped: inspection is unavailable",
-      );
-      expect(getErrorOutput()).toContain("gateway status --deep");
       expect(getErrorOutput()).not.toContain("inspection-secret-canary");
-      expect(lastWriteJsonCall()).toMatchObject({ status: "ok" });
     },
   );
+
+  it("refuses a restart-enabled update when service load inspection is unknown", async () => {
+    mockRunningManagedGateway();
+    mockGitUpdateAfterMutation();
+    serviceLoaded.mockRejectedValue(new Error("load-state-secret-canary"));
+
+    await updateCommand({ yes: true, json: true });
+
+    expect(runGatewayUpdate).not.toHaveBeenCalled();
+    expect(serviceStop).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    expect(getErrorOutput()).toContain(
+      "Gateway service inspection is unavailable. Refusing to mutate code",
+    );
+    expect(getErrorOutput()).not.toContain("load-state-secret-canary");
+  });
 
   it.each([
     { kind: "git", restart: false, capability: "sealed" },
@@ -4596,6 +4623,7 @@ describe("update-cli", () => {
     serviceReadRuntime.mockResolvedValueOnce({
       status: "stopped",
       state: "stopped",
+      missingUnit: true,
     });
 
     await runWithGatewayServiceEnv({ yes: true });
