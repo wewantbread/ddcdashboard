@@ -54,72 +54,84 @@ export async function recoverEmbeddedRunTimeout(
   // A recoverable timeout is a non-terminal lifecycle phase. Release the
   // terminal abandonment gate for the duration of compaction so completions
   // arriving in this window are not discarded as requester_abandoned.
-  const recoveryMarker = markEmbeddedRunRecoveringTimeout(input.runParams.sessionId);
-
-  const timeoutDiagId = createRunRecoveryDiagId();
-  input.state.timeoutCompactionAttempts += 1;
-  log.warn(
-    `[timeout-compaction] LLM timed out with high prompt token usage (${Math.round(tokenUsedRatio * 100)}%); ` +
-      `attempting compaction before retry (attempt ${input.state.timeoutCompactionAttempts}/${MAX_TIMEOUT_COMPACTION_ATTEMPTS}) diagId=${timeoutDiagId}`,
-  );
-  let timeoutCompactResult: Awaited<ReturnType<typeof input.contextEngine.compact>>;
-  await input.runOwnsCompactionBeforeHook("timeout recovery");
+  const recoveryMarker = markEmbeddedRunRecoveringTimeout({
+    sessionId: input.runParams.sessionId,
+    runId: input.runParams.runId,
+  });
   try {
-    ({ result: timeoutCompactResult } = await compactEmbeddedRunForRecovery(input, {
-      tokenBudget: input.contextTokenBudget,
-      trigger: "timeout_recovery",
-      diagId: timeoutDiagId,
-      attempt: input.state.timeoutCompactionAttempts,
-      maxAttempts: MAX_TIMEOUT_COMPACTION_ATTEMPTS,
-    }));
-  } catch (compactErr) {
+    const timeoutDiagId = createRunRecoveryDiagId();
+    input.state.timeoutCompactionAttempts += 1;
     log.warn(
-      `[timeout-compaction] contextEngine.compact() threw during timeout recovery for ${input.provider}/${input.modelId}: ${String(compactErr)}`,
+      `[timeout-compaction] LLM timed out with high prompt token usage (${Math.round(tokenUsedRatio * 100)}%); ` +
+        `attempting compaction before retry (attempt ${input.state.timeoutCompactionAttempts}/${MAX_TIMEOUT_COMPACTION_ATTEMPTS}) diagId=${timeoutDiagId}`,
     );
-    timeoutCompactResult = {
-      ok: false,
-      compacted: false,
-      reason: String(compactErr),
-    };
-  }
-
-  const previousSessionId = timeoutCompactResult.compacted
-    ? await input.adoptCompactionTranscript(timeoutCompactResult)
-    : undefined;
-  await input.runOwnsCompactionAfterHook(
-    "timeout recovery",
-    timeoutCompactResult,
-    previousSessionId,
-  );
-  if (!timeoutCompactResult.compacted) {
-    if (recoveryMarker) {
-      restoreEmbeddedRunTimeoutAbandonment(input.runParams.sessionId);
+    let timeoutCompactResult: Awaited<ReturnType<typeof input.contextEngine.compact>>;
+    await input.runOwnsCompactionBeforeHook("timeout recovery");
+    try {
+      ({ result: timeoutCompactResult } = await compactEmbeddedRunForRecovery(input, {
+        tokenBudget: input.contextTokenBudget,
+        trigger: "timeout_recovery",
+        diagId: timeoutDiagId,
+        attempt: input.state.timeoutCompactionAttempts,
+        maxAttempts: MAX_TIMEOUT_COMPACTION_ATTEMPTS,
+      }));
+    } catch (compactErr) {
+      log.warn(
+        `[timeout-compaction] contextEngine.compact() threw during timeout recovery for ${input.provider}/${input.modelId}: ${String(compactErr)}`,
+      );
+      timeoutCompactResult = {
+        ok: false,
+        compacted: false,
+        reason: String(compactErr),
+      };
     }
-    log.warn(
-      `[timeout-compaction] compaction did not reduce context for ${input.provider}/${input.modelId}; falling through to normal handling`,
-    );
-    return false;
-  }
 
-  input.state.autoCompactionCount += 1;
-  const tokensAfter = timeoutCompactResult.result?.tokensAfter;
-  if (typeof tokensAfter === "number" && Number.isFinite(tokensAfter) && tokensAfter >= 0) {
-    input.state.lastCompactionTokensAfter = Math.floor(tokensAfter);
+    const previousSessionId = timeoutCompactResult.compacted
+      ? await input.adoptCompactionTranscript(timeoutCompactResult)
+      : undefined;
+    await input.runOwnsCompactionAfterHook(
+      "timeout recovery",
+      timeoutCompactResult,
+      previousSessionId,
+    );
+    if (!timeoutCompactResult.compacted) {
+      if (recoveryMarker) {
+        restoreEmbeddedRunTimeoutAbandonment(recoveryMarker);
+      }
+      log.warn(
+        `[timeout-compaction] compaction did not reduce context for ${input.provider}/${input.modelId}; falling through to normal handling`,
+      );
+      return false;
+    }
+
+    input.state.autoCompactionCount += 1;
+    const tokensAfter = timeoutCompactResult.result?.tokensAfter;
+    if (typeof tokensAfter === "number" && Number.isFinite(tokensAfter) && tokensAfter >= 0) {
+      input.state.lastCompactionTokensAfter = Math.floor(tokensAfter);
+    }
+    if (input.contextEngine.info.ownsCompaction === true) {
+      const activeSession = input.getActiveSession();
+      await runPostCompactionSideEffects({
+        config: input.runParams.config,
+        sessionKey: input.runParams.sessionKey,
+        sessionId: activeSession.id,
+        agentId: input.sessionAgentId,
+        sessionFile: activeSession.file,
+      });
+    }
+    log.info(
+      `[timeout-compaction] compaction succeeded for ${input.provider}/${input.modelId}; retrying prompt`,
+    );
+    input.armPostCompactionGuard();
+    await input.prepareCompactedTranscriptRetry();
+    return true;
+  } catch (err) {
+    // Any exception after marking recovery is terminal for this attempt. Do
+    // not leave the requester in a non-abandoned state that admits late
+    // completions after recovery can no longer retry.
+    if (recoveryMarker) {
+      restoreEmbeddedRunTimeoutAbandonment(recoveryMarker);
+    }
+    throw err;
   }
-  if (input.contextEngine.info.ownsCompaction === true) {
-    const activeSession = input.getActiveSession();
-    await runPostCompactionSideEffects({
-      config: input.runParams.config,
-      sessionKey: input.runParams.sessionKey,
-      sessionId: activeSession.id,
-      agentId: input.sessionAgentId,
-      sessionFile: activeSession.file,
-    });
-  }
-  log.info(
-    `[timeout-compaction] compaction succeeded for ${input.provider}/${input.modelId}; retrying prompt`,
-  );
-  input.armPostCompactionGuard();
-  await input.prepareCompactedTranscriptRetry();
-  return true;
 }
