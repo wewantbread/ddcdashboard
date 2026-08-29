@@ -52,6 +52,7 @@ const target = {
   sessionKey: "agent:main:dashboard:target",
 };
 const gatewayDispatch = vi.hoisted(() => vi.fn());
+const gatewayCreate = vi.hoisted(() => vi.fn());
 const sendOwner = vi.hoisted(() => ({
   callGateway: undefined as undefined | ((request: object) => Promise<unknown>),
   execute: vi.fn(),
@@ -63,10 +64,21 @@ vi.mock("../../agents/tools/sessions-send-tool.js", () => ({
     return { execute: sendOwner.execute };
   },
 }));
+vi.mock("../../agents/tools/sessions-spawn-tool.js", () => ({
+  createSessionsSpawnTool: (options: {
+    callGateway: (method: string, params: object) => Promise<unknown>;
+  }) => ({
+    execute: async (_toolCallId: string, args: object) =>
+      await options.callGateway("sessions.create", args),
+  }),
+}));
 vi.mock("../../agents/tools/in-process-gateway.js", () => ({
   callAgentToolGatewayRequest: gatewayDispatch,
-  callInProcessGatewayToolWithCreation: vi.fn(),
+  callInProcessGatewayToolWithCreation: gatewayCreate,
   withAgentToolGatewayRuntimeIdentity: (request: object) => request,
+}));
+vi.mock("../session-utils.js", () => ({
+  loadGatewaySessionEntryReadOnly: (key: string) => ({ canonicalKey: key, entry: undefined }),
 }));
 vi.mock("./placement-turn-claim-events.js", () => ({
   getWorkerTurnExecutionIdentityCapability: () => ({ run: fixture.run }),
@@ -82,6 +94,7 @@ beforeEach(() => {
   resetGlobalHookRunner();
   fixture.state.active = true;
   fixture.run.mockClear();
+  gatewayCreate.mockReset();
   gatewayDispatch.mockReset();
   sendOwner.callGateway = undefined;
   sendOwner.execute.mockReset();
@@ -158,4 +171,80 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(fixture.run).toHaveBeenCalledOnce();
   expect(gatewayDispatch).not.toHaveBeenCalled();
+});
+
+it("fences child creation when delegated authority closes before commit", async () => {
+  const beforeToolCall = vi.fn(() => {
+    const receiptAuthority = getGatewayToolCallerIdentity()?.receiptAuthority;
+    expect(receiptAuthority).toEqual(expect.any(Function));
+    receiptAuthority?.();
+  });
+  initializeGlobalHookRunner(
+    createMockPluginRegistry([
+      { hookName: "before_tool_call", matcher: ["sessions_spawn"], handler: beforeToolCall },
+    ]),
+  );
+  let completed: string | undefined;
+  const placements = {
+    beginWorkerSessionToolOperation: () =>
+      completed
+        ? { kind: "completed", resultJson: completed }
+        : { kind: "execute", operationSeed: "spawn-operation-seed" },
+    bindWorkerSessionToolOperationChild: () => true,
+    completeWorkerSessionToolOperation: (operation: { resultJson: string }) => {
+      completed = operation.resultJson;
+      return true;
+    },
+    isWorkerTurnToolAuthorized: () => true,
+  };
+  const execute = createWorkerSessionToolExecutor({
+    placements,
+    resolveGatewayContext: () => undefined,
+    environments: {
+      get: () => ({
+        state: "attached",
+        ownerEpoch: fixture.claim.owner.ownerEpoch,
+        attachedSessionIds: [fixture.claim.sessionId],
+      }),
+    },
+    dispatchChild: vi.fn(),
+    githubPublication: {},
+    portals: {},
+  } as never);
+  let finishCommit: (() => void) | undefined;
+  gatewayCreate.mockImplementation(
+    async (_method, _params, _creation, options: { sessionMutationCommitGuard: () => void }) =>
+      await new Promise<never>((_resolve, reject) => {
+        finishCommit = () => {
+          try {
+            options.sessionMutationCommitGuard();
+            reject(new Error("child commit guard unexpectedly allowed creation"));
+          } catch (error) {
+            reject(error);
+          }
+        };
+      }),
+  );
+  const request = {
+    identity: {
+      environmentId: fixture.claim.owner.environmentId,
+      ownerEpoch: fixture.claim.owner.ownerEpoch,
+      runId: fixture.claim.runId,
+      sessionId: fixture.claim.sessionId,
+      turnClaim: fixture.claim,
+    },
+    toolName: "sessions_spawn",
+    request: { toolCallId: "spawn-authority-closed-before-commit", task: "must not create" },
+  };
+
+  const pending = execute(request as never);
+  await vi.waitFor(() => expect(gatewayCreate).toHaveBeenCalledOnce());
+  fixture.state.active = false;
+  finishCommit?.();
+  await expect(pending).rejects.toThrow("worker turn authority changed");
+  const replay = await execute(request as never);
+
+  expect(replay.resultJson).toContain("worker turn authority changed");
+  expect(beforeToolCall).toHaveBeenCalledOnce();
+  expect(gatewayCreate).toHaveBeenCalledOnce();
 });

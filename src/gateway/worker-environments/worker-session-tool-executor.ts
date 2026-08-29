@@ -155,8 +155,10 @@ export function createWorkerSessionToolExecutor(params: {
             },
             {
               resolveGatewayContext: params.resolveGatewayContext,
-              sessionMutationCommitGuard: () =>
-                exactSource({ identity: operation.identity, placements: params.placements }),
+              sessionMutationCommitGuard: () => {
+                workerIdentity?.receiptAuthority();
+                exactSource({ identity: operation.identity, placements: params.placements });
+              },
               ...(operation.signal ? { signal: operation.signal } : {}),
               timeoutMs: null,
             },
