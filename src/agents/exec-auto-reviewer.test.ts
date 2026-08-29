@@ -821,6 +821,9 @@ describe("createModelExecAutoReviewer", () => {
   it("keeps repeated gateway reviews bound to one-shot approval", async () => {
     const { reviewer, prepare, complete } = createReviewerHarness();
 
+    // An identical repeated request reuses the memoized verdict, but the
+    // decision is still allow-once: the single-use approval is registered by
+    // the caller per invocation, not extended by the memo.
     await expect(reviewer(input)).resolves.toMatchObject({
       decision: "allow-once",
       risk: "low",
@@ -830,8 +833,8 @@ describe("createModelExecAutoReviewer", () => {
       risk: "low",
     });
 
-    expect(prepare).toHaveBeenCalledTimes(2);
-    expect(complete).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("keeps simultaneous gateway approvals one-shot under concurrency", async () => {
@@ -878,9 +881,14 @@ describe("createModelExecAutoReviewer", () => {
     expect(complete).toHaveBeenCalledTimes(2);
   });
 
-  it("never reuses gateway review authority for a node-host request", async () => {
+  it("bills a fresh completion for each real node-host review", async () => {
     const { reviewer, prepare, complete } = createReviewerHarness();
-    const nodeInput = { ...input, host: "node" as const };
+    // The real node host invokes the reviewer with no resolvedPath (the
+    // gateway cannot resolve the remote node executable and the remote
+    // prepare result exposes no resolved executable identity), so a node-host
+    // request never forms a memo key and must bill its own completion every
+    // time rather than silently reusing gateway-shaped memo coverage.
+    const nodeInput = { ...input, host: "node" as const, resolvedPath: undefined };
 
     await reviewer(nodeInput);
     await reviewer(nodeInput);
@@ -908,5 +916,110 @@ describe("createModelExecAutoReviewer", () => {
 
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("memoizes allow-once verdicts for identical exec requests", async () => {
+    const complete = vi.fn(async () => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            decision: "allow",
+            risk: "low",
+            rationale: "read-only inspection",
+          }),
+        },
+      ],
+      stopReason: "stop",
+    }));
+    const reviewer = createModelExecAutoReviewer({
+      cfg: {},
+      deps: {
+        prepareSimpleCompletionModelForAgent: vi.fn(async () => ({
+          selection: { provider: "openai", modelId: "gpt-5.5", agentDir: "/agent" },
+          model: { provider: "openai", id: "gpt-5.5", api: "openai-responses" },
+          auth: { apiKey: "sk-test", mode: "env" },
+        })) as unknown as typeof import("./simple-completion-runtime.js").prepareSimpleCompletionModelForAgent,
+        completeWithPreparedSimpleCompletionModel:
+          complete as unknown as typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
+      },
+    });
+
+    // First call: model is called.
+    const result1 = await reviewer(input);
+    expect(result1).toEqual({
+      decision: "allow-once",
+      risk: "low",
+      rationale: "read-only inspection",
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    // Second call with identical input: served from memo, no additional model call.
+    const result2 = await reviewer(input);
+    expect(result2).toEqual({
+      decision: "allow-once",
+      risk: "low",
+      rationale: "read-only inspection",
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    // Different command: model is called again.
+    const result3 = await reviewer({ ...input, command: "npm test", argv: ["npm", "test"] });
+    expect(result3).toEqual({
+      decision: "allow-once",
+      risk: "low",
+      rationale: "read-only inspection",
+    });
+    expect(complete).toHaveBeenCalledTimes(2);
+
+    // Different host: model is called again (different memo key).
+    const result4 = await reviewer({ ...input, host: "node" });
+    expect(result4).toEqual({
+      decision: "allow-once",
+      risk: "low",
+      rationale: "read-only inspection",
+    });
+    expect(complete).toHaveBeenCalledTimes(3);
+  });
+
+  it("evicts oldest memo entry when cap is reached", async () => {
+    const complete = vi.fn(async () => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ decision: "allow", risk: "low", rationale: "ok" }),
+        },
+      ],
+    }));
+    const reviewer = createModelExecAutoReviewer({
+      cfg: {},
+      deps: {
+        prepareSimpleCompletionModelForAgent: vi.fn(async () => ({
+          selection: { provider: "openai", modelId: "gpt-5.5", agentDir: "/agent" },
+          model: { provider: "openai", id: "gpt-5.5", api: "openai-responses" },
+          auth: { apiKey: "sk-test", mode: "env" },
+        })) as unknown as typeof import("./simple-completion-runtime.js").prepareSimpleCompletionModelForAgent,
+        completeWithPreparedSimpleCompletionModel:
+          complete as unknown as typeof import("./simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
+      },
+    });
+
+    // Fill memo to cap (256 unique commands).
+    for (let i = 0; i < 256; i++) {
+      await reviewer({ ...input, command: `cmd-${i}`, argv: ["cmd", `${i}`] });
+    }
+    expect(complete).toHaveBeenCalledTimes(256);
+
+    // 257th unique command: evicts oldest, model called again.
+    await reviewer({ ...input, command: "cmd-overflow", argv: ["cmd", "overflow"] });
+    expect(complete).toHaveBeenCalledTimes(257);
+
+    // First command evicted from memo: model called again, re-cached.
+    await reviewer({ ...input, command: "cmd-0", argv: ["cmd", "0"] });
+    expect(complete).toHaveBeenCalledTimes(258);
+
+    // cmd-1 was evicted when cmd-0 was re-cached: model called again.
+    await reviewer({ ...input, command: "cmd-1", argv: ["cmd", "1"] });
+    expect(complete).toHaveBeenCalledTimes(259);
   });
 });
