@@ -22,6 +22,10 @@ import {
   setPreparedModelRuntimeAuthLoader,
   setPreparedModelRuntimeAuthStore,
 } from "./prepared-model-runtime-auth.js";
+import {
+  PreparedModelCatalogGenerationInvalidError,
+  PreparedModelRuntimePublicationSupersededError,
+} from "./prepared-model-runtime.errors.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -31,6 +35,7 @@ import {
   prepareModelRuntimeSnapshot,
   PreparedModelRuntimeOwnerNotPublishedError,
   preparedModelRuntimeConfigsMatch,
+  replacePreparedModelRuntimeSnapshotAfterCatalogGenerationMismatch,
   type PreparedModelRuntimeInput,
   type PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.js";
@@ -74,10 +79,23 @@ async function materializeRequestedModelCatalog(
   if (!snapshot.loadFullModelCatalog) {
     return snapshot;
   }
-  const modelCatalog =
-    readOnly === true
-      ? snapshot.readFullModelCatalog?.()
-      : await snapshot.loadFullModelCatalog({ refresh: refreshFullCatalog === true });
+  let modelCatalog: ModelCatalogSnapshot | undefined;
+  try {
+    modelCatalog =
+      readOnly === true
+        ? snapshot.readFullModelCatalog?.()
+        : await snapshot.loadFullModelCatalog({ refresh: refreshFullCatalog === true });
+  } catch (error) {
+    if (
+      error instanceof PreparedModelCatalogGenerationInvalidError &&
+      (await replacePreparedModelRuntimeSnapshotAfterCatalogGenerationMismatch(snapshot))
+    ) {
+      throw new PreparedModelRuntimePublicationSupersededError(
+        `prepared model runtime catalog generation was replaced for ${snapshot.agentDir}`,
+      );
+    }
+    throw error;
+  }
   if (!modelCatalog) {
     return snapshot;
   }

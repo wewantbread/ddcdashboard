@@ -13,6 +13,7 @@ import {
   configuredOwnersAreRequestVisible,
   registerPreparedRuntimeAuthMaterializationPublisher,
 } from "./prepared-model-runtime-materializations.js";
+import { PreparedModelCatalogGenerationRecoveryOwner } from "./prepared-model-runtime.catalog-generation-recovery.js";
 import {
   PreparedModelRuntimeOwnerNotPublishedError,
   PreparedModelRuntimeOwnerRetention,
@@ -82,6 +83,9 @@ let gatewayLifecycleActive = false;
 let refreshTail: Promise<void> = Promise.resolve();
 let refreshRequestEpoch = 0;
 let pendingModelRuntimeReplacement: PreparedModelRuntimeReplacement | undefined;
+const catalogGenerationRecovery = new PreparedModelCatalogGenerationRecoveryOwner();
+type AuthMutationEvent = { agentDir?: string; affectsInheritedStores: boolean };
+const pendingAuthMutations: AuthMutationEvent[] = [];
 const authPublication = new PreparedModelRuntimeAuthPublicationOwner();
 
 const replyDispatchPublication = new PreparedReplyDispatchPublicationOwner({
@@ -404,6 +408,32 @@ export function markPreparedModelRuntimeSnapshotsStale(
   return pendingModelRuntimeReplacement?.gateId;
 }
 
+/** Rebuilds the configured owner whose deferred catalog no longer matches its plugin generation. */
+export async function replacePreparedModelRuntimeSnapshotAfterCatalogGenerationMismatch(
+  snapshot: PreparedModelRuntimeSnapshot,
+): Promise<boolean> {
+  return await catalogGenerationRecovery.replace(snapshot, {
+    owners,
+    agentBuildCompletions,
+    buildTimeoutMs: modelRuntimeBuildTimeoutMs,
+    getPendingReplacement: () => pendingModelRuntimeReplacement,
+    setPendingReplacement: (replacement) => (pendingModelRuntimeReplacement = replacement),
+    adoptAuthPublication: (replacement) => authPublication.adopt(replacement.gateId),
+    commitAuthPublication: (replacement) => {
+      const transaction = authPublication.prepareAdoptedCommit(replacement.gateId);
+      replyDispatchPublication.rebuild(owners.values());
+      if (transaction) {
+        authPublication.resolve(transaction, owners);
+      }
+    },
+    rejectAuthPublication: (replacement, error) =>
+      authPublication.rejectAdopted(replacement.gateId, error),
+    removeReplyDispatch: (agentIds) => replyDispatchPublication.remove(agentIds),
+    enqueuePublication: enqueuePreparedModelRuntimePublication,
+    drainPendingAuthMutations,
+  });
+}
+
 /** Rejects readers waiting for a replacement when its owning reload cannot continue. */
 export function rejectPendingPreparedModelRuntimeReplacement(
   gateId: PreparedModelRuntimeReplacementGateId | undefined,
@@ -694,6 +724,8 @@ function resetPreparedModelRuntimeSnapshotsForTest(): void {
   gatewayLifecycleActive = false;
   refreshTail = Promise.resolve();
   refreshRequestEpoch = 0;
+  pendingAuthMutations.length = 0;
+  catalogGenerationRecovery.reset();
   replyDispatchPublication.clear();
   resetPreparedModelRuntimePublicationListenersForTest();
   modelRuntimeBuildTimeoutMs = DEFAULT_MODEL_RUNTIME_BUILD_TIMEOUT_MS;

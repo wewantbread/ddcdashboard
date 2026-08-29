@@ -27,6 +27,7 @@ import {
   replacePersistedPluginModelCatalogs,
 } from "./plugin-model-catalog.js";
 import { preparePublishedModelCatalogOwnerIdentity } from "./prepared-model-catalog-owner.js";
+import { expectPublishedOwnerRecoveryAfterGenerationMismatch } from "./prepared-model-catalog-worker.generation-recovery.test-support.js";
 import {
   createPreparedModelCatalogWorker,
   createPreparedModelCatalogWorkerInput,
@@ -960,6 +961,27 @@ describe("prepared model catalog worker boundary", () => {
       fixture.supersede();
       await Promise.allSettled([catalog]);
     }
+  });
+
+  it("retires a worker whose reconstructed generation does not match", async () => {
+    const fixture = await createStaticSnapshot(0);
+    writeFixturePlugin({ root: fixture.root, spinMs: 0, pluginVersion: "v2" });
+    (fixture.config as OpenClawConfig).plugins!.entries![PLUGIN_ID] = {
+      enabled: true,
+      config: {},
+    };
+
+    await expect(fixture.snapshot.loadFullModelCatalog?.()).rejects.toThrow(
+      "generation was invalid",
+    );
+    await expect(fixture.snapshot.loadFullModelCatalog?.()).rejects.toThrow(
+      "generation was invalid",
+    );
+  });
+
+  it("rebuilds the published owner before models.list retries a generation mismatch", async () => {
+    const fixture = await createStaticSnapshot(0);
+    await expectPublishedOwnerRecoveryAfterGenerationMismatch(fixture);
   });
 
   it("preserves ref-only api-key and token profiles through the real worker", async () => {
