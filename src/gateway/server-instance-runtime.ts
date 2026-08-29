@@ -55,6 +55,10 @@ export function createGatewayInstanceRuntime(
 ): GatewayInstanceRuntime {
   const approvalSubscribers = new Set<GatewayApprovalEventSubscriber>();
   const routeCoordinator = createApprovalNativeRouteCoordinator();
+  const approvalDeliveryReceipts = new Map<
+    string,
+    { approvalId: string; entry: unknown }
+  >();
   let closed = false;
 
   const assertDispatchAvailable = (method: string) => {
@@ -242,9 +246,27 @@ export function createGatewayInstanceRuntime(
         ),
       publishResolved: (kind, resolved) => {
         publish(kind, (subscriber) => subscriber.onResolved(resolved as GatewayApprovalResolved));
+        approvalDeliveryReceipts.forEach((receipt, key) => {
+          if (receipt.approvalId === (resolved as GatewayApprovalResolved).id) {
+            approvalDeliveryReceipts.delete(key);
+          }
+        });
       },
     },
     nativeApprovals: {
+      deliveryReceipts: {
+        read: (key) => approvalDeliveryReceipts.get(JSON.stringify(key))?.entry ?? null,
+        write: (key, entry) => {
+          assertDispatchAvailable("native approval delivery receipt write");
+          approvalDeliveryReceipts.set(JSON.stringify(key), {
+            approvalId: key.approvalId,
+            entry,
+          });
+        },
+        remove: (key) => {
+          approvalDeliveryReceipts.delete(JSON.stringify(key));
+        },
+      },
       request: async <T>(
         method: GatewayNativeApprovalMethod,
         payload: Record<string, unknown>,
@@ -298,6 +320,7 @@ export function createGatewayInstanceRuntime(
       closed = true;
       releaseRecoveryRuntime();
       approvalSubscribers.clear();
+      approvalDeliveryReceipts.clear();
       routeCoordinator.close();
     },
   };
