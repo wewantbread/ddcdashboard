@@ -3,6 +3,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  appendTranscriptMessageSync,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { cleanupManagedOutgoingMediaRecords } from "../gateway/managed-image-attachments.js";
 import {
   insertManagedImageRecord,
@@ -10,6 +14,7 @@ import {
   readManagedImageRecord,
 } from "../gateway/managed-image-record-store.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -98,6 +103,56 @@ describe("cleanOldMedia managed-subtree retention", () => {
 
     expect(cleanup.deletedFileCount).toBe(0);
     await expect(fs.stat(legacyOrphanPath)).resolves.toMatchObject({ size: 15 });
+  });
+
+  it("retains transcript-referenced inbound media while sweeping unreferenced inbound media", async () => {
+    const referenced = await store.saveMediaBuffer(Buffer.from("user photo"), "image/png");
+    const orphan = await store.saveMediaBuffer(Buffer.from("orphan"), "image/png");
+    const sessionKey = "agent:main:dm:user-1";
+    await replaceSessionEntry(
+      { agentId: "main", sessionKey },
+      { sessionId: "session-inbound-1", updatedAt: 1 },
+    );
+    appendTranscriptMessageSync(
+      { agentId: "main", sessionId: "session-inbound-1", sessionKey },
+      {
+        message: buildPersistedUserTurnMessage({
+          text: "what is in this picture?",
+          timestamp: 1,
+          media: [
+            { url: `media://inbound/${referenced.id}`, contentType: "image/png", kind: "image" },
+          ],
+        }),
+      },
+    );
+    const stale = Date.now() - 25 * 60 * 60_000;
+    await Promise.all(
+      [referenced.path, orphan.path].map((filePath) =>
+        fs.utimes(filePath, stale / 1000, stale / 1000),
+      ),
+    );
+
+    await store.cleanOldMedia(60 * 60_000, { recursive: true, pruneEmptyDirs: true });
+
+    console.log("[inbound sweep] referenced id:", referenced.id);
+    console.log(
+      "[inbound sweep] referenced on disk:",
+      await fs.stat(referenced.path).then(
+        () => true,
+        () => false,
+      ),
+    );
+    console.log(
+      "[inbound sweep] orphan on disk:",
+      await fs.stat(orphan.path).then(
+        () => true,
+        () => false,
+      ),
+    );
+    await expect(fs.stat(orphan.path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.resolveMediaBufferPath(referenced.id, "inbound")).resolves.toBe(
+      referenced.path,
+    );
   });
 
   it("retires only stale outbound staging and its trusted HTML provenance", async () => {
