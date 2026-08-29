@@ -176,7 +176,18 @@ describe("plugins cli policy mutations", () => {
     });
   });
 
-  it("records explicit capability consent for an already-enabled installed plugin", async () => {
+  it.each([
+    {
+      name: "records explicit capability consent for an already-enabled installed plugin",
+      commandArgs: ["plugins", "enable", "alpha", "--accept-capabilities"],
+      expectsConsent: true,
+    },
+    {
+      name: "preserves no-option re-enable compatibility for an already-enabled installed plugin",
+      commandArgs: ["plugins", "enable", "alpha"],
+      expectsConsent: false,
+    },
+  ])("$name", async ({ commandArgs, expectsConsent }) => {
     await withTempDir("openclaw-cli-capability-consent-enabled-", async (rootDir) => {
       const fixture = createColdPluginFixture({ rootDir, pluginId: "alpha" });
       const { recordPluginManifestInstallOwner } =
@@ -215,16 +226,22 @@ describe("plugins cli policy mutations", () => {
         registryDiagnostics: [],
       });
 
-      await runPluginsCommand(["plugins", "enable", "alpha", "--accept-capabilities"]);
+      await runPluginsCommand(commandArgs);
 
       const { resolvePluginArtifactDeclaredSurface } =
         await import("../plugins/capability-consent.js");
       const { computeDeclaredSurfaceHash } = await import("../plugins/capability-summary.js");
-      const acceptedRecord =
-        writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock.mock.calls[0]?.[0]?.alpha;
-      expect(acceptedRecord?.acceptedSurfaceHash).toBe(
-        computeDeclaredSurfaceHash(resolvePluginArtifactDeclaredSurface(rootDir)),
-      );
+      if (expectsConsent) {
+        const acceptedRecord =
+          writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock.mock.calls[0]?.[0]?.alpha;
+        expect(acceptedRecord?.acceptedSurfaceHash).toBe(
+          computeDeclaredSurfaceHash(resolvePluginArtifactDeclaredSurface(rootDir)),
+        );
+      } else {
+        expect(
+          writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock,
+        ).not.toHaveBeenCalled();
+      }
       expect(replaceConfigFileMock).toHaveBeenCalledOnce();
       expect(promptYesNoMock).not.toHaveBeenCalled();
     });
