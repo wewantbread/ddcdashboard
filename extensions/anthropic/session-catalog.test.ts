@@ -17,6 +17,12 @@ import {
 } from "./session-catalog-registration.js";
 import { listBoundClaudeSessions } from "./session-catalog-runtime.js";
 import {
+  MAX_CATALOG_JSON_CACHE_BYTES,
+  MAX_CATALOG_JSON_FILE_BYTES,
+  MAX_CATALOG_JSON_SCAN_BYTES,
+  readJsonFile,
+} from "./session-catalog-scan.js";
+import {
   CLAUDE_CLI_NODE_RUN_COMMAND,
   CLAUDE_SESSIONS_LIST_COMMAND,
   CLAUDE_SESSION_READ_COMMAND,
@@ -1665,7 +1671,11 @@ describe("Claude session catalog", () => {
     const readFileSpy = vi.spyOn(fs, "readFile");
 
     const first = await listLocalClaudeSessionPage({}, home);
-    expect(openSpy).toHaveBeenCalledTimes(2);
+    expect(
+      openSpy.mock.calls.filter(
+        ([filePath]) => typeof filePath === "string" && filePath.endsWith(".jsonl"),
+      ),
+    ).toHaveLength(2);
     realpathSpy.mockClear();
     statSpy.mockClear();
     openSpy.mockClear();
@@ -1728,7 +1738,9 @@ describe("Claude session catalog", () => {
       return await realpath(...args);
     });
 
-    await expect(listLocalClaudeSessionPage({}, home)).resolves.toEqual({ sessions: [] });
+    await expect(listLocalClaudeSessionPage({}, home)).resolves.toMatchObject({
+      sessions: [],
+    });
     await expect(listLocalClaudeSessionPage({}, home)).resolves.toMatchObject({
       sessions: [expect.objectContaining({ threadId: "recovered" })],
     });
@@ -1791,7 +1803,10 @@ describe("Claude session catalog", () => {
       return await open(...args);
     });
 
-    await expect(listLocalClaudeSessionPage({}, home)).resolves.toEqual({ sessions: [] });
+    await expect(listLocalClaudeSessionPage({}, home)).resolves.toMatchObject({
+      sessions: [],
+      error: { code: "LOCAL_CATALOG_PARTIAL" },
+    });
     now += 15_001;
     await expect(listLocalClaudeSessionPage({}, home)).resolves.toMatchObject({
       sessions: [expect.objectContaining({ threadId: sessionId })],
@@ -2070,9 +2085,9 @@ describe("Claude session catalog", () => {
       cliSessionId: "desktop-session",
       title: "Desktop before",
     });
-    const readFileSpy = vi.spyOn(fs, "readFile");
+    const openSpy = vi.spyOn(fs, "open");
     const metadataReads = () =>
-      readFileSpy.mock.calls
+      openSpy.mock.calls
         .map(([filePath]) => filePath)
         .filter((filePath) => filePath === indexPath || filePath === desktopPath);
 
@@ -2080,7 +2095,7 @@ describe("Claude session catalog", () => {
     expect(metadataReads()).toEqual(expect.arrayContaining([indexPath, desktopPath]));
     const firstRefreshTime = new Date(Date.now() + 2_000);
     await fs.utimes(projectDir, firstRefreshTime, firstRefreshTime);
-    readFileSpy.mockClear();
+    openSpy.mockClear();
 
     await listLocalClaudeSessionPage({}, home);
     expect(metadataReads()).toEqual([]);
@@ -2105,7 +2120,7 @@ describe("Claude session catalog", () => {
       fs.utimes(desktopPath, secondRefreshTime, secondRefreshTime),
       fs.utimes(projectDir, secondRefreshTime, secondRefreshTime),
     ]);
-    readFileSpy.mockClear();
+    openSpy.mockClear();
 
     const refreshed = await listLocalClaudeSessionPage({}, home);
     expect(metadataReads()).toEqual(expect.arrayContaining([indexPath, desktopPath]));
@@ -2115,6 +2130,261 @@ describe("Claude session catalog", () => {
       "desktop-session": "Desktop after a longer title",
       "indexed-session": "Indexed after a longer title",
     });
+  });
+
+  it("does not buffer oversized catalog JSON files", async () => {
+    const home = await createHome();
+    const projectDir = path.join(home, ".claude", "projects", "-workspace");
+    const indexPath = path.join(projectDir, "sessions-index.json");
+    const desktopPath = path.join(
+      home,
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude-code-sessions",
+      "account",
+      "workspace",
+      "local_oversized.json",
+    );
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(
+      indexPath,
+      JSON.stringify({ version: 1, entries: [], padding: "x".repeat(MAX_CATALOG_JSON_FILE_BYTES) }),
+    );
+    await writeDesktopMetadata(home, "oversized", {
+      cliSessionId: "oversized-desktop-session",
+      title: "x".repeat(MAX_CATALOG_JSON_FILE_BYTES),
+    });
+    expect((await fs.stat(indexPath)).size).toBeGreaterThan(MAX_CATALOG_JSON_FILE_BYTES);
+    expect((await fs.stat(desktopPath)).size).toBeGreaterThan(MAX_CATALOG_JSON_FILE_BYTES);
+
+    const openSpy = vi.spyOn(fs, "open");
+    const readFileSpy = vi.spyOn(fs, "readFile");
+    const page = await listLocalClaudeSessionPage({}, home);
+    expect(page.sessions).toEqual([]);
+    expect(page.error).toEqual({
+      code: "LOCAL_CATALOG_PARTIAL",
+      message: expect.stringContaining("2 files"),
+    });
+    expect(openSpy.mock.calls.map(([filePath]) => filePath)).not.toEqual(
+      expect.arrayContaining([indexPath, desktopPath]),
+    );
+    expect(readFileSpy.mock.calls.map(([filePath]) => filePath)).not.toEqual(
+      expect.arrayContaining([indexPath, desktopPath]),
+    );
+
+    process.env.HOME = home;
+    const provider = captureCatalogProvider({
+      nodes: { list: vi.fn().mockResolvedValue({ nodes: [] }) },
+    } as unknown as PluginRuntime);
+    await expect(provider.list({ hostIds: ["gateway:local"] })).resolves.toEqual([
+      expect.objectContaining({
+        hostId: "gateway:local",
+        sessions: [],
+        error: expect.objectContaining({ code: "LOCAL_CATALOG_PARTIAL" }),
+      }),
+    ]);
+  });
+
+  it("bounds aggregate catalog JSON bytes and weights the parse cache", async () => {
+    const home = await createHome();
+    const smallSessionId = "small-catalog-session";
+    await writeIndexedDesktopSession(home, {
+      sessionId: smallSessionId,
+      localSessionId: "local_small-catalog-session",
+      metadataName: "small-catalog",
+      title: "Small catalog",
+      prompt: "small catalog prompt",
+    });
+    await expect(listLocalClaudeSessionPage({ limit: 100 }, home)).resolves.toEqual({
+      sessions: [
+        expect.objectContaining({
+          threadId: smallSessionId,
+          name: "Small catalog",
+          source: "claude-desktop",
+        }),
+      ],
+    });
+
+    const projectRoot = path.join(home, ".claude", "projects");
+    const largeFileBytes =
+      Math.floor(Math.min(MAX_CATALOG_JSON_CACHE_BYTES, MAX_CATALOG_JSON_SCAN_BYTES) / 5) + 1;
+    const largeIndexPaths: string[] = [];
+    const largeSessionIds: string[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const sessionId = `large-catalog-session-${index}`;
+      const projectDir = path.join(projectRoot, `project-${index}`);
+      const transcriptPath = path.join(projectDir, `${sessionId}.jsonl`);
+      const indexPath = path.join(projectDir, "sessions-index.json");
+      await fs.mkdir(projectDir, { recursive: true });
+      const entry = {
+        sessionId,
+        fullPath: transcriptPath,
+        summary: sessionId,
+        isSidechain: false,
+      };
+      const prefix = `{"version":1,"entries":${JSON.stringify([entry])},"padding":"`;
+      const suffix = `"}`;
+      const paddingBytes = largeFileBytes - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+      await fs.writeFile(indexPath, `${prefix}${"x".repeat(paddingBytes)}${suffix}`);
+      await fs.writeFile(transcriptPath, `${JSON.stringify({ type: "progress", sessionId })}\n`);
+      largeIndexPaths.push(indexPath);
+      largeSessionIds.push(sessionId);
+    }
+
+    const refreshed = await listLocalClaudeSessionPage({ limit: 100 }, home);
+    expect(refreshed.error).toEqual({
+      code: "LOCAL_CATALOG_PARTIAL",
+      message: expect.stringContaining("1 file"),
+    });
+    expect(refreshed.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: smallSessionId,
+          name: "Small catalog",
+          source: "claude-desktop",
+        }),
+      ]),
+    );
+    const retainedLargeSessionIds = refreshed.sessions
+      .map((session) => session.threadId)
+      .filter((sessionId) => largeSessionIds.includes(sessionId))
+      .toSorted();
+    expect(retainedLargeSessionIds).toEqual(largeSessionIds.slice(0, 4).toSorted());
+
+    const openSpy = vi.spyOn(fs, "open");
+    for (const indexPath of largeIndexPaths) {
+      await readJsonFile(indexPath);
+    }
+    openSpy.mockClear();
+    for (const indexPath of largeIndexPaths) {
+      await readJsonFile(indexPath);
+    }
+    expect(
+      openSpy.mock.calls.some(([filePath]) => largeIndexPaths.includes(String(filePath))),
+    ).toBe(true);
+  });
+
+  it("keeps the catalog JSON cap across a stat-to-open replacement race", async () => {
+    const home = await createHome();
+    const projectDir = path.join(home, ".claude", "projects", "-workspace");
+    const filePath = path.join(projectDir, "sessions-index.json");
+    const replacementPath = path.join(projectDir, "sessions-index.replacement.json");
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify({ version: 1, entries: [] }));
+    await fs.writeFile(
+      replacementPath,
+      JSON.stringify({ version: 1, entries: [], padding: "x".repeat(MAX_CATALOG_JSON_FILE_BYTES) }),
+    );
+
+    const open = fs.open.bind(fs);
+    let replaced = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (args[0] === filePath && !replaced) {
+        await fs.rename(replacementPath, filePath);
+        replaced = true;
+      }
+      return await open(...args);
+    });
+
+    await expect(readJsonFile(filePath)).resolves.toBeUndefined();
+    expect(replaced).toBe(true);
+  });
+
+  it("reports a partial catalog when an admitted JSON file changes size before open", async () => {
+    const home = await createHome();
+    const projectDir = path.join(home, ".claude", "projects", "-workspace");
+    const filePath = path.join(projectDir, "sessions-index.json");
+    const replacementPath = path.join(projectDir, "sessions-index.replacement.json");
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify({ version: 1, entries: [] }));
+    await fs.writeFile(
+      replacementPath,
+      JSON.stringify({ version: 1, entries: [], padding: "valid replacement" }),
+    );
+
+    const open = fs.open.bind(fs);
+    let replaced = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (args[0] === filePath && !replaced) {
+        await fs.rename(replacementPath, filePath);
+        replaced = true;
+      }
+      return await open(...args);
+    });
+
+    const page = await listLocalClaudeSessionPage({}, home, { includeDesktop: false });
+    expect(page).toMatchObject({
+      sessions: [],
+      error: {
+        code: "LOCAL_CATALOG_PARTIAL",
+        message: expect.stringContaining("changed while being read"),
+      },
+    });
+    expect(replaced).toBe(true);
+  });
+
+  it("preserves catalog JSON across short descriptor reads", async () => {
+    const home = await createHome();
+    const projectDir = path.join(home, ".claude", "projects", "-workspace");
+    const filePath = path.join(projectDir, "sessions-index.json");
+    const expected = { version: 1, entries: [], padding: "short read regression" };
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(expected));
+
+    const open = fs.open.bind(fs);
+    let readCalls = 0;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (args[0] === filePath) {
+        const realRead = handle.read.bind(handle);
+        Object.defineProperty(handle, "read", {
+          configurable: true,
+          value: (buffer: Buffer, offset: number, length: number, position: number) => {
+            readCalls += 1;
+            return realRead(buffer, offset, Math.min(3, length), position);
+          },
+        });
+      }
+      return handle;
+    });
+
+    await expect(readJsonFile(filePath)).resolves.toEqual(expected);
+    expect(readCalls).toBeGreaterThan(1);
+  });
+
+  it("reports a partial catalog when a descriptor read ends before its reserved size", async () => {
+    const home = await createHome();
+    const projectDir = path.join(home, ".claude", "projects", "-workspace");
+    const filePath = path.join(projectDir, "sessions-index.json");
+    const prefix = JSON.stringify({ version: 1, entries: [] });
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(filePath, `${prefix}${"x".repeat(8)}`);
+
+    const open = fs.open.bind(fs);
+    let readCalls = 0;
+    const onIoFailure = vi.fn();
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (args[0] === filePath) {
+        const realRead = handle.read.bind(handle);
+        Object.defineProperty(handle, "read", {
+          configurable: true,
+          value: (buffer: Buffer, offset: number, length: number, position: number) => {
+            readCalls += 1;
+            if (readCalls === 1) {
+              return realRead(buffer, offset, prefix.length, position);
+            }
+            return { bytesRead: 0, buffer };
+          },
+        });
+      }
+      return handle;
+    });
+
+    await expect(readJsonFile(filePath, { onIoFailure })).resolves.toBeUndefined();
+    expect(readCalls).toBe(2);
+    expect(onIoFailure).toHaveBeenCalledOnce();
   });
 
   it("retries transient index reads without waiting for the file metadata to change", async () => {
@@ -2134,14 +2404,14 @@ describe("Claude session catalog", () => {
       ],
       transcripts: { [sessionId]: [message(sessionId, "user", "Indexed only", 1)] },
     });
-    const readFile = fs.readFile.bind(fs);
+    const open = fs.open.bind(fs);
     let failIndexRead = true;
-    vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
       if (failIndexRead && args[0] === indexPath) {
         failIndexRead = false;
         throw new Error("transient index read failure");
       }
-      return await readFile(...args);
+      return await open(...args);
     });
     let now = 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);
