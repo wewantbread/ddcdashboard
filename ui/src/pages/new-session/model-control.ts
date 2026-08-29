@@ -2,7 +2,7 @@ import type {
   SessionCatalog,
   SessionsCatalogListResult,
 } from "../../../../packages/gateway-protocol/src/index.ts";
-import type { GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
+import type { FastMode, GatewayAgentRow, ModelCatalogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { t } from "../../i18n/index.ts";
 import {
@@ -10,14 +10,15 @@ import {
   revalidateChatMetadata,
   subscribeChatMetadata,
 } from "../../lib/chat/chat-metadata-store.ts";
+import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
-  buildQualifiedChatModelValue,
-  normalizeChatModelProviderId,
-  resolvePreferredServerChatModelValue,
-} from "../../lib/chat/model-ref.ts";
-import { isChatModelUnavailable } from "../../lib/chat/model-select-state.ts";
+  isChatFastModeProviderSupported,
+  normalizeChatFastModeInput,
+  resolveChatModelUnavailableReason,
+} from "../../lib/chat/model-select-state.ts";
 import { normalizeThinkingOptionValue } from "../../lib/chat/thinking.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import {
   renderChatModelControls,
@@ -25,6 +26,7 @@ import {
 } from "../chat/components/chat-model-controls.ts";
 import type { ChatModelPickerTargetGroup } from "../chat/components/chat-model-picker-options.ts";
 import { draftCloudProfileSupportsExecutionMode, type DraftCloudProfile } from "./discovery.ts";
+import { resolveDraftModelTarget } from "./model-target.ts";
 import type { NewSessionPreference } from "./preferences.ts";
 
 type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
@@ -60,46 +62,6 @@ type ReconciledNewSessionSelection = {
   repaired: boolean;
 };
 
-type DraftModelTarget = {
-  entry?: ModelCatalogEntry;
-  model: string;
-  provider: string | null;
-};
-
-function resolveDraftModelTarget(
-  model: string | null | undefined,
-  provider: string | null | undefined,
-  catalog: ModelCatalogEntry[],
-): DraftModelTarget | null {
-  const value = resolvePreferredServerChatModelValue(model, provider, catalog);
-  if (!value) {
-    return null;
-  }
-  const normalized = value.toLowerCase();
-  const entry = catalog.find(
-    (candidate) =>
-      buildQualifiedChatModelValue(candidate.id, candidate.provider).toLowerCase() === normalized,
-  );
-  if (entry) {
-    return {
-      entry,
-      model: entry.id,
-      provider: normalizeChatModelProviderId(entry.provider) || null,
-    };
-  }
-  const separator = value.indexOf("/");
-  if (separator > 0) {
-    return {
-      model: value.slice(separator + 1),
-      provider: normalizeChatModelProviderId(value.slice(0, separator)) || null,
-    };
-  }
-  return {
-    model: value,
-    provider: normalizeChatModelProviderId(provider ?? "") || null,
-  };
-}
-
 export class NewSessionModelControl {
   private selectionGeneration = 0;
   private agentId = "";
@@ -128,6 +90,7 @@ export class NewSessionModelControl {
   selected = "";
   contextWindow = "";
   thinkingLevel = "";
+  fastMode: FastMode | undefined;
 
   constructor(
     private readonly notify: () => void,
@@ -283,11 +246,11 @@ export class NewSessionModelControl {
     };
     const cached = peekChatMetadata(client, agentId);
     if (Array.isArray(cached?.models)) {
-      this.publishMetadataCatalog(cached.models, "refreshing");
+      this.publishMetadataCatalog(cached.models, "ready");
     } else {
       this.updateMetadataState({
         ...this.metadataState,
-        status: this.metadataState.hasSnapshot ? "refreshing" : "loading",
+        status: this.metadataState.hasSnapshot ? "ready" : "loading",
       });
     }
 
@@ -327,10 +290,26 @@ export class NewSessionModelControl {
     );
   }
 
-  private retryPickerCatalogs() {
+  private retryPickerCatalogs(refreshReadyMetadata = false) {
     const metadataClient = this.metadataClient;
     if (this.metadataState.status === "error" && metadataClient && this.agentId) {
       this.startMetadataRequest(metadataClient, this.agentId);
+    } else if (
+      refreshReadyMetadata &&
+      this.metadataState.status === "ready" &&
+      metadataClient &&
+      this.agentId
+    ) {
+      const agentId = this.agentId;
+      void loadModelCatalog(metadataClient, {
+        agentId,
+        refreshIfDue: true,
+        rejectOnFailure: true,
+      }).catch(() => {
+        if (this.metadataClient === metadataClient && this.agentId === agentId) {
+          this.updateMetadataState({ ...this.metadataState, status: "error" });
+        }
+      });
     }
     const targetDiscovery = this.catalogTargetDiscovery;
     if (
@@ -375,6 +354,7 @@ export class NewSessionModelControl {
       this.selected = "";
       this.contextWindow = "";
       this.thinkingLevel = "";
+      this.fastMode = undefined;
       this.updateMetadataState({
         catalog: [],
         hasSnapshot: false,
@@ -411,6 +391,7 @@ export class NewSessionModelControl {
       this.selected = "";
       this.contextWindow = "";
       this.thinkingLevel = "";
+      this.fastMode = undefined;
       this.metadataState = {
         catalog: [],
         hasSnapshot: false,
@@ -446,10 +427,7 @@ export class NewSessionModelControl {
     const cached = peekChatMetadata(client, normalizedAgentId);
     if (activeRequestMatches) {
       if (cached) {
-        this.publishMetadataCatalog(
-          Array.isArray(cached.models) ? cached.models : [],
-          "refreshing",
-        );
+        this.publishMetadataCatalog(Array.isArray(cached.models) ? cached.models : [], "ready");
       } else {
         this.notify();
       }
@@ -466,12 +444,16 @@ export class NewSessionModelControl {
     return this.restoringPreference;
   }
 
-  isModelUnavailable(agent: GatewayAgentRow | undefined): boolean {
-    return (
-      this.metadataState.hasSnapshot &&
-      this.metadataState.status === "ready" &&
-      isChatModelUnavailable(this.selected || agent?.model?.primary, undefined, this.catalog)
-    );
+  modelUnavailableReason(
+    agent: GatewayAgentRow | undefined,
+  ): ModelCatalogEntry["unavailableReason"] {
+    return this.metadataState.hasSnapshot && this.metadataState.status === "ready"
+      ? resolveChatModelUnavailableReason(
+          this.selected || agent?.model?.primary,
+          undefined,
+          this.catalog,
+        )
+      : undefined;
   }
 
   private restorePreference(
@@ -575,6 +557,18 @@ export class NewSessionModelControl {
       : undefined;
   }
 
+  // Worker-turn runtimes rank automatic placement by free worker slots;
+  // remote-exec runtimes select by eligible device order and must not be
+  // described as least-busy. Unresolved (auto/default) runtimes fall back to
+  // the worker-turn description, matching the server's default policy.
+  autoPlacementSelectionMode(): "least-busy" | "eligible-order" {
+    const runtime = this.resolveAgentRuntime({
+      agent: this.pendingAgent,
+      context: this.pendingContext,
+    });
+    return runtime?.cloudPlacementExecutionMode === "remote-exec" ? "eligible-order" : "least-busy";
+  }
+
   cloudRuntimeUnsupportedReason(profile?: DraftCloudProfile): string | undefined {
     const runtime = this.resolveAgentRuntime({
       agent: this.pendingAgent,
@@ -651,13 +645,19 @@ export class NewSessionModelControl {
               ...(contextWindowDefault ? { contextWindowDefault } : {}),
             }
           : undefined,
+      fastModeTarget: {
+        model: selectedTarget?.model ?? defaultTarget?.model,
+        modelProvider: selectedTarget?.provider ?? defaultTarget?.provider ?? undefined,
+        fastMode: this.fastMode,
+        effectiveFastMode:
+          this.fastMode ?? (selectedTarget?.entry ?? defaultTarget?.entry)?.effectiveFastMode,
+      },
       modelOverrides: { [sessionKey]: this.selected },
       modelPickerTargetGroups: this.catalogTargetGroups(),
       modelSwitching: false,
       sending: options.sending,
       sessionKey,
       sessionsResult: sourceResult,
-      showFastMode: false,
       stream: null,
       thinkingDefaults,
       thinkingSession: thinkingTarget,
@@ -668,6 +668,12 @@ export class NewSessionModelControl {
         this.selected = selection.model;
         this.contextWindow = "";
         this.thinkingLevel = selection.thinkingLevel;
+        this.fastMode = isChatFastModeProviderSupported(
+          (resolveDraftModelTarget(selection.model, undefined, this.catalog) ?? defaultTarget)
+            ?.provider,
+        )
+          ? this.fastMode
+          : undefined;
         this.onSelectionChange({ model: this.selected, thinkingLevel: this.thinkingLevel });
       },
       onModelPickerTargetSelect: (groupId, catalogId) => {
@@ -686,6 +692,12 @@ export class NewSessionModelControl {
         this.thinkingLevel = value;
         this.onSelectionChange({ model: this.selected, thinkingLevel: this.thinkingLevel });
       },
+      onFastModeSelect: (value) => {
+        this.selectionGeneration += 1;
+        this.restoringPreference = false;
+        this.fastMode = normalizeChatFastModeInput(value);
+        this.notify();
+      },
       onContextWindowSelect: (value) => {
         this.selectionGeneration += 1;
         this.restoringPreference = false;
@@ -693,7 +705,7 @@ export class NewSessionModelControl {
         this.notify();
       },
       onModelSetup: () => options.context?.navigate("model-setup"),
-      onModelPickerOpen: () => this.retryPickerCatalogs(),
+      onModelPickerOpen: () => this.retryPickerCatalogs(true),
       onRequestUpdate: this.notify,
     });
   }

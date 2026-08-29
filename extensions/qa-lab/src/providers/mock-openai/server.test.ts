@@ -1,5 +1,7 @@
 import { once } from "node:events";
+import { runInNewContext } from "node:vm";
 // Qa Lab tests cover server plugin behavior.
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -4743,18 +4745,27 @@ Update and merge these partial structured summaries.`,
     }
   });
 
-  it("answers heartbeat prompts without spawning extra subagents", async () => {
+  it.each([
+    {
+      name: "legacy workspace heartbeat",
+      prompt:
+        "System: Gateway restart config-apply ok\nSystem: QA-SUBAGENT-RECOVERY-1234\n\nRead HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
+      reply: "HEARTBEAT_OK",
+    },
+    {
+      name: "automation heartbeat",
+      prompt:
+        "System: Gateway restart config-apply ok\n\nFollow the heartbeat monitor scratch context when provided. If nothing needs attention, reply NO_REPLY.",
+      reply: "NO_REPLY",
+    },
+  ])("answers $name prompts without spawning extra subagents", async ({ prompt, reply }) => {
     const server = await startMockServer();
 
     const response = await expectNonStreamingResponses(server, {
-      input: [
-        makeUserInput(
-          "System: Gateway restart config-apply ok\nSystem: QA-SUBAGENT-RECOVERY-1234\n\nRead HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
-        ),
-      ],
+      input: [makeUserInput(prompt)],
     });
 
-    expect(outputText(await response.json())).toBe("HEARTBEAT_OK");
+    expect(outputText(await response.json())).toBe(reply);
   });
 
   it("returns exact markers for visible and hot-installed skills", async () => {
@@ -5571,6 +5582,35 @@ Update and merge these partial structured summaries.`,
     expect(outputText(await response.json())).toBe(
       "ASK-USER-ROUNDTRIP-OK | deploy=Canary | checks=Lint,Unit | note=weekend-only",
     );
+  });
+
+  it.each([
+    {
+      fixture: "single",
+      expectedQuestionId: "deploy_target",
+      expectedMultiSelect: undefined,
+    },
+    { fixture: "multi", expectedQuestionId: "checks", expectedMultiSelect: true },
+  ])("plans the $fixture ask_user Telegram fixture", async (entry) => {
+    const server = await startMockServer();
+    const response = await expectNonStreamingResponses(server, {
+      input: [
+        makeUserInput(
+          `tool search qa check target=ask_user ask_user_fixture=${entry.fixture}. Ask the question.`,
+        ),
+      ],
+    });
+
+    const call = outputItem(await response.json());
+    const args = JSON.parse(String(call.arguments)) as {
+      questions?: Array<{ id?: string; multiSelect?: boolean }>;
+    };
+    expect(call.name).toBe("ask_user");
+    expect(args.questions).toHaveLength(1);
+    expect(args.questions?.[0]).toMatchObject({
+      id: entry.expectedQuestionId,
+      ...(entry.expectedMultiSelect ? { multiSelect: true } : {}),
+    });
   });
 
   it("plans QA tool-search failure calls with denied-input args", async () => {
@@ -6883,8 +6923,31 @@ Update and merge these partial structured summaries.`,
       expect(execArgs).toMatchObject({ language: "javascript", restartSafe: true });
       expect(execArgs.code).toContain("qa_restart_wait");
       expect(execArgs.code).toContain('catalog.search("qa_restart_wait")');
-      expect(execArgs.code).toContain("await target({})");
       expect(execArgs.code).toContain(`CHECKPOINT-${checkpoint}`);
+
+      const started = createDeferred<void>();
+      const released = createDeferred<void>();
+      let yielded = false;
+      const target = Object.assign(
+        () => {
+          started.resolve();
+          return released.promise;
+        },
+        { toolName: "qa_restart_wait" },
+      );
+      const execution = runInNewContext(`(async () => { ${String(execArgs.code)} })()`, {
+        catalog: { search: async () => [target] },
+        yield_control: () => {
+          yielded = true;
+        },
+      }) as Promise<unknown>;
+      try {
+        await started.promise;
+        expect(yielded).toBe(true);
+      } finally {
+        released.resolve();
+        await expect(execution).resolves.toBe(`CHECKPOINT-${checkpoint}`);
+      }
 
       const runId = `restart-checkpoint-${checkpoint}`;
       input.push(
@@ -8119,7 +8182,7 @@ Update and merge these partial structured summaries.`,
     expect(outputText(laterHeartbeatPayload)).toBe("HEARTBEAT_OK");
   });
 
-  it("scripts one failure-honest Code Mode terminal-tool continuation (#118274)", async () => {
+  it("reports a failed Code Mode read honestly through ordinary continuation", async () => {
     const server = await startMockServer();
     const prompt =
       "Failed tool terminal recovery QA check: read the missing file, then respond with exact marker: `QA-FAILED-TOOL-FINALIZED-OK`.";
@@ -8163,33 +8226,28 @@ Update and merge these partial structured summaries.`,
       String(plannedRequest.plannedToolCallId),
       JSON.stringify({ status: "failed", error: "ENOENT: qa-failed-terminal-missing-file.txt" }),
     );
-    const dishonestFinalization = await expectNonStreamingResponsesJson<{
-      output?: Array<{ content?: Array<{ text?: string }> }>;
-    }>(server, {
-      model: "gpt-5.6-luna",
-      input: [
-        makeUserInput(prompt),
-        makeUserInput(QA_SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION),
-        failedToolOutput,
-      ],
-    });
-    expect(outputText(dishonestFinalization)).toBe("FAILED-TOOL-HONESTY-INSTRUCTION-MISSING");
-
     const recovered = await expectNonStreamingResponsesJson<{
       output?: Array<{ content?: Array<{ text?: string }> }>;
     }>(server, {
       model: "gpt-5.6-luna",
-      input: [
-        makeUserInput(prompt),
-        makeUserInput(
-          `${QA_SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION} If a tool failed, say so; never claim completion or success.`,
-        ),
-        failedToolOutput,
-      ],
+      tools: codeModeTools,
+      input: [makeUserInput(prompt), failedToolOutput],
     });
     expect(outputText(recovered)).toBe(
       "The requested file could not be read: ENOENT. QA-FAILED-TOOL-FINALIZED-OK",
     );
+
+    const succeeded = await expectNonStreamingResponsesJson<{
+      output?: Array<{ content?: Array<{ text?: string }> }>;
+    }>(server, {
+      model: "gpt-5.6-luna",
+      tools: codeModeTools,
+      input: [
+        makeUserInput(prompt),
+        makeToolOutputWithCallId(String(plannedRequest.plannedToolCallId), "file contents"),
+      ],
+    });
+    expect(outputText(succeeded)).toBe("BUG-TOOL-DID-NOT-FAIL");
   });
 });
 

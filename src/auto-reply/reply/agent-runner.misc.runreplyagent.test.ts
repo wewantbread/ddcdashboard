@@ -10,11 +10,17 @@ import {
   isEmbeddedAgentRunActive,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { testing as embeddedRunTesting } from "../../agents/embedded-agent-runner/runs.test-support.js";
+import {
+  runFallbackModelAttempt,
+  runInitialModelFallbackAttempt,
+  type TestModelFallbackRunnerParams,
+} from "../../agents/test-helpers/model-fallback-runner.test-support.js";
 import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
 import { clearRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import {
   onAgentEvent as subscribeAgentEvent,
   type AgentEventPayload,
@@ -98,11 +104,7 @@ const compactState = vi.hoisted(() => ({
 }));
 
 vi.mock("../../agents/model-fallback-runner.js", () => ({
-  runWithModelFallback: (params: {
-    provider: string;
-    model: string;
-    run: (provider: string, model: string) => Promise<unknown>;
-  }) => runWithModelFallbackMock(params),
+  runWithModelFallback: (params: TestModelFallbackRunnerParams) => runWithModelFallbackMock(params),
 }));
 
 vi.mock("../../agents/model-fallback-attempt.js", () => ({
@@ -261,11 +263,7 @@ vi.mock("./private-message-tool-final.js", async (importOriginal) => {
 
 import { runReplyAgent } from "./agent-runner.js";
 
-type RunWithModelFallbackParams = {
-  provider: string;
-  model: string;
-  run: (provider: string, model: string) => Promise<unknown>;
-};
+type RunWithModelFallbackParams = TestModelFallbackRunnerParams;
 
 type BaseRunOptions = {
   context?: Parameters<typeof createTestTemplateContext>[0];
@@ -405,14 +403,12 @@ function setupAgentRunnerMocks(): void {
   loadCronStoreMock.mockResolvedValue({ version: 1, jobs: [] });
 
   // Default: no provider switch; execute the chosen provider+model.
-  runWithModelFallbackMock.mockImplementation(
-    async ({ provider, model, run }: RunWithModelFallbackParams) => ({
-      result: await run(provider, model),
-      provider,
-      model,
-      attempts: [],
-    }),
-  );
+  runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => ({
+    result: await runInitialModelFallbackAttempt(params),
+    provider: params.provider,
+    model: params.model,
+    attempts: [],
+  }));
 }
 
 beforeEach(setupAgentRunnerMocks);
@@ -595,6 +591,118 @@ describe("runReplyAgent auto-compaction token update", () => {
 
     expect(compactState.compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
     expectReplyText(result, "⚠️ Gateway is restarting. Please wait a few seconds and try again.");
+  });
+
+  it("executes the next user turn in the default 32K early-flush interval without compaction", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-early-flush-"));
+    const storePath = path.join(tmp, "sessions.json");
+    const sessionKey = "agent:main:main";
+    const scope = { agentId: "main", sessionId: "session", sessionKey, storePath };
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 10_920,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      compactionCount: 0,
+    };
+    const prompt = "What is two plus two? Answer in one short sentence without tools.";
+    registerMemoryFlushPlanResolverForTest(({ cfg, contextWindowTokens }) => {
+      expect(cfg?.models?.providers?.anthropic?.models).toMatchObject([
+        { id: "claude-opus-4-6", contextTokens: 32_768 },
+      ]);
+      expect(contextWindowTokens).toBe(32_768);
+      return {
+        softThresholdTokens: 4_000,
+        reserveTokensFloor: 20_000,
+        forceFlushTranscriptBytes: 1_000_000_000,
+        prompt: "Pre-compaction memory flush.",
+        systemPrompt: "Write durable memory, then reply NO_REPLY.",
+        relativePath: "memory/active.md",
+      };
+    });
+    // The usage counters are from bounded QA metadata. This assembled prompt and
+    // transcript are synthetic; their estimates are not an observed second-turn budget.
+    const terminalEvent = (input: number, output: number) => ({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "NO_REPLY" }],
+        stopReason: "stop",
+        usage: { input, output, totalTokens: input + output },
+      },
+    });
+    runEmbeddedAgentMock.mockImplementation(
+      async (params: { trigger?: string; prompt?: string }) => {
+        if (params.trigger === "memory") {
+          await replaceTranscriptEvents(scope, [terminalEvent(7_039, 34)]);
+          return {
+            payloads: [],
+            meta: { agentMeta: { lastCallUsage: { input: 7_039, output: 34 } } },
+          };
+        }
+        expect(params.prompt).toContain(prompt);
+        return { payloads: [{ text: "Two plus two is four." }], meta: {} };
+      },
+    );
+    try {
+      await replaceSessionEntry(scope, sessionEntry);
+      await replaceTranscriptEvents(scope, [terminalEvent(10_920, 10)]);
+      // Store preparation can populate the shared test config snapshot.
+      clearRuntimeConfigSnapshot();
+      const result = await createBaseRun({
+        followup: { prompt },
+        run: {
+          agentId: "main",
+          agentDir: path.join(tmp, "agent"),
+          sessionKey,
+          sessionFile: path.join(tmp, "session.jsonl"),
+          workspaceDir: tmp,
+          model: "claude-opus-4-6",
+          config: {
+            models: {
+              providers: {
+                anthropic: {
+                  baseUrl: "https://example.test",
+                  models: [
+                    {
+                      id: "claude-opus-4-6",
+                      name: "Test model",
+                      contextTokens: 32_768,
+                      reasoning: false,
+                      input: ["text"],
+                      maxTokens: 8_192,
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        reply: {
+          commandBody: prompt,
+          sessionEntry,
+          sessionStore: { [sessionKey]: sessionEntry },
+          sessionKey,
+          storePath,
+        },
+      }).run();
+
+      expect(compactState.compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
+      expect(runtimeErrorMock).not.toHaveBeenCalled();
+      expect(runEmbeddedAgentMock.mock.calls.map(([params]) => params.trigger)).toEqual([
+        "memory",
+        "user",
+      ]);
+      expectReplyText(result, "Two plus two is four.");
+      expect(loadSessionEntry(scope)?.memoryFlush).toMatchObject({
+        kind: "succeeded",
+        compactionCount: 0,
+      });
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 
   it.each([
@@ -871,11 +979,11 @@ describe("runReplyAgent auto-compaction token update", () => {
         meta: { agentMeta: {} },
       });
       runWithModelFallbackMock.mockImplementationOnce(
-        async ({ provider, model, run }: RunWithModelFallbackParams) => {
-          const result = await run(provider, model);
+        async (params: RunWithModelFallbackParams) => {
+          const result = await runInitialModelFallbackAttempt(params);
           markCandidateSettled();
           await fallbackRelease;
-          return { result, provider, model };
+          return { result, provider: params.provider, model: params.model };
         },
       );
       const baseRun = createBaseRun({
@@ -1350,22 +1458,20 @@ describe("runReplyAgent Active Memory inline debug", () => {
       "utf-8",
     );
 
-    runWithModelFallbackMock.mockImplementationOnce(
-      async ({ run }: RunWithModelFallbackParams) => ({
-        result: await run("anthropic", "claude"),
-        provider: "anthropic",
-        model: "claude",
-        attempts: [
-          {
-            provider: "openai",
-            model: "gpt-5.5",
-            error: "LLM request timed out.",
-            reason: "timeout",
-            status: 408,
-          },
-        ],
-      }),
-    );
+    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => ({
+      result: await runFallbackModelAttempt(params, "anthropic", "claude", "timeout"),
+      provider: "anthropic",
+      model: "claude",
+      attempts: [
+        {
+          provider: "openai",
+          model: "gpt-5.5",
+          error: "LLM request timed out.",
+          reason: "timeout",
+          status: 408,
+        },
+      ],
+    }));
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "Visible reply" }],
       meta: {
@@ -2111,13 +2217,11 @@ describe("runReplyAgent fallback reasoning tags", () => {
       payloads: [{ text: "ok" }],
       meta: {},
     });
-    runWithModelFallbackMock.mockImplementationOnce(
-      async ({ run }: RunWithModelFallbackParams) => ({
-        result: await run("google", "gemini-2.5-pro"),
-        provider: "google",
-        model: "gemini-2.5-pro",
-      }),
-    );
+    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => ({
+      result: await runFallbackModelAttempt(params, "google", "gemini-2.5-pro", "unknown"),
+      provider: "google",
+      model: "gemini-2.5-pro",
+    }));
 
     await createRun();
 
@@ -2143,8 +2247,8 @@ describe("runReplyAgent fallback reasoning tags", () => {
       }
       return { payloads: [{ text: "ok" }], meta: {} };
     });
-    runWithModelFallbackMock.mockImplementation(async ({ run }: RunWithModelFallbackParams) => ({
-      result: await run("google-gemini-cli", "gemini-3"),
+    runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => ({
+      result: await runFallbackModelAttempt(params, "google-gemini-cli", "gemini-3", "unknown"),
       provider: "google-gemini-cli",
       model: "gemini-3",
     }));
