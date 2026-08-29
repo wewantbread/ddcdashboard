@@ -50,16 +50,17 @@ async function readInlineTtsAudio(audioPath: string): Promise<string> {
   try {
     // Base64 expansion keeps the default audio cap below the 25 MiB Gateway
     // frame ceiling while leaving room for the response envelope.
-    let audio: Buffer;
+    let audio: Buffer | null = null;
     try {
       audio = await readFileDescriptorBounded(handle.fd, MAX_AUDIO_BYTES);
     } catch (error) {
-      if (error instanceof RangeError) {
-        // Keep filesystem implementation details out of the remote error envelope.
-        // eslint-disable-next-line preserve-caught-error
-        throw new Error(`TTS audio exceeds the ${MAX_AUDIO_BYTES} byte inline transfer limit.`);
+      if (!(error instanceof RangeError)) {
+        throw error;
       }
-      throw error;
+    }
+    if (audio === null) {
+      // Keep filesystem implementation details out of the remote error envelope.
+      throw new Error(`TTS audio exceeds the ${MAX_AUDIO_BYTES} byte inline transfer limit.`);
     }
     if (audio.length === 0) {
       throw new Error("TTS audio output is empty");
