@@ -15,14 +15,12 @@ import {
   type ReplyRunRegistry,
 } from "./reply-run-registry.contracts.js";
 import { resolveReplyMessageInjectionRejection } from "./reply-run-registry.message-injection.js";
-import {
-  createReplyOperation,
-  expireStaleReplyOperation,
-  forceClearReplyOperation,
-} from "./reply-run-registry.operation.js";
+import { createReplyOperation } from "./reply-run-registry.operation.js";
 import {
   clearReplyRunState,
   evictReplyOperationByOperation,
+  expireStaleReplyOperation,
+  forceClearReplyOperation,
   getAttachedBackend,
   isReplyOperationPreBackendPhase,
   isReplyRunCompacting,
@@ -124,7 +122,14 @@ export const replyRunRegistry: ReplyRunRegistry = {
   },
   resolveCurrentInterruptTarget(sessionKey) {
     const operation = this.get(sessionKey);
-    return operation ? { [replyRunInterruptTargetOperation]: operation } : undefined;
+    if (!operation) {
+      return undefined;
+    }
+    const runId = normalizeOptionalString(operation.runId);
+    return {
+      [replyRunInterruptTargetOperation]: operation,
+      ...(runId ? { runId } : {}),
+    };
   },
   abort(sessionKey) {
     const operation = this.get(sessionKey);
@@ -194,9 +199,10 @@ export const replyRunRegistry: ReplyRunRegistry = {
 export async function interruptReplyRunTarget(
   target: ReplyRunInterruptTarget,
   timeoutMs = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  reason: "user_abort" | "restart" = "user_abort",
 ): Promise<{ aborted: boolean; settled: boolean }> {
   const operation = target[replyRunInterruptTargetOperation];
-  const aborted = operation.abortByUser();
+  const aborted = reason === "restart" ? operation.abortForRestart() : operation.abortByUser();
   const settled = await waitForReplyOperationOwnerSettlement(operation, timeoutMs);
   return { aborted, settled };
 }

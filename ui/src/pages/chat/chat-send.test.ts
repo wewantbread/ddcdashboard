@@ -43,7 +43,7 @@ import {
   switchChatFastMode,
   switchChatThinkingLevel,
 } from "./chat-session.ts";
-import { patchChatSessionSettings } from "./chat-settings-patches.ts";
+import { patchChatSessionSettings, restartChatSessionTurn } from "./chat-settings-patches.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
 import {
@@ -524,7 +524,6 @@ describe("refreshChat", () => {
       effortAccess: { allowed: true, requiredScope: "operator.write" },
       permissionAccess: { allowed: true, requiredScope: "operator.write" },
       canSelectFull: true,
-      toastAnchor: document.createElement("div"),
       onModelSetup: vi.fn(),
     });
     render(controls.composerControls, container);
@@ -2079,6 +2078,49 @@ describe("handleSendChat", () => {
     expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(false);
     expect(host.chatMessage).toBe(queuedText);
     expect(host.chatQueue).toStrictEqual([]);
+  });
+
+  it("targets a rapid permission selection at the preceding restart successor", async () => {
+    const firstRestart = createDeferred<{
+      ok: true;
+      status: "started";
+      runId: string;
+      interruptedRunId: string;
+    }>();
+    const requests: unknown[] = [];
+    const host = makeChatHost({
+      requestHandlers: {
+        "sessions.restartTurn": (params: unknown) => {
+          requests.push(params);
+          return requests.length === 1
+            ? firstRestart.promise
+            : { ok: true, status: "started", runId: "run-after-second-selection" };
+        },
+      },
+    });
+    const restart = (runId: string, permissionMode: "workspace" | "full") =>
+      restartChatSessionTurn(host, {
+        sessionKey: host.sessionKey,
+        runId,
+        permissionMode,
+        idempotencyKey: `restart-${permissionMode}`,
+      });
+
+    const first = restart("run-before-selection", "workspace");
+    const second = restart("run-before-selection", "full");
+    await waitForFast(() => expect(requests).toHaveLength(1));
+    firstRestart.resolve({
+      ok: true,
+      status: "started",
+      runId: "run-after-first-selection",
+      interruptedRunId: "run-before-selection",
+    });
+    await Promise.all([first, second]);
+
+    expect(requests[1]).toMatchObject({
+      runId: "run-after-first-selection",
+      permissionMode: "full",
+    });
   });
 
   it("keeps a resolved model reconciliation inside the canonical settings queue", async () => {

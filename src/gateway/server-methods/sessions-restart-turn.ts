@@ -1,0 +1,178 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  ErrorCodes,
+  errorShape,
+  missingScopeErrorShape,
+  validateSessionsRestartTurnParams,
+  type SessionsRestartTurnResult,
+} from "../../../packages/gateway-protocol/src/index.js";
+import type { SessionPermissionMode } from "../../../packages/gateway-protocol/src/schema/sessions-row.js";
+import { TOOL_FAILURE_INSTRUCTION } from "../../agents/tool-outcome-instructions.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { PERMISSION_CHANGE_RESTART_SOURCE_TOOL } from "../../sessions/input-provenance.js";
+import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
+import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { handleTrustedInternalChatSend } from "./chat-send-handler.js";
+import { executeSessionPatch } from "./sessions-patch-engine.js";
+import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
+import { assertValidParams } from "./validation.js";
+
+function permissionModeLabel(mode: SessionPermissionMode | null): string {
+  switch (mode) {
+    case "read-only":
+      return "Read only";
+    case "guarded":
+      return "Guarded";
+    case "workspace":
+      return "Workspace";
+    case "full":
+      return "Full access";
+    default:
+      return "Default";
+  }
+}
+
+function permissionRestartRunId(interruptedRunId: string, idempotencyKey: string): string {
+  return `permission-restart:${interruptedRunId}:${idempotencyKey}`;
+}
+
+async function launchPermissionChangeRestart(params: {
+  agentId?: string;
+  client: GatewayRequestHandlerOptions["client"];
+  context: GatewayRequestHandlerOptions["context"];
+  idempotencyKey: string;
+  permissionMode: SessionPermissionMode | null;
+  req: GatewayRequestHandlerOptions["req"];
+  runId: string;
+  sessionKey: string;
+  sessionMutationAuthorization: GatewayRequestHandlerOptions["sessionMutationAuthorization"];
+}) {
+  let outcome:
+    | { ok: true; runId: string }
+    | { ok: false; error: ReturnType<typeof errorShape> }
+    | undefined;
+  let patchError: ReturnType<typeof errorShape> | undefined;
+  const mode = permissionModeLabel(params.permissionMode);
+  try {
+    await handleTrustedInternalChatSend(
+      {
+        req: params.req,
+        params: {
+          sessionKey: params.sessionKey,
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+          message: formatSystemTurnPrompt(
+            `Permissions changed to ${mode}. Continue the interrupted response from the existing transcript. ` +
+              `Treat interrupted or missing tool results as having an unknown outcome. ${TOOL_FAILURE_INSTRUCTION}`,
+          ),
+          idempotencyKey: permissionRestartRunId(params.runId, params.idempotencyKey),
+          deliver: false,
+          queueMode: "interrupt",
+          suppressCommandInterpretation: true,
+          systemInputProvenance: {
+            kind: "internal_system",
+            sourceSessionKey: params.sessionKey,
+            sourceTool: PERMISSION_CHANGE_RESTART_SOURCE_TOOL,
+          },
+        },
+        respond: (ok, payload, error) => {
+          const runId =
+            ok && isRecord(payload) && typeof payload.runId === "string"
+              ? payload.runId.trim()
+              : "";
+          outcome = runId
+            ? { ok: true, runId }
+            : {
+                ok: false,
+                error: error ?? errorShape(ErrorCodes.UNAVAILABLE, "Turn restart was not started."),
+              };
+        },
+        context: params.context,
+        client: params.client,
+        isWebchatConnect: () => false,
+      },
+      async () => {
+        const patched = await executeSessionPatch({
+          client: params.client,
+          context: params.context,
+          patch: {
+            key: params.sessionKey,
+            ...(params.agentId ? { agentId: params.agentId } : {}),
+            permissionMode: params.permissionMode,
+          },
+          sessionMutationAuthorization: params.sessionMutationAuthorization,
+        });
+        if (!patched.ok) {
+          patchError = patched.error;
+          return false;
+        }
+        return true;
+      },
+      { expectedInterruptRunId: params.runId },
+    );
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: errorShape(
+        ErrorCodes.UNAVAILABLE,
+        `Turn restart failed: ${formatErrorMessage(error)}`,
+      ),
+    };
+  }
+  return (
+    outcome ??
+    (patchError
+      ? { ok: false, error: patchError }
+      : {
+          ok: false,
+          error: errorShape(ErrorCodes.UNAVAILABLE, "Turn restart returned no outcome."),
+        })
+  );
+}
+
+export const sessionRestartTurnHandlers: GatewayRequestHandlers = {
+  "sessions.restartTurn": async ({
+    req,
+    params,
+    respond,
+    context,
+    client,
+    sessionMutationAuthorization,
+  }) => {
+    if (
+      !assertValidParams(params, validateSessionsRestartTurnParams, "sessions.restartTurn", respond)
+    ) {
+      return;
+    }
+    const scopes = Array.isArray(client?.connect.scopes) ? client.connect.scopes : [];
+    if (params.permissionMode === "full" && client !== null && !scopes.includes(ADMIN_SCOPE)) {
+      respond(
+        false,
+        undefined,
+        missingScopeErrorShape({ missingScope: ADMIN_SCOPE, requiredScopes: [ADMIN_SCOPE] }),
+      );
+      return;
+    }
+    const restarted = await launchPermissionChangeRestart({
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      client,
+      context,
+      idempotencyKey: params.idempotencyKey,
+      permissionMode: params.permissionMode,
+      req,
+      runId: params.runId,
+      sessionKey: params.key,
+      sessionMutationAuthorization,
+    });
+    if (!restarted.ok) {
+      respond(false, undefined, restarted.error);
+      return;
+    }
+    const result: SessionsRestartTurnResult = {
+      ok: true,
+      interruptedRunId: params.runId,
+      runId: restarted.runId,
+      status: "started",
+    };
+    respond(true, result, undefined);
+  },
+};

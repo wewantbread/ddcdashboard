@@ -1,5 +1,5 @@
-// Explicit schema exports keep public protocol changes reviewable.
 export * from "./schema/sessions-goal.js";
+export { ShutdownEventSchema, TickEventSchema } from "./schema/frames.js";
 export {
   isCloudWorkerPlacementState,
   ConnectParamsSchema,
@@ -257,6 +257,8 @@ export {
   SessionsCreateResultSchema,
   SessionsRecoverParamsSchema,
   SessionsRecoverResultSchema,
+  SessionsRestartTurnParamsSchema,
+  SessionsRestartTurnResultSchema,
   SessionsDispatchParamsSchema,
   SessionsDispatchResultSchema,
   SessionsReclaimParamsSchema,
@@ -667,8 +669,6 @@ export {
   ChatToolTitlesParamsSchema,
   ChatToolTitlesResultSchema,
   UpdateRunParamsSchema,
-  TickEventSchema,
-  ShutdownEventSchema,
   ProjectRecentSchema,
   ProjectsListParamsSchema,
   ProjectsListResultSchema,

@@ -24,7 +24,8 @@ type ChatCommandSettingsContext = {
   defaultAgentId?: string;
   agentId?: string;
 };
-type PendingPatchStore = WeakMap<SessionCapability, Map<string, Promise<boolean>>>;
+type PendingPatch = { ready: Promise<boolean>; successorRunId?: Promise<string | undefined> };
+type PendingPatchStore = WeakMap<SessionCapability, Map<string, PendingPatch>>;
 
 const pendingChatPickerPatches: PendingPatchStore = new WeakMap();
 
@@ -69,7 +70,7 @@ function getPendingPatch(
   host: ChatPickerPatchHost,
   sessionKey: string,
   agentId?: string,
-): Promise<boolean> | undefined {
+): PendingPatch | undefined {
   const patchKey = resolveChatPickerPatchKey(host, sessionKey, agentId);
   return store.get(host.sessions)?.get(patchKey);
 }
@@ -78,15 +79,15 @@ function trackLatestPatch(
   store: PendingPatchStore,
   host: ChatPickerPatchHost,
   sessionKey: string,
-  patchPromise: Promise<boolean>,
+  patch: PendingPatch,
   agentId?: string,
 ): void {
-  const pendingBySession = store.get(host.sessions) ?? new Map<string, Promise<boolean>>();
+  const pendingBySession = store.get(host.sessions) ?? new Map<string, PendingPatch>();
   store.set(host.sessions, pendingBySession);
   const patchKey = resolveChatPickerPatchKey(host, sessionKey, agentId);
-  pendingBySession.set(patchKey, patchPromise);
-  void patchPromise.finally(() => {
-    if (pendingBySession.get(patchKey) === patchPromise) {
+  pendingBySession.set(patchKey, patch);
+  void patch.ready.finally(() => {
+    if (pendingBySession.get(patchKey) === patch) {
       pendingBySession.delete(patchKey);
     }
   });
@@ -97,16 +98,16 @@ export function getPendingChatPickerPatch(
   sessionKey: string,
   agentId?: string,
 ): Promise<boolean> | undefined {
-  return getPendingPatch(pendingChatPickerPatches, host, sessionKey, agentId);
+  return getPendingPatch(pendingChatPickerPatches, host, sessionKey, agentId)?.ready;
 }
 
 function trackPendingChatSettingsPatch(
   host: ChatPickerPatchHost,
   sessionKey: string,
-  patchPromise: Promise<boolean>,
+  patch: PendingPatch,
   agentId?: string,
 ): void {
-  trackLatestPatch(pendingChatPickerPatches, host, sessionKey, patchPromise, agentId);
+  trackLatestPatch(pendingChatPickerPatches, host, sessionKey, patch, agentId);
 }
 
 export function patchChatSessionSettings(
@@ -137,11 +138,58 @@ export function patchChatSessionSettings(
   trackPendingChatSettingsPatch(
     host,
     sessionKey,
-    operation.then(
-      (result) => result !== null,
-      () => false,
-    ),
+    {
+      ready: operation.then(
+        (result) => result !== null,
+        () => false,
+      ),
+    },
     options.agentId,
+  );
+  return operation;
+}
+
+export function restartChatSessionTurn(
+  host: ChatPickerPatchHost,
+  params: {
+    sessionKey: string;
+    runId: string;
+    permissionMode: "read-only" | "guarded" | "workspace" | "full" | null;
+    agentId?: string;
+    idempotencyKey: string;
+  },
+) {
+  const previous = getPendingPatch(
+    pendingChatPickerPatches,
+    host,
+    params.sessionKey,
+    params.agentId,
+  );
+  const operation = (async () => {
+    await previous?.ready;
+    return await host.sessions.restartTurn({
+      key: params.sessionKey,
+      runId: (await previous?.successorRunId) ?? params.runId,
+      reason: "permission-change",
+      permissionMode: params.permissionMode,
+      idempotencyKey: params.idempotencyKey,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+    });
+  })();
+  trackPendingChatSettingsPatch(
+    host,
+    params.sessionKey,
+    {
+      ready: operation.then(
+        (result) => result !== null,
+        () => false,
+      ),
+      successorRunId: operation.then(
+        (result) => result?.runId,
+        () => undefined,
+      ),
+    },
+    params.agentId,
   );
   return operation;
 }

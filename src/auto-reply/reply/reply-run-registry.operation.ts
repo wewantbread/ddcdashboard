@@ -29,6 +29,7 @@ import {
   evictReplyOperationByOperation,
   expireReplyOperationByOperation,
   flushReplyOperationAfterClear,
+  forceClearReplyOperation,
   getAttachedBackend,
   isReplyOperationAbortable,
   isReplyOperationPreBackendPhase,
@@ -42,7 +43,6 @@ import {
   type ReplyRunAdmissionBarrier,
   runAfterReplyOperationClear,
   startReplyOperationSuccessorBarriers,
-  type ReplyOperationStaleExpiryOptions,
   updateFollowupAdmissionSessionId,
   updateSuccessorAdmissionSessionId,
   waitForReplyBarrierSettlement,
@@ -55,6 +55,7 @@ type ReplyOperationAbortCode = Extract<ReplyOperationResult, { kind: "aborted" }
 export function createReplyOperation(params: {
   sessionKey: string;
   sessionId: string;
+  runId?: string;
   turnKind?: ReplyTurnKind;
   resetTriggered: boolean;
   routeThreadId?: string | number;
@@ -225,6 +226,7 @@ export function createReplyOperation(params: {
     get sessionId() {
       return currentSessionId;
     },
+    runId: normalizeOptionalString(params.runId),
     turnKind: params.turnKind ?? "visible",
     lifecycleGeneration,
     get routeThreadId() {
@@ -721,21 +723,4 @@ export function createReplyOperation(params: {
   }
 
   return operation;
-}
-
-export function expireStaleReplyOperation(
-  operation: ReplyOperation,
-  reason: replyRunSettle.ReplyOperationStaleReason,
-  options?: ReplyOperationStaleExpiryOptions,
-): boolean {
-  return expireReplyOperationByOperation.get(operation)?.(reason, options) ?? false;
-}
-
-export function forceClearReplyOperation(operation: ReplyOperation, cause?: unknown): boolean {
-  if (replyRunState.activeRunsByKey.get(operation.key) !== operation) {
-    return false;
-  }
-  operation.fail("run_failed", cause);
-  operation.complete();
-  return true;
 }
