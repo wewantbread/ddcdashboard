@@ -2,12 +2,16 @@ import type { SessionsListParams } from "../../../packages/gateway-protocol/src/
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { readAgentRunIndexVersion } from "../../infra/agent-run-registry.js";
-import { readSessionIdentityMutationVersion } from "../../sessions/session-lifecycle-events.js";
+import {
+  readSessionIdentityMutationVersion,
+  readSessionLifecycleVersion,
+} from "../../sessions/session-lifecycle-events.js";
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import {
   readOpenClawAgentDatabaseRegistryToken,
   readOpenIncognitoAgentDatabaseGeneration,
 } from "../../state/openclaw-agent-db.js";
+import { readUserProfileVersion } from "../../state/user-profile-events.js";
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { readSessionAutomationVersion } from "../session-automation-index.js";
 import { readSessionLifecyclePersistenceVersion } from "../session-lifecycle-state.js";
@@ -26,9 +30,12 @@ type SessionListFence = {
   modelCatalogRevision: string;
   sessionAutomationVersion: number;
   sessionIdentityMutationVersion: number;
+  sessionLifecycleVersion: number;
+  userProfileVersion: number;
   sessionsMutationVersion: number;
   sessionTranscriptUpdateVersion: number;
   titleProjectionUnavailableVersion: number;
+  workerEnvironmentInventoryVersion: number;
   workerPlacementDiskSpaceVersion: number;
   workerPlacementRunnerAvailabilityVersion: number;
 };
@@ -87,11 +94,14 @@ function readSessionListFence(
     modelCatalogRevision: readSessionListModelCatalogFence(modelCatalog),
     sessionAutomationVersion: readSessionAutomationVersion(),
     sessionIdentityMutationVersion: readSessionIdentityMutationVersion(),
+    sessionLifecycleVersion: readSessionLifecycleVersion(),
+    userProfileVersion: readUserProfileVersion(),
     sessionsMutationVersion: readSessionsMutationVersion(context),
     // Rows embed transcript-derived previews/titles; a committed transcript
     // write without a session mutation must still invalidate reuse.
     sessionTranscriptUpdateVersion: readSessionTranscriptUpdateVersion(),
     titleProjectionUnavailableVersion: readSessionTitleProjectionUnavailableVersion(),
+    workerEnvironmentInventoryVersion: context.workerEnvironmentService?.inventoryVersion() ?? 0,
     workerPlacementDiskSpaceVersion: context.workerPlacementDiskSpaceReader?.version() ?? 0,
     workerPlacementRunnerAvailabilityVersion:
       context.workerPlacementRunnerAvailabilityReader?.version() ?? 0,
@@ -107,28 +117,16 @@ function matchesSessionListFence(value: SessionListFence, fence: SessionListFenc
     value.modelCatalogRevision === fence.modelCatalogRevision &&
     value.sessionAutomationVersion === fence.sessionAutomationVersion &&
     value.sessionIdentityMutationVersion === fence.sessionIdentityMutationVersion &&
+    value.sessionLifecycleVersion === fence.sessionLifecycleVersion &&
+    value.userProfileVersion === fence.userProfileVersion &&
     value.sessionsMutationVersion === fence.sessionsMutationVersion &&
     value.sessionTranscriptUpdateVersion === fence.sessionTranscriptUpdateVersion &&
     value.titleProjectionUnavailableVersion === fence.titleProjectionUnavailableVersion &&
+    value.workerEnvironmentInventoryVersion === fence.workerEnvironmentInventoryVersion &&
     value.workerPlacementDiskSpaceVersion === fence.workerPlacementDiskSpaceVersion &&
     value.workerPlacementRunnerAvailabilityVersion ===
       fence.workerPlacementRunnerAvailabilityVersion
   );
-}
-
-function sessionListVisibilityIdentity(
-  client: GatewayClient | null,
-  config: OpenClawConfig,
-): string {
-  if (isGatewayAdmin(client)) {
-    return "admin";
-  }
-  const profileId = gatewayClientSessionCreator(client)?.id;
-  if (!profileId) {
-    return "anonymous";
-  }
-  const sessionPolicy = operatorSessionCap(client, config);
-  return sessionPolicy ? `profile:${profileId}:sessions:${sessionPolicy}` : `profile:${profileId}`;
 }
 
 function sessionListWorkKey(
@@ -137,7 +135,9 @@ function sessionListWorkKey(
   config: OpenClawConfig,
 ): string {
   return JSON.stringify([
-    sessionListVisibilityIdentity(client, config),
+    // Admin visibility is global, but owner-first and involving-me rows remain viewer-specific.
+    gatewayClientSessionCreator(client)?.id ?? null,
+    isGatewayAdmin(client) ? "admin" : (operatorSessionCap(client, config) ?? null),
     Object.entries(params).toSorted(([left], [right]) => left.localeCompare(right)),
   ]);
 }

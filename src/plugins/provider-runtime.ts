@@ -41,7 +41,10 @@ import {
   type ProviderRuntimePluginHandle,
   wrapProviderStreamFn,
 } from "./provider-hook-runtime.js";
-import { resolveBundledProviderPolicySurface } from "./provider-public-artifacts.js";
+import {
+  resolveBundledProviderPolicySurface,
+  resolveProviderPolicySurface,
+} from "./provider-public-artifacts.js";
 import { matchesProviderPluginRef } from "./provider-registry-shared.js";
 import type { ProviderRuntimeModel } from "./provider-runtime-model.types.js";
 import {
@@ -458,23 +461,6 @@ export function normalizeProviderConfigWithPlugin(params: {
   const matchedPlugin = resolveProviderRuntimePlugin(params);
   const normalizedMatched = matchedPlugin?.normalizeConfig?.(params.context);
   return normalizedMatched && hasConfigChange(normalizedMatched) ? normalizedMatched : undefined;
-}
-
-export function applyProviderNativeStreamingUsageCompatWithPlugin(params: {
-  provider: string;
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  context: ProviderNormalizeConfigContext;
-  allowRuntimePluginLoad?: boolean;
-}): ModelProviderConfig | undefined {
-  if (params.allowRuntimePluginLoad === false) {
-    return undefined;
-  }
-  return (
-    resolveProviderRuntimePlugin(params)?.applyNativeStreamingUsageCompat?.(params.context) ??
-    undefined
-  );
 }
 
 export function resolveProviderConfigApiKeyWithPlugin(params: {
@@ -899,8 +885,17 @@ export function resolveProviderDeprecatedAuthProfileIds(params: {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
 }): readonly string[] {
+  const metadataSnapshot = getCurrentPluginMetadataSnapshot({
+    config: params.config,
+    env: params.env,
+    workspaceDir: params.workspaceDir,
+    allowScopedSnapshot: true,
+    allowWorkspaceScopedSnapshot: true,
+  });
   return (
-    resolveBundledProviderPolicySurface(params.provider)?.deprecatedProfileIds ??
+    resolveProviderPolicySurface(params.provider, {
+      manifestRegistry: metadataSnapshot?.manifestRegistry,
+    })?.deprecatedProfileIds ??
     resolveLoadedProviderRuntimePlugin(params)?.deprecatedProfileIds ??
     []
   );

@@ -150,6 +150,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
                   admission: turn.turnAdoptionLifecycle.admission ?? "exclusive",
                   onAdopted: turn.turnAdoptionLifecycle.onAdopted,
                   onDeferred: turn.turnAdoptionLifecycle.onDeferred,
+                  onDeferredHeartbeat: turn.turnAdoptionLifecycle.onDeferredHeartbeat,
                   onAbandoned: turn.turnAdoptionLifecycle.onAbandoned,
                   abortSignal: turn.turnAdoptionLifecycle.abortSignal,
                 }
@@ -267,6 +268,12 @@ export async function runTelegramDispatchTurn(turn: Turn) {
               turn.streamMode === "progress" ? turn.commentaryProgressEnabled : undefined,
             progressPreambleEnabled: turn.progressPreambleEnabled,
             commentaryPayloadsEnabled: turn.progressPreambleEnabled,
+            // Read the current getter after core freezes visibility so draft
+            // and durable commentary cannot both own the same preamble.
+            shouldDeliverCommentaryPayloads:
+              turn.streamMode === "progress" && turn.commentaryProgressEnabled
+                ? () => turn.verboseProgressActive()
+                : undefined,
             reasoningPayloadsEnabled: turn.durableReasoningPayloadsEnabled,
             onToolStart: (payload) => handleToolStart(turn, payload),
             onItemEvent: (payload) => handleItemEvent(turn, payload),

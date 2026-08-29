@@ -8,6 +8,45 @@ import { contextWith, deferred, renderControl } from "./model-control.test-suppo
 import { NewSessionModelControl } from "./model-control.ts";
 
 describe("new-session model metadata lifecycle", () => {
+  it("discovers account models when an operator opens the New Session picker", async () => {
+    const prepared = [{ id: "prepared", name: "Prepared", provider: "openai" }];
+    const discovered = [
+      ...prepared,
+      { id: "discovered", name: "Discovered", provider: "openai", contextWindow: 262_144 },
+    ];
+    const { context, request } = contextWith(prepared);
+    const client = context.gateway.snapshot.client!;
+    rememberChatMetadata(client, "main", { commands: [], models: prepared });
+    request.mockImplementation((method: string) =>
+      Promise.resolve({
+        models: discovered,
+        ...(method === "chat.metadata" ? { commands: [] } : {}),
+      }),
+    );
+    const control = new NewSessionModelControl(() => undefined);
+    control.load(context, "main", true);
+
+    const picker = renderControl(control, context).querySelector<HTMLDetailsElement>(
+      ".chat-controls__model-picker",
+    );
+    picker!.open = true;
+    picker!.dispatchEvent(new Event("toggle"));
+
+    await vi.waitFor(() => {
+      const container = renderControl(control, context);
+      expect(container.querySelector('[data-chat-model-option="openai/prepared"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-chat-model-option="openai/discovered"]'),
+      ).not.toBeNull();
+    });
+    expect(request).toHaveBeenCalledWith("models.list", {
+      view: "configured",
+      agentId: "main",
+      refresh: true,
+    });
+    expect(request).toHaveBeenCalledWith("chat.metadata", { agentId: "main" });
+  });
+
   it("keeps a ready catalog authoritative across control teardown", async () => {
     const models: ModelCatalogEntry[] = [
       {
@@ -15,13 +54,14 @@ describe("new-session model metadata lifecycle", () => {
         name: "GPT-5.6 Luna",
         provider: "openai",
         available: false,
+        unavailableReason: "missing-auth",
       },
     ];
     const agent = { id: "main", model: { primary: "openai/gpt-5.6-luna" } };
     const { context, request } = contextWith(models);
     const firstControl = new NewSessionModelControl(() => undefined);
     firstControl.load(context, "main", true, { agent });
-    await vi.waitFor(() => expect(firstControl.isModelUnavailable(agent)).toBe(true));
+    await vi.waitFor(() => expect(firstControl.modelUnavailableReason(agent)).toBe("missing-auth"));
     firstControl.reset();
 
     const remountedControl = new NewSessionModelControl(() => undefined);
@@ -29,13 +69,11 @@ describe("new-session model metadata lifecycle", () => {
 
     const container = renderControl(remountedControl, context, "main", agent);
     expect(container.querySelector('[data-chat-model-catalog-state="ready"]')).not.toBeNull();
-    expect(remountedControl.isModelUnavailable(agent)).toBe(true);
+    expect(remountedControl.modelUnavailableReason(agent)).toBe("missing-auth");
     expect(
       container.querySelector('[data-chat-model-option="openai/gpt-5.6-luna"]'),
     ).not.toBeNull();
-    expect(container.textContent).toContain(
-      "Authentication failed. Review the provider credential or sign-in, then retry.",
-    );
+    expect(container.textContent).toContain("No models available");
     expect(request).toHaveBeenCalledOnce();
   });
 

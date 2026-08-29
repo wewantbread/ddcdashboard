@@ -90,6 +90,7 @@ function invalid(message: string): { ok: false; error: ErrorShape } {
 
 export function resolveSessionPatchModelSelection(params: {
   cfg: OpenClawConfig;
+  agentId: string;
   catalog: ModelCatalogEntry[];
   raw: string;
   defaultProvider: string;
@@ -101,6 +102,7 @@ export function resolveSessionPatchModelSelection(params: {
   const { model: modelWithoutProfile, profile } = splitTrailingAuthProfile(params.raw);
   const resolved = resolveAllowedModelRef({
     cfg: params.cfg,
+    agentId: params.agentId,
     catalog: params.catalog,
     raw: modelWithoutProfile,
     defaultProvider: params.defaultProvider,
@@ -175,6 +177,8 @@ export async function projectSessionsPatchEntry(params: {
   storeKey: string;
   agentId?: string;
   patch: SessionsPatchParams;
+  /** Canonical root prepared by the trusted create path; never accepted from public patches. */
+  preparedSessionRoot?: string;
   archivedBy?: SessionCreatedActor;
   loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
   providerAuthMetadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
@@ -237,14 +241,10 @@ export async function projectSessionsPatchEntry(params: {
   };
   let loadedModelCatalog: ModelCatalogEntry[] | undefined;
   const loadPreparedModelCatalogForPatch = async () => {
-    if (loadedModelCatalog) {
-      return loadedModelCatalog;
+    if (!loadedModelCatalog && params.loadGatewayModelCatalog) {
+      const catalog = await params.loadGatewayModelCatalog();
+      loadedModelCatalog = Array.isArray(catalog) ? catalog : [];
     }
-    if (!params.loadGatewayModelCatalog) {
-      return undefined;
-    }
-    const catalog = await params.loadGatewayModelCatalog();
-    loadedModelCatalog = Array.isArray(catalog) ? catalog : [];
     return loadedModelCatalog;
   };
 
@@ -255,6 +255,7 @@ export async function projectSessionsPatchEntry(params: {
     ...existing,
     sessionId: existing?.sessionId || randomUUID(),
     updatedAt: Math.max(existing?.updatedAt ?? 0, now),
+    ...(params.preparedSessionRoot ? { sessionRoot: params.preparedSessionRoot } : {}),
     // Stamp only genuinely new rows; existing placeholder aliases must not be restamped.
     ...(creation && params.existingEntry === undefined ? buildSessionCreationStamp(creation) : {}),
   };
@@ -395,7 +396,9 @@ export async function projectSessionsPatchEntry(params: {
 
   if ("unread" in patch) {
     if (patch.unread === true) {
-      next.markedUnreadAt = now;
+      // This timestamp is also the conditional-ack revision. Repeated writes in
+      // one clock tick must still represent distinct manual unread intent.
+      next.markedUnreadAt = Math.max(now, (params.existingEntry?.markedUnreadAt ?? 0) + 1);
     } else {
       next.lastReadAt = now;
       delete next.markedUnreadAt;
@@ -606,15 +609,6 @@ export async function projectSessionsPatchEntry(params: {
       if (!trimmed) {
         return invalid("invalid model: empty");
       }
-      if (!params.loadGatewayModelCatalog) {
-        return {
-          ok: false,
-          error: errorShape(
-            ErrorCodes.UNAVAILABLE,
-            "model catalog is still loading; retry in a few seconds",
-          ),
-        };
-      }
       const catalog = await loadPreparedModelCatalogForPatch();
       if (!catalog) {
         return {
@@ -627,6 +621,7 @@ export async function projectSessionsPatchEntry(params: {
       }
       const resolved = resolveSessionPatchModelSelection({
         cfg,
+        agentId: sessionAgentId,
         catalog,
         raw: trimmed,
         defaultProvider: resolvedDefault.provider,
@@ -746,6 +741,12 @@ export async function projectSessionsPatchEntry(params: {
       }
       next.groupActivation = normalized;
     }
+  }
+
+  // Fresh rows and placeholder aliases have no running model to replace. Model
+  // and context-window initialization must not queue a switch on their first turn.
+  if (!existing?.sessionId) {
+    delete next.liveModelSwitchPending;
   }
 
   return { ok: true, entry: next };
