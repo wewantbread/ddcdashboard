@@ -109,26 +109,55 @@ describe("async logger file transport", () => {
     ]);
   });
 
-  it("continues with later records after one append fails", async () => {
+  it("reports each append failure streak while continuing records", async () => {
     const logPath = logPathTracker.nextPath();
     let appendAttempts = 0;
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true as unknown as ReturnType<typeof process.stderr.write>);
     testApi.setFileLogAppenderForTests(async (options) => {
       appendAttempts += 1;
-      if (appendAttempts === 1) {
+      if (appendAttempts !== 3) {
         throw new Error("injected append failure");
       }
       await appendRegularFile(options);
     });
     setLoggerOverride({ level: "info", file: logPath });
 
-    getLogger().info("dropped-on-write-failure");
-    getLogger().info("written-after-failure");
+    getLogger().info("dropped-on-first-failure");
+    getLogger().info("dropped-on-repeated-failure");
+    getLogger().info("written-after-recovery");
+    getLogger().info("dropped-after-recovery");
     await testApi.flushFileLogQueueForTests();
 
     const content = fs.readFileSync(logPath, "utf8");
-    expect(appendAttempts).toBe(2);
-    expect(content).not.toContain("dropped-on-write-failure");
-    expect(content).toContain("written-after-failure");
+    expect(appendAttempts).toBe(4);
+    expect(stderrSpy).toHaveBeenCalledTimes(2);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("log file append failed; record dropped"),
+    );
+    expect(content).not.toContain("dropped-on-first-failure");
+    expect(content).not.toContain("dropped-on-repeated-failure");
+    expect(content).toContain("written-after-recovery");
+    expect(content).not.toContain("dropped-after-recovery");
+  });
+
+  it("reports repeated synchronous append failures once", () => {
+    const logPath = logPathTracker.nextPath();
+    fs.mkdirSync(logPath);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true as unknown as ReturnType<typeof process.stderr.write>);
+    setLoggerOverride({ level: "info", file: logPath });
+
+    getLogger().info("first-unwritable-record");
+    getLogger().info("second-unwritable-record");
+    testApi.drainFileLogQueueSyncForTests();
+
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("log file append failed; record dropped"),
+    );
   });
 
   it("synchronously drains a crash-adjacent fatal record through the exit-hook seam", () => {

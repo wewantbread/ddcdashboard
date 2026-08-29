@@ -39,6 +39,7 @@ let processExiting = false;
 let processHooksInstalled = false;
 let appendFile: FileLogAppender = appendRegularFile;
 const warnedRotationFiles = new Map<string, number>();
+let warnedAppendFile: string | null = null;
 
 function rotatedLogPath(file: string, index: number): string {
   const ext = path.extname(file);
@@ -116,6 +117,19 @@ function warnAboutRotationFailure(entry: FileLogQueueEntry): void {
   }
 }
 
+function warnAboutAppendFailure(entry: FileLogQueueEntry): void {
+  if (warnedAppendFile === entry.file) {
+    return;
+  }
+  warnedAppendFile = entry.file;
+  const message = `[openclaw] log file append failed; record dropped; continuing file=${entry.file}`;
+  try {
+    process.stderr.write(`${formatConsoleDiagnosticLine({ level: "warn", message })}\n`);
+  } catch {
+    // Logging diagnostics must not stop the file queue.
+  }
+}
+
 function claimQueuedEntries(): FileLogQueueEntry[] {
   const entries =
     queueStart === 0 ? queue : [...queue.slice(queueStart), ...queue.slice(0, queueStart)];
@@ -167,8 +181,12 @@ async function writeEntries(entries: FileLogQueueEntry[], generation: number): P
     try {
       await appendFile({ filePath: entry.file, content: entry.payload });
       cursor.bytes += payloadBytes;
+      if (warnedAppendFile === entry.file) {
+        warnedAppendFile = null;
+      }
     } catch {
       // Match the old best-effort transport: a failed append must not stop later records.
+      warnAboutAppendFailure(entry);
     } finally {
       activeAppendInFlight = false;
     }
@@ -195,8 +213,12 @@ function writeEntriesSync(entries: FileLogQueueEntry[]): void {
     try {
       appendRegularFileSync({ filePath: entry.file, content: entry.payload });
       cursor.bytes += payloadBytes;
+      if (warnedAppendFile === entry.file) {
+        warnedAppendFile = null;
+      }
     } catch {
       // Match the old best-effort transport: a failed append must not stop later records.
+      warnAboutAppendFailure(entry);
     }
     index += 1;
   }
@@ -354,6 +376,7 @@ function resetFileLogTransportForTests(): void {
   appendFile = appendRegularFile;
   maxQueuedRecords = DEFAULT_MAX_QUEUED_RECORDS;
   warnedRotationFiles.clear();
+  warnedAppendFile = null;
 }
 
 export const fileLogTransport = {
