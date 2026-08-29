@@ -53,6 +53,7 @@ const target = {
 };
 const gatewayDispatch = vi.hoisted(() => vi.fn());
 const gatewayCreate = vi.hoisted(() => vi.fn());
+const sessionStore = vi.hoisted(() => ({ entry: undefined as object | undefined }));
 const sendOwner = vi.hoisted(() => ({
   callGateway: undefined as undefined | ((request: object) => Promise<unknown>),
   execute: vi.fn(),
@@ -78,7 +79,10 @@ vi.mock("../../agents/tools/in-process-gateway.js", () => ({
   withAgentToolGatewayRuntimeIdentity: (request: object) => request,
 }));
 vi.mock("../session-utils.js", () => ({
-  loadGatewaySessionEntryReadOnly: (key: string) => ({ canonicalKey: key, entry: undefined }),
+  loadGatewaySessionEntryReadOnly: (key: string) => ({
+    canonicalKey: key,
+    entry: sessionStore.entry,
+  }),
 }));
 vi.mock("./placement-turn-claim-events.js", () => ({
   getWorkerTurnExecutionIdentityCapability: () => ({ run: fixture.run }),
@@ -96,6 +100,7 @@ beforeEach(() => {
   fixture.run.mockClear();
   gatewayCreate.mockReset();
   gatewayDispatch.mockReset();
+  sessionStore.entry = undefined;
   sendOwner.callGateway = undefined;
   sendOwner.execute.mockReset();
 });
@@ -254,4 +259,88 @@ it("fences child creation when delegated authority closes before commit", async 
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(gatewayCreate).toHaveBeenCalledOnce();
   expect(abandonOperation).not.toHaveBeenCalled();
+});
+
+it("fences existing-child provisioning when delegated authority closes", async () => {
+  const beforeToolCall = vi.fn(() => getGatewayToolCallerIdentity()?.receiptAuthority?.());
+  initializeGlobalHookRunner(
+    createMockPluginRegistry([
+      { hookName: "before_tool_call", matcher: ["sessions_spawn"], handler: beforeToolCall },
+    ]),
+  );
+  const childSessionKey = "agent:main:dashboard:existing-child";
+  const childSessionId = "existing-child-session";
+  sessionStore.entry = {
+    sessionId: childSessionId,
+    parentSessionKey: source.sessionKey,
+    parentSessionId: source.sessionId,
+  };
+  let unknownOperation = false;
+  const abandonOperation = vi.fn(() => {
+    unknownOperation = true;
+    return true;
+  });
+  const placements = {
+    beginWorkerSessionToolOperation: () =>
+      unknownOperation
+        ? { kind: "unknown" }
+        : { kind: "execute", operationSeed: "existing-child-seed", childSessionKey },
+    abandonWorkerSessionToolOperation: abandonOperation,
+    get: () => undefined,
+    isWorkerTurnToolAuthorized: () => true,
+  };
+  let finishDispatch: (() => void) | undefined;
+  let provisioned = 0;
+  const dispatchChild = vi.fn(
+    async (_request, _onTransition, authorize: (() => void) | undefined) =>
+      await new Promise<never>((_resolve, reject) => {
+        finishDispatch = () => {
+          try {
+            authorize?.();
+            provisioned += 1;
+            reject(new Error("revoked dispatch authorization unexpectedly passed"));
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error("dispatch authorization failed"));
+          }
+        };
+      }),
+  );
+  const execute = createWorkerSessionToolExecutor({
+    placements,
+    resolveGatewayContext: () => undefined,
+    environments: {
+      get: () => ({
+        state: "attached",
+        ownerEpoch: fixture.claim.owner.ownerEpoch,
+        attachedSessionIds: [fixture.claim.sessionId],
+      }),
+    },
+    dispatchChild,
+    githubPublication: {},
+    portals: {},
+  } as never);
+  const request = {
+    identity: {
+      environmentId: fixture.claim.owner.environmentId,
+      ownerEpoch: fixture.claim.owner.ownerEpoch,
+      runId: fixture.claim.runId,
+      sessionId: fixture.claim.sessionId,
+      turnClaim: fixture.claim,
+    },
+    toolName: "sessions_spawn",
+    request: { toolCallId: "existing-child-authority-closed", task: "must not provision" },
+  };
+
+  const pending = execute(request as never);
+  await vi.waitFor(() => expect(dispatchChild).toHaveBeenCalledOnce());
+  fixture.state.active = false;
+  finishDispatch?.();
+  await expect(pending).rejects.toThrow("worker turn authority changed");
+  const replay = await execute(request as never);
+
+  expect(replay.resultJson).toContain("prior operation outcome is unknown");
+  expect(beforeToolCall).toHaveBeenCalledOnce();
+  expect(abandonOperation).toHaveBeenCalledOnce();
+  expect(dispatchChild).toHaveBeenCalledOnce();
+  expect(provisioned).toBe(0);
 });

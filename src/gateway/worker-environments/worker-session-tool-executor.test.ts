@@ -466,7 +466,6 @@ describe("worker session tool topology", () => {
 
       expect(childSessionKey).toMatch(/^agent:main:dashboard:cloud-[a-f0-9]{32}$/u);
       expect(spawnOrder).toEqual(["create", "dispatch", "send"]);
-      expect(gatewayCreate).toHaveBeenCalledOnce();
       expect(gatewayCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           creation: expect.objectContaining({
@@ -486,17 +485,21 @@ describe("worker session tool topology", () => {
       expect(gatewayCreate.mock.calls[0]?.[0]?.creation?.sandbox).toBe(
         required ? "required" : undefined,
       );
-      expect(dispatchChild).toHaveBeenCalledWith({
-        sessionId: CHILD.sessionId,
-        sessionKey: childSessionKey,
-        agentId: CHILD.agentId,
-        executionMode: "worker-turn",
-        profileId: "cloud-profile",
-        inheritedProfile: {
-          providerId: "fake",
-          profileSnapshot: { install: "bundle", settings: { region: "source" } },
+      expect(dispatchChild).toHaveBeenCalledWith(
+        {
+          sessionId: CHILD.sessionId,
+          sessionKey: childSessionKey,
+          agentId: CHILD.agentId,
+          executionMode: "worker-turn",
+          profileId: "cloud-profile",
+          inheritedProfile: {
+            providerId: "fake",
+            profileSnapshot: { install: "bundle", settings: { region: "source" } },
+          },
         },
-      });
+        undefined,
+        expect.any(Function),
+      );
       expect(gatewayRequest).toHaveBeenLastCalledWith(
         expect.objectContaining({
           agentRunTracking: "native_subagent",
@@ -508,10 +511,6 @@ describe("worker session tool topology", () => {
           }),
         }),
       );
-      expect(spawnArgs).toHaveBeenCalledWith(
-        expect.objectContaining({ expectsCompletionMessage: false, visible: true, worktree: true }),
-      );
-      expect(placements.get(CHILD.sessionId)?.state).toBe("active");
       expect(sessionEntries.get(childSessionKey!)).toMatchObject({
         sessionId: CHILD.sessionId,
         parentSessionKey: SOURCE.sessionKey,

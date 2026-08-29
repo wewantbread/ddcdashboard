@@ -98,6 +98,10 @@ export function createWorkerSessionToolExecutor(params: {
       operation.source.turnClaim,
     );
     const workerIdentity = operation.workerIdentity;
+    const assertSourceAuthority = () => {
+      workerIdentity?.receiptAuthority();
+      exactSource({ identity: operation.identity, placements: params.placements });
+    };
     const gatewayCall: InProcessGatewayCaller = async <T = Record<string, unknown>>(
       method: string,
       requestParams: Record<string, unknown>,
@@ -155,10 +159,7 @@ export function createWorkerSessionToolExecutor(params: {
             },
             {
               resolveGatewayContext: params.resolveGatewayContext,
-              sessionMutationCommitGuard: () => {
-                workerIdentity?.receiptAuthority();
-                exactSource({ identity: operation.identity, placements: params.placements });
-              },
+              sessionMutationCommitGuard: assertSourceAuthority,
               ...(operation.signal ? { signal: operation.signal } : {}),
               timeoutMs: null,
             },
@@ -221,20 +222,24 @@ export function createWorkerSessionToolExecutor(params: {
         };
         const childPlacement = params.placements.get(childSessionId);
         operation.signal?.throwIfAborted();
-        exactSource({ identity: operation.identity, placements: params.placements });
+        assertSourceAuthority();
         if (childPlacement?.state !== "active") {
           try {
-            await params.dispatchChild({
-              sessionId: childSessionId,
-              sessionKey: operation.childSessionKey,
-              agentId: targetAgentId,
-              profileId: sourceEnvironment.profileId,
-              executionMode: "worker-turn",
-              inheritedProfile: {
-                providerId: sourceEnvironment.providerId,
-                profileSnapshot: sourceEnvironment.profileSnapshot,
+            await params.dispatchChild(
+              {
+                sessionId: childSessionId,
+                sessionKey: operation.childSessionKey,
+                agentId: targetAgentId,
+                profileId: sourceEnvironment.profileId,
+                executionMode: "worker-turn",
+                inheritedProfile: {
+                  providerId: sourceEnvironment.providerId,
+                  profileSnapshot: sourceEnvironment.profileSnapshot,
+                },
               },
-            });
+              undefined,
+              assertSourceAuthority,
+            );
           } catch (error) {
             try {
               assertActiveChildPlacement();
