@@ -74,6 +74,32 @@ describe("buildModelProviderCards", () => {
     });
   });
 
+  it("keeps a ready profile from being overridden by a rejected sibling profile", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      models: [catalogEntry({ provider: "openai", available: true })],
+      providerOutcomes: [
+        { provider: "openai", profileId: "openai:rejected", status: "auth-rejected" },
+        { provider: "openai", profileId: "openai:ready", status: "ready" },
+      ],
+    });
+
+    expect(firstCard(cards).catalogStatus).toBe("ready");
+  });
+
+  it("keeps provider-wide catalog failures authoritative over profile outcomes", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      models: [catalogEntry({ provider: "openai", available: true })],
+      providerOutcomes: [
+        { provider: "openai", status: "auth-rejected" },
+        { provider: "openai", profileId: "openai:ready", status: "ready" },
+      ],
+    });
+
+    expect(firstCard(cards).catalogStatus).toBe("auth-rejected");
+  });
+
   it("propagates explicit API-key capability onto provider cards", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,
