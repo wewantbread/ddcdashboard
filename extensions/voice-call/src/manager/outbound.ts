@@ -211,7 +211,17 @@ export async function initiateCall(
   };
 
   ctx.activeCalls.set(callId, callRecord);
-  persistCallRecord(ctx.storePath, callRecord);
+  try {
+    persistCallRecord(ctx.storePath, callRecord);
+  } catch (err) {
+    // Pre-provider persistence is best-effort durability: activeCalls owns the
+    // concurrency slot here, and the finalize path below records terminal state
+    // once storage recovers. Letting this throw would strand a phantom call
+    // that neither endCall nor the stale-call reaper can clear (#129473).
+    console.warn(
+      `[voice-call] Failed to persist outbound call ${callId} before initiation: ${formatErrorMessage(err)}`,
+    );
+  }
 
   try {
     // For notify mode with a message, use inline TwiML with <Say>.

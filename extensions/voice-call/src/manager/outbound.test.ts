@@ -351,6 +351,30 @@ describe("voice-call outbound helpers", () => {
     expect(ctx.activeCalls.size).toBe(0);
   });
 
+  it("keeps initiating when pre-provider persistence throws", async () => {
+    const initiateProviderCall = vi.fn(async () => ({ providerCallId: "provider-1" }));
+    const ctx = {
+      activeCalls: new Map(),
+      providerCallIdMap: new Map(),
+      provider: { name: "twilio", initiateCall: initiateProviderCall },
+      config: {
+        maxConcurrentCalls: 1,
+        outbound: { defaultMode: "conversation" },
+        fromNumber: "+14155550100",
+      },
+      storePath: "/tmp/voice-call.json",
+      webhookUrl: "https://example.com/webhook",
+    };
+    persistCallRecordMock.mockRejectedValueOnce(new Error("store down"));
+
+    const result = await initiateCall(ctx as never, "+14155550123");
+
+    expect(result.success).toBe(true);
+    expect(result.callId).not.toBe("");
+    expect(initiateProviderCall).toHaveBeenCalledOnce();
+    expect(ctx.activeCalls.size).toBe(1);
+  });
+
   it("speaks through connected calls and rolls back to listening on provider errors", async () => {
     const call = { callId: "call-1", providerCallId: "provider-1", state: "active" };
     const playTts = vi.fn(async () => {});
