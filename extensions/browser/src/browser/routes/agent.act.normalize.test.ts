@@ -180,6 +180,29 @@ describe("normalizeActRequest numeric fields", () => {
   });
 });
 
+describe("normalizeActRequest fill fields", () => {
+  it("reports the offending index when a later field entry is invalid", () => {
+    expect(() =>
+      normalizeActRequest({
+        kind: "fill",
+        fields: [
+          { ref: "e1", value: "Ada" },
+          { ref: "e2", text: "Neo" },
+        ],
+      }),
+    ).toThrow('fields[1] unsupported field key "text"');
+  });
+
+  it("validates fill fields inside batch sub-actions", () => {
+    expect(() =>
+      normalizeActRequest({
+        kind: "batch",
+        actions: [{ kind: "fill", fields: [{ ref: "e1", text: "Neo" }] }],
+      }),
+    ).toThrow('fields[0] unsupported field key "text"');
+  });
+});
+
 describe("normalizeActRequest batch nesting depth", () => {
   const buildNestedBatch = (depth: number): Record<string, unknown> => {
     let action: Record<string, unknown> = { kind: "click", ref: "1" };

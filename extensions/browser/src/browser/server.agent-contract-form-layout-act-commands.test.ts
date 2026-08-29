@@ -262,6 +262,20 @@ describe("browser control server", () => {
         );
       }
 
+      const fillCallsAfterHappyPath = requirePwMock("fillFormViaPlaywright").mock.calls.length;
+      const fillUnsupportedKey = await postJson<{ error?: string; code?: string }>(`${base}/act`, {
+        kind: "fill",
+        fields: [
+          { ref: "e1", value: "must-not-dispatch" },
+          { ref: "e2", text: "Neo" },
+        ],
+      });
+      expect(fillUnsupportedKey.code).toBe("ACT_INVALID_REQUEST");
+      expect(fillUnsupportedKey.error).toContain('fields[1] unsupported field key "text"');
+      expect(requirePwMock("fillFormViaPlaywright").mock.calls.length).toBe(
+        fillCallsAfterHappyPath,
+      );
+
       const resize = await postJson<{ ok: boolean }>(`${base}/act`, {
         kind: "resize",
         width: 800,

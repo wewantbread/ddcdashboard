@@ -96,7 +96,4 @@ export {
   installBrowserCommonMiddleware,
 } from "./browser/server-middleware.js";
 export type { BrowserFormField } from "./browser/client-actions-core.js";
-export {
-  normalizeBrowserFormField,
-  normalizeBrowserFormFieldValue,
-} from "./browser/form-fields.js";
+export { normalizeBrowserFormFields } from "./browser/form-fields.js";
