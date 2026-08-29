@@ -1009,6 +1009,11 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
   vi.doMock("../model-auth.js", () => ({
     applyAuthHeaderOverride: vi.fn((model: unknown) => model),
     applyLocalNoAuthHeaderOverride: vi.fn((model: unknown) => model),
+    createRuntimeProviderAuthLookup: vi.fn(() => ({
+      envApiKey: { skipSetupProviderFallback: true },
+      syntheticAuthProviderRefs: [],
+      syntheticAuthProviderRefsComplete: true,
+    })),
     ensureAuthProfileStore: mockedEnsureAuthProfileStore,
     ensureAuthProfileStoreWithoutExternalProfiles:
       mockedEnsureAuthProfileStoreWithoutExternalProfiles,
