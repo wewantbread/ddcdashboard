@@ -66,6 +66,7 @@ import {
 import { withIMessageRemoteFile } from "./remote-file.js";
 import { resolveIMessageRemoteHost } from "./remote-host.js";
 import {
+  assertDeliverableIMessageHandle,
   formatIMessageChatTarget,
   type IMessageService,
   normalizeIMessageHandle,
@@ -842,6 +843,9 @@ export async function sendMessageIMessage(
     opts.service ??
     resolveTargetService(target) ??
     (account.config.service as IMessageService | undefined);
+  // The bare-numeric verdict needs the effective service: a short code is a
+  // legitimate SMS target, so only reject it once "sms" failed to win.
+  assertDeliverableIMessageHandle({ target, service });
   const sendTransport = (account.config.sendTransport ?? "auto") as IMessageSendTransport;
   const resolvedReplyToId = resolveAuthorizedIMessageReplyReference({
     account,
