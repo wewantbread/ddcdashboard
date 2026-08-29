@@ -262,6 +262,78 @@ describe("firecrawl tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("clamps hosted scrape timeouts to the Firecrawl API maximum", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        success: true,
+        data: {
+          markdown: "clamped",
+          metadata: {
+            sourceURL: "https://example.com/firecrawl-timeout-clamp",
+            statusCode: 200,
+          },
+        },
+      }),
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    await runActualFirecrawlScrape({
+      cfg: {
+        plugins: {
+          entries: {
+            firecrawl: { config: { webFetch: { apiKey: "k", timeoutSeconds: 600 } } },
+          },
+        },
+      } as OpenClawConfig,
+      url: "https://example.com/firecrawl-timeout-clamp",
+      extractMode: "markdown",
+    });
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const rawBody = requestInit?.body;
+    expect(typeof rawBody).toBe("string");
+    const body = JSON.parse(rawBody as string) as { timeout?: number };
+    expect(body.timeout).toBe(300_000);
+  });
+
+  it("keeps oversized scrape timeouts for self-hosted endpoints", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({
+        success: true,
+        data: {
+          markdown: "unclamped",
+          metadata: {
+            sourceURL: "https://example.com/firecrawl-selfhost-timeout",
+            statusCode: 200,
+          },
+        },
+      }),
+    );
+    global.fetch = fetchMock as typeof fetch;
+
+    await runActualFirecrawlScrape({
+      cfg: {
+        plugins: {
+          entries: {
+            firecrawl: {
+              config: {
+                webFetch: { apiKey: "k", baseUrl: "http://localhost:8080", timeoutSeconds: 600 },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      url: "https://example.com/firecrawl-selfhost-timeout",
+      extractMode: "markdown",
+    });
+
+    const requestInit = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    const rawBody = requestInit?.body;
+    expect(typeof rawBody).toBe("string");
+    const body = JSON.parse(rawBody as string) as { timeout?: number };
+    expect(body.timeout).toBe(600_000);
+  });
+
   it.each(["search", "scrape"] as const)(
     "propagates exact %s cancellation into the actual guarded fetch signal",
     async (operation) => {

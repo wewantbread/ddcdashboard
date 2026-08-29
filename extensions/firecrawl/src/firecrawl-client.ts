@@ -50,6 +50,7 @@ const DEFAULT_SCRAPE_MAX_CHARS = 50_000;
 const FIRECRAWL_SCRAPE_METADATA_MAX_CHARS = 4_000;
 const FIRECRAWL_RESULT_URL_MAX_CHARS = 2_048;
 const FIRECRAWL_SCRAPE_RESPONSE_MAX_BYTES = 64 * 1024 * 1024;
+const FIRECRAWL_HOSTED_TIMEOUT_SECONDS_MAX = 300;
 const ALLOWED_FIRECRAWL_HOSTS = new Set(["api.firecrawl.dev"]);
 const FIRECRAWL_PUBLISHED_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[T ][\d:.+Z-]{0,20})?$/u;
 const FIRECRAWL_SELF_HOSTED_PRIVATE_ERROR =
@@ -664,11 +665,19 @@ export async function runFirecrawlScrape(
       : DEFAULT_SCRAPE_MAX_CHARS;
   const maxChars = Math.min(requestedMaxChars, maxCharsCap);
   const endpoint = await resolveEndpoint(baseUrl, "/v2/scrape");
+  // Official Firecrawl rejects body timeouts above its documented 300000ms
+  // maximum; clamp strict-mode requests so oversized operator configs fail on
+  // our own deadline instead of surfacing opaque hosted API errors. Self-hosted
+  // endpoints may accept longer budgets and stay unclamped.
+  const wireTimeoutSeconds =
+    endpoint.mode === "strict"
+      ? Math.min(timeoutSeconds, FIRECRAWL_HOSTED_TIMEOUT_SECONDS_MAX)
+      : timeoutSeconds;
   const payload = await postFirecrawlJson(
     {
       url: endpoint.url,
       mode: endpoint.mode,
-      timeoutSeconds,
+      timeoutSeconds: wireTimeoutSeconds,
       apiKey,
       errorLabel: "Firecrawl",
       ...(params.signal ? { signal: params.signal } : {}),
@@ -676,7 +685,7 @@ export async function runFirecrawlScrape(
         url: params.url,
         formats: ["markdown"],
         onlyMainContent,
-        timeout: timeoutSeconds * 1000,
+        timeout: wireTimeoutSeconds * 1000,
         maxAge: maxAgeMs,
         proxy,
         storeInCache,
