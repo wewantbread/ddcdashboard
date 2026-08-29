@@ -154,10 +154,13 @@ export function resolveRuntimeServiceVersion(
   });
 }
 
-// Runtime provenance is immutable for a process. Build metadata covers packaged
-// installs; source checkouts fall back to the Git revision seen at module load.
+// Runtime provenance is immutable for a process. Loaded build stamps take
+// precedence; true source execution falls back to Git at module load.
 const RUNTIME_SERVICE_BUILD_ID = readBuildIdFromBuildInfoForModuleUrl(import.meta.url);
-const RUNTIME_SERVICE_COMMIT = resolveCommitHash({ moduleUrl: import.meta.url });
+const RUNTIME_SERVICE_COMMIT = resolveCommitHash({
+  moduleUrl: import.meta.url,
+  preferLoadedCommit: true,
+});
 
 export function resolveRuntimeServiceBuildId(): string | null {
   return RUNTIME_SERVICE_BUILD_ID;

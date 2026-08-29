@@ -129,6 +129,59 @@ describe("git commit resolution", () => {
     ).toBe(repoCommit.slice(0, 7));
   });
 
+  it("prefers loaded build stamps over a checkout that moved after the build", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-loaded-build"),
+        env: {},
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: "aaaaaaa", present: true }),
+        },
+      }),
+    ).toBe("aaaaaaa");
+    expect(readGitCommit).not.toHaveBeenCalled();
+  });
+
+  it("does not guess from Git when loaded build stamps disagree", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-incoherent-build"),
+        env: {},
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: null, present: true }),
+        },
+      }),
+    ).toBeNull();
+    expect(readGitCommit).not.toHaveBeenCalled();
+  });
+
+  it("falls back to live Git for true source execution without build metadata", async () => {
+    const readGitCommit = vi.fn(() => "bbbbbbb");
+
+    expect(
+      resolveCommitHash({
+        cwd: await makeTempDir("git-commit-source-runtime"),
+        env: {},
+        moduleUrl: import.meta.url,
+        preferLoadedCommit: true,
+        readers: {
+          readGitCommit,
+          readLoadedCommit: () => ({ commit: null, present: false }),
+        },
+      }),
+    ).toBe("bbbbbbb");
+  });
+
   it("caches build-info fallback results per resolved search directory", async () => {
     const temp = await makeTempDir("git-commit-build-info-cache");
     const readBuildInfoCommit = vi.fn(() => "deadbee");

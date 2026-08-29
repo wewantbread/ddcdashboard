@@ -32,6 +32,7 @@ declare const WORKER_DEPLOY_BUILD: boolean;
 type CommitMetadataReaders = {
   readGitCommit?: (searchDir: string, packageRoot: string | null) => string | null | undefined;
   readBuildInfoCommit?: () => string | null;
+  readLoadedCommit?: (moduleUrl: string) => { commit: string | null; present: boolean };
   readPackageJsonCommit?: () => string | null;
 };
 
@@ -207,11 +208,58 @@ const readCommitFromBuildInfo = () => {
   }
 };
 
+const readCommitProbe = (
+  moduleUrl: string,
+  candidates: readonly string[],
+  field: "commit" | "head",
+): { commit: string | null; present: boolean } => {
+  try {
+    for (const candidate of candidates) {
+      const filePath = fileURLToPath(new URL(candidate, moduleUrl));
+      let raw: string;
+      try {
+        raw = safeReadFilePrefix(filePath, 1024);
+      } catch (error) {
+        if (isMissingPathError(error)) {
+          continue;
+        }
+        return { commit: null, present: true };
+      }
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const value = parsed[field];
+        return { commit: typeof value === "string" ? formatCommit(value) : null, present: true };
+      } catch {
+        return { commit: null, present: true };
+      }
+    }
+  } catch {
+    // invalid module URL
+  }
+  return { commit: null, present: false };
+};
+
+const readLoadedCommit = (moduleUrl: string): { commit: string | null; present: boolean } => {
+  const buildStamp = readCommitProbe(moduleUrl, ["../.buildstamp", "./.buildstamp"], "head");
+  const runtimeStamp = readCommitProbe(
+    moduleUrl,
+    ["../.runtime-postbuildstamp", "./.runtime-postbuildstamp"],
+    "head",
+  );
+  if (buildStamp.present || runtimeStamp.present) {
+    const commit =
+      buildStamp.commit && buildStamp.commit === runtimeStamp.commit ? buildStamp.commit : null;
+    return { commit, present: true };
+  }
+  return readCommitProbe(moduleUrl, ["../build-info.json", "./build-info.json"], "commit");
+};
+
 export const resolveCommitHash = (
   options: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     moduleUrl?: string;
+    preferLoadedCommit?: boolean;
     readers?: CommitMetadataReaders;
   } = {},
 ) => {
@@ -222,6 +270,14 @@ export const resolveCommitHash = (
   const normalized = formatCommit(envCommit);
   if (normalized) {
     return normalized;
+  }
+  if (options.preferLoadedCommit) {
+    const loaded = (readers.readLoadedCommit ?? readLoadedCommit)(
+      options.moduleUrl ?? import.meta.url,
+    );
+    if (loaded.present) {
+      return loaded.commit;
+    }
   }
   const searchDir = resolveCommitSearchDir(options);
   if (cachedGitCommitBySearchDir.has(searchDir)) {
