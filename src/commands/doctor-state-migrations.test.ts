@@ -711,6 +711,42 @@ function appendLegacyTaskWithObsoleteDeliveryStatus(taskRunsPath: string): void 
   }
 }
 
+function appendLegacyReconcilingCronTaskWithDelivery(taskRunsPath: string): void {
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(taskRunsPath);
+  try {
+    db.prepare(
+      `
+        INSERT INTO task_runs (
+          task_id, runtime, requester_session_key, agent_id, run_id, task,
+          status, delivery_status, notify_policy, created_at, last_event_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      "legacy-reconciling",
+      "cron",
+      "",
+      "ops",
+      "legacy-reconciling-run",
+      "Legacy reconciling cron run",
+      "reconciling",
+      "pending",
+      "done_only",
+      170,
+      180,
+    );
+    db.prepare(
+      `
+        INSERT INTO task_delivery_state (
+          task_id, requester_origin_json, last_notified_event_at
+        ) VALUES (?, ?, ?)
+      `,
+    ).run("legacy-reconciling", '{"channel":"test","to":"target"}', 190);
+  } finally {
+    db.close();
+  }
+}
+
 async function detectAndRunMigrations(params: {
   root: string;
   cfg: OpenClawConfig;
@@ -3921,6 +3957,94 @@ describe("doctor legacy state migrations", () => {
       expect(tasks.get("legacy-not-requested")?.deliveryStatus).toBe("not_applicable");
       expect(tasks.get("legacy-task")?.deliveryStatus).toBe("not_applicable");
     });
+  });
+
+  it("settles legacy reconciling cron rows as lost and drops their delivery state", async () => {
+    const root = makeDoctorStateDir();
+    const { taskRunsPath } = writeLegacyTaskStateSidecars(root);
+    appendLegacyReconcilingCronTaskWithDelivery(taskRunsPath);
+
+    const result = await autoMigrateLegacyTaskStateSidecars({
+      env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
+    });
+
+    expect(result.warnings).toContain(
+      "Skipped 1 task delivery sidecar row settled as lost during migration",
+    );
+
+    const shared = openOpenClawStateDatabase({
+      env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
+    });
+    expect(
+      shared.db
+        .prepare("SELECT status, delivery_status, notify_policy FROM task_runs WHERE task_id = ?")
+        .get("legacy-reconciling"),
+    ).toEqual({ status: "lost", delivery_status: "not_applicable", notify_policy: "silent" });
+    expect(
+      shared.db
+        .prepare("SELECT 1 FROM task_delivery_state WHERE task_id = ?")
+        .get("legacy-reconciling"),
+    ).toBeUndefined();
+
+    await withStateDir(root, async () => {
+      const tasks = loadTaskRegistryStateFromSqlite().tasks;
+      expect(tasks.get("legacy-reconciling")?.status).toBe("lost");
+    });
+  });
+
+  it("keeps recorded delivery state for rows that were already lost before migration", async () => {
+    const root = makeDoctorStateDir();
+    const { taskRunsPath } = writeLegacyTaskStateSidecars(root);
+    const sqlite = requireNodeSqlite();
+    const db = new sqlite.DatabaseSync(taskRunsPath);
+    try {
+      db.prepare(
+        `
+          INSERT INTO task_runs (
+            task_id, runtime, requester_session_key, agent_id, run_id, task,
+            status, delivery_status, notify_policy, created_at, last_event_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        "legacy-prelost",
+        "cron",
+        "",
+        "ops",
+        "legacy-prelost-run",
+        "Legacy already-lost cron task",
+        "lost",
+        "pending",
+        "done_only",
+        200,
+        210,
+      );
+      db.prepare(
+        `
+          INSERT INTO task_delivery_state (
+            task_id, requester_origin_json, last_notified_event_at
+          ) VALUES (?, ?, ?)
+        `,
+      ).run("legacy-prelost", '{"channel":"test","to":"target"}', 220);
+    } finally {
+      db.close();
+    }
+
+    const result = await autoMigrateLegacyTaskStateSidecars({
+      env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
+    });
+
+    expect(result.warnings).not.toContain(
+      "Skipped 1 task delivery sidecar row settled as lost during migration",
+    );
+
+    const shared = openOpenClawStateDatabase({
+      env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
+    });
+    expect(
+      shared.db
+        .prepare("SELECT 1 FROM task_delivery_state WHERE task_id = ?")
+        .get("legacy-prelost"),
+    ).toBeDefined();
   });
 
   it("canonicalizes cross-agent attribution while importing task sidecars", async () => {

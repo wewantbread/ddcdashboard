@@ -35,7 +35,7 @@ import {
   normalizeLegacySqliteInteger,
   pickLegacyColumn,
   readLegacyTaskDeliveryRows,
-  readLegacyTaskRows,
+  readLegacyTaskRowsWithSettlements,
   type SqliteBindRow,
 } from "./state-migrations.task-sidecar-rows.js";
 
@@ -650,8 +650,11 @@ async function migrateLegacyTaskRunsSidecar(params: {
   const warnings: string[] = [];
   let taskRows: SqliteBindRow[];
   let deliveryRows: SqliteBindRow[];
+  let settledLostTaskIds = new Set<string>();
   try {
-    taskRows = readLegacyTaskRows(sourcePath);
+    const { rows, settledLostTaskIds: settled } = readLegacyTaskRowsWithSettlements(sourcePath);
+    taskRows = rows;
+    settledLostTaskIds = settled;
     deliveryRows = readLegacyTaskDeliveryRows(sourcePath);
   } catch (err) {
     return {
@@ -665,6 +668,7 @@ async function migrateLegacyTaskRunsSidecar(params: {
     let importedTasks = 0;
     let importedDeliveryStates = 0;
     let skippedOrphanDeliveryStates = 0;
+    let skippedSettledDeliveryStates = 0;
     runOpenClawStateWriteTransaction(
       ({ db }) => {
         const taskColumns = [
@@ -713,6 +717,12 @@ async function migrateLegacyTaskRunsSidecar(params: {
         const deliveryColumns = ["requester_origin_json", "last_notified_event_at"];
         for (const row of deliveryRows) {
           const taskId = legacyKeyValue(expectDefined(row.task_id, "delivery migration row key"));
+          // Only deliveries of tasks this migration just settled are skipped;
+          // pre-existing lost rows keep their recorded delivery state.
+          if (settledLostTaskIds.has(taskId)) {
+            skippedSettledDeliveryStates++;
+            continue;
+          }
           const existing = db
             .prepare(
               `SELECT requester_origin_json, last_notified_event_at FROM task_delivery_state WHERE task_id = ?`,
@@ -751,6 +761,11 @@ async function migrateLegacyTaskRunsSidecar(params: {
     if (skippedOrphanDeliveryStates > 0) {
       warnings.push(
         `Skipped ${skippedOrphanDeliveryStates} orphan task delivery sidecar ${skippedOrphanDeliveryStates === 1 ? "row" : "rows"} with no task run`,
+      );
+    }
+    if (skippedSettledDeliveryStates > 0) {
+      warnings.push(
+        `Skipped ${skippedSettledDeliveryStates} task delivery sidecar ${skippedSettledDeliveryStates === 1 ? "row" : "rows"} settled as lost during migration`,
       );
     }
   } catch (err) {
