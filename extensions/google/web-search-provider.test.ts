@@ -453,7 +453,7 @@ describe("google web search provider", () => {
     );
   });
 
-  it("rejects Gemini success JSON without candidate text", async () => {
+  it("returns empty content for Gemini success JSON without candidate text", async () => {
     vi.stubGlobal(
       "fetch",
       withFetchPreconnect(
@@ -482,9 +482,15 @@ describe("google web search provider", () => {
       searchConfig: { provider: "gemini" },
     });
 
-    await expect(tool?.execute({ query: "OpenClaw docs" })).rejects.toThrow(
-      "Gemini API error: malformed JSON response",
-    );
+    const result = await tool?.execute({ query: "OpenClaw docs" });
+
+    // Empty parts array with no finishReason is treated as an empty result,
+    // not a malformed response (see #130550).
+    expect(result).toMatchObject({
+      citations: [],
+      provider: "gemini",
+    });
+    expect(String(result?.content)).toContain("no answer text returned");
   });
 
   it("does not contact Gemini for an already-cancelled search", async () => {

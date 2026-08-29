@@ -47,6 +47,7 @@ type GeminiGroundingResponse = {
         text?: string;
       }>;
     };
+    finishReason?: string;
     groundingMetadata?: {
       groundingChunks?: Array<{
         web?: {
@@ -56,6 +57,9 @@ type GeminiGroundingResponse = {
       }>;
     };
   }>;
+  promptFeedback?: {
+    blockReason?: string;
+  };
   error?: {
     code?: number;
     message?: string;
@@ -325,23 +329,44 @@ async function runGeminiSearch(params: {
         );
       }
 
+      // Gemini returns promptFeedback.blockReason when content is blocked before
+      // generation. Report it explicitly so operators see the real cause.
+      if (isRecord(data.promptFeedback) && typeof data.promptFeedback.blockReason === "string") {
+        throw new Error(`Gemini API error: prompt blocked (${data.promptFeedback.blockReason})`);
+      }
+
       if (!Array.isArray(data.candidates)) {
         throwMalformedGeminiResponse();
       }
+      if (data.candidates.length === 0) {
+        return { content: "", citations: [] };
+      }
       const candidate = data.candidates[0];
-      if (!isRecord(candidate) || !isRecord(candidate.content)) {
+      if (!isRecord(candidate)) {
         throwMalformedGeminiResponse();
       }
-      const parts = candidate.content.parts;
-      if (!Array.isArray(parts)) {
+      // An empty candidate from a grounded search may omit the content object
+      // entirely (shape B) or include parts: [] (shape A). Only treat content
+      // as malformed when it exists but is not a record.
+      const candidateContent = candidate.content;
+      const parts = isRecord(candidateContent) ? candidateContent.parts : undefined;
+      if (parts !== undefined && !Array.isArray(parts)) {
         throwMalformedGeminiResponse();
       }
-      const content = parts
-        .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : undefined))
-        .filter((text): text is string => Boolean(text))
-        .join("\n");
-      if (!content) {
-        throwMalformedGeminiResponse();
+      const content = Array.isArray(parts)
+        ? parts
+            .map((part) =>
+              isRecord(part) && typeof part.text === "string" ? part.text : undefined,
+            )
+            .filter((text): text is string => Boolean(text))
+            .join("\n")
+        : "";
+      // Empty content with a non-STOP finishReason means the model hit a safety
+      // filter, recitation limit, or policy block — report that, not "malformed".
+      const finishReason =
+        typeof candidate.finishReason === "string" ? candidate.finishReason : undefined;
+      if (!content && finishReason && finishReason !== "STOP") {
+        throw new Error(`Gemini API error: empty result (${finishReason})`);
       }
       const groundingMetadata = candidate.groundingMetadata;
       const groundingChunks =
@@ -380,7 +405,7 @@ async function runGeminiSearch(params: {
         citations.push(...resolved);
       }
 
-      return { content, citations };
+      return { content: content || "no answer text returned", citations };
     },
   );
 }
