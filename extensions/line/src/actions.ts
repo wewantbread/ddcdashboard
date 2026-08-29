@@ -41,6 +41,44 @@ function truncateLineActionData(data: string): string {
   return truncateUtf16Safe(data, LINE_ACTION_DATA_LIMIT);
 }
 
+const UNDELIVERABLE_IMAGE_WARNING = "Image unavailable: URL must be a public https URL.";
+
+// LINE fetches a Flex image itself and rejects the whole message when the URL is
+// not https, so a card carrying one costs the reply rather than just the picture.
+function isDeliverableLineImageUrl(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A Flex picture LINE will refuse to fetch, wherever it sits.
+ *
+ * The scheme is rejected per URL, not per position: a hero, a video hero's own
+ * two URLs, and an image anywhere in a box all sink the same message. Matching
+ * on the component rather than on the key it is stored under keeps every
+ * position covered by one rule. Flex components carry `url`/`previewUrl`, while
+ * standalone image and video messages carry `originalContentUrl`, so this never
+ * matches those.
+ */
+function isUndeliverableFlexImage(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.type === "image" && "url" in value) {
+    return !isDeliverableLineImageUrl(value.url);
+  }
+  if (value.type === "video" && ("url" in value || "previewUrl" in value)) {
+    return !isDeliverableLineImageUrl(value.url) || !isDeliverableLineImageUrl(value.previewUrl);
+  }
+  return false;
+}
+
 const unavailableActionMarker = Symbol("lineUnavailableAction");
 type UnavailableAction = Extract<Action, { type: "message" }> & {
   [unavailableActionMarker]: true;
@@ -80,6 +118,10 @@ function normalizeNestedActions(value: unknown, labelLimit: number, warnings?: s
   if (Array.isArray(value)) {
     const normalized: unknown[] = [];
     for (const item of value) {
+      if (isUndeliverableFlexImage(item)) {
+        warnings?.push(UNDELIVERABLE_IMAGE_WARNING);
+        continue;
+      }
       normalized.push(normalizeNestedActions(item, labelLimit, warnings));
     }
     return normalized;
@@ -107,6 +149,18 @@ function normalizeNestedActions(value: unknown, labelLimit: number, warnings?: s
       } else {
         normalized[key] = action;
       }
+    } else if (isUndeliverableFlexImage(nested)) {
+      // Drop the picture LINE will not accept and say so where the card has room,
+      // the same way an action it cannot honor is replaced rather than allowed to
+      // sink the send. The drop is unconditional: a card missing one image still
+      // reaches the user, while keeping it costs the whole message.
+      delete normalized[key];
+      warnings?.push(UNDELIVERABLE_IMAGE_WARNING);
+    } else if (key === "thumbnailImageUrl" && !isDeliverableLineImageUrl(nested)) {
+      // Optional on every template that offers it, and a template carries no
+      // place for a note that would not rewrite the sender's own text, so an
+      // unusable thumbnail simply goes rather than taking the message with it.
+      delete normalized[key];
     } else if (key === "actions" && Array.isArray(nested)) {
       normalized[key] = nested.map((action) =>
         isLineAction(action) ? normalizeLineAction(action, labelLimit) : action,
