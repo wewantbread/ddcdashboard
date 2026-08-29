@@ -145,7 +145,7 @@ describe("readGatewayServiceState", () => {
     { updateInstallKind: "package" as const, shouldRestart: false },
     { updateInstallKind: "package" as const, shouldRestart: true },
   ])(
-    "allows managerless Linux preflight for $updateInstallKind restart=$shouldRestart",
+    "handles managerless Linux preflight for $updateInstallKind restart=$shouldRestart",
     async ({ updateInstallKind, shouldRestart }) => {
       const { maybeStopManagedServiceBeforeMutableUpdate } =
         await import("../cli/update-cli/update-command-service.js");
@@ -182,10 +182,15 @@ describe("readGatewayServiceState", () => {
           phase: "inspect",
           timeoutMs: 2_000,
         });
-        expect(result.blockMessage).toBeUndefined();
+        if (shouldRestart) {
+          expect(result.blockMessage).toContain("Refusing to mutate code");
+          expect(result.serviceMutationSkipMessage).toBeUndefined();
+        } else {
+          expect(result.blockMessage).toBeUndefined();
+          expect(result.serviceMutationSkipMessage).toContain("inspection is unavailable");
+          expect(result.serviceMutationSkipMessage).toContain("gateway status --deep");
+        }
         expect(result.serviceMutationAllowed).toBe(false);
-        expect(result.serviceMutationSkipMessage).toContain("inspection is unavailable");
-        expect(result.serviceMutationSkipMessage).toContain("gateway status --deep");
         expect(result.serviceUpdateVerdict?.kind).not.toBe("absent");
         expect(result.stopped).toBe(false);
       } finally {
