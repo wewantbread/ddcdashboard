@@ -172,6 +172,15 @@ let cachedHasBinaryPathExt: string | undefined;
 // Installs can create binaries under unchanged PATH/PATHEXT, so cache only successful probes.
 const hasBinaryCache = new Set<string>();
 
+// hasBinary self-invalidates only on a PATH/PATHEXT string change, which an
+// install into an already-on-PATH prefix never triggers. Callers that install
+// a binary and then re-read its presence in the same process must reset first.
+export function resetBinaryDetectionCache(): void {
+  hasBinaryCache.clear();
+  cachedHasBinaryPath = undefined;
+  cachedHasBinaryPathExt = undefined;
+}
+
 /** Checks PATH for an executable binary, including PATHEXT candidates on Windows. */
 export function hasBinary(bin: string): boolean {
   const pathEnv = process.env.PATH ?? "";
