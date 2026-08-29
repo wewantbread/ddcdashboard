@@ -621,7 +621,9 @@ describe("handleTelegramAction", () => {
       added?: string;
     };
     expect(parsed.ok).toBe(false);
-    expect(parsed.warning).toBe("Reaction unavailable: ✅ This chat allows: 👍 🔥.");
+    expect(parsed.warning).toBe(
+      "Reaction unavailable: ✅ This chat allows: 👍 🔥; numeric custom IDs 5231419410191111111.",
+    );
     expect(parsed.warning).not.toContain("disallow list");
     expect(parsed.added).toBe("✅");
   });
@@ -643,6 +645,25 @@ describe("handleTelegramAction", () => {
     });
     expect(String(details.hint).match(/👍/gu)).toHaveLength(20);
     expect(details.hint).not.toContain("disallow list");
+  });
+
+  it("drops custom reaction IDs when the combined hint exceeds the bound", async () => {
+    reactMessageTelegram.mockRejectedValueOnce(new Error("400: REACTION_INVALID"));
+    getTelegramAllowedReactions.mockResolvedValueOnce([
+      ...Array.from({ length: 20 }, () => ({ type: "emoji" as const, emoji: "👍" as const })),
+      { type: "custom_emoji" as const, custom_emoji_id: "5231419410191111111" },
+    ]);
+
+    const details = resultDetails(
+      await handleTelegramAction(defaultReactionAction, reactionConfig("minimal")),
+    );
+
+    expect(details).toMatchObject({
+      ok: false,
+      reason: "REACTION_INVALID",
+      hint: expect.stringContaining("This chat allows:"),
+    });
+    expect(String(details.hint)).not.toContain("5231419410191111111");
   });
 
   it("lists permitted standard and custom reactions with an optional limit", async () => {

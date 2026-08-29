@@ -3715,7 +3715,10 @@ describe("message tool schema scoping", () => {
     {
       action: "react",
       fields: ["messageId", "emoji"],
-      descriptions: { emoji: "Unicode emoji; channels may also support custom emoji." },
+      descriptions: {
+        emoji:
+          "Unicode emoji; channels may also accept their own custom emoji identifiers when listed by the channel's emoji-list action.",
+      },
     },
     { action: "search", fields: ["query", "limit"] },
     { action: "reactions", fields: ["messageId", "limit"] },

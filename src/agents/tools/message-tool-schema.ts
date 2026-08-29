@@ -243,7 +243,10 @@ function buildReactionSchema() {
       }),
     ),
     emoji: Type.Optional(
-      Type.String({ description: "Unicode emoji; channels may also support custom emoji." }),
+      Type.String({
+        description:
+          "Unicode emoji; channels may also accept their own custom emoji identifiers when listed by the channel's emoji-list action.",
+      }),
     ),
     remove: Type.Optional(Type.Boolean()),
     trackToolCalls: Type.Optional(
