@@ -1,6 +1,7 @@
 // Tests CLI dispatch arguments and runtime selection for agent runner turns.
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { withTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
@@ -162,19 +163,46 @@ describe("runCliAgentWithLifecycle", () => {
       });
       emitAgentEvent({
         runId: params.runId,
+        stream: "tool",
+        data: { phase: "start", name: "search", toolCallId: "tool-1", args: {} },
+      });
+      emitAgentEvent({
+        runId: params.runId,
+        stream: "thinking",
+        data: { text: "Second window", delta: "Second window", isReasoningSnapshot: true },
+      });
+      emitAgentEvent({
+        runId: params.runId,
         stream: "assistant",
         data: { text: "Visible answer", delta: "Visible answer" },
       });
       return { payloads: [{ text: "Visible answer" }], meta: { durationMs: 1 } };
     });
+    const callbackOrder: string[] = [];
     const onReasoningText = vi.fn<(payload: ReasoningTextPayload) => Promise<void>>(
-      async () => undefined,
+      async ({ text }) => {
+        callbackOrder.push(`reasoning:${text}`);
+      },
     );
+    const onReasoningEnd = vi.fn(async () => {
+      callbackOrder.push("reasoning:end");
+      throw new Error("reasoning notice failed");
+    });
+    const onAssistantText = vi.fn(async (text: string) => {
+      callbackOrder.push(`assistant:${text}`);
+    });
+    const onToolEvent = vi.fn(async () => {
+      callbackOrder.push("tool");
+    });
 
     const result = await runCliAgentWithLifecycle({
       runId: "run-thinking-bridge",
       provider: "claude-cli",
+      onAssistantText,
+      onReasoningEnd,
       onReasoningText,
+      onToolEvent,
+      preserveProgressCallbackStartOrder: true,
       runParams: {
         sessionId: "session-1",
         sessionFile: "/tmp/session.jsonl",
@@ -188,14 +216,82 @@ describe("runCliAgentWithLifecycle", () => {
       },
     });
 
-    expect(onReasoningText).toHaveBeenCalledTimes(2);
+    expect(onReasoningText).toHaveBeenCalledTimes(3);
     expect(onReasoningText.mock.calls.map((call) => call[0])).toEqual([
       { text: "Thinking", isReasoningSnapshot: true },
       { text: "Thinking more", isReasoningSnapshot: true },
+      { text: "Second window", isReasoningSnapshot: true },
+    ]);
+    expect(callbackOrder).toEqual([
+      "reasoning:Thinking",
+      "reasoning:Thinking more",
+      "reasoning:end",
+      "reasoning:Second window",
+      "tool",
+      "reasoning:end",
+      "assistant:Visible answer",
     ]);
     expect(result.payloads).toEqual([
-      { text: "Thinking more", isReasoning: true },
+      { text: "Second window", isReasoning: true },
       { text: "Visible answer" },
+    ]);
+  });
+
+  it("holds every assistant delta behind an in-flight reasoning close", async () => {
+    cliDispatchState.runCliAgentMock.mockImplementationOnce(async (params: { runId: string }) => {
+      emitAgentEvent({
+        runId: params.runId,
+        stream: "thinking",
+        data: { text: "Thinking", delta: "Thinking", isReasoningSnapshot: true },
+      });
+      emitAgentEvent({
+        runId: params.runId,
+        stream: "assistant",
+        data: { text: "First answer", delta: "First answer" },
+      });
+      emitAgentEvent({
+        runId: params.runId,
+        stream: "assistant",
+        data: { text: "Second answer", delta: "Second answer" },
+      });
+      return { payloads: [{ text: "Second answer" }], meta: { durationMs: 1 } };
+    });
+    const closeStarted = createDeferred();
+    const releaseClose = createDeferred();
+    const onAssistantText = vi.fn(async () => undefined);
+
+    const run = runCliAgentWithLifecycle({
+      runId: "run-delayed-reasoning-close",
+      provider: "claude-cli",
+      onAssistantText,
+      onReasoningEnd: async () => {
+        closeStarted.resolve();
+        await releaseClose.promise;
+      },
+      onReasoningText: async () => undefined,
+      preserveProgressCallbackStartOrder: true,
+      runParams: {
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp/workspace",
+        prompt: "hello",
+        provider: "claude-cli",
+        model: "claude",
+        thinkLevel: "high",
+        timeoutMs: 1_000,
+        runId: "run-delayed-reasoning-close",
+      },
+    });
+
+    await closeStarted.promise;
+    await Promise.resolve();
+    expect(onAssistantText).not.toHaveBeenCalled();
+
+    releaseClose.resolve();
+    await run;
+    expect(onAssistantText.mock.calls.map((call) => call[0])).toEqual([
+      "First answer",
+      "Second answer",
     ]);
   });
 

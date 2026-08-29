@@ -3059,17 +3059,24 @@ describe("matrix monitor handler draft streaming", () => {
       ttsSupplement?: { spokenText: string; visibleTextAlreadyDelivered?: boolean };
       isCompactionNotice?: boolean;
       isError?: boolean;
+      isReasoning?: boolean;
       replyToId?: string;
     },
     info: { kind: string },
   ) => Promise<unknown>;
   type ReplyOpts = {
+    preserveProgressCallbackStartOrder?: boolean;
+    reasoningPayloadsEnabled?: boolean;
+    onReasoningLevelResolved?: (level: "off" | "on" | "stream") => boolean;
+    onReasoningStream?: (payload: { text?: string }) => Promise<boolean> | boolean;
+    onReasoningEnd?: () => Promise<boolean> | boolean;
     onReplyStart?: () => Promise<void> | void;
     onPartialReply?: (payload: { text: string }) => void;
     onBlockReplyQueued?: (
       payload: {
         text?: string;
         isCompactionNotice?: boolean;
+        isReasoning?: boolean;
       },
       context?: { assistantMessageIndex?: number },
     ) => Promise<void> | void;
@@ -3190,11 +3197,11 @@ describe("matrix monitor handler draft streaming", () => {
       }) as never,
     });
 
-    const dispatch = async () => {
+    const dispatch = async (body = "hello") => {
       // Start handler without awaiting — it blocks on runGate.
       const handlerDone = handler(
         "!room:example.org",
-        createMatrixTextMessageEvent({ eventId: "$msg1", body: "hello" }),
+        createMatrixTextMessageEvent({ eventId: "$msg1", body }),
       );
       await captured;
       return {
@@ -3212,6 +3219,79 @@ describe("matrix monitor handler draft streaming", () => {
 
     return { dispatch, redactEventMock, logVerboseMessage };
   }
+
+  it("preserves progress callback start order for reasoning lifecycle", async () => {
+    const { dispatch } = createStreamingHarness();
+    const { opts, finish } = await dispatch();
+
+    expect(opts.preserveProgressCallbackStartOrder).toBe(true);
+
+    await finish();
+  });
+
+  it("applies the current-turn inline on mode before durable reasoning delivery", async () => {
+    const { dispatch, redactEventMock } = createStreamingHarness({ streaming: "partial" });
+    const { deliver, opts, finish } = await dispatch("/reasoning on explain this");
+
+    expect(opts.onReasoningLevelResolved?.("on")).toBe(true);
+    opts.onPartialReply?.({ text: "Visible answer draft" });
+    await waitForMatrixState(() => {
+      expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledOnce();
+    });
+    await deliver({ text: "Reasoning:\nInline on thought", isReasoning: true }, { kind: "block" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replies: [{ text: "Reasoning:\nInline on thought", isReasoning: true }],
+      }),
+    );
+    expect(editMessageMatrixMock).not.toHaveBeenCalled();
+    expect(redactEventMock).not.toHaveBeenCalled();
+    await finish();
+  });
+
+  it("applies the current-turn inline stream mode before reasoning callbacks", async () => {
+    const { dispatch } = createStreamingHarness({ streaming: "off" });
+    const { deliver, opts, finish } = await dispatch("/reasoning stream explain this");
+
+    expect(opts.onReasoningLevelResolved?.("stream")).toBe(false);
+    await opts.onReasoningStream?.({ text: "Reasoning:\nInline stream thought" });
+    await opts.onReasoningEnd?.();
+    await deliver({ text: "Inline final" }, { kind: "final" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        replies: [{ text: "Reasoning:\nInline stream thought", isReasoning: true }],
+      }),
+    );
+    expect(deliverMatrixRepliesMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ replies: [{ text: "Inline final" }] }),
+    );
+    await finish();
+  });
+
+  it("keeps off-mode reasoning invisible without spending final reply accounting", async () => {
+    const { dispatch } = createStreamingHarness({ replyToMode: "first", streaming: "off" });
+    const { deliver, opts, finish } = await dispatch("/reasoning off explain this");
+
+    expect(opts.onReasoningLevelResolved?.("off")).toBe(false);
+    await expect(
+      deliver({ text: "Hidden thought", isReasoning: true }, { kind: "final" }),
+    ).resolves.toMatchObject({ visibleReplySent: false });
+    await deliver({ text: "Visible final" }, { kind: "final" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledOnce();
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hasRepliedRef: { value: false },
+        replies: [{ text: "Visible final" }],
+        replyToMode: "first",
+      }),
+    );
+    await finish();
+  });
 
   it("records a failed block typing restart without replaying the accepted delivery", async () => {
     const acceptedDelivery = createMockMatrixDeliveryResult("$accepted", "Already delivered block");
@@ -4427,6 +4507,25 @@ describe("matrix monitor handler draft streaming", () => {
     expect(singleTextMessageBody(1)).toBe("Beta");
     expect(deliverMatrixRepliesMock).not.toHaveBeenCalled();
     expect(redactEventMock).not.toHaveBeenCalled();
+    await finish();
+  });
+
+  it("keeps reasoning outside answer draft boundaries", async () => {
+    const { dispatch } = createStreamingHarness({ blockStreamingEnabled: true });
+    const { opts, finish } = await dispatch();
+
+    opts.onPartialReply?.({ text: "Alpha" });
+    await waitForMatrixState(() => {
+      expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledOnce();
+    });
+
+    await opts.onBlockReplyQueued?.({ text: "Thinking", isReasoning: true });
+    opts.onPartialReply?.({ text: "AlphaBeta" });
+
+    await waitForMatrixState(() => {
+      expectMatrixEdit("!room:example.org", "$draft1", "AlphaBeta");
+    });
+    expect(sendSingleTextMessageMatrixMock).toHaveBeenCalledOnce();
     await finish();
   });
 

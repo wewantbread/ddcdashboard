@@ -53,7 +53,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     notifySessionMetadataChanges,
     onToolResultFromReplyOptions,
     params,
-    reasoningPayloadsEnabled,
     recordAgentDispatchCompleted,
     replyConfig,
     replyRoute,
@@ -72,6 +71,8 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     waitForPendingDirectBlockReplyDelivery,
     wrapProgressCallback,
   } = state;
+  // Keep the block and final snapshots aligned so hidden modes spend no slot.
+  const onReasoningLevelResolved = params.replyOptions?.onReasoningLevelResolved;
   // Bind at invocation so every public resolver consumes the request generation without widening its Plugin SDK contract.
   const replyResolver = bindPreparedReplyDispatchRuntime(
     params.configOverride ? undefined : state.preparedReplyDispatchRuntime,
@@ -127,6 +128,12 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                   onSessionPrepared: state.notePreparedSession,
                 } satisfies InternalReplyResolverOptions),
                 onObservedReplyDelivery: state.markObservedReplyDelivery,
+                onReasoningLevelResolved: onReasoningLevelResolved
+                  ? (level) => {
+                      state.reasoningPayloadsEnabled = onReasoningLevelResolved(level);
+                      return state.reasoningPayloadsEnabled;
+                    }
+                  : undefined,
                 suppressToolErrorWarnings: state.suppressToolErrorWarnings,
                 typingPolicy: typing.typingPolicy,
                 suppressTyping: typing.suppressTyping,
@@ -163,7 +170,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                   state.deliverStandaloneCommentaryProgress ||
                   state.canForwardSuppressedSourceItemEvents ||
                   params.replyOptions?.commentaryProgressEnabled,
-                reasoningPayloadsEnabled,
+                reasoningPayloadsEnabled: state.reasoningPayloadsEnabled,
                 commentaryPayloadsEnabled,
                 onCommandOutput: wrapProgressCallback(params.replyOptions?.onCommandOutput, {
                   forwardWhenSourceDeliverySuppressed: true,
@@ -428,13 +435,9 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                     ) {
                       return;
                     }
-                    // Durable reasoning is a channel-owned lane; generic channels
-                    // keep the historical suppression unless they explicitly opt in.
-                    if (inputPayload.isReasoning === true && !reasoningPayloadsEnabled) {
+                    if (inputPayload.isReasoning === true && !state.reasoningPayloadsEnabled) {
                       return;
                     }
-                    // Durable commentary is a channel-owned lane; generic channels keep the
-                    // historical suppression unless they explicitly opt in.
                     if (inputPayload.isCommentary === true && !commentaryPayloadsEnabled) {
                       return;
                     }
@@ -448,10 +451,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                     if (!payload) {
                       return;
                     }
-                    // Accumulate block text for TTS generation after streaming.
-                    // Exclude status notices — they are informational UI signals
-                    // and must not be synthesised into the spoken reply. Display
-                    // lanes stay out too: they are presentation, never final text.
+                    // Accumulate TTS text after streaming; status/display lanes are never spoken.
                     const isStatusNotice = isReplyPayloadStatusNotice(payload);
                     const contributesToFinalReply =
                       !isStatusNotice &&
@@ -504,9 +504,8 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                     if (!hasOutboundReplyContent(visiblePayload, { trimText: true })) {
                       return;
                     }
-                    // Channels that keep a live draft preview may need to rotate their
-                    // preview state at the logical block boundary before queued block
-                    // delivery drains asynchronously through the dispatcher.
+                    // Rotate live previews at the logical block boundary before queued
+                    // block delivery drains asynchronously through the dispatcher.
                     const payloadMetadata = getReplyPayloadMetadata(payload);
                     const queuedContext =
                       payloadMetadata?.assistantMessageIndex !== undefined
@@ -563,8 +562,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                         !state.suppressAutomaticSourceDelivery &&
                         params.replyOptions?.onBlockReplyQueued
                       ) {
-                        // Block callbacks are delivery facts, not queue-admission facts.
-                        // Resolve them after beforeDeliver hooks without stalling streaming.
+                        // Resolve delivery-fact callbacks after hooks without stalling streaming.
                         trackDispatchLifecycleWork(
                           wasReplyDeliveredAsBlock(normalizedPayload, context?.abortSignal).then(
                             async (delivered) => {

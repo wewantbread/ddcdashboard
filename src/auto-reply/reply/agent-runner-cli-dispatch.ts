@@ -441,6 +441,7 @@ type RunCliAgentWithLifecycleParams = {
   preserveProgressCallbackStartOrder?: boolean;
   onAssistantText?: (text: string) => Promise<boolean | void>;
   onReasoningText?: (payload: ReasoningTextPayload) => Promise<void>;
+  onReasoningEnd?: GetReplyOptions["onReasoningEnd"];
   onReasoningProgress?: (payload: ReasoningProgressPayload) => Promise<void>;
   onToolEvent?: (payload: CliToolEventPayload) => Promise<void>;
   onCommentaryText?: (payload: CommentaryTextPayload) => Promise<void>;
@@ -558,18 +559,43 @@ async function runCliAgentWithLifecycleInternal(
   const progressStartOrder = params.preserveProgressCallbackStartOrder
     ? createAgentEventDeliveryStartOrder()
     : undefined;
+  let finalReasoningText: string | undefined;
+  let reasoningEnded = false;
+  // CLI stream bridges drain independently. Every boundary shares this tail so
+  // later tool or assistant callbacks cannot overtake an in-flight close.
+  let reasoningClose = Promise.resolve();
+  const endReasoning = () => {
+    if (!finalReasoningText || reasoningEnded) {
+      return reasoningClose;
+    }
+    reasoningEnded = true;
+    reasoningClose = reasoningClose.then(async () => {
+      try {
+        await params.onReasoningEnd?.();
+      } catch {
+        // Channel progress callbacks cannot turn a valid CLI result into a run failure.
+      }
+    });
+    return reasoningClose;
+  };
+  const onAssistantText = params.onAssistantText;
   const assistantBridge = createAssistantTextBridge({
     runId: params.runId,
     suppressed: params.suppressAssistantBridge,
-    deliver: params.onAssistantText,
+    deliver: onAssistantText
+      ? async (text) => {
+          await endReasoning();
+          return await onAssistantText(text);
+        }
+      : undefined,
     startOrder: progressStartOrder,
   });
-  let finalReasoningText: string | undefined;
   const reasoningBridge = createReasoningTextBridge({
     runId: params.runId,
     suppressed: params.suppressAssistantBridge,
     startOrder: progressStartOrder,
     deliver: async (payload: ReasoningTextPayload) => {
+      reasoningEnded = false;
       finalReasoningText = normalizeOptionalString(payload.text);
       await params.onReasoningText?.(payload);
     },
@@ -583,7 +609,10 @@ async function runCliAgentWithLifecycleInternal(
   const toolBridge = createToolEventBridge({
     runId: params.runId,
     suppressed: params.suppressAssistantBridge,
-    deliver: params.onToolEvent,
+    deliver: async (payload) => {
+      await endReasoning();
+      await params.onToolEvent?.(payload);
+    },
     startOrder: progressStartOrder,
   });
   const commentaryBridge = createCommentaryEventBridge({
@@ -625,6 +654,7 @@ async function runCliAgentWithLifecycleInternal(
     }
     const result = params.transformResult?.(rawResult) ?? rawResult;
     await stopAgentEventBridges(bridges);
+    await endReasoning();
 
     const cliText = normalizeOptionalString(result.payloads?.[0]?.text);
     const durableReasoningText = normalizeOptionalString(finalReasoningText);

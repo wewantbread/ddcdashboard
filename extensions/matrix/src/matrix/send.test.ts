@@ -1133,6 +1133,23 @@ describe("sendMessageMatrix mentions", () => {
     expect(sentContent(sendMessage)["m.mentions"]).toEqual({});
   });
 
+  it("suppresses mention metadata when requested", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await sendMessageMatrix("room:!room:example", "@room hi @alice:example.org", {
+      client,
+      cfg: {} as never,
+      msgtype: "m.notice",
+      disableMentions: true,
+    });
+
+    const content = sentContent(sendMessage);
+    expect(content.msgtype).toBe("m.notice");
+    expect(content.body).toBe("@room hi @alice:example.org");
+    expect(content["m.mentions"]).toEqual({});
+    expect(content.formatted_body).not.toContain("matrix.to");
+  });
+
   it("marks room mentions via m.mentions.room", async () => {
     const { client, sendMessage } = makeClient();
 
@@ -1156,6 +1173,20 @@ describe("sendMessageMatrix mentions", () => {
     expect(sentContent(sendMessage)["m.mentions"]).toEqual({
       user_ids: ["@alice:example.org"],
     });
+  });
+
+  it("suppresses mention metadata in media captions when requested", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await sendMessageMatrix("room:!room:example", "caption @room @alice:example.org", {
+      client,
+      cfg: {} as never,
+      mediaUrl: "file:///tmp/photo.png",
+      disableMentions: true,
+    });
+
+    expect(sentContent(sendMessage)["m.mentions"]).toEqual({});
+    expect(sentContent(sendMessage).formatted_body).not.toContain("matrix.to");
   });
 
   it("does not emit mentions from fallback filenames when there is no caption", async () => {

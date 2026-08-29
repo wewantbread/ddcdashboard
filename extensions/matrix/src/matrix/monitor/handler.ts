@@ -436,7 +436,8 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         mediaLocalRoots,
         logVerboseMessage,
       });
-      const { deliverReply, onReplyError, turnDispatcherOptions } = replyDispatcher;
+      const { deliverReply, onReplyError, setReasoningLevel, turnDispatcherOptions } =
+        replyDispatcher;
       const pinnedMainDmOwner = isDirectMessage
         ? await (async () => {
             const { liveCfg, liveDmAllowFrom } = await handlerState.resolveLiveAccountAllowlists();
@@ -562,7 +563,14 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
               onSettled: () => draftController.cancelProgressDraft(),
             },
             replyOptions: {
+              preserveProgressCallbackStartOrder: true,
               skillFilter: roomConfig?.skills,
+              // Core resolves inline and stored reasoning policy after Matrix creates its dispatcher.
+              // Admit typed payloads here, then let the resolved-turn callback select the Matrix lane.
+              reasoningPayloadsEnabled: true,
+              onReasoningLevelResolved: setReasoningLevel,
+              onReasoningStream: turnDispatcherOptions.onReasoningStream,
+              onReasoningEnd: turnDispatcherOptions.onReasoningEnd,
               // Preserve explicit block streaming with draft previews: drafts update the live
               // block, while block deliveries finalize completed blocks as separate events.
               disableBlockStreaming: !blockStreamingEnabled,
@@ -571,6 +579,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 : undefined,
               onBlockReplyQueued: draftStream
                 ? (payload, context) => {
+                    if (payload.isReasoning === true) {
+                      return false;
+                    }
                     if (payload.isCompactionNotice === true) {
                       return false;
                     }

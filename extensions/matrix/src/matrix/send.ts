@@ -243,8 +243,11 @@ export async function sendMessageMatrix(
           content: MatrixOutboundContent,
           receiptKind: MessageReceiptPartKind,
         ) => {
+          const enrichedContent = withMatrixExtraContentFields(content, pendingExtraContent);
           events.push({
-            content: withMatrixExtraContentFields(content, pendingExtraContent),
+            content: opts.disableMentions
+              ? { ...enrichedContent, "m.mentions": {} }
+              : enrichedContent,
             receiptKind,
           });
           pendingExtraContent = undefined;
@@ -304,6 +307,7 @@ export async function sendMessageMatrix(
             content,
             markdown: captionMarkdown,
             preparedBody: captionMarkdown === convertedText ? singleEventBody : undefined,
+            includeMentions: opts.disableMentions ? false : undefined,
             tableMode,
           });
           prepareContent(content, receiptKind);
@@ -319,6 +323,7 @@ export async function sendMessageMatrix(
               content: followup,
               markdown: chunk,
               preparedBody: chunk === convertedText ? singleEventBody : undefined,
+              includeMentions: opts.disableMentions ? false : undefined,
               tableMode,
             });
             prepareContent(followup, "text");
@@ -328,12 +333,13 @@ export async function sendMessageMatrix(
             if (!chunk.trim()) {
               continue;
             }
-            const content = buildTextContent(chunk, relation);
+            const content = buildTextContent(chunk, relation, { msgtype: opts.msgtype });
             await enrichMatrixFormattedContent({
               client,
               content,
               markdown: chunk,
               preparedBody: chunk === convertedText ? singleEventBody : undefined,
+              includeMentions: opts.disableMentions ? false : undefined,
               tableMode,
             });
             prepareContent(content, "text");

@@ -85,6 +85,10 @@ update occurred. Existing synchronous and asynchronous callbacks that return `vo
 backward-compatible and are treated as visible; new acceptance-aware implementations should use
 an explicit boolean.
 
+For mode-dependent durable reasoning, provide `onReasoningLevelResolved`. Core calls it
+synchronously after inline and stored mode resolution and before the agent run; return `true` only
+when durable reasoning should enter block and final accounting. Stream callbacks stay separate.
+
 ### Commentary delivery ownership
 
 Set `commentaryPayloadsEnabled: true` when the channel supports durable commentary messages.

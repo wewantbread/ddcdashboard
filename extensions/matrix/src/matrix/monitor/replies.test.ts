@@ -387,6 +387,46 @@ describe("deliverMatrixReplies", () => {
     expect(sendOptions(0).cfg).toBe(cfg);
   });
 
+  it("delivers explicit reasoning payloads as Matrix notices", async () => {
+    await deliverMatrixReplies({
+      cfg,
+      replies: [{ text: "Reasoning:\nCheck the tool result and @room", isReasoning: true }],
+      roomId: "room:reasoning",
+      client: {} as MatrixClient,
+      runtime: runtimeEnv,
+      replyToMode: "off",
+    });
+
+    expect(sendMessageMatrixMock).toHaveBeenCalledTimes(1);
+    expect(sendCall(0)[0]).toBe("room:reasoning");
+    expect(sendCall(0)[1]).toBe("Thinking\n\n_Check the tool result and @room_");
+    expect(sendOptions(0).msgtype).toBe("m.notice");
+    expect(sendOptions(0).disableMentions).toBe(true);
+  });
+
+  it("suppresses mentions in reasoning media captions", async () => {
+    await deliverMatrixReplies({
+      cfg,
+      replies: [
+        {
+          text: "Reasoning:\nCheck @room and @alice:example.org",
+          mediaUrl: "file:///tmp/reasoning.png",
+          isReasoning: true,
+        },
+      ],
+      roomId: "room:reasoning-media",
+      client: {} as MatrixClient,
+      runtime: runtimeEnv,
+      replyToMode: "off",
+    });
+
+    expect(sendMessageMatrixMock).toHaveBeenCalledOnce();
+    expect(sendOptions(0)).toMatchObject({
+      mediaUrl: "file:///tmp/reasoning.png",
+      disableMentions: true,
+    });
+  });
+
   it("delivers literal reasoning tags inside Markdown code", async () => {
     const text = "Use `<mm:think>example</mm:think>` literally.";
 
