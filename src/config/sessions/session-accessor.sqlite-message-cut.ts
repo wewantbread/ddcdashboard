@@ -413,17 +413,20 @@ function validateBranchTip(
   return tree.leafId === entryId ? "already-active" : undefined;
 }
 
-function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBranchSummary[] {
-  const tree = scanSessionTranscriptTree(events);
-  return sessionBranchTipNodes(tree)
-    .toSorted(
-      (left, right) =>
-        Number(right.id === tree.leafId) - Number(left.id === tree.leafId) ||
-        right.index - left.index,
-    )
-    .map((node) => summarizeSessionBranch(tree, node.id));
-}
-
+/**
+ * Summarize session branches.
+ *
+ * One top-down DP pass over the transcript tree instead of a per-branch root
+ * walk: long-lived sessions accumulate thousands of branch tips that share
+ * long prefixes, and the previous per-tip traversal revisited every shared
+ * prefix (~7M node visits on a 13.9k-event / 1.3k-branch session -> ~12s of
+ * synchronous event-loop stall, surfacing as `sessions.branches.list` latency
+ * spikes and delayed heartbeats). Each node is now visited once, propagating
+ * messageCount and headline in O(1) per node.
+ *
+ * Iterative (explicit stack): transcript trees can exceed the JS call stack
+ * depth, so a recursive visit would overflow.
+ */
 function sessionBranchTipNodes(tree: SessionTranscriptTree<TranscriptEvent>) {
   const referencedParents = new Set(
     tree.nodes.flatMap((node) =>
@@ -437,27 +440,79 @@ function sessionBranchTipNodes(tree: SessionTranscriptTree<TranscriptEvent>) {
   );
 }
 
-function summarizeSessionBranch(
-  tree: SessionTranscriptTree<TranscriptEvent>,
-  leafEntryId: string,
-): SessionBranchSummary {
-  const path = selectSessionTranscriptTreePathNodes(tree, leafEntryId);
-  const messages = path.flatMap((node) => {
+function summarizeSessionBranches(events: readonly TranscriptEvent[]): SessionBranchSummary[] {
+  const tree = scanSessionTranscriptTree(events);
+  type TreeNode = SessionTranscriptTree<TranscriptEvent>["nodes"][number];
+
+  const children = new Map<string, TreeNode[]>();
+  for (const node of tree.nodes) {
+    if (node.parentId === null) {
+      continue;
+    }
+    const siblings = children.get(node.parentId);
+    if (siblings) {
+      siblings.push(node);
+    } else {
+      children.set(node.parentId, [node]);
+    }
+  }
+
+  const messageCounts = new Map<string, number>();
+  const headlines = new Map<string, string>();
+  const stack: Array<{ node: TreeNode; count: number; headline: string | undefined }> = [];
+  for (const node of tree.nodes) {
+    // Seed every root of the traversal: top-level roots (parentId === null) and
+    // retained suffixes whose ancestor is absent from the tree (parentId not in
+    // byId). selectSessionTranscriptTreePathNodes deliberately keeps a reachable
+    // suffix after a missing ancestor, so branch summaries must preserve that
+    // behavior; leaving such suffixes unseeded would turn their formerly valid
+    // summaries into empty headlines with zero counts. Cycles stay unseeded
+    // because every node in a cycle has its parent present in byId.
+    if (node.parentId === null || !tree.byId.has(node.parentId)) {
+      stack.push({ node, count: 0, headline: undefined });
+    }
+  }
+  while (stack.length > 0) {
+    const { node, count, headline } = stack.pop()!;
     const record = asRecord(node.entry);
-    return record?.type === "message" ? [record] : [];
-  });
-  const headline = messages
-    .toReversed()
-    .map((record) => extractHeadlineText(record.message))
-    .find((value): value is string => value !== undefined);
-  const timestamp = asRecord(tree.byId.get(leafEntryId)?.entry)?.timestamp;
-  return {
-    leafEntryId,
-    headline: truncateBranchHeadline(headline ?? ""),
-    messageCount: messages.length,
-    ...(typeof timestamp === "string" && timestamp.trim() ? { updatedAt: timestamp } : {}),
-    active: tree.leafId === leafEntryId,
-  };
+    const nextCount = count + (record?.type === "message" ? 1 : 0);
+    // Headline = the nearest message with extractable text on the path, so
+    // every message attempts extraction and overwrites the inherited value.
+    let nextHeadline = headline;
+    if (record?.type === "message") {
+      const extracted = extractHeadlineText(record.message);
+      if (extracted !== undefined) {
+        nextHeadline = extracted;
+      }
+    }
+    messageCounts.set(node.id, nextCount);
+    if (nextHeadline !== undefined) {
+      headlines.set(node.id, nextHeadline);
+    }
+    for (const child of children.get(node.id) ?? []) {
+      stack.push({ node: child, count: nextCount, headline: nextHeadline });
+    }
+  }
+
+  return sessionBranchTipNodes(tree)
+    .toSorted(
+      (left, right) =>
+        Number(right.id === tree.leafId) - Number(left.id === tree.leafId) ||
+        right.index - left.index,
+    )
+    .map((node) => {
+      const timestamp = asRecord(tree.byId.get(node.id)?.entry)?.timestamp;
+      const summary: SessionBranchSummary = {
+        leafEntryId: node.id,
+        headline: truncateBranchHeadline(headlines.get(node.id) ?? ""),
+        messageCount: messageCounts.get(node.id) ?? 0,
+        active: tree.leafId === node.id,
+      };
+      if (typeof timestamp === "string" && timestamp.trim()) {
+        summary.updatedAt = timestamp;
+      }
+      return summary;
+    });
 }
 
 function extractHeadlineText(messageValue: unknown): string | undefined {

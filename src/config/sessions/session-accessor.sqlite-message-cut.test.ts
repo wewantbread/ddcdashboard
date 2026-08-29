@@ -199,6 +199,75 @@ describe("SQLite session message cuts", () => {
     expect(fullTranscriptLoads()).toBe(1);
   });
 
+  it("retains branch summaries for a reachable suffix after a missing ancestor", async () => {
+    const stateDir = tempDirs.make("openclaw-missing-parent-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const sessionId = "missing-parent-source";
+    const scope = { agentId, env, sessionId, sessionKey };
+    await upsertSessionEntryCore(scope, { sessionId, updatedAt: Date.now() });
+    await appendTranscriptEvent(scope, {
+      type: "session",
+      id: sessionId,
+      version: 3,
+      timestamp: "2026-07-18T00:00:00.000Z",
+    });
+    // The orphan suffix must be appended before any usable leaf exists.
+    // Message rows carry their own leafId, so once a later row is scanned,
+    // scanSessionTranscriptTree rebases an absent parent onto the current
+    // leaf and the suffix stops being orphaned. Keeping "missing-ancestor"
+    // unresolved is exactly the shape branch summaries must retain.
+    await appendTranscriptMessage(scope, {
+      eventId: "orphan-user",
+      message: { role: "user", content: "orphan prompt" },
+      now: Date.parse("2026-07-18T00:00:01.000Z"),
+      parentId: "missing-ancestor",
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "orphan-assistant",
+      message: { role: "assistant", content: "orphan answer" },
+      now: Date.parse("2026-07-18T00:00:02.000Z"),
+      parentId: "orphan-user",
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "user-1",
+      message: { role: "user", content: "first prompt" },
+      now: Date.parse("2026-07-18T00:00:03.000Z"),
+      parentId: null,
+    });
+    await appendTranscriptMessage(scope, {
+      eventId: "assistant-1",
+      message: { role: "assistant", content: "first answer" },
+      now: Date.parse("2026-07-18T00:00:04.000Z"),
+      parentId: "user-1",
+    });
+    // The suffix below hangs off an ancestor ("missing-ancestor") that is
+    // absent from the transcript. selectSessionTranscriptTreePathNodes keeps
+    // reachable suffixes after missing ancestors, so the branch summaries must
+    // keep listing this suffix with its own headline and message count.
+    await appendTranscriptEvent(scope, {
+      type: "leaf",
+      id: "orphan-leaf",
+      parentId: "orphan-assistant",
+      timestamp: "2026-07-18T00:00:05.000Z",
+      targetId: "orphan-assistant",
+    });
+
+    const result = await listSessionBranches({ agentId, env, sessionKey });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") {
+      throw new Error("expected branch list result");
+    }
+    const orphan = result.branches.find((branch) => branch.leafEntryId === "orphan-assistant");
+    expect(orphan).toMatchObject({
+      leafEntryId: "orphan-assistant",
+      headline: "orphan answer",
+      // The retained suffix is its own reachable branch: orphan-user and
+      // orphan-assistant. Its ancestor is absent from the transcript, so the
+      // count must not include the unrelated main path (user-1, assistant-1).
+      messageCount: 2,
+    });
+  });
+
   it("recomputes branch summaries after an append advances the watermark", async () => {
     const { env, scope } = await createSession();
     const fullTranscriptLoads = trackFullTranscriptLoads(env);
