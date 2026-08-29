@@ -80,14 +80,23 @@ export function createWorkerSessionToolGatewayCaller(params: {
 }
 
 export async function runWithWorkerSessionToolExecutionIdentity<T>(params: {
+  agentId: string;
   claim: WorkerSessionToolSource["turnClaim"];
   placements: WorkerSessionPlacementStore;
   resolveGatewayContext: GatewayContextResolver;
   run: (identity?: WorkerTurnExecutionIdentity) => Promise<T>;
+  sessionKey: string;
 }): Promise<T> {
   const capability = getWorkerTurnExecutionIdentityCapability(params.placements, params.claim);
   if (!capability) {
-    return await params.run();
+    return await withGatewayToolCallerIdentity(
+      {
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        gatewayContextResolver: params.resolveGatewayContext,
+      },
+      () => params.run(),
+    );
   }
   return await capability.run(
     async (identity) =>

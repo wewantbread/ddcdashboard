@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -88,7 +89,11 @@ beforeEach(() => {
 afterEach(() => resetGlobalHookRunner());
 
 it("fences an allowed send when delegated authority closes before dispatch", async () => {
-  const beforeToolCall = vi.fn();
+  const beforeToolCall = vi.fn(() => {
+    const receiptAuthority = getGatewayToolCallerIdentity()?.receiptAuthority;
+    expect(receiptAuthority).toEqual(expect.any(Function));
+    receiptAuthority?.();
+  });
   initializeGlobalHookRunner(
     createMockPluginRegistry([
       { hookName: "before_tool_call", matcher: ["sessions_send"], handler: beforeToolCall },
@@ -146,11 +151,10 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
   await vi.waitFor(() => expect(sendOwner.execute).toHaveBeenCalledOnce());
   fixture.state.active = false;
   finishPreDispatch?.();
-  const result = await pending;
+  await expect(pending).rejects.toThrow("worker turn authority changed");
   const replay = await execute(request as never);
 
-  expect(result.resultJson).toContain("worker turn authority changed");
-  expect(replay.resultJson).toBe(result.resultJson);
+  expect(replay.resultJson).toContain("worker turn authority changed");
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(fixture.run).toHaveBeenCalledOnce();
   expect(gatewayDispatch).not.toHaveBeenCalled();
