@@ -266,11 +266,6 @@ export const resolveCommitHash = (
   const env = options.env ?? process.env;
   const readers = options.readers ?? {};
   const readGitCommit = readers.readGitCommit ?? readCommitFromGit;
-  const envCommit = env.GIT_COMMIT?.trim() || env.GIT_SHA?.trim();
-  const normalized = formatCommit(envCommit);
-  if (normalized) {
-    return normalized;
-  }
   if (options.preferLoadedCommit) {
     const loaded = (readers.readLoadedCommit ?? readLoadedCommit)(
       options.moduleUrl ?? import.meta.url,
@@ -278,6 +273,11 @@ export const resolveCommitHash = (
     if (loaded.present) {
       return loaded.commit;
     }
+  }
+  const envCommit = env.GIT_COMMIT?.trim() || env.GIT_SHA?.trim();
+  const normalized = formatCommit(envCommit);
+  if (normalized) {
+    return normalized;
   }
   const searchDir = resolveCommitSearchDir(options);
   if (cachedGitCommitBySearchDir.has(searchDir)) {

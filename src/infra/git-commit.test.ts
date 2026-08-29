@@ -135,7 +135,7 @@ describe("git commit resolution", () => {
     expect(
       resolveCommitHash({
         cwd: await makeTempDir("git-commit-loaded-build"),
-        env: {},
+        env: { GIT_COMMIT: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
         moduleUrl: import.meta.url,
         preferLoadedCommit: true,
         readers: {
