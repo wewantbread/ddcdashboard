@@ -169,7 +169,7 @@ function mockNodeGatewayPlanFixture(
   mocks.resolveSystemNodeInfo.mockResolvedValue({
     path: "/opt/node",
     version,
-    supported,
+    status: supported ? "supported" : "unsupported",
   });
   mocks.renderSystemNodeWarning.mockReturnValue(warning);
   mocks.buildServiceEnvironment.mockReturnValue(serviceEnvironment);
@@ -397,10 +397,23 @@ describe("buildGatewayInstallPlan", () => {
       wrapperPath: undefined,
     });
     expect(mocks.resolveSystemNodeInfo).not.toHaveBeenCalled();
+    expect(firstMockArg(mocks.buildServiceEnvironment, "buildServiceEnvironment").runtime).toBe(
+      "bun",
+    );
   });
 
-  it("passes only the existing service NODE_OPTIONS to heap resolution", async () => {
+  it("passes override ownership to heap resolution without persisting operator options", async () => {
     mockNodeGatewayPlanFixture();
+    const managedDefinition = {
+      programArguments: ["node", "--max-heap-size=24576", "cli.js", "gateway"],
+      environment: { NODE_OPTIONS: "--max-old-space-size=6144" },
+    };
+    const existingCommand = {
+      ...managedDefinition,
+      environment: { NODE_OPTIONS: "--max-old-space-size=512 --require=/operator/preload.js" },
+      managedDefinition,
+      managedOverrides: { environment: { keys: ["NODE_OPTIONS"] } },
+    };
 
     await buildGatewayInstallPlan({
       env: {
@@ -409,14 +422,15 @@ describe("buildGatewayInstallPlan", () => {
       },
       port: 3000,
       runtime: "node",
-      existingEnvironment: {
-        NODE_OPTIONS: "--max-old-space-size=6144",
-      },
+      existingCommand,
     });
 
     expect(
       firstMockArg(mocks.buildServiceEnvironment, "buildServiceEnvironment").existingNodeOptions,
     ).toBe("--max-old-space-size=6144");
+    expect(mocks.resolveGatewayProgramArguments).toHaveBeenCalledWith(
+      expect.objectContaining({ existingCommand }),
+    );
   });
 
   it("adds the active openclaw command bin directory to the managed service PATH", async () => {
@@ -569,6 +583,9 @@ describe("buildGatewayInstallPlan", () => {
       firstMockArg(mocks.resolveGatewayProgramArguments, "resolveGatewayProgramArguments")
         .wrapperPath,
     ).toBeUndefined();
+    expect(mocks.resolveGatewayProgramArguments).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimePath: "/opt/node" }),
+    );
     expect(mocks.buildServiceEnvironment).toHaveBeenCalledOnce();
     expect(
       firstMockArg(mocks.buildServiceEnvironment, "buildServiceEnvironment").env?.OPENCLAW_WRAPPER,

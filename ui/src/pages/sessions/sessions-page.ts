@@ -519,7 +519,7 @@ class SessionsPage extends OpenClawLightDomElement {
     this.loading = snapshot.loading;
     this.error = snapshot.error;
     const result = snapshot.result;
-    if (this.sessionMutationPending || !result || result === this.appliedListResult) {
+    if (!result || result === this.appliedListResult) {
       return;
     }
     const previous = this.result;
@@ -757,14 +757,6 @@ class SessionsPage extends OpenClawLightDomElement {
           selected.delete(key);
         }
         this.selectedKeys = selected;
-        if (this.result) {
-          const sessions = this.result.sessions.filter((row) => !deleted.has(row.key));
-          this.result = {
-            ...this.result,
-            count: Math.max(0, this.result.count - (this.result.sessions.length - sessions.length)),
-            sessions,
-          };
-        }
         if (this.expandedSessionKey && deleted.has(this.expandedSessionKey)) {
           this.expandedSessionKey = null;
         }
