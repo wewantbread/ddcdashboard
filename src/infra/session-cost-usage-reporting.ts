@@ -63,7 +63,8 @@ export async function discoverAllSessions(params: {
   for (const file of files) {
     // Do not exclude by endMs: a session can have activity in range even if it continued later.
     const filePath = file.filePath;
-    const fileName = path.basename(filePath);
+    const sourceFilePath = file.sourceFilePath ?? filePath;
+    const fileName = path.basename(sourceFilePath);
     const sqliteMarker = parseSqliteSessionFileMarker(filePath);
 
     const sessionId = sqliteMarker?.sessionId ?? parseUsageCountedSessionIdFromFileName(fileName);
@@ -121,7 +122,7 @@ export async function discoverAllSessions(params: {
     if (shouldReplace) {
       discovered.set(sessionId, {
         sessionId,
-        sessionFile: filePath,
+        sessionFile: sourceFilePath,
         mtime: file.mtimeMs,
         firstUserMessage: firstUserMessage ?? existing?.firstUserMessage,
       });
