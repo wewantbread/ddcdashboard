@@ -73,7 +73,13 @@ import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { sessionAgentIdentityById, sessionAgentIds } from "./agent-scope.ts";
 import { rememberSessionCustomGroup, sessionCategoryNames } from "./custom-groups.ts";
-import { loadStoredGroupBy, saveStoredGroupBy } from "./page-state.ts";
+import {
+  loadSessionsPagePreferences,
+  saveSessionsPagePreferences,
+  type SessionsPagePreferences,
+  type SessionsSortColumn,
+  type SessionsSortDirection,
+} from "./page-state.ts";
 import { sessionsPageListQuery, type SessionsRouteData } from "./route.ts";
 import { renderSessions, type SessionsProps, type TranscriptSearchState } from "./view.ts";
 
@@ -107,23 +113,25 @@ class SessionsPage extends OpenClawLightDomElement {
 
   @property({ attribute: false }) routeData?: SessionsRouteData;
 
+  private readonly initialPreferences = loadSessionsPagePreferences();
+  private persistedPreferences = this.initialPreferences;
   @state() private result: SessionsListResult | null = null;
   @state() private loading = false;
   @state() private error: string | null = null;
-  @state() private activeMinutes = "";
-  @state() private limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-  @state() private includeGlobal = true;
-  @state() private includeUnknown = false;
-  @state() private statusFilter: SessionArchivedFilter = "active";
-  @state() private searchQuery = "";
+  @state() private activeMinutes = this.initialPreferences.activeMinutes;
+  @state() private limit = this.initialPreferences.limit;
+  @state() private includeGlobal = this.initialPreferences.includeGlobal;
+  @state() private includeUnknown = this.initialPreferences.includeUnknown;
+  @state() private statusFilter: SessionArchivedFilter = this.initialPreferences.statusFilter;
+  @state() private searchQuery = this.initialPreferences.searchQuery;
   @state() private transcriptSearchQuery = "";
   @state() private submittedTranscriptSearchQuery = "";
   @state() private transcriptSearch: TranscriptSearchState = { status: "idle" };
-  @state() private sortColumn: "key" | "kind" | "updated" | "tokens" = "updated";
-  @state() private sortDir: "asc" | "desc" = "desc";
-  @state() private groupBy: SessionsGroupBy = loadStoredGroupBy();
+  @state() private sortColumn: SessionsSortColumn = this.initialPreferences.sortColumn;
+  @state() private sortDir: SessionsSortDirection = this.initialPreferences.sortDir;
+  @state() private groupBy: SessionsGroupBy = this.initialPreferences.groupBy;
   @state() private page = 0;
-  @state() private pageSize = 25;
+  @state() private pageSize = this.initialPreferences.pageSize;
   @state() private selectedKeys = new Set<string>();
   @state() private sessionMenu: { key: string; x: number; y: number } | null = null;
   @state() private sessionMenuWork: SessionMenuWork | null = null;
@@ -407,10 +415,9 @@ class SessionsPage extends OpenClawLightDomElement {
       this.page = 0;
       this.selectedKeys = new Set();
     } else {
-      this.activeMinutes = "";
-      this.limit = String(SESSIONS_PAGE_DEFAULT_LIMIT);
-      this.includeGlobal = true;
-      this.includeUnknown = false;
+      this.applyStoredPreferences();
+      // An explicit route status owns this visit without overwriting the saved default.
+      this.statusFilter = data.statusFilter;
     }
     this.expandedSessionKey = data.expandedSessionKey;
     // Only route-driven expansion narrows the list query; interactive drawer
@@ -634,6 +641,19 @@ class SessionsPage extends OpenClawLightDomElement {
     includeGlobal: boolean;
     includeUnknown: boolean;
   }) {
+    const changedPreferences: Partial<SessionsPagePreferences> = {};
+    if (next.activeMinutes !== this.activeMinutes) {
+      changedPreferences.activeMinutes = next.activeMinutes;
+    }
+    if (next.limit !== this.limit) {
+      changedPreferences.limit = next.limit;
+    }
+    if (next.includeGlobal !== this.includeGlobal) {
+      changedPreferences.includeGlobal = next.includeGlobal;
+    }
+    if (next.includeUnknown !== this.includeUnknown) {
+      changedPreferences.includeUnknown = next.includeUnknown;
+    }
     this.activeMinutes = next.activeMinutes;
     this.limit = next.limit;
     this.includeGlobal = next.includeGlobal;
@@ -642,6 +662,7 @@ class SessionsPage extends OpenClawLightDomElement {
     this.selectedKeys = new Set();
     // Explicit filter edits leave deep-link mode; load the full roster.
     this.deepLinkSessionKey = null;
+    this.persistPreferences(changedPreferences);
     void this.refreshSessionList();
   }
 
@@ -654,6 +675,7 @@ class SessionsPage extends OpenClawLightDomElement {
     this.page = 0;
     this.selectedKeys = new Set();
     this.deepLinkSessionKey = null;
+    this.persistPreferences({ statusFilter });
     // Route navigation refetches (statusFilter is in loaderDeps); mask the old
     // view's rows until the new result applies via applyRouteData.
     this.loading = true;
@@ -908,7 +930,26 @@ class SessionsPage extends OpenClawLightDomElement {
   private setGroupBy(mode: SessionsGroupBy) {
     this.groupBy = mode;
     this.page = 0;
-    saveStoredGroupBy(mode);
+    this.persistPreferences({ groupBy: mode });
+  }
+
+  private applyStoredPreferences() {
+    const preferences = loadSessionsPagePreferences();
+    this.persistedPreferences = preferences;
+    this.activeMinutes = preferences.activeMinutes;
+    this.limit = preferences.limit;
+    this.includeGlobal = preferences.includeGlobal;
+    this.includeUnknown = preferences.includeUnknown;
+    this.searchQuery = preferences.searchQuery;
+    this.sortColumn = preferences.sortColumn;
+    this.sortDir = preferences.sortDir;
+    this.groupBy = preferences.groupBy;
+    this.pageSize = preferences.pageSize;
+  }
+
+  private persistPreferences(changes: Partial<SessionsPagePreferences>) {
+    this.persistedPreferences = { ...this.persistedPreferences, ...changes };
+    saveSessionsPagePreferences(this.persistedPreferences);
   }
 
   private async rememberCustomGroup(
@@ -1613,12 +1654,20 @@ class SessionsPage extends OpenClawLightDomElement {
             this.page = 0;
             this.selectedKeys = new Set();
             this.deepLinkSessionKey = null;
+            this.persistPreferences({
+              activeMinutes: "",
+              limit: String(SESSIONS_PAGE_DEFAULT_LIMIT),
+              includeGlobal: true,
+              includeUnknown: false,
+              searchQuery: "",
+            });
             void this.refreshSessionList();
           },
           onSearchChange: (query) => {
             this.searchQuery = query;
             this.page = 0;
             this.selectedKeys = new Set();
+            this.persistPreferences({ searchQuery: query });
           },
           onTranscriptSearchChange: (query) => this.updateTranscriptSearchQuery(query),
           onTranscriptSearch: () => void this.runTranscriptSearch(),
@@ -1627,6 +1676,7 @@ class SessionsPage extends OpenClawLightDomElement {
             this.sortColumn = column;
             this.sortDir = direction;
             this.page = 0;
+            this.persistPreferences({ sortColumn: column, sortDir: direction });
           },
           onGroupByChange: (mode) => this.setGroupBy(mode),
           onAssignCategory: (key, category) => this.assignCategory(key, category),
@@ -1637,6 +1687,7 @@ class SessionsPage extends OpenClawLightDomElement {
           onPageSizeChange: (pageSize) => {
             this.pageSize = pageSize;
             this.page = 0;
+            this.persistPreferences({ pageSize });
           },
           onRefresh: () => void this.refreshSessionList(),
           onStatusFilterChange: (statusFilter) => this.updateStatusFilter(statusFilter),

@@ -1,11 +1,20 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import type { RouteLoaderOptions } from "@openclaw/uirouter";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionListOptions, SessionListSnapshot } from "../../lib/sessions/index.ts";
+import { createStorageMock } from "../../test-helpers/storage.ts";
+import { loadSessionsPagePreferences, saveSessionsPagePreferences } from "./page-state.ts";
 import { page, type SessionsRouteData } from "./route.ts";
+import {
+  createContext,
+  createGateway,
+  createRenderedPage,
+  createSessions,
+} from "./sessions-page.test-support.ts";
 
 const result: SessionsListResult = {
   ts: 1,
@@ -55,6 +64,14 @@ async function loadSessionsRoute(options: {
 }
 
 describe("sessions route", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorageMock());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it.each([
     {
       name: "default selected-agent roster",
@@ -114,5 +131,140 @@ describe("sessions route", () => {
     },
   ])("loads the managed $name without a raw list", async (testCase) => {
     await loadSessionsRoute(testCase);
+  });
+
+  it("uses persisted filters for the initial list request", async () => {
+    saveSessionsPagePreferences({
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15",
+      limit: "100",
+      includeGlobal: false,
+      includeUnknown: true,
+      statusFilter: "active",
+    });
+
+    await loadSessionsRoute({
+      search: "",
+      scopeId: "writer",
+      expectedQuery: {
+        activeMinutes: 15,
+        limit: 100,
+        includeGlobal: false,
+        includeUnknown: true,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "active",
+        agentId: "writer",
+      },
+    });
+  });
+
+  it("falls back from malformed or unsafe persisted numeric filters", async () => {
+    saveSessionsPagePreferences({
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15x",
+      limit: "9007199254740992",
+    });
+
+    expect(loadSessionsPagePreferences()).toMatchObject({
+      activeMinutes: "",
+      limit: "50",
+    });
+
+    await loadSessionsRoute({
+      search: "",
+      scopeId: "writer",
+      expectedQuery: {
+        limit: 50,
+        includeGlobal: true,
+        includeUnknown: false,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "active",
+        agentId: "writer",
+      },
+    });
+  });
+
+  it("gives an explicit status URL precedence over persisted status", async () => {
+    saveSessionsPagePreferences({
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15",
+      statusFilter: "archived",
+    });
+
+    await loadSessionsRoute({
+      search: "?status=all",
+      scopeId: null,
+      expectedQuery: {
+        limit: 50,
+        includeGlobal: true,
+        includeUnknown: false,
+        includeDerivedTitles: false,
+        includeLastMessage: false,
+        archivedFilter: "all",
+      },
+    });
+  });
+
+  it("keeps unrelated saved preferences when controls change in a direct-session view", async () => {
+    const savedPreferences = {
+      ...loadSessionsPagePreferences(),
+      activeMinutes: "15",
+      limit: "100",
+      includeGlobal: false,
+      includeUnknown: false,
+      statusFilter: "archived" as const,
+      searchQuery: "saved",
+      sortColumn: "updated" as const,
+      sortDir: "desc" as const,
+      groupBy: "category" as const,
+      pageSize: 25,
+    };
+    saveSessionsPagePreferences(savedPreferences);
+
+    const key = "agent:main:linked";
+    const context = createContext(
+      createGateway({} as GatewayBrowserClient).gateway,
+      createSessions(),
+    );
+    const linkedResult: SessionsListResult = {
+      ...result,
+      count: 1,
+      sessions: [{ key, kind: "direct" }],
+    };
+    const sessionsPage = await createRenderedPage(context, linkedResult, "active", key);
+
+    const limitInput = sessionsPage.querySelector<HTMLInputElement>(
+      "input.session-filter-input--limit",
+    );
+    const keySortButton = sessionsPage.querySelector<HTMLButtonElement>(
+      "th[data-sortable] .data-table-sort-button",
+    );
+    const pageSize = sessionsPage.querySelector<HTMLSelectElement>(
+      "select.data-table-pagination__size",
+    );
+    const searchInput = sessionsPage.querySelector<HTMLInputElement>(
+      ".sessions-toolbar__search input",
+    );
+    if (!limitInput || !keySortButton || !pageSize || !searchInput) {
+      throw new Error("Expected direct-session preference controls");
+    }
+
+    limitInput.value = "25";
+    limitInput.dispatchEvent(new Event("input", { bubbles: true }));
+    keySortButton.click();
+    pageSize.value = "50";
+    pageSize.dispatchEvent(new Event("change", { bubbles: true }));
+    searchInput.value = "linked";
+    searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(loadSessionsPagePreferences()).toEqual({
+      ...savedPreferences,
+      limit: "25",
+      searchQuery: "linked",
+      sortColumn: "key",
+      pageSize: 50,
+    });
   });
 });
