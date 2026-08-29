@@ -31,6 +31,12 @@ const runtimeConsumers = [
     dir: "",
   },
   {
+    file: "src/gateway/gateway-active-memory.test.ts",
+    configs: ["test/vitest/vitest.gateway-core.config.ts", "test/vitest/vitest.gateway.config.ts"],
+    mode: "runtime",
+    dir: "src/gateway",
+  },
+  {
     file: "src/gateway/gateway-concurrent-streams.test.ts",
     configs: ["test/vitest/vitest.gateway-core.config.ts", "test/vitest/vitest.gateway.config.ts"],
     mode: "runtime",
@@ -60,6 +66,19 @@ export function resolveVitestRuntimeCliSelections(
       consumer.configs.some((candidate) => includesRuntimeConfig([config], candidate)),
     )
     .map((consumer) => ({ configs: consumer.configs, cli: { args, dir: consumer.dir, env } }));
+}
+
+/**
+ * Test files under `configs` that need a built runtime. Callers use this to keep
+ * those files in one shard: the pretest build is charged per job, so spreading
+ * them across stripes makes every stripe pay for it.
+ */
+export function listVitestRuntimeConsumerFiles(configs: readonly string[]): string[] {
+  return runtimeConsumers
+    .filter((consumer) =>
+      consumer.configs.some((candidate) => includesRuntimeConfig(configs, candidate)),
+    )
+    .map((consumer) => consumer.file);
 }
 
 export function resolveVitestPretestBuildMode(
