@@ -255,6 +255,9 @@ export function buildQaToolSearchArgs(
       ].join("\n"),
     };
   }
+  if (failureMode && targetTool === "sessions_spawn") {
+    return { task: "" };
+  }
   if (failureMode) {
     return { __qaFailureMode: "denied-input" };
   }
