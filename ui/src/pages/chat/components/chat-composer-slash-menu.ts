@@ -15,6 +15,10 @@ import {
   type SlashCommandDef,
 } from "../../../lib/chat/commands.ts";
 import {
+  applyComposerCommandActivation,
+  resolveComposerCommandActivation,
+} from "./chat-composer-command-activation.ts";
+import {
   paneDomId,
   scrollActiveMenuOptionIntoView,
   syncComposerMenuScroll,
@@ -39,7 +43,6 @@ export type SlashMenuState = {
   slashMenuCompletion: InlineSlashCompletion | null;
   slashCommandRefreshPending: boolean;
 };
-
 export type SlashMenuHost = {
   paneId: string;
   getDraft: () => string;
@@ -53,21 +56,6 @@ export type SlashMenuHost = {
   commandFilter?: (command: SlashCommandDef) => boolean;
   activateComposerMode?: (command: SlashCommandDef) => boolean;
 };
-
-export function createSlashMenuState(): SlashMenuState {
-  return {
-    slashCommandDispatchConnected: false,
-    slashMenuOpen: false,
-    slashMenuItems: [],
-    slashMenuIndex: 0,
-    slashMenuMode: "command",
-    slashMenuCommand: null,
-    slashMenuArgItems: [],
-    slashMenuCompletion: null,
-    slashCommandRefreshPending: false,
-  };
-}
-
 export function resetSlashMenuState(state: SlashMenuState): void {
   state.slashMenuOpen = false;
   state.slashMenuMode = "command";
@@ -165,8 +153,11 @@ export function updateSlashMenu(
     const cmd = SLASH_COMMANDS.find(
       (entry) => entry.name === cmdName && (host.commandFilter?.(entry) ?? true),
     );
-    const argOptions = cmd ? host.resolveArgOptions(cmd) : [];
-    if (cmd && argOptions.length > 0) {
+    const plan = cmd
+      ? resolveComposerCommandActivation(cmd, state, host, "typed", "enter", value)
+      : null;
+    const argOptions = cmd && plan?.kind === "collect-arguments" ? host.resolveArgOptions(cmd) : [];
+    if (cmd && plan?.kind === "collect-arguments" && argOptions.length > 0) {
       const filtered = argFilter
         ? argOptions.filter((arg) => arg.toLowerCase().startsWith(argFilter))
         : argOptions;
@@ -254,6 +245,7 @@ function selectSlashCommand(
   state: SlashMenuState,
   host: SlashMenuHost,
   requestUpdate: () => void,
+  trigger: "enter" | "pointer" = "pointer",
 ): void {
   if (host.activateComposerMode?.(cmd)) {
     return;
@@ -262,19 +254,42 @@ function selectSlashCommand(
     return;
   }
   const inlineReplacement = cmd.source === "skill" ? `$${cmd.name}` : `/${cmd.name}`;
-  if (beginInlineSlashArguments(cmd, state, host, requestUpdate)) {
-    return;
+  const plan = resolveComposerCommandActivation(
+    cmd,
+    state,
+    host,
+    trigger === "pointer" ? "sheet" : "typed",
+    trigger,
+  );
+  if (state.slashMenuCompletion?.inline && plan) {
+    if (beginInlineSlashArguments(cmd, state, host, requestUpdate)) {
+      return;
+    }
+    if (
+      executesInlineImmediately(cmd) &&
+      host.canRunInlineCommand() &&
+      host.runInlineCommand &&
+      removeInlineSlashSelection(state, host)
+    ) {
+      resetSlashMenuState(state);
+      requestUpdate();
+      host.runInlineCommand(`/${cmd.name}`);
+      return;
+    }
+    const replacement =
+      cmd.source === "skill"
+        ? inlineReplacement
+        : plan.kind === "insert-text" || plan.kind === "collect-arguments"
+          ? plan.invocation.text
+          : null;
+    if (replacement && commitInlineSlashSelection(replacement, state, host)) {
+      resetSlashMenuState(state);
+      requestUpdate();
+      return;
+    }
   }
-  if (
-    state.slashMenuCompletion?.inline &&
-    executesInlineImmediately(cmd) &&
-    host.canRunInlineCommand() &&
-    host.runInlineCommand &&
-    removeInlineSlashSelection(state, host)
-  ) {
-    resetSlashMenuState(state);
-    requestUpdate();
-    host.runInlineCommand(`/${cmd.name}`);
+  if (plan) {
+    applyComposerCommandActivation(plan, cmd, state, host, requestUpdate, resetSlashMenuState);
     return;
   }
   if (commitInlineSlashSelection(inlineReplacement, state, host)) {
@@ -282,27 +297,8 @@ function selectSlashCommand(
     requestUpdate();
     return;
   }
-
-  const argOptions = host.resolveArgOptions(cmd);
-  if (argOptions.length > 0) {
-    host.commitDraft(`/${cmd.name} `);
-    state.slashMenuMode = "args";
-    state.slashMenuCommand = cmd;
-    state.slashMenuArgItems = argOptions;
-    state.slashMenuOpen = true;
-    state.slashMenuIndex = 0;
-    state.slashMenuItems = [];
-    requestUpdate();
-    return;
-  }
-  if (cmd.executeLocal && !cmd.args) {
-    resetSlashMenuState(state);
-    host.commitDraft(`/${cmd.name}`);
-    host.runCommand();
-  } else {
-    host.commitDraft(`/${cmd.name} `);
-    closeSlashMenuIfNeeded(state, requestUpdate);
-  }
+  host.commitDraft(cmd.args ? `/${cmd.name} ` : `/${cmd.name}`);
+  closeSlashMenuIfNeeded(state, requestUpdate);
 }
 
 function tabCompleteSlashCommand(
@@ -320,16 +316,9 @@ function tabCompleteSlashCommand(
     requestUpdate();
     return;
   }
-  const argOptions = host.resolveArgOptions(cmd);
-  if (argOptions.length > 0) {
-    host.commitDraft(`/${cmd.name} `);
-    state.slashMenuMode = "args";
-    state.slashMenuCommand = cmd;
-    state.slashMenuArgItems = argOptions;
-    state.slashMenuOpen = true;
-    state.slashMenuIndex = 0;
-    state.slashMenuItems = [];
-    requestUpdate();
+  const plan = resolveComposerCommandActivation(cmd, state, host, "typed", "tab");
+  if (plan) {
+    applyComposerCommandActivation(plan, cmd, state, host, requestUpdate, resetSlashMenuState);
     return;
   }
   host.commitDraft(cmd.args ? `/${cmd.name} ` : `/${cmd.name}`);
@@ -498,7 +487,7 @@ export function handleSlashMenuKeydown(
     const command = state.slashMenuItems[state.slashMenuIndex];
     if (command) {
       if (event.key === "Enter") {
-        selectSlashCommand(command, state, host, requestUpdate);
+        selectSlashCommand(command, state, host, requestUpdate, "enter");
       } else {
         tabCompleteSlashCommand(command, state, host, requestUpdate);
       }
