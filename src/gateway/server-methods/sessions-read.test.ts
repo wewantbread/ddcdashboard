@@ -324,6 +324,58 @@ test("unknown-agent session reads return missing results without provisioning an
   expect(await listAgentIdsViaRpc()).toEqual(["main"]);
 });
 
+test("sessions.describe preserves model-derived reasoning metadata", async () => {
+  const cfg = {
+    agents: {
+      defaults: { model: { primary: "anthropic/claude-opus-4-8" } },
+      list: [
+        {
+          id: "main",
+          default: true,
+          model: "anthropic/claude-opus-4-8",
+        },
+      ],
+    },
+  } as OpenClawConfig;
+  const sessionKey = "agent:main:model-reasoning-describe";
+  await replaceSessionEntry(
+    { agentId: "main", sessionKey, storePath: resolveStorePath(undefined, { agentId: "main" }) },
+    { sessionId: "session-model-reasoning-describe", updatedAt: 42 },
+  );
+  const readPreparedGatewayModelCatalog = vi.fn(async () => ({
+    entries: [
+      {
+        provider: "anthropic",
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        reasoning: true,
+      },
+    ],
+  }));
+  const loadGatewayModelCatalog = vi.fn(async () => {
+    throw new Error("sessions.describe must not activate model discovery");
+  });
+
+  const described = await directSessionReq<{ session: { effectiveReasoningLevel?: string } }>(
+    "sessions.describe",
+    { key: sessionKey },
+    {
+      context: {
+        getRuntimeConfig: () => cfg,
+        loadGatewayModelCatalog,
+        readPreparedGatewayModelCatalog,
+      },
+    },
+  );
+
+  expect(described).toMatchObject({
+    ok: true,
+    payload: { session: { effectiveReasoningLevel: "on" } },
+  });
+  expect(readPreparedGatewayModelCatalog).toHaveBeenCalledWith({ agentId: "main" });
+  expect(loadGatewayModelCatalog).not.toHaveBeenCalled();
+});
+
 test("a hidden-foreign role cannot discover sessions through search, batch previews, or exact resolve", async () => {
   const ownerId = ensureProfileForEmail("role-viewer@example.com").id;
   const foreignKey = "agent:main:foreign-role-read";

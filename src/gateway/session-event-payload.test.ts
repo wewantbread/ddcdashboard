@@ -198,3 +198,34 @@ it.each(["user", "auto", null] as const)(
     expect(snapshot.session).not.toHaveProperty("modelOverrideSource");
   },
 );
+
+it("projects effective reasoning level for session change subscribers", () => {
+  expect(
+    buildGatewaySessionEventFields({
+      sessionRow: {
+        key: "agent:main:main",
+        kind: "direct",
+        updatedAt: 5,
+        effectiveReasoningLevel: "stream",
+      },
+    }),
+  ).toMatchObject({
+    reasoningLevel: undefined,
+    effectiveReasoningLevel: "stream",
+  });
+});
+
+it("omits unknown effective reasoning from event payloads", () => {
+  const sessionRow = {
+    key: "agent:main:main",
+    kind: "direct" as const,
+    updatedAt: 6,
+  };
+
+  expect(buildGatewaySessionEventFields({ sessionRow })).not.toHaveProperty(
+    "effectiveReasoningLevel",
+  );
+  expect(buildGatewaySessionSnapshot({ sessionRow, includeSession: true })).not.toHaveProperty(
+    "effectiveReasoningLevel",
+  );
+});

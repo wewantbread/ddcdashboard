@@ -1,4 +1,5 @@
 import { expect, vi } from "vitest";
+import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 
@@ -107,6 +108,7 @@ function createHandler(
   projectSessionActive: boolean,
   executionStarted = true,
   getSessionMessageSubscribers: SessionMessageSubscriberRegistry["get"] = () => new Set<string>(),
+  loadModelCatalog?: (agentId: string) => Promise<ModelCatalogEntry[] | undefined>,
 ) {
   const broadcastToConnIds = vi.fn();
   const handler = createTranscriptUpdateBroadcastHandler({
@@ -116,6 +118,7 @@ function createHandler(
     chatAbortControllers: new Map([
       ["run-before-finalize", createActiveRun(projectSessionActive, executionStarted)],
     ]),
+    ...(loadModelCatalog ? { loadModelCatalog } : {}),
   });
   return { broadcastToConnIds, handler };
 }

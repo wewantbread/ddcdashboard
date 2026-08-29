@@ -1,5 +1,3 @@
-// Gateway cron runtime service runs scheduled agent turns, heartbeat wakeups,
-// plugin hooks, notifications, and cron lifecycle cleanup.
 import { retireSessionMcpRuntime } from "../agents/agent-bundle-mcp-tools.js";
 import { isAgentDeletionBlocked } from "../agents/agent-lifecycle-registry.js";
 import {
@@ -769,7 +767,7 @@ export function buildGatewayCronService(params: {
 
   // Cron job changes flip session automation badges; push refreshed rows so
   // subscribed session lists update without waiting for unrelated session events.
-  const broadcastCronBoundSessionChanges = (evt: CronEvent) => {
+  const broadcastCronBoundSessionChanges = async (evt: CronEvent) => {
     const job = evt.job ?? cron.getJob(evt.jobId);
     if (!job) {
       return;
@@ -782,14 +780,24 @@ export function buildGatewayCronService(params: {
       // Emit even without a stored row: clients run a canonical list refresh on
       // every sessions.changed, which also clears badges on prior bindings
       // (e.g. after retargeting a job to a not-yet-created session).
-      const sessionRow = loadGatewaySessionRow(sessionKey);
+      const sessionAgentId =
+        parseAgentSessionKey(sessionKey)?.agentId ??
+        normalizeAgentId(job.agentId ?? cron.getDefaultAgentId());
+      const sessionRow = loadGatewaySessionRow(sessionKey, {
+        agentId: sessionAgentId,
+      });
       params.broadcast(
         "sessions.changed",
         {
           sessionKey,
           reason: "cron-binding",
           ts: Date.now(),
-          ...(sessionRow ? buildGatewaySessionEventFields({ sessionRow }) : {}),
+          ...(sessionRow
+            ? buildGatewaySessionEventFields({
+                sessionRow,
+                agentId: sessionAgentId,
+              })
+            : {}),
         },
         { dropIfSlow: true },
       );
@@ -1163,7 +1171,7 @@ export function buildGatewayCronService(params: {
       runCronChangedHook(hookEvt);
       // Re-arm / cancel scheduler-owned process watchers when the job set changes.
       if (evt.action === "added" || evt.action === "updated" || evt.action === "removed") {
-        broadcastCronBoundSessionChanges(evt);
+        void broadcastCronBoundSessionChanges(evt);
         void reconcileExitWatchers();
         // cron.update and cron.add (including declarative convergence) route
         // lifecycle after the mutation. Ignoring state-only update events keeps
@@ -1186,7 +1194,7 @@ export function buildGatewayCronService(params: {
         // Fully deleted jobs emit their own "removed" event instead.
         const finishedJob = evt.job ?? cron.getJob(evt.jobId);
         if (finishedJob?.enabled === false) {
-          broadcastCronBoundSessionChanges(evt);
+          void broadcastCronBoundSessionChanges(evt);
           void routeStreamWatcherMutation(evt.jobId, finishedJob, "finished").catch(
             (err: unknown) => {
               cronLogger.warn(

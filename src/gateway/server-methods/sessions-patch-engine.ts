@@ -240,14 +240,11 @@ async function executeSessionPatchMutations(params: {
 
   const modelCatalogByAgent = new Map<string, Promise<ModelCatalog>>();
   const loadModelCatalog = (agentId: string) => {
-    let promise = modelCatalogByAgent.get(agentId);
-    if (!promise) {
-      promise = params.context.loadGatewayModelCatalog({ agentId });
-      modelCatalogByAgent.set(agentId, promise);
-    }
+    const promise =
+      modelCatalogByAgent.get(agentId) ?? params.context.loadGatewayModelCatalog({ agentId });
+    modelCatalogByAgent.set(agentId, promise);
     return promise;
   };
-
   if (prepared.length > 0) {
     try {
       await runExclusiveSessionLifecycleMutation({
@@ -256,8 +253,11 @@ async function executeSessionPatchMutations(params: {
           identities: target.lifecycleIdentities,
         })),
         prepare: async () => {
-          await Promise.all(
-            prepared
+          await Promise.all([
+            ...prepared
+              .filter((target) => target.fullPatch.reasoningLevel !== undefined)
+              .map((target) => loadModelCatalog(target.targetAgentId).catch(() => undefined)),
+            ...prepared
               .filter((target) => target.fullPatch.archived === true)
               .map(async (target) => {
                 try {
@@ -281,7 +281,7 @@ async function executeSessionPatchMutations(params: {
                   };
                 }
               }),
-          );
+          ]);
         },
         run: async () => {
           const groups = new Map<string, PreparedPatchTarget[]>();
@@ -571,10 +571,14 @@ async function executeSessionPatchMutations(params: {
       sessionKey: target.canonicalKey,
       targetAgentId: target.targetAgentId,
     });
+    const modelCatalog = await modelCatalogByAgent
+      .get(target.targetAgentId)
+      ?.catch(() => undefined);
     emitSessionsChanged(params.context, {
       sessionKey: target.canonicalKey,
       ...(target.requestedAgentId ? { agentId: target.requestedAgentId } : {}),
       reason: "patch",
+      ...(modelCatalog !== undefined ? { modelCatalog } : {}),
     });
     patched = true;
     if (target.fullPatch.archived === true) {

@@ -399,6 +399,7 @@ export type GatewaySessionRow = SessionRow & {
   fastAutoOnSeconds?: number;
   verboseLevel?: string;
   reasoningLevel?: string;
+  effectiveReasoningLevel?: string;
   elevatedLevel?: string;
   hasActiveRun?: boolean;
   activeRunIds?: string[];
@@ -471,6 +472,7 @@ export type SessionsPatchResult = SessionsPatchResultBase<{
   fastMode?: FastMode;
   verboseLevel?: string;
   reasoningLevel?: string;
+  effectiveReasoningLevel?: string;
   elevatedLevel?: string;
 }> & {
   resolved?: {

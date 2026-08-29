@@ -4,6 +4,7 @@ import path from "node:path";
 import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import {
   readTranscriptDisplayPosition,
   type TranscriptDisplayPosition,
@@ -17,7 +18,10 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
-import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
+import {
+  createSessionIdentityMutationFence,
+  type SessionLifecycleEvent,
+} from "../sessions/session-lifecycle-events.js";
 import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { projectChatDisplayMessage } from "./chat-display-projection.js";
@@ -78,12 +82,25 @@ function readTranscriptUpdateLifecycleOwner(
   return lifecycleRevision ? { lifecycleRevision } : {};
 }
 
+function isTranscriptUpdateLifecycleCurrent(
+  update: InternalSessionTranscriptUpdate,
+  lifecycleRevision: string,
+): boolean {
+  const currentLifecycleOwner = readTranscriptUpdateLifecycleOwner(update);
+  return Boolean(
+    currentLifecycleOwner &&
+    (!currentLifecycleOwner.lifecycleRevision ||
+      currentLifecycleOwner.lifecycleRevision === lifecycleRevision),
+  );
+}
+
 /** Creates a serialized transcript-update broadcaster for session websocket clients. */
 export function createTranscriptUpdateBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
   sessionMessageSubscribers: SessionMessageSubscribers;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  loadModelCatalog?: (agentId: string) => Promise<ModelCatalogEntry[] | undefined>;
 }) {
   // Ordering is a per-transcript contract: subscribers merge each session's
   // updates independently, so lanes keyed by transcript identity keep message
@@ -143,6 +160,7 @@ async function handleTranscriptUpdateBroadcast(
     sessionEventSubscribers: SessionEventSubscribers;
     sessionMessageSubscribers: SessionMessageSubscribers;
     chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+    loadModelCatalog?: (agentId: string) => Promise<ModelCatalogEntry[] | undefined>;
   },
   update: InternalSessionTranscriptUpdate,
   capturedAgentScope: SessionEventAgentScope | undefined,
@@ -319,23 +337,28 @@ async function handleTranscriptUpdateBroadcast(
         )
       : undefined;
   }
-  if (lifecycleRevision) {
-    // A reset can retain sessionId, so validate the captured owner after every
-    // awaited transcript read before projecting the current session snapshot.
-    const currentLifecycleOwner = readTranscriptUpdateLifecycleOwner(update);
-    if (
-      !currentLifecycleOwner ||
-      (currentLifecycleOwner.lifecycleRevision &&
-        currentLifecycleOwner.lifecycleRevision !== lifecycleRevision)
-    ) {
-      return;
-    }
+  if (lifecycleRevision && !isTranscriptUpdateLifecycleCurrent(update, lifecycleRevision)) {
+    return;
   }
   // Message frames must keep transcript-derived live usage (dashboard API
   // contract from #50101); the 64KB cap bounds the per-message tail read.
+  const shouldLoadModelCatalog =
+    routingAgentId !== undefined && params.loadModelCatalog !== undefined;
+  const modelCatalog =
+    routingAgentId && params.loadModelCatalog
+      ? await params.loadModelCatalog(routingAgentId)
+      : undefined;
+  if (
+    lifecycleRevision &&
+    shouldLoadModelCatalog &&
+    !isTranscriptUpdateLifecycleCurrent(update, lifecycleRevision)
+  ) {
+    return;
+  }
   const sessionRow = loadGatewaySessionRow(sessionKey, {
     agentId: routingAgentId,
     transcriptUsageMaxBytes: 64 * 1024,
+    ...(modelCatalog !== undefined ? { modelCatalog } : {}),
   });
   const activeRunState =
     sessionRow &&
@@ -414,8 +437,9 @@ export function createLifecycleEventBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  loadModelCatalog?: (agentId: string) => Promise<ModelCatalogEntry[] | undefined>;
 }) {
-  return (event: SessionLifecycleEvent): void => {
+  return async (event: SessionLifecycleEvent): Promise<void> => {
     const swarmEvent = event as SessionLifecycleEvent & {
       swarmGroupId?: string;
       kind?: "phase" | "log";
@@ -459,46 +483,60 @@ export function createLifecycleEventBroadcastHandler(params: {
       );
       return;
     }
-    const sessionRow = loadGatewaySessionRow(event.sessionKey, { agentId: routingAgentId });
-    const activeRunState =
-      sessionRow && (sessionRow.key !== "global" || routingAgentId)
-        ? resolveVisibleActiveSessionRunState({
-            context: params,
-            requestedKey: event.sessionKey,
-            canonicalKey: sessionRow.key,
-            sessionId: sessionRow.sessionId,
-            ...(routingAgentId ? { agentId: routingAgentId } : {}),
-            defaultAgentId: compatibilityOwnerAgentId,
-          })
-        : null;
-    params.broadcastToConnIds(
-      "sessions.changed",
-      {
-        sessionKey: event.sessionKey,
-        ...(eventAgentId ? { agentId: eventAgentId } : {}),
-        reason: event.reason,
-        parentSessionKey: event.parentSessionKey,
-        label: event.label,
-        displayName: event.displayName,
-        ts: Date.now(),
-        ...buildGatewaySessionSnapshot({
-          sessionRow,
-          agentId: eventAgentId,
+    const identityMutationFence = createSessionIdentityMutationFence({
+      sessionKey: event.sessionKey,
+    });
+    try {
+      const modelCatalog = await params.loadModelCatalog?.(routingAgentId);
+      if (!identityMutationFence.isCurrent()) {
+        return;
+      }
+      const sessionRow = loadGatewaySessionRow(event.sessionKey, {
+        agentId: routingAgentId,
+        ...(modelCatalog !== undefined ? { modelCatalog } : {}),
+      });
+      const activeRunState =
+        sessionRow && (sessionRow.key !== "global" || routingAgentId)
+          ? resolveVisibleActiveSessionRunState({
+              context: params,
+              requestedKey: event.sessionKey,
+              canonicalKey: sessionRow.key,
+              sessionId: sessionRow.sessionId,
+              ...(routingAgentId ? { agentId: routingAgentId } : {}),
+              defaultAgentId: compatibilityOwnerAgentId,
+            })
+          : null;
+      params.broadcastToConnIds(
+        "sessions.changed",
+        {
+          sessionKey: event.sessionKey,
+          ...(eventAgentId ? { agentId: eventAgentId } : {}),
+          reason: event.reason,
+          parentSessionKey: event.parentSessionKey,
           label: event.label,
           displayName: event.displayName,
-          parentSessionKey: event.parentSessionKey,
-          activeRunState,
-        }),
-        ...(swarmEvent.swarmGroupId
-          ? {
-              swarmGroupId: swarmEvent.swarmGroupId,
-              kind: swarmEvent.kind,
-              text: swarmEvent.text,
-            }
-          : {}),
-      },
-      connIds,
-      { dropIfSlow: true },
-    );
+          ts: Date.now(),
+          ...buildGatewaySessionSnapshot({
+            sessionRow,
+            agentId: eventAgentId,
+            label: event.label,
+            displayName: event.displayName,
+            parentSessionKey: event.parentSessionKey,
+            activeRunState,
+          }),
+          ...(swarmEvent.swarmGroupId
+            ? {
+                swarmGroupId: swarmEvent.swarmGroupId,
+                kind: swarmEvent.kind,
+                text: swarmEvent.text,
+              }
+            : {}),
+        },
+        connIds,
+        { dropIfSlow: true },
+      );
+    } finally {
+      identityMutationFence.release();
+    }
   };
 }
