@@ -8,6 +8,7 @@ describe("serializeSessionCleanupResult", () => {
     const result = serializeSessionCleanupResult({
       mode: "enforce",
       dryRun: false,
+      allAgents: false,
       summaries: [
         {
           agentId: "main",

@@ -512,6 +512,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       const result = serializeSessionCleanupResult({
         mode,
         dryRun: false,
+        allAgents: params.allAgents ?? false,
         summaries: appliedSummaries,
       });
       respond(true, result, undefined);
@@ -525,7 +526,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       }
     } catch (error) {
       if (error instanceof SessionsCleanupPartialError) {
-        respondSessionsCleanupPartialFailure({ error, context, respond });
+        respondSessionsCleanupPartialFailure({
+          error,
+          allAgents: params.allAgents ?? false,
+          context,
+          respond,
+        });
         return;
       }
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));

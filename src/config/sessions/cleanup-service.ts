@@ -47,6 +47,7 @@ import type { SessionEntry } from "./types.js";
 export {
   SessionsCleanupPartialError,
   buildSessionsCleanupPartialResult,
+  isSessionsCleanupResult,
   serializeSessionCleanupResult,
   type SessionCleanupSummary,
   type SessionsCleanupResult,

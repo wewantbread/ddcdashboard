@@ -16,6 +16,7 @@ type SessionsCleanupHandlerRespond = Parameters<
 /** Responds ok:false with the typed partial result and emits sessions.changed for committed stores. */
 export function respondSessionsCleanupPartialFailure(opts: {
   error: SessionsCleanupPartialError;
+  allAgents: boolean;
   context: Parameters<typeof emitSessionsChanged>[0];
   respond: SessionsCleanupHandlerRespond;
 }): void {
@@ -23,7 +24,7 @@ export function respondSessionsCleanupPartialFailure(opts: {
     false,
     undefined,
     errorShape(ErrorCodes.INVALID_REQUEST, opts.error.message, {
-      details: buildSessionsCleanupPartialResult(opts.error),
+      details: buildSessionsCleanupPartialResult(opts.error, opts.allAgents),
     }),
   );
   for (const _ of opts.error.appliedSummaries) {

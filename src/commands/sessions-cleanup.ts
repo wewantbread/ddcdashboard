@@ -13,6 +13,7 @@ import {
   runSessionsCleanup,
   serializeSessionCleanupResult,
   SessionsCleanupPartialError,
+  isSessionsCleanupResult,
   type SessionCleanupSummary,
   type SessionsCleanupOptions,
   type SessionsCleanupPartialErrorDetail,
@@ -291,13 +292,14 @@ function asGatewayPartialCleanupResult(error: unknown): SessionsCleanupResult | 
   if (!error || typeof error !== "object") {
     return null;
   }
-  // SAFETY: Gateway error envelopes are untyped; details carries the partial result only when partialError is present.
+  // Gateway error envelopes are untyped; validate the closed SessionsCleanupResult shape
+  // before rendering. Nonconforming or older responses return null so the caller rethrows
+  // the original error instead of rendering a garbage partial result.
   const details = (error as { details?: unknown }).details;
-  if (!details || typeof details !== "object" || !("partialError" in details)) {
+  if (!isSessionsCleanupResult(details)) {
     return null;
   }
-  // SAFETY: Verified above via the "partialError" in details guard; details is the partial result shape.
-  return details as SessionsCleanupResult;
+  return details;
 }
 
 /** Runs session cleanup, optionally using the live gateway for active stores. */
@@ -383,6 +385,7 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
         serializeSessionCleanupResult({
           mode,
           dryRun: true,
+          allAgents: opts.allAgents ?? false,
           summaries: previewResults.map((result) => toDisplayedCleanupSummary(result.summary)),
         }),
       );
@@ -410,6 +413,7 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
       serializeSessionCleanupResult({
         mode,
         dryRun: false,
+        allAgents: opts.allAgents ?? false,
         summaries: appliedSummaries.map(toDisplayedCleanupSummary),
         ...(partialError ? { partialError } : {}),
       }),

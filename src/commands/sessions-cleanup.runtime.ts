@@ -2,6 +2,7 @@ import { resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import {
   resolveSessionCleanupAction,
   runSessionsCleanup,
+  SessionsCleanupPartialError,
   type SessionStoreTarget,
   type SessionsCleanupOptions,
 } from "../config/sessions.js";
@@ -116,11 +117,28 @@ export async function runLocalSessionsCleanup(
       owners = prepareCleanupHarnessOwners(params.cfg, workspaceDir);
       ownersByWorkspace.set(workspaceDir, owners);
     }
-    const result = await withPluginRuntimeRegistryScope(owners.registry, () =>
-      runSessionsCleanup({ ...params, targets: [target] }),
-    );
-    warnUnavailableCleanupOwners(owners, result, runtime);
-    results.push(result);
+    try {
+      const result = await withPluginRuntimeRegistryScope(owners.registry, () =>
+        runSessionsCleanup({ ...params, targets: [target] }),
+      );
+      warnUnavailableCleanupOwners(owners, result, runtime);
+      results.push(result);
+    } catch (error) {
+      if (error instanceof SessionsCleanupPartialError) {
+        throw new SessionsCleanupPartialError({
+          mode: error.mode,
+          previewResults: [...results.flatMap((r) => r.previewResults), ...error.previewResults],
+          appliedSummaries: [
+            ...results.flatMap((r) => r.appliedSummaries),
+            ...error.appliedSummaries,
+          ],
+          failingTarget: error.failingTarget,
+          lifecycleCommitted: error.lifecycleCommitted,
+          cause: error.cause,
+        });
+      }
+      throw error;
+    }
   }
   const first = results[0];
   if (!first) {

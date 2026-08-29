@@ -94,6 +94,7 @@ export class SessionsCleanupPartialError extends Error {
 export function serializeSessionCleanupResult(params: {
   mode: ResolvedSessionMaintenanceConfig["mode"];
   dryRun: boolean;
+  allAgents: boolean;
   summaries: SessionCleanupSummary[];
   partialError?: SessionsCleanupPartialErrorDetail;
 }): SessionsCleanupResult {
@@ -103,7 +104,7 @@ export function serializeSessionCleanupResult(params: {
       agentId: summary.agentId,
     }).path,
   }));
-  if (summaries.length === 1 && !params.partialError) {
+  if (!params.allAgents && summaries.length === 1) {
     const single = summaries[0];
     if (single) {
       return single;
@@ -135,10 +136,12 @@ export function serializeSessionCleanupResult(params: {
 /** Builds the serialized partial-cleanup result for a thrown SessionsCleanupPartialError. */
 export function buildSessionsCleanupPartialResult(
   error: SessionsCleanupPartialError,
+  allAgents: boolean,
 ): SessionsCleanupResult {
   return serializeSessionCleanupResult({
     mode: error.mode,
     dryRun: false,
+    allAgents,
     summaries: error.appliedSummaries,
     partialError: {
       failingAgentId: error.failingTarget.agentId,
@@ -147,4 +150,42 @@ export function buildSessionsCleanupPartialResult(
       lifecycleCommitted: error.lifecycleCommitted,
     },
   });
+}
+
+/**
+ * Runtime check that an untyped Gateway error `details` is a closed
+ * SessionsCleanupResult shape. The gateway-client preserves details as `unknown`,
+ * so a nonconforming or older Gateway response must not be rendered as a partial
+ * cleanup result; callers fall back to rethrowing the original error.
+ */
+export function isSessionsCleanupResult(value: unknown): value is SessionsCleanupResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.allAgents === true) {
+    if (
+      typeof record.mode !== "string" ||
+      typeof record.dryRun !== "boolean" ||
+      !Array.isArray(record.stores)
+    ) {
+      return false;
+    }
+    if (record.partialError !== undefined) {
+      const detail = record.partialError as Record<string, unknown>;
+      if (
+        typeof detail.failingAgentId !== "string" ||
+        typeof detail.failingStorePath !== "string" ||
+        typeof detail.message !== "string"
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return (
+    typeof record.agentId === "string" &&
+    typeof record.storePath === "string" &&
+    typeof record.mode === "string"
+  );
 }

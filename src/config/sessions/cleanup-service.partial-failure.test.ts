@@ -63,8 +63,10 @@ vi.mock("./session-accessor.sqlite-archive-store.js", async (importOriginal) => 
 
 import {
   runSessionsCleanup,
+  isSessionsCleanupResult,
   serializeSessionCleanupResult,
   SessionsCleanupPartialError,
+  type SessionCleanupSummary,
 } from "./cleanup-service.js";
 import { replaceSessionEntry } from "./session-accessor.js";
 
@@ -117,6 +119,7 @@ describe("sessions cleanup partial failure", () => {
     const serialized = serializeSessionCleanupResult({
       mode: error.mode,
       dryRun: false,
+      allAgents: true,
       summaries: error.appliedSummaries,
       partialError: {
         failingAgentId: error.failingTarget.agentId,
@@ -177,6 +180,7 @@ describe("sessions cleanup partial failure", () => {
     const serialized = serializeSessionCleanupResult({
       mode: error.mode,
       dryRun: false,
+      allAgents: true,
       summaries: error.appliedSummaries,
       partialError: {
         failingAgentId: error.failingTarget.agentId,
@@ -194,5 +198,101 @@ describe("sessions cleanup partial failure", () => {
         }),
       }),
     );
+  });
+});
+
+describe("serializeSessionCleanupResult single-store shape", () => {
+  const summary: SessionCleanupSummary = {
+    agentId: "work",
+    storePath: "/tmp/openclaw-test-store",
+    mode: "reset",
+    dryRun: false,
+    beforeCount: 5,
+    afterCount: 2,
+    missing: 0,
+    dmScopeRetired: 0,
+    modelRunPruned: 0,
+    pruned: 3,
+    capped: 0,
+    unreferencedArtifacts: { scanned: 0, pruned: 0, orphaned: 0 },
+    diskBudget: null,
+    wouldMutate: true,
+  };
+
+  it("returns a scalar summary for a single target without allAgents even on partial error", () => {
+    const serialized = serializeSessionCleanupResult({
+      mode: "reset",
+      dryRun: false,
+      allAgents: false,
+      summaries: [summary],
+      partialError: {
+        failingAgentId: "work",
+        failingStorePath: "/tmp/openclaw-test-store",
+        message: "boom",
+      },
+    });
+    expect((serialized as { allAgents?: boolean }).allAgents).toBeUndefined();
+    expect((serialized as { partialError?: unknown }).partialError).toBeUndefined();
+    expect(serialized.agentId).toBe("work");
+    expect(serialized.storePath).toContain("openclaw-test-store");
+  });
+
+  it("returns the allAgents envelope when allAgents is true", () => {
+    const serialized = serializeSessionCleanupResult({
+      mode: "reset",
+      dryRun: false,
+      allAgents: true,
+      summaries: [summary],
+      partialError: {
+        failingAgentId: "work",
+        failingStorePath: "/tmp/openclaw-test-store",
+        message: "boom",
+      },
+    });
+    expect(serialized).toEqual(
+      expect.objectContaining({
+        allAgents: true,
+        partialError: expect.objectContaining({ failingAgentId: "work", message: "boom" }),
+      }),
+    );
+  });
+});
+
+describe("isSessionsCleanupResult closed-shape guard", () => {
+  it("accepts a scalar summary", () => {
+    expect(isSessionsCleanupResult({ agentId: "work", storePath: "/s", mode: "reset" })).toBe(true);
+  });
+
+  it("accepts an allAgents envelope with partialError", () => {
+    expect(
+      isSessionsCleanupResult({
+        allAgents: true,
+        mode: "reset",
+        dryRun: false,
+        stores: [{ agentId: "work", storePath: "/s", mode: "reset" }],
+        partialError: { failingAgentId: "work", failingStorePath: "/s", message: "boom" },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a partialError envelope missing required strings", () => {
+    expect(
+      isSessionsCleanupResult({
+        allAgents: true,
+        mode: "reset",
+        dryRun: false,
+        stores: [],
+        partialError: { failingAgentId: 1 },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a scalar missing storePath", () => {
+    expect(isSessionsCleanupResult({ agentId: "work", mode: "reset" })).toBe(false);
+  });
+
+  it("rejects non-objects", () => {
+    expect(isSessionsCleanupResult(null)).toBe(false);
+    expect(isSessionsCleanupResult("nope")).toBe(false);
   });
 });
