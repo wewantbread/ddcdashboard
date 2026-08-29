@@ -82,6 +82,13 @@ export type SessionCleanupSummary = {
   appliedCount?: number;
 };
 
+export type SessionsCleanupPartialErrorDetail = {
+  failingAgentId: string;
+  failingStorePath: string;
+  message: string;
+  lifecycleCommitted?: boolean;
+};
+
 export type SessionsCleanupResult =
   | SessionCleanupSummary
   | {
@@ -89,6 +96,7 @@ export type SessionsCleanupResult =
       mode: ResolvedSessionMaintenanceConfig["mode"];
       dryRun: boolean;
       stores: SessionCleanupSummary[];
+      partialError?: SessionsCleanupPartialErrorDetail;
     };
 
 type SessionsCleanupRunResult = {
@@ -105,6 +113,41 @@ type SessionsCleanupRunResult = {
   }>;
   appliedSummaries: SessionCleanupSummary[];
 };
+
+/**
+ * Thrown when `sessions.cleanup` applies some stores but a later target fails
+ * after its lifecycle mutation committed. Carries the already-applied summaries
+ * so callers can render the partial result instead of a silent success.
+ */
+export class SessionsCleanupPartialError extends Error {
+  readonly mode: ResolvedSessionMaintenanceConfig["mode"];
+  readonly previewResults: SessionsCleanupRunResult["previewResults"];
+  readonly appliedSummaries: SessionCleanupSummary[];
+  readonly failingTarget: SessionStoreTarget;
+  readonly lifecycleCommitted: boolean;
+
+  constructor(params: {
+    mode: ResolvedSessionMaintenanceConfig["mode"];
+    previewResults: SessionsCleanupRunResult["previewResults"];
+    appliedSummaries: SessionCleanupSummary[];
+    failingTarget: SessionStoreTarget;
+    cause: unknown;
+    lifecycleCommitted?: boolean;
+  }) {
+    const causeMessage =
+      params.cause instanceof Error ? params.cause.message : String(params.cause);
+    super(
+      `Session cleanup failed for target agent '${params.failingTarget.agentId}': ${causeMessage}`,
+      { cause: params.cause },
+    );
+    this.name = "SessionsCleanupPartialError";
+    this.mode = params.mode;
+    this.previewResults = params.previewResults;
+    this.appliedSummaries = params.appliedSummaries;
+    this.failingTarget = params.failingTarget;
+    this.lifecycleCommitted = Boolean(params.lifecycleCommitted);
+  }
+}
 
 function resolveCleanupSqlitePath(target: SessionStoreTarget): string {
   return resolveSqliteTargetFromSessionStorePath(target.storePath, { agentId: target.agentId })
@@ -265,6 +308,7 @@ export function serializeSessionCleanupResult(params: {
   mode: ResolvedSessionMaintenanceConfig["mode"];
   dryRun: boolean;
   summaries: SessionCleanupSummary[];
+  partialError?: SessionsCleanupPartialErrorDetail;
 }): SessionsCleanupResult {
   const summaries = params.summaries.map((summary) => ({
     ...summary,
@@ -272,14 +316,32 @@ export function serializeSessionCleanupResult(params: {
       agentId: summary.agentId,
     }).path,
   }));
-  if (summaries.length === 1) {
-    return summaries[0] ?? ({} as SessionCleanupSummary);
+  if (summaries.length === 1 && !params.partialError) {
+    const single = summaries[0];
+    if (single) {
+      return single;
+    }
   }
   return {
     allAgents: true,
     mode: params.mode,
     dryRun: params.dryRun,
     stores: summaries,
+    ...(params.partialError
+      ? {
+          partialError: {
+            failingAgentId: params.partialError.failingAgentId,
+            failingStorePath: resolveSqliteTargetFromSessionStorePath(
+              params.partialError.failingStorePath,
+              { agentId: params.partialError.failingAgentId },
+            ).path,
+            message: params.partialError.message,
+            ...(params.partialError.lifecycleCommitted !== undefined
+              ? { lifecycleCommitted: params.partialError.lifecycleCommitted }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -568,121 +630,136 @@ export async function runSessionsCleanup(params: {
   const appliedSummaries: SessionCleanupSummary[] = [];
   if (!opts.dryRun) {
     for (const target of targets) {
-      const applyStore = loadCleanupSessionStore(target, { createIfMissing: true });
-      const missingRemovals: SessionEntryLifecycleRemoval[] = [];
-      const dmScopeRetiredRemovals: SessionEntryLifecycleRemoval[] = [];
-      if (opts.fixMissing) {
-        pruneMissingTranscriptEntries({
-          store: applyStore,
-          target,
-          onPruned: (sessionKey, entry, inspection) => {
-            missingRemovals.push({
-              sessionKey,
-              expectedEntry: structuredClone(entry),
-              archiveRemovedTranscript: true,
-              ...(inspection ? { expectedTranscriptSnapshot: inspection.snapshot } : {}),
-            });
+      let lifecycleCommitted = false;
+      try {
+        const applyStore = loadCleanupSessionStore(target, { createIfMissing: true });
+        const missingRemovals: SessionEntryLifecycleRemoval[] = [];
+        const dmScopeRetiredRemovals: SessionEntryLifecycleRemoval[] = [];
+        if (opts.fixMissing) {
+          pruneMissingTranscriptEntries({
+            store: applyStore,
+            target,
+            onPruned: (sessionKey, entry, inspection) => {
+              missingRemovals.push({
+                sessionKey,
+                expectedEntry: structuredClone(entry),
+                archiveRemovedTranscript: true,
+                ...(inspection ? { expectedTranscriptSnapshot: inspection.snapshot } : {}),
+              });
+            },
+          });
+        }
+        if (opts.fixDmScope) {
+          retireMainScopeDirectSessionEntries({
+            cfg,
+            store: applyStore,
+            targetAgentId: target.agentId,
+            activeKey: opts.activeKey,
+            onRetired: (sessionKey, entry) => {
+              dmScopeRetiredRemovals.push({
+                sessionKey,
+                expectedEntry: structuredClone(entry),
+                archiveRemovedTranscript: true,
+              });
+            },
+          });
+        }
+        const removals: SessionEntryLifecycleRemoval[] = [
+          ...missingRemovals,
+          ...dmScopeRetiredRemovals,
+        ];
+        const lifecycleResult = await applySessionEntryLifecycleMutation({
+          agentId: target.agentId,
+          storePath: target.storePath,
+          removals,
+          activeSessionKey: opts.activeKey,
+          onLifecycleCommitted: () => {
+            lifecycleCommitted = true;
+          },
+          maintenanceOverride: {
+            ...maintenance,
+            mode,
           },
         });
-      }
-      if (opts.fixDmScope) {
-        retireMainScopeDirectSessionEntries({
-          cfg,
-          store: applyStore,
-          targetAgentId: target.agentId,
-          activeKey: opts.activeKey,
-          onRetired: (sessionKey, entry) => {
-            dmScopeRetiredRemovals.push({
-              sessionKey,
-              expectedEntry: structuredClone(entry),
-              archiveRemovedTranscript: true,
-            });
-          },
-        });
-      }
-      const removals: SessionEntryLifecycleRemoval[] = [
-        ...missingRemovals,
-        ...dmScopeRetiredRemovals,
-      ];
-      const lifecycleResult = await applySessionEntryLifecycleMutation({
-        agentId: target.agentId,
-        storePath: target.storePath,
-        removals,
-        activeSessionKey: opts.activeKey,
-        maintenanceOverride: {
-          ...maintenance,
+        const postApplyStore = loadCleanupSessionStore(target, { createIfMissing: true });
+        const appliedUnreferencedArtifacts =
+          mode === "warn"
+            ? null
+            : await pruneUnreferencedSessionArtifacts({
+                store: postApplyStore,
+                storePath: target.storePath,
+                olderThanMs: maintenance.pruneAfterMs,
+                dryRun: false,
+              });
+        const removedSessionKeys = new Set(lifecycleResult.removedSessionKeys);
+        const unreferencedArtifacts =
+          mode === "warn"
+            ? {
+                scannedFiles: 0,
+                removedFiles: 0,
+                freedBytes: 0,
+                olderThanMs: maintenance.pruneAfterMs,
+              }
+            : (appliedUnreferencedArtifacts ?? {
+                scannedFiles: 0,
+                removedFiles: 0,
+                freedBytes: 0,
+                olderThanMs: maintenance.pruneAfterMs,
+              });
+        const appliedDiskBudget = await enforceSqliteSessionHistoryDiskBudget({
+          agentId: target.agentId,
+          storePath: target.storePath,
           mode,
-        },
-      });
-      const postApplyStore = loadCleanupSessionStore(target, { createIfMissing: true });
-      const appliedUnreferencedArtifacts =
-        mode === "warn"
-          ? null
-          : await pruneUnreferencedSessionArtifacts({
-              store: postApplyStore,
-              storePath: target.storePath,
-              olderThanMs: maintenance.pruneAfterMs,
-              dryRun: false,
-            });
-      const removedSessionKeys = new Set(lifecycleResult.removedSessionKeys);
-      const unreferencedArtifacts =
-        mode === "warn"
-          ? {
-              scannedFiles: 0,
-              removedFiles: 0,
-              freedBytes: 0,
-              olderThanMs: maintenance.pruneAfterMs,
-            }
-          : (appliedUnreferencedArtifacts ?? {
-              scannedFiles: 0,
-              removedFiles: 0,
-              freedBytes: 0,
-              olderThanMs: maintenance.pruneAfterMs,
-            });
-      const appliedDiskBudget = await enforceSqliteSessionHistoryDiskBudget({
-        agentId: target.agentId,
-        storePath: target.storePath,
-        mode,
-        maintenance,
-      });
-      const missing = missingRemovals.filter(({ sessionKey }) =>
-        removedSessionKeys.has(sessionKey),
-      ).length;
-      const dmScopeRetired = dmScopeRetiredRemovals.filter(({ sessionKey }) =>
-        removedSessionKeys.has(sessionKey),
-      ).length;
-      const maintenanceRemovedEntries =
-        lifecycleResult.modelRunPruned + lifecycleResult.pruned + lifecycleResult.capped;
-      const summary: SessionCleanupSummary = {
-        agentId: target.agentId,
-        storePath: target.storePath,
-        mode,
-        dryRun: false,
-        beforeCount: lifecycleResult.beforeCount,
-        afterCount: lifecycleResult.afterCount,
-        missing,
-        dmScopeRetired,
-        modelRunPruned: lifecycleResult.modelRunPruned,
-        archived: lifecycleResult.archived,
-        pruned: lifecycleResult.pruned,
-        capped: lifecycleResult.capped,
-        unreferencedArtifacts,
-        diskBudget: appliedDiskBudget,
-        wouldMutate:
-          lifecycleResult.removedEntries > 0 ||
-          lifecycleResult.archived > 0 ||
-          maintenanceRemovedEntries > 0 ||
-          unreferencedArtifacts.removedFiles > 0 ||
-          (appliedDiskBudget?.removedEntries ?? 0) > 0 ||
-          (appliedDiskBudget?.removedFiles ?? 0) > 0 ||
-          // Checkpoint/incremental-vacuum reclamation mutates the store
-          // even when no session or archive was removed.
-          (appliedDiskBudget != null &&
-            appliedDiskBudget.totalBytesAfter < appliedDiskBudget.totalBytesBefore),
-        applied: true,
-        appliedCount: lifecycleResult.afterCount,
-      };
-      appliedSummaries.push(summary);
+          maintenance,
+        });
+        const missing = missingRemovals.filter(({ sessionKey }) =>
+          removedSessionKeys.has(sessionKey),
+        ).length;
+        const dmScopeRetired = dmScopeRetiredRemovals.filter(({ sessionKey }) =>
+          removedSessionKeys.has(sessionKey),
+        ).length;
+        const maintenanceRemovedEntries =
+          lifecycleResult.modelRunPruned + lifecycleResult.pruned + lifecycleResult.capped;
+        const summary: SessionCleanupSummary = {
+          agentId: target.agentId,
+          storePath: target.storePath,
+          mode,
+          dryRun: false,
+          beforeCount: lifecycleResult.beforeCount,
+          afterCount: lifecycleResult.afterCount,
+          missing,
+          dmScopeRetired,
+          modelRunPruned: lifecycleResult.modelRunPruned,
+          archived: lifecycleResult.archived,
+          pruned: lifecycleResult.pruned,
+          capped: lifecycleResult.capped,
+          unreferencedArtifacts,
+          diskBudget: appliedDiskBudget,
+          wouldMutate:
+            lifecycleResult.removedEntries > 0 ||
+            lifecycleResult.archived > 0 ||
+            maintenanceRemovedEntries > 0 ||
+            unreferencedArtifacts.removedFiles > 0 ||
+            (appliedDiskBudget?.removedEntries ?? 0) > 0 ||
+            (appliedDiskBudget?.removedFiles ?? 0) > 0 ||
+            // Checkpoint/incremental-vacuum reclamation mutates the store
+            // even when no session or archive was removed.
+            (appliedDiskBudget != null &&
+              appliedDiskBudget.totalBytesAfter < appliedDiskBudget.totalBytesBefore),
+          applied: true,
+          appliedCount: lifecycleResult.afterCount,
+        };
+        appliedSummaries.push(summary);
+      } catch (cause) {
+        throw new SessionsCleanupPartialError({
+          mode,
+          previewResults,
+          appliedSummaries,
+          failingTarget: target,
+          cause,
+          lifecycleCommitted,
+        });
+      }
     }
   }
 

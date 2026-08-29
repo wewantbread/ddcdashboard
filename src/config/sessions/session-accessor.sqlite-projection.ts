@@ -259,6 +259,8 @@ export async function applySessionEntryLifecycleMutation(params: {
   afterUpsertsInTransaction?: (database: OpenClawAgentDatabase) => void;
   /** Synchronous caller-authority guard checked immediately before lifecycle writes. */
   beforeCommitInTransaction?: () => void;
+  /** Fires once the lifecycle mutation has committed, so callers can observe committed stores. */
+  onLifecycleCommitted?: () => void;
 }): Promise<SessionEntryLifecycleMutationResult> {
   const resolved = resolveSqliteScope({
     ...(params.agentId ? { agentId: params.agentId } : {}),
@@ -313,6 +315,8 @@ export async function applySessionEntryLifecycleMutation(params: {
         ),
     };
   });
+
+  params.onLifecycleCommitted?.();
 
   function commitProjectedLifecycleMutation(
     removalPlans: MaterializedSessionStateDeletePlan[],
