@@ -363,7 +363,11 @@ export function buildOpenAIResponsesParams(
     }
   }
   if (model.reasoning) {
-    if (options?.reasoningEffort || options?.reasoning || options?.reasoningSummary) {
+    if (
+      options?.reasoningEffort !== undefined ||
+      options?.reasoning !== undefined ||
+      options?.reasoningSummary !== undefined
+    ) {
       const requestedReasoningEffort = resolveOpenAIReasoningEffort(options);
       const resolvedReasoningEffort = resolveOpenAIReasoningEffortForModel({
         model,
@@ -379,7 +383,12 @@ export function buildOpenAIResponsesParams(
       if (reasoningEffort) {
         params.reasoning = {
           effort: reasoningEffort,
-          ...(reasoningEffort === "none" ? {} : { summary: options?.reasoningSummary || "auto" }),
+          ...(reasoningEffort === "none"
+            ? {}
+            : {
+                summary:
+                  options?.reasoningSummary === undefined ? "auto" : options.reasoningSummary,
+              }),
         };
         if (reasoningEffort !== "none") {
           params.include = ["reasoning.encrypted_content"];
