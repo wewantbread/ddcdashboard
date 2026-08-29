@@ -5,7 +5,18 @@ import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.j
 import { registerSessionResourceCleanup } from "../session-resources.js";
 import { sha256Hex } from "./transport-utils.js";
 
-const HTTP_CONTINUATION_IDLE_TTL_MS = 5 * 60 * 1000;
+// Default only for callers that don't resolve a per-model TTL via
+// resolveOpenAIResponsesPayloadPolicy (e.g. direct test/tooling callers).
+// The real transport call site always passes an explicit idleTtlMs.
+const DEFAULT_HTTP_CONTINUATION_IDLE_TTL_MS = 90 * 60 * 1000;
+// A ready entry retains the full request/response baseline for as long as
+// idleTtlMs, and that TTL now defaults 18x longer (5m -> 90m) with an
+// operator-configurable ceiling near 25 days. Without a capacity cap, a
+// burst of concurrent sessions/connections could grow this process-wide
+// map unbounded for the entire idle window. Claimed entries (in-flight,
+// no retained baseline) don't count against the cap -- they're already
+// bounded by the request they represent.
+export const MAX_HTTP_CONTINUATION_READY_ENTRIES = 1000;
 const TURN_HEADERS = new Set(["traceparent", "x-openclaw-turn-id", "x-openclaw-turn-attempt"]);
 
 export type ResponsesContinuationRequest = Record<string, unknown> & {
@@ -134,11 +145,41 @@ type HttpContinuationEntry =
       generation: number;
       state: ResponsesContinuationState;
       idleTimer: ReturnType<typeof setTimeout>;
+      readyAtMs: number;
     }
   | { kind: "claimed"; sessionId: string; generation: number };
 
 const httpContinuationEntries = new Map<string, HttpContinuationEntry>();
 let nextHttpContinuationGeneration = 1;
+
+// Deterministic capacity policy for MAX_HTTP_CONTINUATION_READY_ENTRIES:
+// evict the least-recently-committed ready entry, since that's the one
+// least likely to be reused before its own idle TTL would have expired it
+// anyway. Scans only ready entries (bounded by the cap itself), not the
+// full map, so cost stays proportional to the configured limit.
+function evictOldestReadyEntryAtCapacity(): void {
+  let readyCount = 0;
+  let oldestKey: string | undefined;
+  let oldestReadyAtMs = Infinity;
+  for (const [key, entry] of httpContinuationEntries) {
+    if (entry.kind !== "ready") {
+      continue;
+    }
+    readyCount += 1;
+    if (entry.readyAtMs < oldestReadyAtMs) {
+      oldestReadyAtMs = entry.readyAtMs;
+      oldestKey = key;
+    }
+  }
+  if (readyCount < MAX_HTTP_CONTINUATION_READY_ENTRIES || !oldestKey) {
+    return;
+  }
+  const evicted = httpContinuationEntries.get(oldestKey);
+  if (evicted?.kind === "ready") {
+    clearTimeout(evicted.idleTimer);
+  }
+  httpContinuationEntries.delete(oldestKey);
+}
 
 type HttpContinuationIdentity = {
   apiKey: string;
@@ -165,9 +206,12 @@ export function claimOpenAIResponsesHttpContinuation(
   params: HttpContinuationIdentity & {
     sessionId: string;
     request: ResponsesContinuationRequest;
+    /** Idle eviction bound; resolved per-model via resolveOpenAIResponsesPayloadPolicy. */
+    idleTtlMs?: number;
   },
 ) {
   const key = `${params.sessionId}\0${connectionIdentity(params)}`;
+  const idleTtlMs = params.idleTtlMs ?? DEFAULT_HTTP_CONTINUATION_IDLE_TTL_MS;
   const previous = httpContinuationEntries.get(key);
   if (previous?.kind === "claimed") {
     return undefined;
@@ -193,7 +237,7 @@ export function claimOpenAIResponsesHttpContinuation(
         if (current?.kind === "ready" && current.generation === generation) {
           httpContinuationEntries.delete(key);
         }
-      }, HTTP_CONTINUATION_IDLE_TTL_MS);
+      }, idleTtlMs);
       idleTimer.unref?.();
       const ready = {
         ...claimed,
@@ -204,7 +248,9 @@ export function claimOpenAIResponsesHttpContinuation(
           lastResponseItems: response.output,
         },
         idleTimer,
+        readyAtMs: Date.now(),
       } satisfies Extract<HttpContinuationEntry, { kind: "ready" }>;
+      evictOldestReadyEntryAtCapacity();
       httpContinuationEntries.set(key, ready);
     },
     release: () => {
