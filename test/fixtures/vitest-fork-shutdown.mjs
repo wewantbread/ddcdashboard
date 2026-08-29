@@ -252,29 +252,31 @@ it("completes the test before worker shutdown", () => {
 });
 `,
   );
-  const args =
-    scenario === "plain" || scenario === "custom"
-      ? [
-          path.join(repo, "scripts/run-vitest.mjs"),
-          "run",
-          "--config",
-          config,
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ]
-      : [
-          path.join(repo, "scripts/run-vitest-profile.mts"),
-          "runner",
-          "--output-dir",
-          profiles,
-          "--",
-          "--root",
-          root,
-          "--configLoader",
-          "native",
-        ];
+  // Runner profiling supports only the built-in forks and threads pools.
+  // Keep alternate and custom pool shutdown coverage on the direct Vitest path.
+  const profilesEnabled = !["plain", "vmForks", "custom", "custom-opt-in"].includes(scenario);
+  const args = !profilesEnabled
+    ? [
+        path.join(repo, "scripts/run-vitest.mjs"),
+        "run",
+        "--config",
+        config,
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ]
+    : [
+        path.join(repo, "scripts/run-vitest-profile.mts"),
+        "runner",
+        "--output-dir",
+        profiles,
+        "--",
+        "--root",
+        root,
+        "--configLoader",
+        "native",
+      ];
   const { child, completion } = spawnOwnedVitestProcess({
     command: process.execPath,
     args,
@@ -316,6 +318,7 @@ it("completes the test before worker shutdown", () => {
       output,
       workerStopped,
       profiles: counts,
+      profilesEnabled,
       homeRemoved: !fs.existsSync(state.home),
       callerPreserved: fs.readFileSync(path.join(root, "home", "caller"), "utf8") === "keep",
       events: fs.existsSync(events)

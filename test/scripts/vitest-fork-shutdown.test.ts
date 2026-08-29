@@ -67,7 +67,7 @@ it.each([
       false,
     );
     expect(result.events).toContainEqual({ event: "terminate", signal: "SIGTERM" });
-  } else if (scenario !== "plain") {
+  } else if (result.profilesEnabled) {
     expect(result.profiles.cpu, result.output).toBeGreaterThan(0);
     expect(result.profiles.heap, result.output).toBeGreaterThan(0);
     expect(result.events.some((event: { event: string }) => event.event === "terminate")).toBe(
