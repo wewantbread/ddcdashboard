@@ -17,6 +17,8 @@ import {
   resolveMantleSonnet5Cost,
 } from "./discovery.js";
 import { createMantleAnthropicStreamFn } from "./mantle-anthropic.runtime.js";
+import { createMantleOpenAIResponsesStreamWrapper } from "./mantle-openai-responses.runtime.js";
+import { supportsMantleExplicitPromptCaching } from "./model-capabilities.js";
 
 const MANTLE_OPUS_5_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 
@@ -36,13 +38,28 @@ function normalizeMantleResolvedModel(params: {
     : resolveClaudeSonnet5ModelIdentity(ref)
       ? resolveMantleSonnet5Cost()
       : undefined;
-  if (!cost) {
+  const needsPromptCacheCompat =
+    supportsMantleExplicitPromptCaching(params.modelId) &&
+    params.model.api === "openai-responses" &&
+    (params.model.compat?.supportsPromptCacheKey !== true ||
+      params.model.compat?.supportsLongCacheRetention !== false);
+  const needsCostUpdate = cost !== undefined && !modelCostsEqual(params.model.cost, cost);
+  if (!needsCostUpdate && !needsPromptCacheCompat) {
     return undefined;
   }
-  if (modelCostsEqual(params.model.cost, cost)) {
-    return undefined;
-  }
-  return { ...params.model, cost };
+  return {
+    ...params.model,
+    ...(needsCostUpdate ? { cost } : {}),
+    ...(needsPromptCacheCompat
+      ? {
+          compat: {
+            ...params.model.compat,
+            supportsLongCacheRetention: false,
+            supportsPromptCacheKey: true,
+          },
+        }
+      : {}),
+  };
 }
 
 /** Register the Amazon Bedrock Mantle provider with OpenClaw. */
@@ -92,6 +109,8 @@ export function registerBedrockMantlePlugin(api: OpenClawPluginApi): void {
       normalizeMantleResolvedModel({ modelId, model }),
     createStreamFn: ({ model }) =>
       model.api === "anthropic-messages" ? createMantleAnthropicStreamFn() : undefined,
+    wrapSimpleCompletionStreamFn: createMantleOpenAIResponsesStreamWrapper,
+    wrapStreamFn: createMantleOpenAIResponsesStreamWrapper,
     matchesContextOverflowError: ({ errorMessage }) =>
       /context_length_exceeded|max.*tokens.*exceeded/i.test(errorMessage),
     classifyFailoverReason: ({ errorMessage }) => {

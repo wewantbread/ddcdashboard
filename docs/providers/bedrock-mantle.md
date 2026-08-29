@@ -1,6 +1,7 @@
 ---
 summary: "Use Amazon Bedrock Mantle OpenAI-compatible and Claude Messages models with OpenClaw"
 read_when:
+  - You use GPT-5.6 through a Mantle Responses route and want prompt-cache control
   - You want to use Bedrock Mantle hosted OSS models with OpenClaw
   - You need the Mantle OpenAI-compatible endpoint for GPT-OSS, Qwen, Kimi, or GLM
   - You want to use Claude Opus 5, Sonnet 5, or Mythos 5 through Amazon Bedrock Mantle
@@ -148,6 +149,33 @@ complete Claude model entries you want to use.
 ## Advanced configuration
 
 <AccordionGroup>
+  <Accordion title="OpenAI Responses and prompt caching">
+    When GPT-5.6 Sol, Terra, or Luna is resolved through Mantle with
+    `api: "openai-responses"`, OpenClaw selects explicit prompt caching. For a
+    manually configured model, use the Mantle `/openai/v1` base URL. Automatic
+    discovery owns model-to-endpoint routing separately.
+
+    The plugin places one cache breakpoint after the stable system-prompt
+    prefix and keeps dynamic runtime additions after that breakpoint. This
+    avoids rewriting the full conversation prefix when user messages or tool
+    results change.
+
+    A GPT-5.6 cache breakpoint needs at least 1,024 tokens. Eligible prefixes
+    remain available for at least 30 minutes. Inspect `cached_tokens` and
+    `cache_write_tokens` in the Responses usage details to confirm reuse.
+
+    Set `cacheRetention: "none"` in the selected model's parameters to send
+    explicit mode without a breakpoint. That disables prompt-cache writes for
+    the request.
+
+    Mantle uses its provider-managed cache lifetime, so `cacheRetention: "long"`
+    does not send OpenAI's `prompt_cache_retention: "24h"` field.
+
+    See [Amazon Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html)
+    for the model limits and billing behavior.
+
+  </Accordion>
+
   <Accordion title="Reasoning support">
     Reasoning support is inferred from model IDs containing patterns like
     `thinking`, `reasoner`, `reasoning`, `deepseek.r`, `gpt-oss-120b`, or

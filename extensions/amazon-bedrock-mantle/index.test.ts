@@ -1,7 +1,23 @@
 // Amazon Bedrock Mantle tests cover index plugin behavior.
+import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import bedrockMantlePlugin from "./index.js";
+
+function createGpt56ResponsesModel() {
+  return {
+    id: "openai.gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    api: "openai-responses",
+    provider: "amazon-bedrock-mantle",
+    baseUrl: "https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275 },
+    contextWindow: 272_000,
+    maxTokens: 65_536,
+  };
+}
 
 describe("amazon-bedrock-mantle provider plugin", () => {
   beforeEach(() => {
@@ -126,6 +142,235 @@ describe("amazon-bedrock-mantle provider plugin", () => {
         },
       } as never),
     ).toBeUndefined();
+  });
+
+  it("injects explicit prompt caching for Mantle GPT-5.6 Responses models", async () => {
+    const provider = await registerSingleProviderPlugin(bedrockMantlePlugin);
+    const model = createGpt56ResponsesModel();
+    let capturedPayload: Record<string, unknown> = {};
+    const baseStreamFn: StreamFn = (selectedModel, _context, options) => {
+      const payload = {
+        model: selectedModel.id,
+        input: [
+          {
+            type: "message",
+            role: "developer",
+            content: [
+              {
+                type: "input_text",
+                text: "Stable system prompt\nDynamic runtime context",
+              },
+            ],
+          },
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Hello" }],
+          },
+        ],
+        prompt_cache_key: "session-123",
+        stream: true,
+      };
+      void options?.onPayload?.(payload, selectedModel);
+      capturedPayload = payload;
+      return {} as ReturnType<StreamFn>;
+    };
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "amazon-bedrock-mantle",
+      modelId: model.id,
+      model,
+      streamFn: baseStreamFn,
+    } as never);
+    expect(wrapped).toBeTypeOf("function");
+    if (!wrapped) {
+      throw new Error("Mantle GPT-5.6 Responses wrapper missing");
+    }
+    void wrapped(
+      model as never,
+      {
+        systemPrompt:
+          "Stable system prompt\n<!-- OPENCLAW_CACHE_BOUNDARY -->\nDynamic runtime context",
+        messages: [],
+      },
+      {},
+    );
+
+    expect(capturedPayload.prompt_cache_options).toEqual({ mode: "explicit" });
+    expect(capturedPayload.input).toEqual([
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "Stable system prompt",
+            prompt_cache_breakpoint: { mode: "explicit" },
+          },
+          {
+            type: "input_text",
+            text: "Dynamic runtime context",
+          },
+        ],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Hello" }],
+      },
+    ]);
+
+    const normalized = provider.normalizeResolvedModel?.({
+      provider: "amazon-bedrock-mantle",
+      modelId: model.id,
+      model,
+    } as never);
+    expect(normalized?.compat).toMatchObject({
+      supportsLongCacheRetention: false,
+      supportsPromptCacheKey: true,
+    });
+
+    capturedPayload = {};
+    void wrapped(
+      model as never,
+      { systemPrompt: "Stable system prompt", messages: [] },
+      { cacheRetention: "none" },
+    );
+    expect(capturedPayload.prompt_cache_options).toEqual({ mode: "explicit" });
+    expect(JSON.stringify(capturedPayload)).not.toContain("prompt_cache_breakpoint");
+
+    expect(
+      provider.wrapStreamFn?.({
+        provider: "amazon-bedrock-mantle",
+        modelId: "openai.gpt-5.5",
+        model: { ...model, id: "openai.gpt-5.5" },
+        streamFn: baseStreamFn,
+      } as never),
+    ).toBeUndefined();
+  });
+
+  it("retains the shared Responses payload policy on Mantle cache requests", async () => {
+    const provider = await registerSingleProviderPlugin(bedrockMantlePlugin);
+    const model = createGpt56ResponsesModel();
+    const normalized =
+      provider.normalizeResolvedModel?.({
+        provider: "amazon-bedrock-mantle",
+        modelId: model.id,
+        model,
+      } as never) ?? model;
+    let capturedPayload: Record<string, unknown> = {};
+    const baseStreamFn: StreamFn = (selectedModel, _context, options) => {
+      const payload = {
+        model: selectedModel.id,
+        input: [
+          {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "Stable system prompt" }],
+          },
+          {
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: [{ type: "output_text", text: "Earlier reply" }],
+          },
+        ],
+        reasoning: { effort: "none", summary: "auto" },
+        prompt_cache_key: "session-123",
+        stream: true,
+      };
+      void options?.onPayload?.(payload, selectedModel);
+      capturedPayload = payload;
+      return {} as ReturnType<StreamFn>;
+    };
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "amazon-bedrock-mantle",
+      modelId: model.id,
+      model: normalized,
+      streamFn: baseStreamFn,
+    } as never);
+    if (!wrapped) {
+      throw new Error("Mantle GPT-5.6 Responses wrapper missing");
+    }
+
+    void wrapped(normalized as never, { systemPrompt: "Stable system prompt", messages: [] }, {});
+
+    expect(capturedPayload).not.toHaveProperty("reasoning");
+    expect(capturedPayload.input).toEqual([
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "Stable system prompt",
+            prompt_cache_breakpoint: { mode: "explicit" },
+          },
+        ],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Earlier reply" }],
+      },
+    ]);
+  });
+
+  it("applies explicit caching to simple completions without 24-hour retention", async () => {
+    const provider = await registerSingleProviderPlugin(bedrockMantlePlugin);
+    const model = createGpt56ResponsesModel();
+    const normalized =
+      provider.normalizeResolvedModel?.({
+        provider: "amazon-bedrock-mantle",
+        modelId: model.id,
+        model,
+      } as never) ?? model;
+    let capturedPayload: Record<string, unknown> = {};
+    const baseStreamFn: StreamFn = (selectedModel, _context, options) => {
+      const supportsLongCacheRetention = selectedModel.compat?.supportsLongCacheRetention !== false;
+      const payload = {
+        model: selectedModel.id,
+        input: [
+          {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: "Stable system prompt" }],
+          },
+        ],
+        prompt_cache_key: "session-123",
+        ...(options?.cacheRetention === "long" && supportsLongCacheRetention
+          ? { prompt_cache_retention: "24h" }
+          : {}),
+        stream: true,
+      };
+      void options?.onPayload?.(payload, selectedModel);
+      capturedPayload = payload;
+      return {} as ReturnType<StreamFn>;
+    };
+    const simpleCompletionModel = {
+      ...normalized,
+      api: "openclaw-provider-stream:amazon-bedrock-mantle",
+    };
+    const wrapped = provider.wrapSimpleCompletionStreamFn?.({
+      provider: "amazon-bedrock-mantle",
+      modelId: model.id,
+      model: simpleCompletionModel,
+      sourceApi: "openai-responses",
+      streamFn: baseStreamFn,
+    } as never);
+    expect(wrapped).toBeTypeOf("function");
+    if (!wrapped) {
+      throw new Error("Mantle GPT-5.6 simple-completion wrapper missing");
+    }
+
+    void wrapped(
+      simpleCompletionModel as never,
+      { systemPrompt: "Stable system prompt", messages: [] },
+      { cacheRetention: "long" },
+    );
+
+    expect(capturedPayload.prompt_cache_options).toEqual({ mode: "explicit" });
+    expect(JSON.stringify(capturedPayload)).not.toContain("prompt_cache_retention");
   });
 
   it("restores missing or stale Opus 5 pricing during runtime normalization", async () => {
