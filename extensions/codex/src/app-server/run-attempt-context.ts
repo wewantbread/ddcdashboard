@@ -1,4 +1,5 @@
 import {
+  buildAgentHookContextChannelFields,
   bootstrapHarnessContextEngine,
   buildHarnessContextEngineRuntimeContext,
   CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
@@ -97,15 +98,21 @@ export async function prepareCodexAttemptContext(
       ? { contextWindowReferenceTokens: effectiveContextWindowInfo.referenceTokens }
       : {}),
   };
-  const hookContext = {
+    const hookContext = {
     runId: params.runId,
     agentId: sessionAgentId,
     sessionKey: sandboxSessionKey,
     sessionId: params.sessionId,
     workspaceDir: params.workspaceDir,
-    messageProvider: params.messageProvider ?? undefined,
-    trigger: params.trigger,
+    ...buildAgentHookContextChannelFields({
+      sessionKey: sandboxSessionKey,
+      messageProvider: params.messageProvider,
+      currentChannelId: params.currentChannelId,
+      messageTo: params.messageTo,
+      senderId: params.senderId,
+    }),
     channelId: hookChannelId,
+    trigger: params.trigger,
     ...hookContextWindowFields,
   };
   const hookRunner = getAgentHarnessHookRunner();
