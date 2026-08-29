@@ -6,10 +6,11 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureClawHubPackageTrustAcknowledged } from "../../src/infra/clawhub-install-trust.js";
+import { checkClawHubPackageTrust } from "../../src/infra/clawhub-install-trust.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const SCRIPT_PATH = path.resolve("scripts/e2e/lib/clawhub-fixture-server.cjs");
+const UPGRADE_SURVIVOR_RUN_PATH = path.resolve("scripts/e2e/lib/upgrade-survivor/run.sh");
 const PACKAGE_NAME = "@openclaw/kitchen-sink";
 const PACKAGE_PATH = `/api/v1/packages/${encodeURIComponent(PACKAGE_NAME)}`;
 const KITCHEN_SINK_VERSION = "0.2.5";
@@ -87,6 +88,7 @@ function runPrepublishAssertion(
   version?: string,
   securityMode?: "required" | "absent",
   cwd = process.cwd(),
+  attempts?: number | "complete",
 ) {
   return spawnSync(
     process.execPath,
@@ -96,7 +98,8 @@ function runPrepublishAssertion(
       baseUrl ?? "",
       packageName ?? "",
       version ?? "",
-      ...(securityMode ? [securityMode] : []),
+      ...(securityMode || attempts ? [securityMode ?? "required"] : []),
+      ...(attempts ? [String(attempts)] : []),
     ],
     { cwd, encoding: "utf8", env: { ...process.env } },
   );
@@ -111,6 +114,34 @@ function runNoRequestsAssertion(baseUrl?: string, cwd = process.cwd()) {
 }
 
 describe("ClawHub fixture server", () => {
+  it("accepts complete audit sequences for auto-auth upgrade recovery", () => {
+    const runner = readFileSync(UPGRADE_SURVIVOR_RUN_PATH, "utf8");
+    expect(runner).toContain("clawhub_request_attempts=complete");
+    expect(runner).toContain('"$clawhub_request_attempts"');
+  });
+
+  it.each([
+    ["plugins", "0.1.0"],
+    ["kitchen-sink-plugin", KITCHEN_SINK_VERSION],
+    ["catalog-search", "0.1.0"],
+  ])("serves an accepted install audit for the %s profile", async (profile, version) => {
+    const { baseUrl } = await startFixtureServer(profile);
+    const auditMessages: string[] = [];
+    const trust = await checkClawHubPackageTrust({
+      subject: { kind: "plugin", packageName: PACKAGE_NAME },
+      version,
+      baseUrl,
+      mode: "update",
+      logger: { info: (message) => auditMessages.push(message) },
+    });
+
+    expect(trust.ok).toBe(true);
+    expect(auditMessages).toHaveLength(1);
+    expect(auditMessages[0]).toContain("Outcome: Safe");
+    expect(auditMessages[0]).toContain("No security concerns found in the fixture release.");
+    expect(auditMessages[0]).toContain(`${baseUrl}${PACKAGE_PATH}/versions/${version}/security`);
+  });
+
   it("serves package metadata and npm-pack artifacts for kitchen-sink fixtures", async () => {
     const { baseUrl } = await startFixtureServer("kitchen-sink-plugin");
 
@@ -165,64 +196,6 @@ describe("ClawHub fixture server", () => {
     expect(emptyAssertion.stderr).toContain("assert-no-requests requires <base-url>");
   });
 
-  it("parks WhatsApp startup config and restores the authored bytes exactly", () => {
-    const root = tempDirs.make("openclaw-clawhub-auth-config-");
-    const configPath = path.join(root, "openclaw.json");
-    const snapshotPath = path.join(root, "openclaw.authored.json");
-    const authoredConfig = `{
-  "gateway": { "mode": "local", "reload": { "mode": "hybrid" } },
-  "plugins": {
-    "allow": ["discord", "whatsapp"],
-    "entries": { "discord": { "enabled": true }, "whatsapp": { "enabled": true } }
-  },
-  "channels": { "discord": { "enabled": true }, "whatsapp": { "enabled": true } }
-}
-`;
-    writeFileSync(configPath, authoredConfig);
-
-    const park = spawnSync(
-      process.execPath,
-      [SCRIPT_PATH, "park-prepublish-auth-config", configPath, snapshotPath],
-      { encoding: "utf8", env: { ...process.env } },
-    );
-    expect(park.status, park.stderr).toBe(0);
-    expect(readFileSync(snapshotPath, "utf8")).toBe(authoredConfig);
-    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
-      gateway: { mode: "local", reload: { mode: "off" } },
-      plugins: {
-        allow: ["discord"],
-        entries: { discord: { enabled: true } },
-      },
-      channels: { discord: { enabled: true } },
-    });
-
-    const restore = spawnSync(
-      process.execPath,
-      [SCRIPT_PATH, "restore-prepublish-auth-config", configPath, snapshotPath],
-      { encoding: "utf8", env: { ...process.env } },
-    );
-    expect(restore.status, restore.stderr).toBe(0);
-    expect(readFileSync(configPath, "utf8")).toBe(authoredConfig);
-  });
-
-  it("rejects malformed probe config without changing authored bytes", () => {
-    const root = tempDirs.make("openclaw-clawhub-invalid-auth-config-");
-    const configPath = path.join(root, "openclaw.json");
-    const snapshotPath = path.join(root, "openclaw.authored.json");
-    const authoredConfig = '{"plugins":{"allow":"whatsapp"}}\n';
-    writeFileSync(configPath, authoredConfig);
-
-    const park = spawnSync(
-      process.execPath,
-      [SCRIPT_PATH, "park-prepublish-auth-config", configPath, snapshotPath],
-      { encoding: "utf8", env: { ...process.env } },
-    );
-    expect(park.status).toBe(1);
-    expect(park.stderr).toContain("plugins.allow must be an array");
-    expect(readFileSync(configPath, "utf8")).toBe(authoredConfig);
-    expect(existsSync(snapshotPath)).toBe(false);
-  });
-
   it("serves exact prepublish tarballs through the ClawHub artifact contract", async () => {
     const root = tempDirs.make("openclaw-clawhub-prepublish-");
     const isolatedCwd = tempDirs.make("openclaw-clawhub-isolated-");
@@ -258,6 +231,16 @@ describe("ClawHub fixture server", () => {
       isolatedCwd,
     );
     expect(runNoRequestsAssertion(baseUrl, isolatedCwd).status).toBe(0);
+    expect(
+      runPrepublishAssertion(
+        baseUrl,
+        "@openclaw/whatsapp",
+        version,
+        "required",
+        isolatedCwd,
+        "complete",
+      ).status,
+    ).toBe(1);
     const whatsappPath = `/api/v1/packages/${encodeURIComponent("@openclaw/whatsapp")}`;
     const detail = await fetchJson(baseUrl, whatsappPath);
     expect(detail.package).toMatchObject({
@@ -282,11 +265,13 @@ describe("ClawHub fixture server", () => {
       }
       return response;
     });
-    const trust = await ensureClawHubPackageTrustAcknowledged({
+    const auditMessages: string[] = [];
+    const trust = await checkClawHubPackageTrust({
       subject: { kind: "plugin", packageName: "@openclaw/whatsapp" },
       version,
       baseUrl,
       mode: "update",
+      logger: { info: (message) => auditMessages.push(message) },
     });
     expect(security).toEqual({
       package: {
@@ -304,6 +289,8 @@ describe("ClawHub fixture server", () => {
         npmTarballName: tarball,
         createdAt: 0,
       },
+      overview: "No security concerns found in the fixture release.",
+      securityAuditUrl: securityUrl,
       trust: {
         scanStatus: "clean",
         moderationState: null,
@@ -313,6 +300,12 @@ describe("ClawHub fixture server", () => {
         stale: false,
       },
     });
+    expect(auditMessages).toHaveLength(1);
+    expect(auditMessages[0]).toContain("ClawHub Security Audit");
+    expect(auditMessages[0]).toContain("Outcome: Safe");
+    expect(auditMessages[0]).toContain("No security concerns found in the fixture release.");
+    expect(auditMessages[0]).toContain("Details:");
+    expect(auditMessages[0]).toContain(securityUrl);
     expect(trust).toEqual({
       ok: true,
       trustInstallRecordFields: {
@@ -336,10 +329,40 @@ describe("ClawHub fixture server", () => {
     const unexpectedStartupRequest = runNoRequestsAssertion(baseUrl, isolatedCwd);
     expect(unexpectedStartupRequest.status).toBe(1);
     expect(unexpectedStartupRequest.stderr).toContain("unexpected ClawHub fixture requests");
+    for (let sequence = 1; sequence < 4; sequence += 1) {
+      for (const requestPath of [
+        whatsappPath,
+        `${whatsappPath}/versions/${version}/artifact`,
+        `${whatsappPath}/versions/${version}/security`,
+        `${whatsappPath}/versions/${version}/artifact/download`,
+      ]) {
+        const response = await fetch(`${baseUrl}${requestPath}`);
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+      }
+    }
+    expect(runPrepublishAssertion(baseUrl, "@openclaw/whatsapp", version).status).toBe(1);
+    const complete = runPrepublishAssertion(
+      baseUrl,
+      "@openclaw/whatsapp",
+      version,
+      "required",
+      isolatedCwd,
+      "complete",
+    );
+    expect(complete.status, complete.stderr).toBe(0);
+    expect(complete.stdout).toContain("Verified 4 complete ClawHub artifact audit sequence(s).");
     expect((await fetch(`${baseUrl}${whatsappPath}/versions/0.0.0/artifact`)).status).toBe(404);
-    const mismatch = runPrepublishAssertion(baseUrl, "@openclaw/whatsapp", version);
+    const mismatch = runPrepublishAssertion(
+      baseUrl,
+      "@openclaw/whatsapp",
+      version,
+      "required",
+      isolatedCwd,
+      "complete",
+    );
     expect(mismatch.status).toBe(1);
-    expect(mismatch.stderr).toContain("unexpected ClawHub fixture requests");
+    expect(mismatch.stderr).toContain("expected 1-16 complete ClawHub artifact audit sequences");
   });
 
   it("serves separate plugin-family and skill search fixtures", async () => {

@@ -48,6 +48,7 @@ if [ "$SCENARIO" = "configured-plugin-installs" ] || [ "$SCENARIO" = "sqlite-vol
 fi
 
 ARTIFACT_ROOT="$(dirname "${OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON:-/tmp/openclaw-upgrade-survivor-artifacts/summary.json}")"
+export OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT="$ARTIFACT_ROOT"
 export OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="${OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT:-/tmp/openclaw-upgrade-survivor-runtime}"
 RUNTIME_ROOT="$OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT"
 STATE_HOME_ROOT="${OPENCLAW_UPGRADE_SURVIVOR_STATE_HOME_ROOT:-$RUNTIME_ROOT/state-home}"
@@ -71,11 +72,20 @@ BASELINE_RAW="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE:?missing OPENCLAW_UPGRADE_SUR
 CANDIDATE_KIND="${OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_KIND:-tarball}"
 CANDIDATE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_SPEC:-${OPENCLAW_CURRENT_PACKAGE_TGZ:-}}"
 UPDATE_RESTART_MODE="${OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE:-manual}"
+OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="stable"
+if [ "$SCENARIO" = "prerelease-plugin-registry" ] ||
+  { [ "$UPDATE_RESTART_MODE" = "auto-auth" ] &&
+    [ -n "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ] &&
+    [[ "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION:-}" =~ -(alpha|beta)\.[1-9][0-9]*$ ]]; }; then
+  OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL="beta"
+fi
+export OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL
 ROOT_MANAGED_VPS="${OPENCLAW_UPGRADE_SURVIVOR_ROOT_MANAGED_VPS:-0}"
 COMMAND_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT:-900s}"
 CURRENT_PHASE="setup"
 FAILURE_PHASE=""
 FAILURE_MESSAGE=""
+FAILURE_SIGNAL=""
 gateway_pid=""
 plugin_registry_pid=""
 clawhub_fixture_pid=""
@@ -298,6 +308,7 @@ on_signal() {
   trap - HUP INT TERM
   FAILURE_PHASE="${CURRENT_PHASE:-unknown}"
   FAILURE_MESSAGE="phase ${FAILURE_PHASE} interrupted by ${signal}"
+  FAILURE_SIGNAL="$signal"
   exit "$status"
 }
 
@@ -305,14 +316,20 @@ on_exit() {
   local status="$1"
   trap - ERR EXIT HUP INT TERM
   set +e
+  if [ "$status" -eq 0 ] && [ "$run_completed" != "1" ]; then
+    status=1
+    FAILURE_MESSAGE="upgrade survivor exited before all phases completed"
+  fi
+  # Capture before stop/cleanup can replace the first failing service evidence.
+  if [ "$status" -ne 0 ]; then
+    node scripts/e2e/lib/upgrade-survivor/diagnostics.mjs capture \
+      "$ARTIFACT_ROOT" "${FAILURE_PHASE:-${CURRENT_PHASE:-unknown}}" "$status" "$FAILURE_SIGNAL" ||
+      echo "Upgrade survivor diagnostics missing; preserving original phase failure." >&3
+  fi
   cleanup
   if [ "$status" -eq 0 ] && [ "$run_completed" = "1" ]; then
     write_summary passed ""
   else
-    if [ "$status" -eq 0 ]; then
-      status=1
-      FAILURE_MESSAGE="upgrade survivor exited before all phases completed"
-    fi
     [ -n "$FAILURE_PHASE" ] || FAILURE_PHASE="${CURRENT_PHASE:-unknown}"
     [ -n "$FAILURE_MESSAGE" ] || FAILURE_MESSAGE="upgrade survivor failed with status $status"
     write_summary failed "$FAILURE_MESSAGE"
@@ -462,8 +479,8 @@ prepublish_auto_auth_enabled() {
 
 park_prepublish_authored_config() {
   prepublish_auto_auth_enabled || return 0
-  node "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_FIXTURE_SERVER:-scripts/e2e/lib/clawhub-fixture-server.cjs}" \
-    park-prepublish-auth-config "$OPENCLAW_CONFIG_PATH" "$PREPUBLISH_AUTHORED_CONFIG"
+  node "${OPENCLAW_UPGRADE_SURVIVOR_CONFIG_PARKING_HELPER:-scripts/e2e/lib/upgrade-survivor/config-parking.mjs}" \
+    park-prepublish "$OPENCLAW_CONFIG_PATH" "$PREPUBLISH_AUTHORED_CONFIG"
 }
 
 assert_prepublish_fixture_idle() {
@@ -474,15 +491,8 @@ assert_prepublish_fixture_idle() {
 
 restore_prepublish_authored_config() {
   prepublish_auto_auth_enabled || return 0
-  if ! node "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_FIXTURE_SERVER:-scripts/e2e/lib/clawhub-fixture-server.cjs}" \
-    restore-prepublish-auth-config "$OPENCLAW_CONFIG_PATH" "$PREPUBLISH_AUTHORED_CONFIG"; then
-    return 1
-  fi
-  if ! cmp -s "$PREPUBLISH_AUTHORED_CONFIG" "$OPENCLAW_CONFIG_PATH"; then
-    echo "restored prepublish config did not match authored bytes" >&2
-    return 1
-  fi
-  rm -f "$PREPUBLISH_AUTHORED_CONFIG"
+  node "${OPENCLAW_UPGRADE_SURVIVOR_CONFIG_PARKING_HELPER:-scripts/e2e/lib/upgrade-survivor/config-parking.mjs}" \
+    restore "$OPENCLAW_CONFIG_PATH" "$PREPUBLISH_AUTHORED_CONFIG"
 }
 
 configure_plugin_registry() {
@@ -958,6 +968,7 @@ start_gateway() {
     return 1
   }
   rm -f "$pid_file" "$supervisor_script"
+  rm -f "${daemon_log}.exit.json"
   cat >"$supervisor_script" <<'SUPERVISOR'
 import fs from "node:fs";
 import { spawn } from "node:child_process";
@@ -984,6 +995,7 @@ const restartWindowMs = 60_000;
 const restartBurst = 5;
 const stopTimeoutMs = 30_000;
 const starts = [];
+let firstExit;
 let child;
 let activeGroupPid;
 let drainingGroupPid;
@@ -1080,7 +1092,16 @@ const start = () => {
   child.on("error", (error) => {
     fs.writeSync(output, `[systemctl-shim] gateway spawn failed: ${String(error)}\n`);
   });
-  child.once("close", (code) => {
+  child.once("close", (code, signal) => {
+    const observed = { code, signal, at: new Date().toISOString() };
+    firstExit ??= observed;
+    try {
+      fs.writeFileSync(`${daemonLog}.exit.json`, JSON.stringify({
+        first: firstExit, last: observed, cwd: process.cwd(),
+      }));
+    } catch {
+      fs.writeSync(output, "[systemctl-shim] child exit diagnostic could not be retained\n");
+    }
     child = undefined;
     drainProcessGroup(childGroupPid, () => {
       if (stopping) return finish();
@@ -1099,7 +1120,7 @@ SUPERVISOR
     load_unit_environment "$unit"
     OPENCLAW_SYSTEMCTL_SHIM_EXEC_START="$exec_start" \
       OPENCLAW_SYSTEMCTL_SHIM_DAEMON_LOG="$daemon_log" \
-      nohup node "$supervisor_script" </dev/null >/dev/null 2>&1 &
+      nohup node "$supervisor_script" </dev/null >>"${daemon_log}.bootstrap.log" 2>&1 &
     printf '%s\n' "$!" >"$pid_file"
   )
 }
@@ -1145,10 +1166,20 @@ case "$command" in
       exit 0
     fi
     if is_running; then
-      printf 'ActiveState=active\nSubState=running\nMainPID=%s\nExecMainStatus=0\nExecMainCode=0\n' "$(cat "$pid_file")"
+      printf 'ActiveState=active\nSubState=running\nMainPID=%s\n' "$(cat "$pid_file")"
     else
-      printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\nExecMainStatus=0\nExecMainCode=0\n'
+      printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\n'
     fi
+    # Missing observations stay unknown, including bootstrap failures.
+    node - "${daemon_log}.exit.json" <<'EXIT_STATUS'
+const fs = require("node:fs");
+try {
+  const { last } = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  if (Number.isInteger(last.code) && last.code >= 0 && last.code <= 255) {
+    process.stdout.write(`ExecMainStatus=${last.code}\nExecMainCode=exited\n`);
+  }
+} catch {}
+EXIT_STATUS
     exit 0
     ;;
   *)
@@ -1404,6 +1435,7 @@ update_candidate() {
   if [ "$ROOT_MANAGED_VPS" != "1" ]; then
     update_env+=(OPENCLAW_ALLOW_ROOT=1)
   fi
+  update_env+=("NODE_OPTIONS=${NODE_OPTIONS:+$NODE_OPTIONS }--import=$PWD/scripts/e2e/lib/upgrade-survivor/diagnostics.mjs")
   local update_status=0
   openclaw_e2e_maybe_timeout "$COMMAND_TIMEOUT" "${update_env[@]}" openclaw "${update_args[@]}" >"$UPDATE_JSON" 2>"$UPDATE_ERR" || update_status=$?
   if [ "$update_status" -ne 0 ]; then
@@ -1632,19 +1664,20 @@ phase prepare-update-restart-probe prepare_update_restart_probe
 phase configure-plugin-registry configure_plugin_registry
 phase update-candidate update_candidate
 if [ -n "${OPENCLAW_CLAWHUB_URL:-}" ]; then
-  clawhub_security_mode="required"
+  clawhub_security_mode="$(
+    node scripts/e2e/lib/package-compat.mjs --clawhub-release-security-mode "$candidate_version"
+  )"
   prepublish_package="@openclaw/whatsapp"
   if configured_plugin_installs_enabled; then
     prepublish_package="@openclaw/matrix"
   fi
-  # 2026.6.35 predates the release-security endpoint. The trusted fixture still
-  # asserts its exact older request contract instead of accepting arbitrary IO.
-  if [ "$candidate_version" = "2026.6.35" ]; then
-    clawhub_security_mode="absent"
+  clawhub_request_attempts=1
+  if [ "$UPDATE_RESTART_MODE" = "auto-auth" ]; then
+    clawhub_request_attempts=complete
   fi
   phase assert-prepublish-requests node \
     "${OPENCLAW_UPGRADE_SURVIVOR_CLAWHUB_FIXTURE_SERVER:-scripts/e2e/lib/clawhub-fixture-server.cjs}" \
-    assert-prepublish-requests "$OPENCLAW_CLAWHUB_URL" "$prepublish_package" "$candidate_version" "$clawhub_security_mode"
+    assert-prepublish-requests "$OPENCLAW_CLAWHUB_URL" "$prepublish_package" "$candidate_version" "$clawhub_security_mode" "$clawhub_request_attempts"
 fi
 phase root-managed-vps-cli-usable assert_root_managed_vps_cli_usable
 phase assert-legacy-plugin-dependency-debris-before-doctor assert_legacy_plugin_dependency_debris_before_doctor
