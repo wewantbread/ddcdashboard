@@ -38,10 +38,12 @@ import { startCodexComputerUseHealthMonitor } from "./computer-use-health.js";
 import { ensureCodexComputerUse } from "./computer-use.js";
 import {
   withMcpElicitationsApprovalPolicy,
+  readCodexPluginConfig,
   type CodexAppServerRuntimeOptions,
   type CodexPluginConfig,
   type ResolvedCodexComputerUseConfig,
 } from "./config.js";
+import { checkConfiguredCodexAppAvailability } from "./configured-app-availability.js";
 import {
   resolveCodexAppServerExecutionCwd,
   resolveCodexExternalSandboxPolicyForOpenClawSandbox,
@@ -427,6 +429,13 @@ export async function startCodexAttemptThread(params: {
               environment: startupSandboxEnvironment,
               nativeToolSurfaceEnabled: params.nativeToolSurfaceEnabled,
               remoteWorkspaceRoot: params.appServer.remoteWorkspaceRoot,
+            });
+            void checkConfiguredCodexAppAvailability({
+              client: activeStartupClient,
+              appCacheKey: pluginAppCacheKey,
+              requiredAppIds: readCodexPluginConfig(params.pluginConfig).requiredAppIds ?? [],
+              timeoutMs: params.appServer.requestTimeoutMs,
+              signal: startupAbandonController.signal,
             });
             const startupSandboxPolicy = startupSandboxEnvironment
               ? resolveCodexExternalSandboxPolicyForOpenClawSandbox(params.sandbox)
