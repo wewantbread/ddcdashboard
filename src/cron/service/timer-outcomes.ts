@@ -7,7 +7,7 @@ import { resolveCronRunErrorReason } from "../run-error-reason.js";
 import { cronSchedulingInputsEqual } from "../schedule-identity.js";
 import { computeNextRunAtMs } from "../schedule.js";
 import type { CronJob, CronRunStatus } from "../types.js";
-import { maybeAutoDisableCronJobAfterRunFailure } from "./auto-disable.js";
+import { autoDisableCronJob, maybeAutoDisableCronJobAfterRunFailure } from "./auto-disable.js";
 import {
   finalizeCronFailureNotifications,
   maybeEmitFailureAlert,
@@ -200,6 +200,7 @@ export function applyJobResult(
     job.deleteAfterRun === true &&
     completionStatus === "succeeded";
   let autoDisableNotificationOwnsFailure = false;
+  let oneShotTerminalDisable = false;
   const finish = () => {
     finalizeCronFailureNotifications(state, {
       job,
@@ -207,6 +208,7 @@ export function applyJobResult(
       result,
       completionFailed: completionStatus === "failed",
       autoDisableNotificationOwnsFailure,
+      oneShotTerminalDisable,
       replay: opts?.replay,
       deferredNotifications: opts?.deferredNotifications,
     });
@@ -305,6 +307,28 @@ export function applyJobResult(
           // Note: deleteAfterRun:true only triggers on ok (see shouldDelete above),
           // so exhausted-retry jobs are disabled but intentionally kept in the store
           // to preserve the error state for inspection.
+          // This disable is terminal for a one-shot, so the threshold-gated
+          // failure alert may never fire again; record the durable auto-disable
+          // fact, let a resolvable failure-alert route own the (threshold-
+          // bypassed) notification, and fall back to the generic auto-disable
+          // notice when no route exists (#131490). Operator cancels and
+          // lifecycle retirements already have a visible outcome, so they keep
+          // the quiet disable.
+          const recordedAutoDisable =
+            retryDecision.reason !== "aborted" &&
+            autoDisableCronJob({
+              state,
+              job,
+              reason: "consecutive-failures",
+              atMs: result.endedAt,
+              consecutiveErrors: retryDecision.consecutiveErrors,
+              deferredNotifications: opts?.deferredNotifications,
+              notify: alertConfig === null,
+            });
+          autoDisableNotificationOwnsFailure = recordedAutoDisable && alertConfig === null;
+          oneShotTerminalDisable = recordedAutoDisable && alertConfig !== null;
+          // System-owned payloads and aborts opt out of the auto-disable owner;
+          // keep the plain disable for them.
           job.enabled = false;
           job.state.nextRunAtMs = undefined;
           state.deps.log.warn(

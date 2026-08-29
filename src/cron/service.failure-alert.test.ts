@@ -332,6 +332,33 @@ describe("CronService failure alerts", () => {
     );
   });
 
+  it("contains a failing alert fallback instead of leaking an unhandled rejection", async () => {
+    // Pre-fix, a fallback enqueue that throws (e.g. the job's agent was
+    // removed) rejected inside the async send .catch handler; Vitest fails
+    // this file on the resulting unhandled rejection.
+    await withFailureAlertCron(
+      {
+        failureAlert: { enabled: true, after: 1 },
+        runResult: { status: "error", error: "wrong model id" },
+      },
+      async ({ cron, enqueueSystemEvent, sendCronFailureAlert, addJob }) => {
+        sendCronFailureAlert.mockRejectedValue(new Error("send failed"));
+        enqueueSystemEvent.mockImplementation(() => {
+          throw new Error("cron job agent is unavailable: gone");
+        });
+        const job = await addJob("alert fallback containment", {
+          delivery: { mode: "announce", channel: "telegram", to: "19098680" },
+        });
+
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(1);
+        // Flush the rejected send's .catch fallback before the test ends.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(enqueueSystemEvent).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   it("supports per-job failure alert override when global alerts are disabled", async () => {
     await withFailureAlertCron(
       {

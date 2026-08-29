@@ -204,7 +204,17 @@ function transportFailureAlert(
   let pendingFallback = true;
   const fallback = (reachedRecipient = false) => {
     if (pendingFallback && !reachedRecipient) {
-      enqueueCronNotification(state, params.job, params.payload.text ?? "", "failure-alert");
+      // The fallback enqueue can itself fail (e.g. the job's agent was
+      // removed); a failed alert runs inside async send callbacks and must
+      // never escape as an unhandled rejection.
+      try {
+        enqueueCronNotification(state, params.job, params.payload.text ?? "", "failure-alert");
+      } catch (err) {
+        state.deps.log.warn(
+          { jobId: params.job.id, err: String(err) },
+          "cron: failure alert fallback enqueue failed",
+        );
+      }
     }
     pendingFallback = false;
   };
@@ -320,11 +330,17 @@ export function maybeEmitFailureAlert(
     failureNotificationDetail?: CronFailureNotificationDetail;
     runAtMs?: number;
     consecutiveCount: number;
+    // A one-shot's terminal disable never gets another failure to cross the
+    // `after` threshold, so it alerts regardless of the configured count.
+    terminalDisable?: boolean;
     deferredNotifications?: DeferredCronNotifications;
   },
 ) {
   const alertConfig = params.alertConfig;
-  if (!alertConfig || params.consecutiveCount < alertConfig.after) {
+  if (
+    !alertConfig ||
+    (params.consecutiveCount < alertConfig.after && params.terminalDisable !== true)
+  ) {
     return;
   }
   // Best-effort delivery suppresses inherited alert noise, not an independently
@@ -369,6 +385,7 @@ export function finalizeCronFailureNotifications(
     };
     completionFailed: boolean;
     autoDisableNotificationOwnsFailure: boolean;
+    oneShotTerminalDisable?: boolean;
     replay?: boolean;
     deferredNotifications?: DeferredCronNotifications;
   },
@@ -387,6 +404,7 @@ export function finalizeCronFailureNotifications(
       failureNotificationDetail: params.result.failureNotificationDetail,
       runAtMs: params.result.startedAt,
       consecutiveCount: params.job.state.consecutiveErrors ?? 0,
+      ...(params.oneShotTerminalDisable === true ? { terminalDisable: true as const } : {}),
       deferredNotifications: params.deferredNotifications,
     });
   } else if (
