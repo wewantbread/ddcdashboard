@@ -363,7 +363,7 @@ describe("device worker placement dispatch", () => {
     await expect(
       harness.service.dispatch(request, undefined, () => {
         authorizationChecks += 1;
-        if (authorizationChecks === 2) {
+        if (authorizationChecks === 4) {
           vi.mocked(harness.environments.get).mockReturnValue({
             ...harness.attached,
             providerId: "generic-cloud-node",
@@ -428,7 +428,7 @@ describe("device worker placement dispatch", () => {
     await expect(
       harness.service.dispatch(request, undefined, () => {
         authorizationChecks += 1;
-        if (authorizationChecks === 2) {
+        if (authorizationChecks === 4) {
           currentNode = {
             ...currentNode,
             connId: "replacement-connection",
@@ -469,7 +469,7 @@ describe("device worker placement dispatch", () => {
     await expect(
       harness.service.dispatch(request, undefined, () => {
         authorizationChecks += 1;
-        if (authorizationChecks === 2) {
+        if (authorizationChecks === 4) {
           if (scenario.revocation === "command") {
             currentNode = {
               ...currentNode,
