@@ -226,7 +226,7 @@ it("fences child creation when delegated authority closes before commit", async 
             options.sessionMutationCommitGuard();
             reject(new Error("child commit guard unexpectedly allowed creation"));
           } catch (error) {
-            reject(error);
+            reject(error instanceof Error ? error : new Error("child commit guard failed"));
           }
         };
       }),
