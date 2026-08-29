@@ -271,6 +271,7 @@ export abstract class AgentSessionBase {
             content: result.content,
             details: result.details,
             isError,
+            ...(result.terminate !== undefined ? { terminate: result.terminate } : {}),
           }),
       );
 
@@ -283,6 +284,7 @@ export abstract class AgentSessionBase {
         content: hookResult.content,
         details: hookResult.details,
         isError: hookResult.isError ?? isError,
+        ...(hookResult.terminate !== undefined ? { terminate: hookResult.terminate } : {}),
       };
     };
   }

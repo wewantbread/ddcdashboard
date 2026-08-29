@@ -577,6 +577,41 @@ describe("AgentSession loop correctness", () => {
     expect(compactionEvents).toEqual([]);
   });
 
+  it("forwards an explicit false tool result termination override", async () => {
+    const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>([
+      [
+        "tool_result",
+        [
+          async (event: unknown) => ({
+            ...(event as object),
+            terminate: false,
+          }),
+        ],
+      ],
+    ]);
+    const { session } = await createTestSession({
+      resourceLoader: createResourceLoader(handlers),
+    });
+    const afterToolCall = (
+      session.agent as unknown as {
+        afterToolCall?: (params: unknown) => Promise<{ terminate?: boolean } | undefined>;
+      }
+    ).afterToolCall;
+
+    const result = await afterToolCall?.({
+      toolCall: { id: "call-false-override", name: "custom" },
+      args: {},
+      result: {
+        content: [{ type: "text", text: "terminal" }],
+        details: {},
+        terminate: true,
+      },
+      isError: false,
+    });
+
+    expect(result).toMatchObject({ terminate: false });
+  });
+
   it("does not retry a high-usage turn terminated by a tool result", async () => {
     const terminalTool: ToolDefinition = {
       name: "finish",

@@ -130,6 +130,55 @@ describe("buildEmbeddedExtensionFactories", () => {
     });
   });
 
+  it("preserves plugin middleware terminate requests in the embedded tool result", async () => {
+    const registry = createEmptyPluginRegistry();
+    registry.agentToolResultMiddlewares.push({
+      pluginId: "terminator",
+      pluginName: "terminator",
+      rawHandler: () => undefined,
+      handler: (event) => ({
+        result: {
+          ...event.result,
+          content: [{ type: "text", text: "stop after this tool" }],
+          terminate: true,
+        },
+      }),
+      runtimes: ["openclaw"],
+      source: "test",
+    });
+    setActivePluginRegistry(registry);
+
+    const factories = buildEmbeddedExtensionFactories({
+      cfg: undefined,
+      sessionManager: SessionManager.inMemory(),
+      provider: "openai",
+      modelId: "gpt-5.4",
+      model: undefined,
+      runId: "run-terminate",
+    });
+    const handlers = new Map<string, Function>();
+    await factories[0]?.({
+      on(event: string, handler: Function) {
+        handlers.set(event, handler);
+      },
+    } as never);
+
+    const result = await handlers.get("tool_result")?.(
+      {
+        toolName: "read",
+        toolCallId: "tool-terminate",
+        content: [{ type: "text", text: "raw" }],
+        details: {},
+      },
+      { cwd: "/tmp" },
+    );
+
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: "stop after this tool" }],
+      terminate: true,
+    });
+  });
+
   it("bridges middleware mutations with unique fallback tool call ids", async () => {
     // Middleware invoked from app-server style tool_result events may not have a
     // call id; synthesize stable unique ids for downstream audit/mutation hooks.
