@@ -100,7 +100,7 @@ export type AuthProfileCooldownClassification = "wham_token_expired" | "wham_acc
 /** Profile-wide blocked reason reported by provider usage probes. */
 export type AuthProfileBlockedReason = "subscription_limit";
 /** Source that marked a profile as blocked. */
-export type AuthProfileBlockedSource = "codex_rate_limits" | "wham";
+export type AuthProfileBlockedSource = "codex_rate_limits" | "wham" | "claude_usage";
 
 /** Per-profile usage statistics for round-robin and cooldown tracking */
 export type ProfileUsageStats = {
