@@ -690,6 +690,56 @@ describe("processDiscordMessage draft streaming progress", () => {
     );
   });
 
+  it("repairs a name-only raw tool row when a non-start update carries the resolved args", async () => {
+    // Delivery-boundary proof for the empty-start enrichment: a streaming tool
+    // start can fire before its args arrive, rendering a name-only Discord
+    // progress row; the later non-start phase:"update" (the enriched snapshot
+    // args forwarded by the cli event path) repairs that row in place through
+    // the real message-handler -> draft compositor -> draft-stream delivery.
+    const elapseProgressDraftStartDelay = useProgressDraftStartDelay();
+    const draftStream = createMockDraftStreamForTest();
+
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onToolStart?.({
+        name: "exec",
+        toolCallId: "tool-exec-raw",
+        phase: "start",
+        args: {},
+        detailMode: "raw",
+      });
+      await params?.replyOptions?.onToolStart?.({
+        name: "exec",
+        toolCallId: "tool-exec-raw",
+        phase: "update",
+        args: { command: "pnpm test -- --watch=false" },
+        detailMode: "raw",
+      });
+      await params?.replyOptions?.onItemEvent?.({ progressText: "done" });
+      await elapseProgressDraftStartDelay();
+      return createNoQueuedDispatchResult();
+    });
+
+    const ctx = await createAutomaticDraftContext({
+      discordConfig: {
+        streaming: {
+          mode: "progress",
+          progress: {
+            label: "Shelling",
+            commandText: "raw",
+          },
+        },
+      },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    // One row (no duplicate), carrying the resolved command instead of the
+    // bare tool name.
+    expect(draftStream.update).toHaveBeenCalledWith(
+      "Shelling\n\n🛠️ run tests, `pnpm test -- --watch=false`\n• done",
+    );
+  });
+
   it("can hide raw command progress text in Discord progress drafts by config", async () => {
     const elapseProgressDraftStartDelay = useProgressDraftStartDelay();
     const draftStream = createMockDraftStreamForTest();

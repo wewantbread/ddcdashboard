@@ -101,6 +101,16 @@ export type CliToolUseStartDelta = {
   args: Record<string, unknown>;
 };
 
+/** Late tool-call metadata update reconstructed from a later snapshot.
+ * Unlike a start, this carries late-arriving args to the live draft through a
+ * non-start update, so exactly one tool-start lifecycle (diagnostics and
+ * tracking) fires per tool call even when the streaming start had empty args. */
+export type CliToolUseUpdateDelta = {
+  toolCallId: string;
+  name: string;
+  args: Record<string, unknown>;
+};
+
 /** Tool-call result event reconstructed from CLI stream output. */
 export type CliToolResultDelta = {
   toolCallId: string;
@@ -117,8 +127,10 @@ export type CliJsonlStreamingParserOptions = {
   onThinkingDelta?: (delta: CliThinkingDelta) => void;
   onThinkingProgress?: (progress: CliThinkingProgress) => void;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
+  onToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
   onToolResult?: (delta: CliToolResultDelta) => void;
   onDisplayToolUseStart?: (delta: CliToolUseStartDelta) => void;
+  onDisplayToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
   onDisplayToolResult?: (delta: CliToolResultDelta) => void;
   onCommentaryText?: (text: string) => void;
   onSessionId?: (sessionId: string) => void;

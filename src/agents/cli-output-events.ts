@@ -13,6 +13,7 @@ import type {
   CliThinkingProgress,
   CliToolResultDelta,
   CliToolUseStartDelta,
+  CliToolUseUpdateDelta,
   CliUsage,
 } from "./cli-output-contracts.js";
 import {
@@ -26,12 +27,20 @@ type PendingToolUse = {
   name: string;
   kind: CliToolUseStartDelta["kind"];
   inputJsonParts: string[];
+  /** Complete input carried on content_block_start; used as a fallback when no
+   * input_json_delta chunks arrive (some dialects ship args inline here). */
+  initialInput?: Record<string, unknown>;
 };
 
 type ToolUseTracker = {
   pendingByIndex: Map<number, PendingToolUse>;
   nameById: Map<string, string>;
   startedIds: Set<string>;
+  /** Tool call ids whose start fired with empty args. Only a small marker is
+   * kept (never the args payload); it is cleared once a richer copy repairs
+   * the start or the tool result is delivered, so long CLI runs do not retain
+   * per-call argument objects. */
+  emptyStartIds: Set<string>;
   resultDeliveredIds: Set<string>;
 };
 
@@ -40,6 +49,7 @@ export function createToolUseTracker(): ToolUseTracker {
     pendingByIndex: new Map(),
     nameById: new Map(),
     startedIds: new Set(),
+    emptyStartIds: new Set(),
     resultDeliveredIds: new Set(),
   };
 }
@@ -51,13 +61,28 @@ function emitToolStartOnce(
   kind: CliToolUseStartDelta["kind"],
   args: Record<string, unknown>,
   onToolUseStart?: (delta: CliToolUseStartDelta) => void,
+  onToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void,
 ): void {
   // Streaming and final assistant records may both describe the same tool call.
+  // Exactly one start lifecycle fires per id. If the streaming start fired
+  // before args were available (empty input), a later richer copy — typically
+  // the assistant-record snapshot — updates the live draft's args through a
+  // non-start metadata update, so the draft can repair a name-only tool row
+  // without re-firing the tool-start lifecycle (diagnostics and tracking stay
+  // one-per-call). The empty-start marker is cleared after the repair, and a
+  // prior non-empty emit keeps the original dedup behavior (no marker).
   if (tracker.startedIds.has(toolCallId)) {
+    if (tracker.emptyStartIds.has(toolCallId) && Object.keys(args).length > 0) {
+      tracker.emptyStartIds.delete(toolCallId);
+      onToolUseUpdate?.({ toolCallId, name, args });
+    }
     return;
   }
   tracker.startedIds.add(toolCallId);
   tracker.nameById.set(toolCallId, name);
+  if (Object.keys(args).length === 0) {
+    tracker.emptyStartIds.add(toolCallId);
+  }
   onToolUseStart?.({ toolCallId, name, kind, args });
 }
 
@@ -73,6 +98,9 @@ function emitToolResultOnce(
     return;
   }
   tracker.resultDeliveredIds.add(toolCallId);
+  // A delivered result can never be enriched afterwards; drop the marker so
+  // tracker state stays bounded by in-flight tool calls.
+  tracker.emptyStartIds.delete(toolCallId);
   onToolResult?.({
     toolCallId,
     name: tracker.nameById.get(toolCallId) ?? "",
@@ -99,6 +127,8 @@ export function projectCliBackendEvent(params: {
   onThinkingDelta?: (delta: CliThinkingDelta) => void;
   onDisplayToolUseStart?: (delta: CliToolUseStartDelta) => void;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
+  onToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
+  onDisplayToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
   onDisplayToolResult?: (delta: CliToolResultDelta) => void;
   onToolResult?: (delta: CliToolResultDelta) => void;
   onSessionId?: (sessionId: string) => void;
@@ -153,6 +183,7 @@ export function projectCliBackendEvent(params: {
       "tool_use",
       event.args ?? {},
       params.onDisplayToolUseStart ?? params.onToolUseStart,
+      params.onDisplayToolUseUpdate ?? params.onToolUseUpdate,
     );
     return;
   }
@@ -251,6 +282,7 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
   parsed: Record<string, unknown>;
   tracker: ToolUseTracker;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
+  onToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
   onToolResult?: (delta: CliToolResultDelta) => void;
 }): void {
   if (!supportsCliJsonlToolEvents(params) || isClaudeSubagentRecord(params.parsed)) {
@@ -275,6 +307,7 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
             name,
             kind: block.type,
             inputJsonParts: [],
+            initialInput: isRecord(block.input) ? block.input : undefined,
           });
         }
       } else if (isClaudeAssistantToolResultBlockType(block.type)) {
@@ -305,13 +338,17 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
       const pending = tracker.pendingByIndex.get(event.index);
       tracker.pendingByIndex.delete(event.index);
       if (pending) {
+        const streamedArgs = parseToolInputJson(pending.inputJsonParts);
+        const args =
+          Object.keys(streamedArgs).length > 0 ? streamedArgs : (pending.initialInput ?? {});
         emitToolStartOnce(
           tracker,
           pending.toolCallId,
           pending.name,
           pending.kind,
-          parseToolInputJson(pending.inputJsonParts),
+          args,
           params.onToolUseStart,
+          params.onToolUseUpdate,
         );
       }
       return;
@@ -333,7 +370,15 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
           continue;
         }
         const args: Record<string, unknown> = isRecord(block.input) ? block.input : {};
-        emitToolStartOnce(tracker, toolCallId, name, block.type, args, params.onToolUseStart);
+        emitToolStartOnce(
+          tracker,
+          toolCallId,
+          name,
+          block.type,
+          args,
+          params.onToolUseStart,
+          params.onToolUseUpdate,
+        );
       } else if (isClaudeAssistantToolResultBlockType(block.type)) {
         const toolCallId = typeof block.tool_use_id === "string" ? block.tool_use_id.trim() : "";
         if (!toolCallId) {
@@ -581,6 +626,7 @@ export function dispatchGeminiCliStreamingToolEvent(params: {
   parsed: Record<string, unknown>;
   tracker: ToolUseTracker;
   onToolUseStart?: (delta: CliToolUseStartDelta) => void;
+  onToolUseUpdate?: (delta: CliToolUseUpdateDelta) => void;
   onToolResult?: (delta: CliToolResultDelta) => void;
 }): void {
   if (!isGeminiStreamJsonDialect(params)) {
@@ -594,7 +640,15 @@ export function dispatchGeminiCliStreamingToolEvent(params: {
       return;
     }
     const args = isRecord(params.parsed.parameters) ? params.parsed.parameters : {};
-    emitToolStartOnce(params.tracker, toolCallId, name, "tool_use", args, params.onToolUseStart);
+    emitToolStartOnce(
+      params.tracker,
+      toolCallId,
+      name,
+      "tool_use",
+      args,
+      params.onToolUseStart,
+      params.onToolUseUpdate,
+    );
     return;
   }
   if (params.parsed.type === "tool_result") {

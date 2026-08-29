@@ -17,6 +17,7 @@ import {
   resolveChannelStreamingPreviewChunk,
   resolveChannelStreamingProgressCommentary,
   resolveChannelStreamingProgressNarration,
+  type ChannelProgressDraftLine,
 } from "./streaming.js";
 
 describe("buildChannelProgressDraftLine", () => {
@@ -227,6 +228,74 @@ describe("mergeChannelProgressDraftLine", () => {
     const lines = mergeChannelProgressDraftLine([first], second, { maxLines: 8 });
 
     expect(lines.map((line) => line.id)).toEqual(["tool-1", "tool-2"]);
+  });
+
+  it("carries a prior tool detail forward when a later status-only tool update drops it", () => {
+    const prior: ChannelProgressDraftLine = {
+      id: "tool:call-1",
+      kind: "tool",
+      text: "🛠️ echo hi",
+      label: "Bash",
+      icon: "🛠️",
+      detail: "echo hi",
+      toolName: "bash",
+    };
+    const statusOnly: ChannelProgressDraftLine = {
+      id: "tool:call-1",
+      kind: "tool",
+      text: "🛠️ Bash: completed",
+      label: "Bash",
+      icon: "🛠️",
+      status: "completed",
+      toolName: "bash",
+    };
+
+    const merged = mergeChannelProgressDraftLine([prior], statusOnly, { maxLines: 4 });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "tool:call-1",
+      kind: "tool",
+      detail: "echo hi",
+      status: "completed",
+      toolName: "bash",
+    });
+    expect(merged[0]?.text).toBe("🛠️ echo hi");
+  });
+
+  it("repairs a name-only tool row when a later phase:update carries the resolved args", () => {
+    // The streaming start fired before args were available (name-only row),
+    // then a non-start update delivered the resolved args. The compositor
+    // merges by id and the richer detail replaces the empty one, without any
+    // second start lifecycle being emitted upstream.
+    const nameOnly: ChannelProgressDraftLine = {
+      id: "tool:call-2",
+      kind: "tool",
+      text: "🛠️ Bash",
+      label: "Bash",
+      icon: "🛠️",
+      toolName: "bash",
+    };
+    const enriched: ChannelProgressDraftLine = {
+      id: "tool:call-2",
+      kind: "tool",
+      text: "🛠️ Bash: echo hi",
+      label: "Bash",
+      icon: "🛠️",
+      detail: "echo hi",
+      toolName: "bash",
+    };
+
+    const merged = mergeChannelProgressDraftLine([nameOnly], enriched, { maxLines: 4 });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "tool:call-2",
+      kind: "tool",
+      detail: "echo hi",
+      toolName: "bash",
+    });
+    expect(merged[0]?.text).toContain("echo hi");
   });
 });
 

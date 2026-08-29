@@ -2,7 +2,9 @@
 // results must not duplicate that potentially large payload.
 import { describe, expect, it, vi } from "vitest";
 import { type AgentEventRuntimePayload, onAgentEvent } from "../../infra/agent-events.js";
+import { onInternalDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
+import { createCliJsonlStreamingParser } from "../cli-output-stream.js";
 import { createCliEventHandlers } from "./execute-events.js";
 import type { CliToolTracking } from "./execute-tool-tracking.js";
 import type { PreparedCliRunContext } from "./types.js";
@@ -156,6 +158,159 @@ describe("cli tool result events", () => {
       expect(results[1]?.data.args).toBeUndefined();
     } finally {
       dispose();
+    }
+  });
+
+  it("emits exactly one tool.execution.started when a later snapshot enriches empty args", async () => {
+    // Regression for the raw Discord/CLI progress arg-loss fix: a streaming
+    // tool start that fires before its args arrive must be upgradable from a
+    // later snapshot through a NON-start update, so the tool-start lifecycle
+    // (diagnostics + tracking) stays one-per-call while the live draft still
+    // receives the resolved args.
+    const runId = "run-one-start-diagnostic";
+    const handlers = createCliEventHandlers({
+      context: buildContext(runId),
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const toolEvents: AgentEventRuntimePayload[] = [];
+    const stopTool = onAgentEvent((event) => {
+      if (event.runId === runId && event.stream === "tool") {
+        toolEvents.push(event);
+      }
+    });
+    let startedDiagnostics = 0;
+    const stopDiag = onInternalDiagnosticEvent((event) => {
+      if (event.type === "tool.execution.started") {
+        startedDiagnostics += 1;
+      }
+    });
+
+    try {
+      // 1. Streaming start with empty args (the name-only row).
+      handlers.emitParsedToolUseStart({
+        toolCallId: "call-up",
+        name: "Bash",
+        kind: "tool_use",
+        args: {},
+      });
+      // 2. Late snapshot enriches the args via a non-start update.
+      handlers.emitCliToolUseUpdate({
+        toolCallId: "call-up",
+        name: "Bash",
+        args: { command: "echo hi" },
+      });
+
+      // tool.execution.started is dispatched on the async diagnostic queue.
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+
+      // Exactly one start lifecycle diagnostic; the update did not re-fire it.
+      expect(startedDiagnostics).toBe(1);
+      // The live event stream carries one start (empty) plus one update (rich).
+      const starts = toolEvents.filter((event) => event.data.phase === "start");
+      const updates = toolEvents.filter((event) => event.data.phase === "update");
+      expect(starts).toHaveLength(1);
+      expect(starts[0]?.data.args).toEqual({});
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.data.args).toEqual({ command: "echo hi" });
+    } finally {
+      stopDiag();
+      stopTool();
+    }
+  });
+
+  it("runs the parser end-to-end to a non-start update with one start lifecycle", async () => {
+    // After-fix run: the real streaming parser produces a tool start with
+    // empty args (name-only draft row), then a later assistant-record
+    // snapshot enriches the args through the non-start onToolUseUpdate path.
+    // Asserts the live tool stream carries one start (empty) + one update
+    // (resolved args) and exactly one tool.execution.started diagnostic fires.
+    const runId = "run-parser-non-start-update";
+    const handlers = createCliEventHandlers({
+      context: buildContext(runId),
+      toolTracking: buildToolTracking(),
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const toolEvents: AgentEventRuntimePayload[] = [];
+    const stopTool = onAgentEvent((event) => {
+      if (event.runId === runId && event.stream === "tool") {
+        toolEvents.push(event);
+      }
+    });
+    let startedDiagnostics = 0;
+    const stopDiag = onInternalDiagnosticEvent((event) => {
+      if (event.type === "tool.execution.started") {
+        startedDiagnostics += 1;
+      }
+    });
+
+    const parser = createCliJsonlStreamingParser({
+      backend: {
+        command: "local-cli",
+        output: "jsonl",
+        jsonlDialect: "claude-stream-json",
+        sessionIdFields: ["session_id"],
+      },
+      providerId: "claude-cli",
+      onAssistantDelta: () => undefined,
+      onToolUseStart: handlers.emitParsedToolUseStart,
+      onToolUseUpdate: handlers.emitCliToolUseUpdate,
+      onToolResult: handlers.emitParsedToolResult,
+    });
+
+    try {
+      parser.push(
+        [
+          JSON.stringify({
+            type: "stream_event",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "tool_use", id: "toolu_run", name: "Bash", input: {} },
+            },
+          }),
+          JSON.stringify({
+            type: "stream_event",
+            event: { type: "content_block_stop", index: 0 },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              id: "msg-run",
+              content: [
+                { type: "tool_use", id: "toolu_run", name: "Bash", input: { command: "echo hi" } },
+              ],
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+      parser.finish();
+
+      // tool.execution.started is dispatched on the async diagnostic queue.
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+
+      // Exactly one start lifecycle diagnostic; the update did not re-fire it.
+      expect(startedDiagnostics).toBe(1);
+      const starts = toolEvents.filter((event) => event.data.phase === "start");
+      const updates = toolEvents.filter((event) => event.data.phase === "update");
+      expect(starts).toHaveLength(1);
+      expect(starts[0]?.data.args).toEqual({});
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.data.args).toEqual({ command: "echo hi" });
+    } finally {
+      stopDiag();
+      stopTool();
     }
   });
 });

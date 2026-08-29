@@ -5,6 +5,7 @@ import type {
   CliThinkingDelta,
   CliThinkingProgress,
   CliToolUseStartDelta,
+  CliToolUseUpdateDelta,
 } from "../cli-output-contracts.js";
 import type { ToolSummaryTrace } from "../embedded-agent-runner/types.js";
 import { sanitizeToolArgs, sanitizeToolResult } from "../embedded-agent-tool-results.js";
@@ -136,6 +137,30 @@ export function createCliEventHandlers(params: {
   };
   // Plugin-parsed events describe native work already performed by the backend.
   // Render and summarize them without host-tool correlation or delivery evidence.
+  // Late snapshot args repair the live draft's name-only tool row through a
+  // non-start update: no second tool.execution.started diagnostic, no
+  // re-tracking, no re-signal. Only the args cache is refreshed (so the later
+  // result event carries the resolved args) and a tool stream event with
+  // phase: "update" is forwarded, which the progress draft compositor merges
+  // by id to enrich the existing row.
+  const emitCliToolUseUpdate = (event: CliToolUseUpdateDelta) => {
+    observedCliActivity = true;
+    if (event.args && typeof event.args === "object") {
+      toolArgsByCallId.set(event.toolCallId, event.args);
+    }
+    if (emitLiveEvents) {
+      emitAgentEvent({
+        runId: runParams.runId,
+        stream: "tool",
+        data: {
+          phase: "update",
+          name: event.name,
+          toolCallId: event.toolCallId,
+          args: sanitizeToolArgs(event.args),
+        },
+      });
+    }
+  };
   const emitCliDisplayToolUseStart = (event: CliToolUseStartDelta) => {
     observedCliActivity = true;
     recordToolStart(event);
@@ -373,6 +398,7 @@ export function createCliEventHandlers(params: {
   return {
     emitLiveEvents,
     emitCliToolUseStart,
+    emitCliToolUseUpdate,
     emitCliToolResult,
     emitCliDisplayToolUseStart,
     emitCliDisplayToolResult,

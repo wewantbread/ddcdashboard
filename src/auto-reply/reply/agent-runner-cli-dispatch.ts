@@ -325,6 +325,22 @@ export function createCliToolSummaryTracker(params: {
         }
         return false;
       }
+      if (payload.phase === "update") {
+        // A late args-bearing update carries the resolved block.input that an
+        // empty-delta start could not capture. Refresh the per-call metadata so
+        // the durable CLI summary renders the resolved args at result, mirroring
+        // the progress-draft compositor. Only an args-bearing update refreshes;
+        // an empty update preserves the prior start metadata.
+        if (payload.toolCallId && payload.name && payload.args !== undefined) {
+          toolByCallId.set(payload.toolCallId, {
+            meta: inferToolMetaFromArgsCore(payload.name, payload.args, {
+              detailMode: params.detailMode ?? "explain",
+            }),
+            commandBearing: isCommandBearingToolCall(payload.name, payload.args),
+          });
+        }
+        return false;
+      }
       if (payload.phase !== "result") {
         return false;
       }

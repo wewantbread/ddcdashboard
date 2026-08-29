@@ -839,6 +839,31 @@ describe("createCliToolSummaryTracker", () => {
     await tracker.noteToolEvent({ ...resultEvent, toolCallId: "unseen" });
     expect(deliver).toHaveBeenCalledTimes(1);
   });
+
+  it("refreshes name-only start metadata from a late args-bearing update", async () => {
+    const deliver = vi.fn();
+    const tracker = createCliToolSummaryTracker({
+      commandDetailsVisible: true,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => false,
+      deliver,
+    });
+    // A CLI stream start can arrive with empty args when no input_json_delta
+    // chunks precede the stop event; the later assistant snapshot carries the
+    // resolved block.input as a non-start update.
+    await tracker.noteToolEvent({ ...startEvent, args: undefined });
+    await tracker.noteToolEvent({
+      name: "exec",
+      phase: "update",
+      args: { command: "date -u" },
+      toolCallId: "tool-1",
+    });
+    await tracker.noteToolEvent(resultEvent);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const payload = deliver.mock.calls[0]?.[0] as { text: string };
+    // The durable summary must reflect the refreshed args, not the empty start.
+    expect(payload.text).toContain("date -u");
+  });
 });
 
 describe("runCliAgentWithLifecycle fast auto progress", () => {

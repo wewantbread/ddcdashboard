@@ -539,17 +539,23 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
       }
     }
 
-    if (params.onToolUseStart || params.onToolResult) {
+    if (params.onToolUseStart || params.onToolUseUpdate || params.onToolResult) {
       dispatchGeminiCliStreamingToolEvent({
         backend: params.backend,
         providerId: params.providerId,
         parsed,
         tracker: toolTracker,
         onToolUseStart: params.onToolUseStart,
+        onToolUseUpdate: params.onToolUseUpdate,
         onToolResult: params.onToolResult,
       });
     }
-    if (claudeStreamJson || params.onToolUseStart || params.onToolResult) {
+    if (
+      claudeStreamJson ||
+      params.onToolUseStart ||
+      params.onToolUseUpdate ||
+      params.onToolResult
+    ) {
       const onToolUseStart =
         claudeStreamJson && parsed.type === "assistant"
           ? (tool: Parameters<NonNullable<typeof params.onToolUseStart>>[0]) => {
@@ -567,6 +573,7 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
         parsed,
         tracker: toolTracker,
         onToolUseStart,
+        onToolUseUpdate: params.onToolUseUpdate,
         onToolResult: params.onToolResult,
       });
     }
