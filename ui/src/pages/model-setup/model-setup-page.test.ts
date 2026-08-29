@@ -10,6 +10,7 @@ import {
   createApplicationContextProvider,
   type ApplicationContextProvider,
 } from "../../test-helpers/application-context.ts";
+import { waitForFast } from "../../test-helpers/wait-for.ts";
 import type { ModelSetupRouteData } from "./model-setup-page.ts";
 import "./model-setup-page.ts";
 
@@ -228,7 +229,7 @@ describe("ModelSetupPage catalog icons", () => {
       firstRun: false,
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         page
           .querySelector<HTMLImageElement>(".model-setup__recommendation img")
@@ -276,7 +277,7 @@ describe("ModelSetupPage catalog icons", () => {
       firstRun: false,
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         page
           .querySelector<HTMLImageElement>(".model-setup__recommendation img")
@@ -317,11 +318,11 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-prepare-choice="llama-cpp"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(request).toHaveBeenCalledWith(
         "openclaw.setup.prepare.start",
         { sessionId: expect.any(String), agentId: "main", authChoice: "llama-cpp" },
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        { timeoutMs: null },
       );
       expect(page.querySelector("openclaw-modal-dialog")).not.toBeNull();
       expect(page.textContent).toContain("Downloading model: 25%");
@@ -403,7 +404,7 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>(`[data-prepare-choice="${choiceId}"] button`)?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(request).toHaveBeenCalledWith(
         "openclaw.setup.activate",
         {
@@ -450,7 +451,7 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-prepare-choice="llama-cpp"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(page.textContent).toContain(
         "llama.cpp did not expose a usable local model. Review the setup result, then retry.",
       );
@@ -562,7 +563,7 @@ describe("ModelSetupPage catalog icons", () => {
       if (method === "wizard.next") {
         config = { ...config, configuredModel: "provider/model" };
         hash = "hash-3";
-        return { done: true, status: "done" };
+        return { done: true, status: "done", modelActivation: { modelRef: "provider/model" } };
       }
       if (method === "openclaw.setup.detect") {
         return {
@@ -590,13 +591,12 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-auth-choice="provider-auth"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(order).toEqual([
         "config.set",
         "openclaw.setup.auth.start",
         "wizard.next",
         "config.get",
-        "openclaw.setup.detect",
       ]);
       expect(page.textContent).toContain("Connection verified");
     });
@@ -644,7 +644,7 @@ describe("ModelSetupPage catalog icons", () => {
     snapshot.hello.auth.scopes = ["operator.read"];
     releaseConfigSet?.({ hash: "hash-2" });
 
-    await vi.waitFor(() => expect(page.textContent).toContain("Model setup request failed."));
+    await waitForFast(() => expect(page.textContent).toContain("Model setup request failed."));
     expect(request).not.toHaveBeenCalledWith(
       "openclaw.setup.auth.start",
       expect.anything(),
@@ -773,7 +773,7 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-candidate-kind="codex-cli"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(page.textContent).toContain("Connection changed before model activation started.");
     });
     expect(replacementRequest).not.toHaveBeenCalled();
@@ -815,7 +815,7 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-candidate-kind="codex-cli"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(page.textContent).toContain("Connection verified");
       expect(page.textContent).toContain("config.get failed after model commit");
     });
@@ -864,7 +864,7 @@ describe("ModelSetupPage catalog icons", () => {
 
     page.querySelector<HTMLButtonElement>('[data-auth-choice="provider-auth"] button')?.click();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(runExternalMutation).toHaveBeenCalledTimes(1);
       expect(page.textContent).toContain("config.get failed after wizard commit");
       expect(page.textContent).toContain("Paste token");

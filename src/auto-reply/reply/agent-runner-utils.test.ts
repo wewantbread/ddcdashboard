@@ -148,6 +148,7 @@ describe("agent-runner-utils", () => {
       enforceFinalTag: true,
       cwd: "/tmp/task-repo",
       taskSuggestionDeliveryMode: "gateway",
+      terminalReplyExpectation: "optional",
       trustedInternalHandoff: {
         kind: "subagent-completion",
         sourceSessionKey: "agent:child",
@@ -202,6 +203,7 @@ describe("agent-runner-utils", () => {
     expect(resolved.runId).toBe("run-1");
     expect(resolved.promptCacheKey).toBe("webchat-cache-key");
     expect(resolved.taskSuggestionDeliveryMode).toBe("gateway");
+    expect(resolved.terminalReplyExpectation).toBe("optional");
   });
 
   it("threads prompt cache affinity through embedded execution params", () => {
@@ -379,7 +381,11 @@ describe("agent-runner-utils", () => {
   });
 
   it("prefers OriginatingChannel over Provider for messageProvider", () => {
-    const run = makeRun({ agentAccountId: "work", chatType: "group" });
+    const run = makeRun({
+      agentAccountId: "work",
+      chatType: "group",
+      conversationRoutePeerId: "queued-peer",
+    });
 
     const resolved = buildEmbeddedRunExecutionParams({
       run,
@@ -387,6 +393,7 @@ describe("agent-runner-utils", () => {
         Provider: "heartbeat",
         OriginatingChannel: "Telegram",
         OriginatingTo: "268300329",
+        ConversationRoutePeerId: "later-peer",
       },
       hasRepliedRef: undefined,
       provider: "openai",
@@ -397,6 +404,7 @@ describe("agent-runner-utils", () => {
     expect(resolved.embeddedContext.messageProvider).toBe("telegram");
     expect(resolved.embeddedContext.agentAccountId).toBe("work");
     expect(resolved.embeddedContext.chatType).toBe("group");
+    expect(resolved.embeddedContext.conversationRoutePeerId).toBe("queued-peer");
     expect(resolved.embeddedContext.messageTo).toBe("268300329");
   });
 
@@ -408,10 +416,17 @@ describe("agent-runner-utils", () => {
           context,
         }: {
           accountId?: string | null;
-          context: { ChatType?: string; NativeChannelId?: string; To?: string };
+          context: {
+            ChatType?: string;
+            MessageThreadId?: string | number;
+            NativeChannelId?: string;
+            To?: string;
+          };
         }) => ({
           currentChannelId: context.NativeChannelId ?? context.To,
           currentMessagingTarget: context.To,
+          currentThreadTs:
+            context.MessageThreadId != null ? String(context.MessageThreadId) : undefined,
           replyToMode: accountId === "work" && context.ChatType === "direct" ? "off" : "all",
         }),
       },
@@ -423,12 +438,15 @@ describe("agent-runner-utils", () => {
       sessionCtx: {
         Provider: "cron-event",
         NativeChannelId: "D1",
+        SessionKey: "agent:main:main:thread:1234:42",
+        MessageThreadId: "stale-topic",
       },
       replyRoute: {
         originatingChannel: "slack",
         originatingTo: "user:U1",
         originatingAccountId: "work",
         originatingChatType: "direct",
+        originatingThreadId: 42,
       },
       hasRepliedRef: undefined,
       provider: "openai",
@@ -440,6 +458,8 @@ describe("agent-runner-utils", () => {
     expect(resolved.embeddedContext.messageTo).toBe("user:U1");
     expect(resolved.embeddedContext.currentChannelId).toBe("D1");
     expect(resolved.embeddedContext.currentMessagingTarget).toBe("user:U1");
+    expect(resolved.embeddedContext.messageThreadId).toBe(42);
+    expect(resolved.embeddedContext.currentThreadTs).toBe("42");
     expect(resolved.embeddedContext.agentAccountId).toBe("work");
     expect(resolved.embeddedContext.chatType).toBe("direct");
     expect(resolved.embeddedContext.replyToMode).toBe("off");

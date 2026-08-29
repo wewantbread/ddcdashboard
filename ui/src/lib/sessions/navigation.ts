@@ -15,6 +15,7 @@ import {
   normalizeAgentId,
   normalizeSessionKeyForUiComparison,
   parseAgentSessionKey,
+  readSessionDefaults,
   resolveUiConfiguredMainKey,
   resolveUiDefaultAgentId,
   resolveUiGlobalAliasAgentId,
@@ -62,23 +63,6 @@ export type SessionScopeHostWithKey = SessionScopeHost & {
 };
 
 export type SessionRefreshTarget = { sessionKey: string; agentId?: string };
-
-type SessionDefaults = {
-  defaultAgentId?: string | null;
-  mainKey?: string | null;
-  mainSessionKey?: string | null;
-};
-
-function readSessionDefaults(
-  host: Pick<SessionNavigationInput, "hello">,
-): SessionDefaults | undefined {
-  const snapshot = host.hello?.snapshot;
-  if (!snapshot || typeof snapshot !== "object" || !("sessionDefaults" in snapshot)) {
-    return undefined;
-  }
-  const defaults = snapshot.sessionDefaults;
-  return defaults && typeof defaults === "object" ? (defaults as SessionDefaults) : undefined;
-}
 
 export function resolveSessionKey(
   sessionKey: string | undefined | null,
@@ -273,6 +257,21 @@ export function sessionMatchesArchivedFilter(
   return (row.archived === true) === (archivedFilter === "archived");
 }
 
+export function sessionMatchesVisibleSessionScope(
+  row: GatewaySessionRow,
+  options: VisibleSessionRowOptions,
+): boolean {
+  return (
+    sessionMatchesArchivedFilter(row, options.archivedFilter) &&
+    row.kind !== "global" &&
+    row.kind !== "unknown" &&
+    (options.showCron === true || !isCronSessionKey(row.key)) &&
+    (options.showSystem === true || !isSystemCreatedSessionRow(row)) &&
+    (!options.filterByAgent ||
+      isSessionKeyTiedToAgent(row.key, options.agentId, options.defaultAgentId))
+  );
+}
+
 export function filterVisibleSessionRows(
   rows: readonly GatewaySessionRow[],
   options: VisibleSessionRowOptions,
@@ -286,15 +285,9 @@ export function filterVisibleSessionRows(
       return true;
     }
     return (
-      sessionMatchesArchivedFilter(row, options.archivedFilter) &&
-      row.kind !== "global" &&
-      row.kind !== "unknown" &&
-      (options.showCron === true || !isCronSessionKey(row.key)) &&
-      (options.showSystem === true || !isSystemCreatedSessionRow(row)) &&
+      sessionMatchesVisibleSessionScope(row, options) &&
       !isSubagentSessionKey(row.key) &&
-      !row.spawnedBy &&
-      (!options.filterByAgent ||
-        isSessionKeyTiedToAgent(row.key, options.agentId, options.defaultAgentId))
+      !row.spawnedBy
     );
   });
 }
@@ -364,8 +357,8 @@ export function resolveSessionNavigation(input: SessionNavigationInput): Session
   let activeRow = visibleSessions.find(matchesCurrentSession);
   if (!activeRow && activeSession && input.archivedFilter !== "archived") {
     // Deep-linked and archived sessions still need a visible selected row.
-    activeRow = sortedSessions.find(matchesCurrentSession) ?? activeSession;
-    visibleSessions = [activeRow, ...visibleSessions.filter((row) => row !== activeRow)];
+    activeRow = activeSession;
+    visibleSessions = [activeRow, ...visibleSessions];
   }
   return {
     currentSessionKey,

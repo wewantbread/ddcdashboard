@@ -9,7 +9,11 @@ import {
   readConfigFileSnapshotFromContext,
   readConfigFileSnapshotWithPluginMetadataFromContext,
 } from "./io.snapshot.js";
-import { getConfigResolutionFacts } from "./resolution-facts.js";
+import {
+  cloneConfigWithResolutionFacts,
+  getAuthoredConfigSecretRef,
+  getConfigResolutionFacts,
+} from "./resolution-facts.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -52,6 +56,7 @@ describe("config snapshot plugin metadata", () => {
           },
           remote: { token: "${GATEWAY_TOKEN}", password: "literal-${" },
         },
+        hooks: { token: "$MISSING_HOOK_TOKEN" },
       }),
       "utf8",
     );
@@ -64,6 +69,20 @@ describe("config snapshot plugin metadata", () => {
     expect(snapshot.config.gateway?.auth?.token).toBe("${ESCAPED_GATEWAY_TOKEN}");
     expect(snapshot.config.gateway?.remote?.token).toBe("${ENV_LITERAL_GATEWAY_TOKEN}");
     expect(snapshot.config.gateway?.remote?.password).toBe("literal-${");
+    expect(getAuthoredConfigSecretRef(snapshot.config, "hooks.token")).toEqual({
+      source: "env",
+      provider: "default",
+      id: "MISSING_HOOK_TOKEN",
+    });
+    expect(getAuthoredConfigSecretRef(snapshot.config, "gateway.auth.password")?.id).toBe(
+      "MISSING_GATEWAY_PASSWORD",
+    );
+    expect(getAuthoredConfigSecretRef(snapshot.config, "gateway.auth.token")).toBeNull();
+    expect(getAuthoredConfigSecretRef(snapshot.config, "gateway.remote.token")).toBeNull();
+    expect(
+      getAuthoredConfigSecretRef(cloneConfigWithResolutionFacts(snapshot.config), "hooks.token")
+        ?.id,
+    ).toBe("MISSING_HOOK_TOKEN");
     expect(JSON.stringify(snapshot)).not.toContain("resolutionFacts");
   });
 
@@ -75,12 +94,14 @@ describe("config snapshot plugin metadata", () => {
     const plainSnapshot = await readConfigFileSnapshotFromContext(context);
 
     expect(plainSnapshot).toMatchObject({ exists: false, valid: true });
-    expect(loader).not.toHaveBeenCalled();
+    expect(loader.mock.results.every(({ value }) => value.getSnapshot() === undefined)).toBe(true);
 
     const result = await readConfigFileSnapshotWithPluginMetadataFromContext(context);
 
     expect(result.snapshot).toMatchObject({ exists: false, valid: true });
-    expect(loader).toHaveBeenCalledOnce();
+    expect(structuredClone(result.pluginMetadataSnapshot?.manifestRegistry)).toEqual(
+      result.pluginMetadataSnapshot?.manifestRegistry,
+    );
     expect(result.pluginMetadataSnapshot?.configFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(result.pluginMetadataSnapshot?.index).toMatchObject({
       version: 1,

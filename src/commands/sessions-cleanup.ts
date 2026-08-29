@@ -269,9 +269,9 @@ async function maybeRunGatewayCleanup(
     });
     return { delegated: true, result };
   } catch (error) {
-    if (isGatewayTransportError(error)) {
-      // A stopped gateway should not block local maintenance; fall back to the
-      // on-disk session stores when transport is unavailable.
+    if (isGatewayTransportError(error) && error.kind === "closed" && error.code === undefined) {
+      // Only a pre-connect failure proves the Gateway never received this
+      // mutation; timeouts and established closes must not replay it locally.
       return { delegated: false };
     }
     throw error;
@@ -311,11 +311,15 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
   if (!targets) {
     return;
   }
-  const { mode, previewResults, appliedSummaries } = await runSessionsCleanup({
-    cfg,
-    opts,
-    targets,
-  });
+  const cleanupParams = { cfg, opts, targets };
+  let cleanupResult;
+  if (opts.dryRun) {
+    cleanupResult = await runSessionsCleanup(cleanupParams);
+  } else {
+    const { runLocalSessionsCleanup } = await import("./sessions-cleanup.runtime.js");
+    cleanupResult = await runLocalSessionsCleanup(cleanupParams, runtime);
+  }
+  const { mode, previewResults, appliedSummaries } = cleanupResult;
 
   if (opts.dryRun) {
     if (opts.json) {

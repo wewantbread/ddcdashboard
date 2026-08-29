@@ -364,6 +364,7 @@ public struct OpenClawChatSessionMutationRouteLease: Sendable {
     public typealias PatchSession = @Sendable (
         _ key: String,
         _ expectedSessionID: String?,
+        _ expectedMarkedUnreadAt: Double??,
         _ label: String??,
         _ category: String??,
         _ pinned: Bool?,
@@ -385,6 +386,7 @@ public struct OpenClawChatSessionMutationRouteLease: Sendable {
     public func patchSession(
         key: String,
         expectedSessionID: String? = nil,
+        expectedMarkedUnreadAt: Double?? = nil,
         label: String??,
         category: String??,
         pinned: Bool?,
@@ -394,6 +396,7 @@ public struct OpenClawChatSessionMutationRouteLease: Sendable {
         try await self.patchSessionImpl(
             key,
             expectedSessionID,
+            expectedMarkedUnreadAt,
             label,
             category,
             pinned,
@@ -706,7 +709,10 @@ public protocol OpenClawChatTransport: Sendable {
         worktreeBaseRef: String?) async throws -> OpenClawChatCreateSessionResponse
 
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload
-    func gatewayAdvertisesProgressCardStore() async -> Bool?
+    /// Tri-state hello-catalog negotiation: true/false when the connected
+    /// gateway's advertised method set answers, nil when no catalog is known
+    /// (disconnected, pre-catalog gateway, or non-gateway transport).
+    func gatewayAdvertisesMethod(_ method: String) async -> Bool?
     func fetchProgressCard(sessionKey: String) async throws -> ProgressCard?
     func requestFullMessage(sessionKey: String, messageID: String) async throws -> OpenClawChatMessage?
     func listModels(agentID: String?) async throws -> [OpenClawChatModelChoice]
@@ -805,7 +811,7 @@ public protocol OpenClawChatTransport: Sendable {
 }
 
 extension OpenClawChatTransport {
-    public func gatewayAdvertisesProgressCardStore() async -> Bool? {
+    public func gatewayAdvertisesMethod(_: String) async -> Bool? {
         nil
     }
 
@@ -911,7 +917,7 @@ extension OpenClawChatTransport {
     public func acquireSessionMutationRouteLease() async -> OpenClawChatSessionMutationRouteLease? {
         let transport = self
         return OpenClawChatSessionMutationRouteLease(
-            patchSession: { key, expectedSessionID, label, category, pinned, archived, unread in
+            patchSession: { key, expectedSessionID, _, label, category, pinned, archived, unread in
                 try await transport.patchSession(
                     key: key,
                     expectedSessionID: expectedSessionID,
@@ -1047,14 +1053,10 @@ extension OpenClawChatTransport {
         []
     }
 
-    /// Conveniences for callers that only page a list. Transports must
+    /// Convenience for callers that only select archive state. Transports must
     /// implement the canonical `listSessions(limit:search:archived:)`
-    /// requirement; same-name methods on a conformer are shadowed by these
-    /// sugars and never called through the protocol.
-    public func listSessions(limit: Int?) async throws -> OpenClawChatSessionsListResponse {
-        try await self.listSessions(limit: limit, search: nil, archived: false)
-    }
-
+    /// requirement; same-name methods on a conformer are shadowed by this
+    /// sugar and never called through the protocol.
     public func listSessions(limit: Int?, archived: Bool) async throws -> OpenClawChatSessionsListResponse {
         try await self.listSessions(limit: limit, search: nil, archived: archived)
     }

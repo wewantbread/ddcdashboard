@@ -29,6 +29,7 @@ import type {
   MessagingToolSourceReplyPayload,
 } from "../../embedded-agent-messaging.types.js";
 import type { AgentMessage, StreamFn } from "../../runtime/index.js";
+import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
 import {
   getModelRegistryRuntime,
   initializeModelRegistryRuntime,
@@ -111,7 +112,7 @@ type AttemptSpawnWorkspaceHoisted = {
   runContextEngineMaintenanceMock: AsyncContextEngineMaintenanceMock;
   detectAndLoadPromptImagesMock: AsyncUnknownMock;
   getHistoryLimitFromSessionKeyMock: Mock<
-    (sessionKey: string | undefined, config: unknown) => number | undefined
+    (sessionKey: string | undefined, config: unknown, route?: unknown) => number | undefined
   >;
   limitHistoryTurnsMock: Mock<<T>(messages: T, limit: number | undefined) => T>;
   preemptiveCompactionCalls: Parameters<ShouldPreemptivelyCompactBeforePromptFn>[0][];
@@ -132,12 +133,14 @@ function createSubscriptionMock(): SubscriptionMock {
     getLatestMcpAppChannelView: () => undefined,
     getLatestMcpConnectAction: () => undefined,
     toolMetas: [] as Array<{ toolName: string; meta?: string; asyncStarted?: boolean }>,
-    runToolLifecycle: async <T>(toolParams: { execute: () => Promise<T> }) =>
-      await toolParams.execute(),
+    runToolLifecycle: async <T>(toolParams: {
+      execute: (onImplementationStart: () => void) => Promise<T>;
+    }) => await toolParams.execute(() => undefined),
     unsubscribe: () => {},
     setTerminalLifecycleMeta: () => {},
     waitForCompactionRetry: async () => {},
     waitForPendingEvents: async () => {},
+    flushPartialAssistantText: () => {},
     getAcceptedSessionSpawns: () => [],
     getMessagingToolSentTexts: () => [] as string[],
     getMessagingToolSentMediaUrls: () => [] as string[],
@@ -155,7 +158,6 @@ function createSubscriptionMock(): SubscriptionMock {
     didSendViaMessagingTool: () => false,
     didSendDeterministicApprovalPrompt: () => false,
     getLastToolError: () => undefined,
-    getLastToolRecovery: () => undefined,
     getUsageTotals: () => undefined,
     getLastAssistantUsage: () => undefined,
     getAssistantTurnCount: () => 0,
@@ -223,7 +225,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     skippedCount: 0,
   }));
   const getHistoryLimitFromSessionKeyMock = vi.fn<
-    (sessionKey: string | undefined, config: unknown) => number | undefined
+    (sessionKey: string | undefined, config: unknown, route?: unknown) => number | undefined
   >(() => undefined);
   const limitHistoryTurnsMock = vi.fn<<T>(messages: T, limit: number | undefined) => T>(
     (messages) => messages,
@@ -295,19 +297,21 @@ export function getHoisted(): AttemptSpawnWorkspaceHoisted {
   return hoisted;
 }
 
+const emptyPluginIndex: PluginMetadataSnapshot["index"] = {
+  version: 1,
+  hostContractVersion: "test",
+  compatRegistryVersion: "test",
+  migrationVersion: 1,
+  policyHash: "",
+  generatedAtMs: 1,
+  installRecords: {},
+  plugins: [],
+  diagnostics: [],
+};
 const emptyPluginMetadataSnapshot: PluginMetadataSnapshot = {
   policyHash: "",
-  index: {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash: "",
-    generatedAtMs: 1,
-    installRecords: {},
-    plugins: [],
-    diagnostics: [],
-  },
+  index: emptyPluginIndex,
+  registryIndex: emptyPluginIndex,
   registryDiagnostics: [],
   manifestRegistry: { plugins: [], diagnostics: [] },
   plugins: [],
@@ -384,14 +388,17 @@ vi.mock("../../../trajectory/runtime.js", async () => {
   };
 });
 
-vi.mock("../../sessions/index.js", () => {
-  function AuthStorage() {}
-  class DefaultResourceLoader {
+vi.mock("../../sessions/resource-loader.js", () => ({
+  DefaultResourceLoader: class {
     constructor(...args: unknown[]) {
       hoisted.defaultResourceLoaderInitMock(...args);
     }
     async reload() {}
-  }
+  },
+}));
+
+vi.mock("../../sessions/index.js", () => {
+  function AuthStorage() {}
   function ModelRegistry() {}
   const estimateTokens = (value: unknown) =>
     Math.max(1, Math.ceil(JSON.stringify(value ?? "").length / 4));
@@ -399,7 +406,6 @@ vi.mock("../../sessions/index.js", () => {
   return {
     AuthStorage,
     createAgentSession: (...args: unknown[]) => hoisted.createAgentSessionMock(...args),
-    DefaultResourceLoader,
     estimateTokens,
     generateSummary: async () => "",
     ModelRegistry,
@@ -834,8 +840,13 @@ vi.mock("../compaction-safety-timeout.js", () => ({
 }));
 
 vi.mock("../history.js", () => ({
-  getHistoryLimitFromSessionKey: (sessionKey: string | undefined, config: unknown) =>
-    hoisted.getHistoryLimitFromSessionKeyMock(sessionKey, config),
+  // Forward the account id too: dropping it here would hide whether the prompt
+  // path actually scopes the limit to the routed account.
+  getHistoryLimitFromSessionKey: (
+    sessionKey: string | undefined,
+    config: unknown,
+    route?: unknown,
+  ) => hoisted.getHistoryLimitFromSessionKeyMock(sessionKey, config, route),
   limitHistoryTurns: (messages: unknown, limit: number | undefined) =>
     hoisted.limitHistoryTurnsMock(messages, limit),
 }));
@@ -967,6 +978,7 @@ type MutableSession = {
   abort: () => Promise<void>;
   dispose: () => void;
   steer: (text: string) => Promise<void>;
+  [agentSessionSetContextReplacementHook]: (callback: (() => void) | undefined) => void;
 };
 
 type SessionPromptOverride = (
@@ -1219,6 +1231,7 @@ export function createDefaultEmbeddedSession(params?: {
     abort: async () => {},
     dispose: () => {},
     steer: async () => {},
+    [agentSessionSetContextReplacementHook]: () => {},
   };
 
   return session;

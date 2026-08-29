@@ -13,9 +13,11 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { onAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
+import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createChatRunState } from "../server-chat-state.js";
+import { persistAbortedPartials } from "./chat-abort-runtime.js";
 import {
   createActiveRun,
   createChatAbortContext,
@@ -110,6 +112,26 @@ function findMessageWithIdempotencyKey(
     }
   }
   return undefined;
+}
+
+function collectAssistantRowsWithText(
+  lines: TranscriptLine[],
+  text: string,
+): Record<string, unknown>[] {
+  return lines
+    .map((line) => line.message)
+    .filter(
+      (message): message is Record<string, unknown> =>
+        message?.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some(
+          (block) =>
+            typeof block === "object" &&
+            block !== null &&
+            (block as { type?: unknown }).type === "text" &&
+            (block as { text?: unknown }).text === text,
+        ),
+    );
 }
 
 function expectRecord(value: unknown, label: string): Record<string, unknown> {
@@ -256,6 +278,99 @@ afterEach(async () => {
 });
 
 describe("chat abort transcript persistence", () => {
+  it("publishes one run-owned transcript row for an abandoned placement partial", async () => {
+    const { transcriptPath, sessionId } = await createTranscriptFixture(
+      "openclaw-chat-placement-abandon-",
+    );
+    const runId = "placement-abandon-run";
+    const updates: unknown[] = [];
+    const unsubscribe = onInternalSessionTranscriptUpdate((update) => updates.push(update));
+    const snapshot = {
+      runId,
+      sessionId,
+      agentId: "main",
+      text: "Gateway-synced remote partial",
+      abortOrigin: "placement-abandon" as const,
+    };
+
+    try {
+      await persistAbortedPartials({
+        context: { logGateway: { warn: vi.fn() } },
+        sessionKey: "main",
+        snapshots: [snapshot],
+      });
+      await persistAbortedPartials({
+        context: { logGateway: { warn: vi.fn() } },
+        sessionKey: "main",
+        snapshots: [snapshot],
+      });
+    } finally {
+      unsubscribe();
+    }
+
+    const persisted = collectMessagesWithIdempotencyKey(
+      await readTranscriptLines(transcriptPath),
+      `${runId}:assistant`,
+    );
+    expect(persisted).toHaveLength(1);
+    expectPersistedAbortMessage(persisted[0], {
+      idempotencyKey: `${runId}:assistant`,
+      origin: "placement-abandon",
+      runId,
+    });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ runId, messageId: expect.any(String), messageSeq: 1 });
+  });
+
+  it.each([
+    { origin: "placement-abandon" as const, rejects: true },
+    { origin: "rpc" as const, rejects: false },
+  ])("keeps $origin append failure at its owning abort boundary", async ({ origin, rejects }) => {
+    const { sessionId } = await createTranscriptFixture("openclaw-chat-abort-append-failure-");
+    sessionEntryState.storePath = "";
+    const warn = vi.fn();
+    const persistence = persistAbortedPartials({
+      context: { logGateway: { warn } },
+      sessionKey: "main",
+      snapshots: [
+        {
+          sessionId,
+          agentId: "main",
+          runId: "failed-abort-run",
+          text: "partial that cannot be persisted",
+          abortOrigin: origin,
+        },
+      ],
+    });
+
+    if (rejects) {
+      await expect(persistence).rejects.toThrow("transcript identity not resolved");
+    } else {
+      await expect(persistence).resolves.toBeUndefined();
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("transcript identity not resolved"));
+  });
+
+  it("rejects an abandoned partial after its exact transcript session is replaced", async () => {
+    const { sessionId } = await createTranscriptFixture("openclaw-chat-abort-rebound-session-");
+
+    await expect(
+      persistAbortedPartials({
+        context: { logGateway: { warn: vi.fn() } },
+        sessionKey: "main",
+        snapshots: [
+          {
+            sessionId: `${sessionId}-stale`,
+            agentId: "main",
+            runId: "stale-placement-run",
+            text: "partial from the former session",
+            abortOrigin: "placement-abandon",
+          },
+        ],
+      }),
+    ).rejects.toThrow("transcript session changed");
+  });
+
   it("persists run-scoped abort partial with rpc metadata and idempotency", async () => {
     const { transcriptPath, sessionId } = await createTranscriptFixture("openclaw-chat-abort-run-");
     const runId = "idem-abort-run-1";
@@ -316,6 +431,195 @@ describe("chat abort transcript persistence", () => {
       runId,
       stopReason: "stop",
     });
+  });
+
+  it("does not duplicate a committed reply when a late abort re-persists the buffered text", async () => {
+    const { transcriptPath, sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-committed-reply-",
+    );
+    // The embedded agent loop persists its final assistant row without a
+    // run-scoped idempotency key, so the store-level key dedupe cannot see
+    // it; only the attached run identity can scope the skip to this run.
+    appendTranscriptMessageSync(
+      { agentId: "main", sessionId, sessionKey: "main", storePath },
+      {
+        idempotencyLookup: "caller-checked",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Completed reply" }],
+          timestamp: Date.now(),
+          stopReason: "stop",
+          __openclaw: { runId: "stalled-committed-run" },
+        },
+        now: 1,
+      },
+    );
+
+    // Settlement stall: the run committed its row but never emitted its
+    // terminal lifecycle event, so the gateway still projects it active with
+    // the full reply buffered.
+    const runId = "stalled-committed-run";
+    const respond = vi.fn();
+    const context = createChatAbortContext({
+      chatAbortControllers: new Map([[runId, createActiveRun("main", { sessionId })]]),
+      chatRunState: createAbortTestRunState([[runId, { buffer: "Completed reply" }]]),
+      removeChatRun: vi
+        .fn()
+        .mockReturnValue({ sessionKey: "main", clientRunId: "client-stalled-committed-run" }),
+      agentRunSeq: new Map<string, number>([
+        [runId, 2],
+        ["client-stalled-committed-run", 3],
+      ]),
+      broadcast: vi.fn(),
+      nodeSendToSession: vi.fn(),
+      logGateway: { warn: vi.fn() },
+    });
+
+    await invokeChatAbortHandler({
+      handler: expectDefined(
+        chatHandlers["chat.abort"],
+        'chatHandlers["chat.abort"] test invariant',
+      ),
+      context,
+      request: { sessionKey: "main", runId },
+      respond,
+    });
+
+    const lines = await readTranscriptLines(transcriptPath);
+    const committedRows = collectAssistantRowsWithText(lines, "Completed reply");
+
+    expect(committedRows).toHaveLength(1);
+    expect(committedRows[0]?.openclawAbort).toBeUndefined();
+  });
+
+  it("keeps an abort partial when the committed reply belongs to a different run", async () => {
+    const { transcriptPath, sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-cross-run-",
+    );
+    // An earlier run committed the identical reply. Text equality alone would
+    // drop this run's abort partial, so the skip must be run-scoped.
+    appendTranscriptMessageSync(
+      { agentId: "main", sessionId, sessionKey: "main", storePath },
+      {
+        idempotencyLookup: "caller-checked",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Completed reply" }],
+          timestamp: Date.now(),
+          stopReason: "stop",
+          __openclaw: { runId: "settled-other-run" },
+        },
+        now: 1,
+      },
+    );
+
+    await persistAbortedPartials({
+      context: { logGateway: { warn: vi.fn() } },
+      sessionKey: "main",
+      snapshots: [
+        {
+          runId: "aborted-later-run",
+          sessionId,
+          agentId: "main",
+          text: "Completed reply",
+          abortOrigin: "rpc",
+        },
+      ],
+    });
+
+    const lines = await readTranscriptLines(transcriptPath);
+    const committedRows = collectAssistantRowsWithText(lines, "Completed reply");
+    expect(committedRows).toHaveLength(2);
+    expectPersistedAbortMessage(committedRows[1], {
+      idempotencyKey: "aborted-later-run:assistant",
+      origin: "rpc",
+      runId: "aborted-later-run",
+    });
+  });
+
+  it("keeps an abort partial when the committed row predates run identity tagging", async () => {
+    const { transcriptPath, sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-legacy-row-",
+    );
+    appendTranscriptMessageSync(
+      { agentId: "main", sessionId, sessionKey: "main", storePath },
+      {
+        idempotencyLookup: "caller-checked",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Completed reply" }],
+          timestamp: Date.now(),
+          stopReason: "stop",
+        },
+        now: 1,
+      },
+    );
+
+    // A row without a stored run identity cannot prove this run's reply is
+    // committed; losing the abort record is worse than a duplicate reply.
+    await persistAbortedPartials({
+      context: { logGateway: { warn: vi.fn() } },
+      sessionKey: "main",
+      snapshots: [
+        {
+          runId: "aborted-unproven-run",
+          sessionId,
+          agentId: "main",
+          text: "Completed reply",
+          abortOrigin: "rpc",
+        },
+      ],
+    });
+
+    const lines = await readTranscriptLines(transcriptPath);
+    const committedRows = collectAssistantRowsWithText(lines, "Completed reply");
+    expect(committedRows).toHaveLength(2);
+    expectPersistedAbortMessage(committedRows[1], {
+      idempotencyKey: "aborted-unproven-run:assistant",
+      origin: "rpc",
+      runId: "aborted-unproven-run",
+    });
+  });
+
+  it("treats a declined committed-reply skip as a decision, not a placement-abandon failure", async () => {
+    const { transcriptPath, sessionId, storePath } = await createTranscriptFixture(
+      "openclaw-chat-abort-skip-decision-",
+    );
+    appendTranscriptMessageSync(
+      { agentId: "main", sessionId, sessionKey: "main", storePath },
+      {
+        idempotencyLookup: "caller-checked",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Completed reply" }],
+          timestamp: Date.now(),
+          stopReason: "stop",
+          __openclaw: { runId: "stalled-placement-run" },
+        },
+        now: 1,
+      },
+    );
+
+    // The skip happens inside the writer queue after the append decision was
+    // handed off, so it must not surface as a failed placement abandonment.
+    await persistAbortedPartials({
+      context: { logGateway: { warn: vi.fn() } },
+      sessionKey: "main",
+      snapshots: [
+        {
+          runId: "stalled-placement-run",
+          sessionId,
+          agentId: "main",
+          text: "Completed reply",
+          abortOrigin: "placement-abandon",
+        },
+      ],
+    });
+
+    const lines = await readTranscriptLines(transcriptPath);
+    const committedRows = collectAssistantRowsWithText(lines, "Completed reply");
+    expect(committedRows).toHaveLength(1);
+    expect(committedRows[0]?.openclawAbort).toBeUndefined();
   });
 
   it("does not let non-assistant idempotency collisions suppress abort partial persistence", async () => {

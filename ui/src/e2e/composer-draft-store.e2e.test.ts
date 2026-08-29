@@ -64,6 +64,154 @@ async function rawDraftRecords(page: Page, scopes: readonly TestDraftScope[], ex
 }
 
 suite.define(() => {
+  it("does not reuse a cached composer owner while reconnect authentication is unresolved", async () => {
+    await suite.withPage({ locale: "en-US", serviceWorkers: "block" }, async ({ page }) => {
+      await installMockGateway(page);
+      await page.goto(`${suite.server.baseUrl}chat`);
+      const storeHandle = await page.evaluateHandle<
+        typeof import("../lib/chat/composer-draft-store.runtime.ts")
+      >('import("/src/lib/chat/composer-draft-store.runtime.ts")');
+      const composerHandle = await page.evaluateHandle<
+        typeof import("../pages/chat/composer-persistence.ts")
+      >('import("/src/pages/chat/composer-persistence.ts")');
+      const result = await page.evaluate(
+        async ({ draftStore, composer }) => {
+          const client = { recoveryScope: "credential-a", recoveryScopeReady: true };
+          const state = {
+            settings: { gatewayUrl: "owner-fence-gateway" },
+            sessionKey: "agent:main:owner-fence",
+            chatMessage: "",
+            chatAttachments: [],
+            chatQueue: [],
+            client,
+            connected: true,
+            selectedChatSessionIncognito: false,
+          };
+          const scope = {
+            gatewayOwner: state.settings.gatewayUrl,
+            recoveryScope: client.recoveryScope,
+            scopeKey: composer.storedChatOutboxScopeKey(
+              composer.resolveStoredChatOutboxScope(state, state.sessionKey),
+            ),
+          };
+          const persistence = new composer.ChatComposerPersistence(() => state);
+          persistence.start();
+          state.connected = false;
+          client.recoveryScopeReady = false;
+          state.chatMessage = "authenticated offline draft";
+          persistence.persistChangedState();
+          let offlineStored = false;
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const stored = await draftStore.readDurableComposerDraft(scope);
+            if (stored.status === "found" && stored.draft.text === state.chatMessage) {
+              offlineStored = true;
+              break;
+            }
+            await new Promise((resolve) => {
+              setTimeout(resolve, 10);
+            });
+          }
+          if (!offlineStored) {
+            throw new Error("offline composer draft did not settle");
+          }
+
+          state.connected = true;
+          state.chatMessage = "unresolved reconnect draft";
+          persistence.persistChangedState();
+          // Let a wrongly admitted fire-and-forget write open its transaction,
+          // then commit a later transaction in the same object store as a barrier.
+          await Promise.resolve();
+          await draftStore.writeDurableComposerDraft(
+            { ...scope, recoveryScope: "credential-b", scopeKey: "reconnect-barrier" },
+            { revision: 1, text: "barrier", attachments: [] },
+            { expectedRevision: 0, writeId: "reconnect-barrier" },
+          );
+          return draftStore.readDurableComposerDraft(scope);
+        },
+        { draftStore: storeHandle, composer: composerHandle },
+      );
+
+      expect(result).toMatchObject({
+        status: "found",
+        draft: { text: "authenticated offline draft" },
+      });
+    });
+  });
+
+  it("reads the requested draft before global expiry maintenance settles", async () => {
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block" },
+      async ({ context, page }) => {
+        await installMockGateway(page);
+        await page.goto(`${suite.server.baseUrl}settings`);
+        const scope = {
+          gatewayOwner: "foreground-gateway",
+          recoveryScope: "foreground-credential",
+          scopeKey: "foreground-draft",
+        };
+        const seedStoreHandle = await page.evaluateHandle<
+          typeof import("../lib/chat/composer-draft-store.runtime.ts")
+        >('import("/src/lib/chat/composer-draft-store.runtime.ts")');
+        await page.evaluate(
+          ({ draftScope, draftStore }) =>
+            draftStore.writeDurableComposerDraft(
+              draftScope,
+              { revision: 1, text: "restore before maintenance", attachments: [] },
+              { expectedRevision: 0, writeId: "foreground-write" },
+            ),
+          { draftScope: scope, draftStore: seedStoreHandle },
+        );
+
+        await page.close();
+        const reopened = await context.newPage();
+        await reopened.addInitScript(() => {
+          const blockedTransactions = new WeakSet<IDBTransaction>();
+          const originalOpenCursor = Object.getOwnPropertyDescriptor(
+            IDBObjectStore.prototype,
+            "openCursor",
+          )?.value as IDBObjectStore["openCursor"];
+          IDBObjectStore.prototype.openCursor = function (this: IDBObjectStore, ...args) {
+            if (this.name === "composerDrafts") {
+              blockedTransactions.add(this.transaction);
+            }
+            return originalOpenCursor.apply(this, args);
+          };
+          IDBTransaction.prototype.addEventListener = function (
+            this: IDBTransaction,
+            type: string,
+            listener: EventListenerOrEventListenerObject,
+            options?: boolean | AddEventListenerOptions,
+          ) {
+            if (type === "complete" && blockedTransactions.has(this)) {
+              return;
+            }
+            return EventTarget.prototype.addEventListener.call(this, type, listener, options);
+          } as IDBTransaction["addEventListener"];
+        });
+        await installMockGateway(reopened);
+        await reopened.goto(`${suite.server.baseUrl}settings`);
+        const reopenedStoreHandle = await reopened.evaluateHandle<
+          typeof import("../lib/chat/composer-draft-store.runtime.ts")
+        >('import("/src/lib/chat/composer-draft-store.runtime.ts")');
+        const result = await reopened.evaluate(
+          ({ draftScope, draftStore }) =>
+            Promise.race([
+              draftStore.readDurableComposerDraft(draftScope),
+              new Promise((resolve) => {
+                setTimeout(() => resolve({ status: "maintenance-blocked-read" }), 1_000);
+              }),
+            ]),
+          { draftScope: scope, draftStore: reopenedStoreHandle },
+        );
+
+        expect(result).toMatchObject({
+          status: "found",
+          draft: { text: "restore before maintenance" },
+        });
+      },
+    );
+  });
+
   it("expires drafts across abandoned credential owners on the next database open", async () => {
     await suite.withPage(
       { locale: "en-US", serviceWorkers: "block" },

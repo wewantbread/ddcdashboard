@@ -34,8 +34,9 @@ type VmRun = {
   didTimeout: () => boolean;
 };
 
-// Each worker handles exactly one exec/resume payload, so cancellations are run-scoped.
+// Each worker handles exactly one exec/resume payload, so bridge state is run-scoped.
 const canceledBridgeRequestIds: string[] = [];
+let bridgeAdmissionFailure: CodeModeWorkerFailure | undefined;
 
 // QuickJS error stacks are backtrace frames only ("    at file:line:col"), with
 // no leading "Name: message" header like V8. Returning .stack alone therefore
@@ -64,6 +65,19 @@ function buildUserSource(code: string): string {
   return `globalThis.__openclawResult = (async () => {\n${code}\n})()`;
 }
 
+function trackPromiseRejection(
+  promise: JSValueHandle,
+  reason: JSValueHandle,
+  handled: boolean,
+): void {
+  const vm = promise.vm;
+  vm.global
+    .getProp("__openclawTrackRejection")
+    .consume((track) =>
+      vm.callFunction(track, vm.undefined, promise, reason, handled ? vm.true : vm.false).dispose(),
+    );
+}
+
 function createHostRequestHandler(params: {
   vm: QuickJS;
   pendingRequests: PendingBridgeRequest[];
@@ -76,13 +90,16 @@ function createHostRequestHandler(params: {
 ) => JSValueHandle {
   return (methodHandle, argsHandle, bridgeIdHandle) => {
     if (params.pendingRequests.length >= params.config.maxPendingToolCalls) {
-      throw new Error("too many pending code mode tool calls");
+      bridgeAdmissionFailure ??= new CodeModeWorkerFailure(
+        "invalid_input",
+        "too many pending code mode tool calls",
+      );
+      throw bridgeAdmissionFailure;
     }
     const method = methodHandle.toString();
     if (
       method !== "search" &&
       method !== "describe" &&
-      method !== "call" &&
       method !== "callValue" &&
       method !== "nodes" &&
       method !== "yield" &&
@@ -148,13 +165,14 @@ async function createVm(params: {
   config: CodeModeConfig;
   pendingRequests: PendingBridgeRequest[];
 }): Promise<VmRun> {
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   let timedOut = false;
-  const deadlineReached = () => Date.now() - startedAt >= params.config.timeoutMs;
+  const deadlineReached = () => performance.now() - startedAt >= params.config.timeoutMs;
   const vm = await QuickJS.create({
     wasm: params.wasmModule,
     memoryLimit: params.config.memoryLimitBytes,
     timezoneOffset: 0,
+    onUnhandledRejection: trackPromiseRejection,
     interruptHandler: () => {
       timedOut = deadlineReached();
       return timedOut;
@@ -196,14 +214,15 @@ async function restoreVm(params: {
   config: CodeModeConfig;
   pendingRequests: PendingBridgeRequest[];
 }): Promise<VmRun> {
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   let timedOut = false;
-  const deadlineReached = () => Date.now() - startedAt >= params.config.timeoutMs;
+  const deadlineReached = () => performance.now() - startedAt >= params.config.timeoutMs;
   const snapshot = QuickJS.deserializeSnapshot(params.snapshotBytes);
   const vm = await QuickJS.restore(snapshot, {
     wasm: params.wasmModule,
     memoryLimit: params.config.memoryLimitBytes,
     timezoneOffset: 0,
+    onUnhandledRejection: trackPromiseRejection,
     interruptHandler: () => {
       timedOut = deadlineReached();
       return timedOut;
@@ -248,12 +267,17 @@ function boundWorkerResult(
   const bounded = boundCodeModeResult({
     output: result.output,
     ...(result.status === "completed" ? { value: result.value } : {}),
+    ...(result.status === "failed" ? { error: result.error } : {}),
     maxOutputBytes: config.maxOutputBytes,
   });
   if (result.status === "completed") {
     return { ...result, output: bounded.output, value: bounded.value };
   }
-  return { ...result, output: bounded.output };
+  return {
+    ...result,
+    output: bounded.output,
+    ...(bounded.error !== undefined ? { error: bounded.error } : {}),
+  };
 }
 
 function failedWorkerResult(
@@ -293,7 +317,7 @@ function workerFailureResult(params: {
 
 async function readCompletedResult(vm: QuickJS, resultHandle: JSValueHandle): Promise<unknown> {
   if (!resultHandle.isPromise) {
-    return toJsonSafe(vm.dump(resultHandle));
+    return serializeCompletedCatalogHandles(vm, resultHandle);
   }
   const settled = await vm.resolvePromise(resultHandle);
   if ("error" in settled) {
@@ -319,7 +343,17 @@ async function readCompletedResult(vm: QuickJS, resultHandle: JSValueHandle): Pr
       throw new Error(text);
     });
   }
-  return settled.value.consume((value) => toJsonSafe(vm.dump(value)));
+  return settled.value.consume((value) => serializeCompletedCatalogHandles(vm, value));
+}
+
+function serializeCompletedCatalogHandles(vm: QuickJS, value: JSValueHandle): unknown {
+  return vm.global
+    .getProp("__openclawSerializeCatalogHandles")
+    .consume((serialize) =>
+      vm
+        .callFunction(serialize, vm.undefined, value)
+        .consume((serialized) => toJsonSafe(vm.dump(serialized))),
+    );
 }
 
 function waitingResult(params: {
@@ -354,6 +388,9 @@ async function runVmExecution(params: {
   try {
     params.prepare();
     params.vm.executePendingJobs();
+    if (bridgeAdmissionFailure) {
+      throw bridgeAdmissionFailure;
+    }
     output = takeOutput(params.vm);
     const resultHandle = params.vm.global.getProp("__openclawResult");
     try {
@@ -376,6 +413,12 @@ async function runVmExecution(params: {
         });
       }
       const value = await readCompletedResult(params.vm, resultHandle);
+      // Check only after all host work and microtasks settle. Catches attached
+      // after an await (including a restored snapshot) still own their errors.
+      using rejection = params.vm.global
+        .getProp("__openclawUnhandledRejection")
+        .consume((read) => params.vm.callFunction(read, params.vm.undefined));
+      await readCompletedResult(params.vm, rejection);
       return { status: "completed", value, output };
     } finally {
       resultHandle.dispose();
@@ -511,7 +554,10 @@ async function main(): Promise<CodeModeWorkerResult> {
       : error instanceof CodeModeWorkerFailure
         ? error.code
         : "internal_error";
-    return failedWorkerResult(code, timedOut ? "code mode timeout exceeded" : errorMessage(error));
+    return boundWorkerResult(
+      failedWorkerResult(code, timedOut ? "code mode timeout exceeded" : errorMessage(error)),
+      config,
+    );
   }
 }
 

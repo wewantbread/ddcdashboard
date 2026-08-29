@@ -1,4 +1,4 @@
-import { getHealthCheck, type HealthCheck, type HealthFinding } from "openclaw/plugin-sdk/health";
+import type { HealthCheck, HealthFinding } from "openclaw/plugin-sdk/health";
 import {
   asOptionalRecord as readRecord,
   normalizeOptionalString as nonEmptyString,
@@ -10,6 +10,7 @@ export const CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID = "crabbox/cloud-worker-profi
 
 type CrabboxDoctorRegistrationHost = {
   readonly openclawRoot: string;
+  readonly getHealthCheck: (id: string) => HealthCheck | undefined;
   readonly registerHealthCheck: (check: HealthCheck) => void;
 };
 
@@ -57,19 +58,6 @@ function createCrabboxCloudWorkerProfileCheck(openclawRoot: string): HealthCheck
       const findings: HealthFinding[] = [];
       for (const [profileId, profile] of profiles) {
         const settings = readRecord(profile.settings);
-        if (settings?.desktop === true) {
-          const configPath = `cloudWorkers.profiles.${profileId}.settings.desktop`;
-          findings.push({
-            checkId: CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID,
-            severity: "warning",
-            source: "crabbox",
-            message: `Cloud worker profile "${profileId}" requests a desktop, but Crabbox node transport no longer supports desktop profiles.`,
-            ocPath: configPath,
-            target: profileId,
-            requirement: "a Crabbox cloud worker profile without desktop mode",
-            fixHint: `Run \`openclaw doctor --fix\` to remove the stale ${configPath} setting.`,
-          });
-        }
         const explicitBinary = nonEmptyString(settings?.binary);
         const binary = findCrabboxBinary({
           ...(explicitBinary ? { explicit: explicitBinary } : {}),
@@ -118,50 +106,14 @@ function createCrabboxCloudWorkerProfileCheck(openclawRoot: string): HealthCheck
       }
       return findings;
     },
-    async repair(ctx, findings) {
-      const profileIds = new Set(
-        findings.flatMap((entry) => {
-          const profileId = entry.target;
-          return entry.checkId === CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID &&
-            profileId &&
-            entry.ocPath === `cloudWorkers.profiles.${profileId}.settings.desktop`
-            ? [profileId]
-            : [];
-        }),
-      );
-      const staleProfileIds = [...profileIds].filter((profileId) => {
-        const profile = ctx.cfg.cloudWorkers?.profiles?.[profileId];
-        return (
-          profile?.provider.trim().toLowerCase() === CRABBOX_WORKER_PROVIDER_ID &&
-          readRecord(profile.settings)?.desktop === true
-        );
-      });
-      if (staleProfileIds.length === 0) {
-        return { config: ctx.cfg, changes: [] };
-      }
-
-      const config = structuredClone(ctx.cfg);
-      for (const profileId of staleProfileIds) {
-        const settings = readRecord(config.cloudWorkers?.profiles?.[profileId]?.settings);
-        if (settings) {
-          delete settings.desktop;
-        }
-      }
-      return {
-        config,
-        changes: staleProfileIds.map(
-          (profileId) =>
-            `Removed stale cloudWorkers.profiles.${profileId}.settings.desktop from Crabbox profile "${profileId}".`,
-        ),
-      };
-    },
   };
 }
 
 export function registerCrabboxWorkerProviderDoctorChecks(
   host: CrabboxDoctorRegistrationHost,
 ): void {
-  if (getHealthCheck(CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID)) {
+  // Lookup and registration must use the same host registry across artifact loaders.
+  if (host.getHealthCheck(CRABBOX_CLOUD_WORKER_PROFILE_CHECK_ID)) {
     return;
   }
   host.registerHealthCheck(createCrabboxCloudWorkerProfileCheck(host.openclawRoot));

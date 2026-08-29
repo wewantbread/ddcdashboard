@@ -5,7 +5,10 @@ import {
   formatErrorMessage,
   setActiveEmbeddedRun,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { retireCodexAppServerClientAfterTimedOutTurn } from "./attempt-client-cleanup.js";
+import {
+  retireCodexAppServerClientAfterTimedOutTurn,
+  terminateCodexBackgroundTerminals,
+} from "./attempt-client-cleanup.js";
 import { isTerminalTurnStatus } from "./attempt-notifications.js";
 import {
   CodexSteeringAcceptedUnconfirmedError,
@@ -23,6 +26,7 @@ import type { CodexAttemptNotificationController } from "./run-attempt-notificat
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import {
+  codexTranscriptMirrorRuntime,
   createCodexAppServerUserMessagePersistenceNotifier,
   mirrorPromptAtTurnStartBestEffort,
 } from "./transcript-mirror.js";
@@ -55,6 +59,7 @@ export async function activateCodexAttemptTurn(
     bindingIdentity,
     sessionAgentId,
     sandboxSessionKey,
+    contextSessionKey,
     effectiveCwd,
   } = connection;
   const { dynamicToolParams, compactionPlanState, computerContextEpoch, toolBridge } = attemptTools;
@@ -102,6 +107,19 @@ export async function activateCodexAttemptTurn(
       nativePostToolUseRelayEnabled:
         resourceState.nativeHookRelay?.allowedEvents.includes("post_tool_use") === true &&
         resourceState.nativeHookRelay.shouldRelayEvent("post_tool_use"),
+      asyncUserMessageAllowed:
+        params.disableTools !== true &&
+        (params.toolsAllow === undefined ||
+          toolBridge.availableTools.some((tool) => tool.name === "message")),
+      onAsyncDelivery: async (delivery) => {
+        return await codexTranscriptMirrorRuntime.deliverAsyncMessageBestEffort({
+          params: dynamicToolParams,
+          cwd: effectiveCwd,
+          threadId: resourceState.thread.threadId,
+          turnId: activeTurnId,
+          ...delivery,
+        });
+      },
       readRecentRateLimits: () => readRecentCodexRateLimits(resourceState.client),
       runAbortSignal: runAbortController.signal,
       remoteWorkspaceRoot: connection.appServer.remoteWorkspaceRoot,
@@ -179,6 +197,20 @@ export async function activateCodexAttemptTurn(
   for (const failure of pendingNativePreToolUseFailures.splice(0)) {
     activeProjector.recordNativeToolPreToolUseFailure(failure);
   }
+  const notifyUserMessagePersisted = createCodexAppServerUserMessagePersistenceNotifier(params);
+  // Buffered async items can persist immediately when the route opens. Commit
+  // their owning user admission first so durable history stays chronological.
+  const promptMirrorPromise = mirrorPromptAtTurnStartBestEffort({
+    params,
+    agentId: sessionAgentId,
+    notifyUserMessagePersisted,
+    sessionKey: sandboxSessionKey,
+    cwd: effectiveCwd,
+    threadId: resourceState.thread.threadId,
+    turnId: activeTurnId,
+    upstreamUserText: turnState.codexTurnPromptText,
+  });
+  await promptMirrorPromise;
   // The route buffers early events. Publish full turn context, then release in wire order.
   if (resourceState.turnRoute) {
     try {
@@ -215,8 +247,40 @@ export async function activateCodexAttemptTurn(
     threadId: resourceState.thread.threadId,
     turnId: activeTurnId,
     requestTimeoutMs: connection.appServer.requestTimeoutMs,
-    claimPendingUserInput: () => userInputBridgeRef.current?.claimPendingRequest(),
     signal: runAbortController.signal,
+    beforeConfirmConsumed: async (items) => {
+      const inboundItems = items.filter((item) => item.isInboundUserMessage === true);
+      if (inboundItems.length === 0) {
+        return;
+      }
+      await promptMirrorPromise;
+      const messages = activeProjector.buildSteeringTranscriptPrefix();
+      if (params.sessionTarget && messages.length > 0) {
+        await codexTranscriptMirrorRuntime.mirror({
+          agentId: sessionAgentId,
+          sessionKey: contextSessionKey,
+          sessionId: params.sessionId,
+          storePath: params.sessionTarget.storePath,
+          cwd: effectiveCwd,
+          messages,
+          idempotencyScope: `codex-app-server:${resourceState.thread.threadId}`,
+          runId: params.runId,
+          runMirrorIdentityPrefix: `${activeTurnId}:`,
+          config: params.config,
+        });
+        activeProjector.markSteeringTranscriptPersisted();
+      }
+      for (const item of inboundItems) {
+        const recorder = item.userTurnTranscriptRecorder;
+        if (!recorder) {
+          continue;
+        }
+        await recorder.persistApproved();
+        if (!recorder.hasPersisted()) {
+          throw new Error("Codex consumed steering before its user turn was persisted");
+        }
+      }
+    },
   });
   steeringQueueRef.current = activeSteeringQueue;
   const claimPendingUserInputAnswer = async (
@@ -273,6 +337,7 @@ export async function activateCodexAttemptTurn(
   const handle = {
     kind: "embedded" as const,
     runId: params.runId,
+    startedAtMs: params.startedAtMs,
     toolAuthorityFingerprint: params.toolAuthorityFingerprint,
     claimPendingUserInputAnswer,
     cancelPendingUserInput,
@@ -309,17 +374,6 @@ export async function activateCodexAttemptTurn(
     terminalState.terminalOutcomeFrozen = true;
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
   };
-  const notifyUserMessagePersisted = createCodexAppServerUserMessagePersistenceNotifier(params);
-  void mirrorPromptAtTurnStartBestEffort({
-    params,
-    agentId: sessionAgentId,
-    notifyUserMessagePersisted,
-    sessionKey: sandboxSessionKey,
-    cwd: effectiveCwd,
-    threadId: resourceState.thread.threadId,
-    turnId: activeTurnId,
-    upstreamUserText: turnState.codexTurnPromptText,
-  });
   const abortListener = () => {
     if (state.timedOut) {
       void (async () => {
@@ -339,7 +393,29 @@ export async function activateCodexAttemptTurn(
       })().finally(completeTurn);
       return;
     }
-    void interruptTurn(activeTurnId).finally(completeTurn);
+    const interrupted = interruptTurn(activeTurnId);
+    if (terminalState.explicitCancellationObserved) {
+      // turn/completed ends the turn, not its native background terminals.
+      // Keep this attempt's route and lease until thread-scoped cleanup settles.
+      state.abortCleanup = interrupted.then(async (confirmed) => {
+        if (!confirmed) {
+          throw new Error(
+            "Codex cancellation could not confirm the turn stopped; background terminals may still be running.",
+          );
+        }
+        await terminateCodexBackgroundTerminals(
+          resourceState.client,
+          resourceState.thread.threadId,
+        );
+      });
+    }
+    const cancellation = terminalState.explicitCancellationObserved
+      ? state.abortCleanup
+      : interrupted;
+    void cancellation.then(completeTurn, (error: unknown) => {
+      embeddedAgentLog.warn("codex app-server cancellation cleanup failed", { error });
+      completeTurn();
+    });
   };
   runAbortController.signal.addEventListener("abort", abortListener, { once: true });
   if (runAbortController.signal.aborted) {

@@ -10,10 +10,8 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import {
-  createGatewayMethodRegistry,
-  createPluginGatewayMethodDescriptor,
-} from "./methods/registry.js";
+import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
+import { createGatewayMethodRegistry } from "./methods/registry.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
@@ -395,7 +393,11 @@ describe("gateway method authorization", () => {
       );
 
       const dispatchRequest = async (
-        method: "sessions.create" | "sessions.fork" | "sessions.recover",
+        method:
+          | "sessions.create"
+          | "sessions.fork"
+          | "sessions.github.publish"
+          | "sessions.recover",
         requestParams: Record<string, unknown>,
         profileId: string,
       ) => {
@@ -442,6 +444,10 @@ describe("gateway method authorization", () => {
         {
           method: "sessions.fork" as const,
           params: { sessionKey, entryId: "user-entry" },
+        },
+        {
+          method: "sessions.github.publish" as const,
+          params: { sessionKey, idempotencyKey: "publication-1" },
         },
         { method: "sessions.recover" as const, params: { key: sessionKey } },
       ];

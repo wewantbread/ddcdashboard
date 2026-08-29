@@ -9,6 +9,7 @@ import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes
 import type { InlineModelEntry } from "./embedded-agent-runner/model.inline-provider.js";
 import type { AgentHarnessPluginSelection } from "./harness/runtime-plugin-load-plan.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
+import type { PublishedModelCatalogOwnerCandidate } from "./prepared-model-catalog.types.js";
 import type { PreparedConfiguredRuntimeModel } from "./prepared-model-runtime.configured.js";
 import type { AuthStorage } from "./sessions/auth-storage.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
@@ -26,9 +27,12 @@ export type PreparedModelRuntimePluginGeneration = Readonly<{
   configuredCatalogEntries: readonly ModelCatalogEntry[];
   pluginRegistry?: PluginRegistry;
   inboundPluginRegistry?: PluginRegistry;
+  /** Immutable artifact choice for every registry reuse in this generation. */
+  preferBuiltPluginArtifacts?: boolean;
 }>;
 
 export type PreparedModelRuntimeSnapshot = Readonly<{
+  catalogOwner: PublishedModelCatalogOwnerCandidate["catalogOwner"];
   agentId?: string;
   agentDir: string;
   inheritedAuthDir?: string;
@@ -114,6 +118,9 @@ export type PreparedModelRuntimeRefreshOptions = {
   onBuildStats?: (stats: PreparedModelRuntimeBuildStats) => void;
   allowGatewaySubagentBinding?: boolean;
   pluginMetadataSnapshot?: PluginMetadataSnapshot;
+  isPublicationCurrent?: () => boolean;
+  /** Restricts replacement to configured owners whose normalized agent id is present. */
+  agentIds?: ReadonlySet<string>;
 };
 
 export type PreparedModelRuntimeBuildStats = Readonly<{
@@ -142,6 +149,7 @@ export type PreparedModelRuntimeBuildStats = Readonly<{
 
 export type PreparedModelRuntimeOwner = {
   input: PreparedModelRuntimeInput;
+  catalogOwner: PublishedModelCatalogOwnerCandidate["catalogOwner"];
   environmentFingerprint: string;
   catalogMode: PreparedModelRuntimeCatalogMode;
   provenance: "configured" | "standalone" | "explicit" | "run" | "ephemeral";
@@ -150,6 +158,8 @@ export type PreparedModelRuntimeOwner = {
   refreshError?: Error;
   snapshot?: PreparedModelRuntimeSnapshot;
   pluginGeneration?: PreparedModelRuntimePluginGeneration;
+  /** Explicit generation admitted for the current publication, when known. */
+  pendingPluginGeneration?: PreparedModelRuntimePluginGeneration;
   pending?: Promise<PreparedModelRuntimeSnapshot>;
   buildCompletion?: Promise<void>;
   leaseCount?: number;

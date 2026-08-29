@@ -2,11 +2,11 @@
 
 Official llama.cpp provider for managed and external OpenClaw model servers.
 
-The `llama-cpp` provider installs a pinned, integrity-verified `llama-server`
-and configures OpenClaw's existing `localService` supervisor. The
-`llama-server` provider connects to a server that you already run and discovers
-its models and capabilities. Both use OpenClaw's normal OpenAI-compatible chat
-transport; managed local embeddings stay on `llama-cpp`.
+The `llama-cpp` provider either installs a pinned, integrity-verified
+`llama-server` under OpenClaw's `localService` supervisor or connects to a
+server that you already operate. Both choices use `llama-cpp/<model>` references
+and OpenClaw's normal OpenAI-compatible chat transport. Local embeddings require
+the managed choice.
 
 ## Install
 
@@ -25,6 +25,13 @@ downloads Gemma 4 E4B IT Q4_K_M (approximately 5.0 GB) plus EmbeddingGemma
 (approximately 0.3 GB). The default chat download is offered only on machines
 with at least 16 GiB of RAM.
 
+When local memory search is configured and chat setup is unavailable or
+declined, OpenClaw offers a separate embedding-only setup. After explicit
+consent, it installs only the server and EmbeddingGemma. It leaves the current
+chat model unchanged. Move any llama.cpp chat routes and remove its configured
+chat model entries first. Remove an existing external server config before
+retrying embedding-only setup.
+
 Custom GGUF models remain supported through `params.modelPath`. Rerun llama.cpp
 setup after changing the model so OpenClaw can verify the file and regenerate
 the managed router preset.
@@ -38,7 +45,7 @@ Choose **Existing llama-server** during setup and enter the endpoint and
 optional API key. OpenClaw passively discovers single-model and router catalogs.
 It never installs, starts, stops, or reconfigures the external process.
 
-See the [llama-server provider guide](https://docs.openclaw.ai/providers/llama-server)
+See the [llama.cpp provider guide](https://docs.openclaw.ai/plugins/llama-cpp)
 for authentication, router behavior, manual configuration, and troubleshooting.
 
 ## Configure embeddings
@@ -50,6 +57,6 @@ the managed server's `/v1/embeddings` endpoint.
 ## Package
 
 - Plugin id: `llama-cpp`
-- Provider ids: `llama-cpp`, `llama-server`
+- Provider id: `llama-cpp`
 - Package: `@openclaw/llama-cpp-provider`
 - Minimum OpenClaw host: `2026.6.2`

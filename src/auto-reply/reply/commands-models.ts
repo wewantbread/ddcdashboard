@@ -18,9 +18,13 @@ import {
   resolveLogicalVisibleModelCatalog,
   type ModelCatalogAuthChecker,
 } from "../../agents/model-catalog-visibility.js";
+import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { createProviderAuthChecker } from "../../agents/model-provider-auth.js";
 import { isRetiredModelPickerProvider } from "../../agents/model-runtime-aliases.js";
-import { modelCatalogLogicalKey } from "../../agents/model-selection-shared.js";
+import {
+  dedupeModelCatalogEntries,
+  modelCatalogLogicalKey,
+} from "../../agents/model-selection-shared.js";
 import {
   buildModelAliasIndex,
   normalizeProviderId,
@@ -28,10 +32,7 @@ import {
   resolveDefaultModelForAgent,
   resolveModelRefFromString,
 } from "../../agents/model-selection.js";
-import {
-  RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
-  createModelVisibilityPolicy,
-} from "../../agents/model-visibility-policy.js";
+import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
 import { openAIModelCatalogRoutePolicy } from "../../agents/openai-model-routes.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/openai-routing.js";
 import { loadPreparedModelCatalogSnapshot } from "../../agents/prepared-model-catalog.js";
@@ -43,6 +44,7 @@ import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
 import type { ReplyPayload } from "../types.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
 import type { CommandHandler } from "./commands-types.js";
+import { resolveRuntimeNormalization } from "./model-runtime-normalization.js";
 
 const PAGE_SIZE_DEFAULT = 20;
 const PAGE_SIZE_MAX = 100;
@@ -59,6 +61,10 @@ export type ModelsProviderData = {
   resolvedDefault: { provider: string; model: string };
   modelNames: Map<string, string>;
   runtimeChoicesByProvider?: Map<string, ModelsRuntimeChoice[]>;
+};
+
+type PreparedModelsProviderData = ModelsProviderData & {
+  modelCatalog: ModelCatalogEntry[];
 };
 
 export type ModelsRuntimeChoice = {
@@ -150,14 +156,16 @@ function addRuntimeChoice(
   return choices;
 }
 
-export async function buildModelsProviderData(
+export async function buildPreparedModelsProviderData(
   cfg: OpenClawConfig,
   agentId?: string,
   options: { view?: "default" | "all"; workspaceDir?: string } = {},
-): Promise<ModelsProviderData> {
+): Promise<PreparedModelsProviderData> {
+  const runtimeNormalization = resolveRuntimeNormalization(cfg);
   const resolvedDefault = resolveDefaultModelForAgent({
     cfg,
     agentId,
+    ...runtimeNormalization,
   });
   const catalogWorkspaceDir = options.workspaceDir;
   const workspaceDir =
@@ -187,7 +195,7 @@ export async function buildModelsProviderData(
     defaultProvider: resolvedDefault.provider,
     defaultModel: resolvedDefault.model,
     agentId,
-    ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+    ...runtimeNormalization,
   });
   const authChecker = createProviderAuthChecker({
     cfg,
@@ -211,6 +219,7 @@ export async function buildModelsProviderData(
     agentId,
     workspaceDir,
     view: options.view,
+    policy: visibilityPolicy,
     routePolicy: openAIModelCatalogRoutePolicy,
     routeVariants: snapshot.routeVariants,
     evaluateEntry: async (entry, routeVariants) => {
@@ -238,6 +247,7 @@ export async function buildModelsProviderData(
     cfg,
     defaultProvider: resolvedDefault.provider,
     agentId,
+    ...runtimeNormalization,
   });
   const restrictToProviderWildcards =
     options.view !== "all" && visibilityPolicy.hasProviderWildcards;
@@ -272,6 +282,7 @@ export async function buildModelsProviderData(
           model: trimmed,
           defaultProvider: resolvedDefault.provider,
           agentId,
+          manifestPlugins: runtimeNormalization.manifestPlugins,
         })
       : resolvedDefault.provider;
     const resolved = resolveModelRefFromString({
@@ -280,6 +291,7 @@ export async function buildModelsProviderData(
       raw: trimmed,
       defaultProvider,
       aliasIndex,
+      ...runtimeNormalization,
     });
     if (!resolved) {
       return;
@@ -394,7 +406,16 @@ export async function buildModelsProviderData(
     runtimeChoicesByProvider.set(provider, choices);
   }
 
-  return { byProvider, providers, resolvedDefault, modelNames, runtimeChoicesByProvider };
+  return {
+    byProvider,
+    providers,
+    resolvedDefault,
+    modelNames,
+    // Selection needs the prepared capabilities, with selected physical routes
+    // ahead of other inventory rows for the same logical model.
+    modelCatalog: dedupeModelCatalogEntries([...visibleCatalog, ...catalog]),
+    runtimeChoicesByProvider,
+  };
 }
 
 function formatProviderLine(params: { provider: string; count: number }): string {
@@ -568,7 +589,7 @@ export async function resolveModelsCommandReply(params: {
   const argText = body.replace(/^\/models\b/i, "").trim();
   const parsed = parseModelsArgs(argText);
 
-  const { byProvider, providers, modelNames } = await buildModelsProviderData(
+  const { byProvider, providers, modelNames } = await buildPreparedModelsProviderData(
     params.cfg,
     params.agentId,
     {

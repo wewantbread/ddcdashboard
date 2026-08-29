@@ -1,6 +1,6 @@
 // Hook integration coverage for direct and queued embedded compaction.
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -30,14 +30,17 @@ import {
   ensureAuthProfileStoreMock,
   estimateTokensMock,
   getApiKeyForModelMock,
+  getHistoryLimitFromSessionKeyMock,
   getMemorySearchManagerMock,
   guardSessionManagerMock,
   hookRunner,
   listRegisteredPluginAgentPromptGuidanceMock,
+  limitHistoryTurnsMock,
   loadCompactHooksHarness,
   maybeCompactAgentHarnessSessionMock,
   resolveAgentHarnessPolicyMock,
   registerProviderStreamForModelMock,
+  resolveAgentConfigMock,
   resolveProviderEntryApiKeyProfileReferenceMock,
   resolveContextWindowInfoMock,
   resolveCliBackendConfigMock,
@@ -49,6 +52,7 @@ import {
   resolveModelAsyncMock,
   resolveModelMock,
   resolveSandboxContextMock,
+  resolveSkillsPromptMock,
   resolveSessionAgentIdMock,
   resolveSessionAgentIdsMock,
   rotateTranscriptAfterCompactionMock,
@@ -81,12 +85,18 @@ let onInternalSessionTranscriptUpdate: typeof import("../../sessions/transcript-
 let diagnosticEvents: typeof import("../../infra/diagnostic-events.js");
 let diagnosticRunActivity: typeof import("../../logging/diagnostic-run-activity.js");
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+// Target resolution still reads real SQLite metadata even when compaction is mocked.
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(() => {
+    closeOpenClawAgentDatabasesForTest();
+    cleanup();
+  }),
+);
 
 const TEST_SESSION_ID = "session-1";
 const TEST_SESSION_KEY = "agent:main:session-1";
-const TEST_SESSION_FILE = "/tmp/session.jsonl";
-const TEST_WORKSPACE_DIR = "/tmp";
+let TEST_SESSION_FILE: string;
+let TEST_WORKSPACE_DIR: string;
 const TEST_CUSTOM_INSTRUCTIONS = "focus on decisions";
 type SessionHookEvent = {
   type?: string;
@@ -226,7 +236,7 @@ function wrappedCompactionArgs(overrides: Record<string, unknown> = {}) {
       agentId: "main",
       sessionId: TEST_SESSION_ID,
       sessionKey: TEST_SESSION_KEY,
-      storePath: "/tmp/sessions.json",
+      storePath: join(TEST_WORKSPACE_DIR, "sessions.json"),
     },
     workspaceDir: TEST_WORKSPACE_DIR,
     customInstructions: TEST_CUSTOM_INSTRUCTIONS,
@@ -328,7 +338,9 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  resetCompactHooksHarnessMocks();
+  TEST_WORKSPACE_DIR = tempDirs.make("openclaw-compact-hooks-");
+  TEST_SESSION_FILE = join(TEST_WORKSPACE_DIR, "session.jsonl");
+  resetCompactHooksHarnessMocks(TEST_WORKSPACE_DIR);
 });
 
 describe("compactEmbeddedAgentSessionDirect hooks", () => {
@@ -378,7 +390,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       ok: true,
       compacted: true,
       compactionKind: "server-endpoint",
-      result: { tokensBefore: 1_000, tokensAfter: 200 },
+      result: { tokensBefore: 1_000 },
     });
     expect(result.result).not.toHaveProperty("summary");
     expect(attemptServerEndpointCompactionMock).toHaveBeenCalledWith(
@@ -389,6 +401,96 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     );
     expect(sessionManualCompactionMock).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: "unrestricted",
+      toolsAllow: undefined,
+      expectedPromptMode: "full",
+      expectedSkillsPrompt: "PRIVATE_SKILL_MARKER",
+      expectedToolNames: ["read", "exec"],
+    },
+    {
+      label: "wildcard",
+      toolsAllow: ["*"],
+      expectedPromptMode: "full",
+      expectedSkillsPrompt: "PRIVATE_SKILL_MARKER",
+      expectedToolNames: ["read", "exec"],
+    },
+    {
+      label: "finite",
+      toolsAllow: ["read"],
+      expectedPromptMode: "minimal",
+      expectedSkillsPrompt: null,
+      expectedToolNames: ["read"],
+    },
+  ])(
+    "projects the $label tool policy into the compact endpoint prompt",
+    async ({ toolsAllow, expectedPromptMode, expectedSkillsPrompt, expectedToolNames }) => {
+      resolveSkillsPromptMock.mockReturnValue("PRIVATE_SKILL_MARKER");
+      createOpenClawCodingToolsMock.mockReturnValue([
+        {
+          name: "read",
+          label: "Read",
+          description: "Read a file",
+          parameters: { type: "object", properties: {} },
+          execute: vi.fn(),
+        },
+        {
+          name: "exec",
+          label: "Exec",
+          description: "Run a command",
+          parameters: { type: "object", properties: {} },
+          execute: vi.fn(),
+        },
+      ]);
+      buildEmbeddedSystemPromptMock.mockImplementation((params) =>
+        JSON.stringify({
+          promptMode: params.promptMode,
+          skillsPrompt: params.skillsPrompt ?? null,
+          toolNames: params.tools.map((tool) => tool.name),
+        }),
+      );
+      let endpointSystemPrompt: string | undefined;
+      attemptServerEndpointCompactionMock.mockImplementationOnce(async (input: unknown) => {
+        endpointSystemPrompt = (input as { context: { systemPrompt: string } }).context
+          .systemPrompt;
+        return {
+          item: { type: "compaction", encrypted_content: "opaque" },
+          usage: { input_tokens: 1_000, output_tokens: 200 },
+        };
+      });
+
+      const result = await compactEmbeddedAgentSessionDirect(
+        wrappedCompactionArgs({
+          provider: "xai",
+          model: "grok-4.5",
+          config: {
+            models: {
+              providers: {
+                xai: {
+                  api: "openai-responses",
+                  baseUrl: "https://api.x.ai/v1",
+                  models: [],
+                },
+              },
+            },
+          },
+          customInstructions: undefined,
+          trigger: "manual",
+          toolsAllow,
+        }),
+      );
+
+      expect(result).toMatchObject({ compacted: true, compactionKind: "server-endpoint" });
+      expect(endpointSystemPrompt).toBeDefined();
+      expect(JSON.parse(endpointSystemPrompt ?? "{}")).toEqual({
+        promptMode: expectedPromptMode,
+        skillsPrompt: expectedSkillsPrompt,
+        toolNames: expectedToolNames,
+      });
+    },
+  );
 
   it("never calls the compact endpoint during overflow recovery", async () => {
     mockResolvedModel();
@@ -447,11 +549,64 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     expect(sessionManualCompactionMock).toHaveBeenCalledOnce();
   });
 
+  it("prepares the routed peer's account window for server-endpoint compaction", async () => {
+    const history = await vi.importActual<typeof import("./history.js")>("./history.js");
+    getHistoryLimitFromSessionKeyMock.mockImplementationOnce(history.getHistoryLimitFromSessionKey);
+    limitHistoryTurnsMock.mockImplementationOnce(history.limitHistoryTurns);
+    attemptServerEndpointCompactionMock.mockResolvedValueOnce({
+      item: { type: "compaction", encrypted_content: "opaque" },
+      usage: { input_tokens: 1_000, output_tokens: 200 },
+    });
+    const sessionKey = "agent:main:telegram:direct:direct:peer";
+    sessionMessages.splice(
+      0,
+      sessionMessages.length,
+      ...Array.from({ length: 6 }, (_, index) => ({
+        role: "user",
+        content: `turn-${index + 1}`,
+        timestamp: index + 1,
+      })),
+    );
+    await compactEmbeddedAgentSessionDirect(
+      wrappedCompactionArgs({
+        sessionKey,
+        sessionTarget: { ...wrappedCompactionArgs().sessionTarget, sessionKey },
+        agentAccountId: "direct",
+        conversationRoutePeerId: "123",
+        chatType: "direct",
+        config: {
+          session: { identityLinks: { "direct:peer": ["telegram:123"] } },
+          channels: {
+            telegram: {
+              dmHistoryLimit: 20,
+              accounts: {
+                direct: {
+                  dmHistoryLimit: 10,
+                  dms: { "direct:peer": { historyLimit: 2 }, peer: { historyLimit: 6 } },
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+    expect(attemptServerEndpointCompactionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          messages: [
+            { role: "user", content: "turn-5", timestamp: 5 },
+            { role: "user", content: "turn-6", timestamp: 6 },
+          ],
+        }),
+      }),
+    );
+  });
+
   it("fails closed before generic compaction for a model-locked native session", async () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       agentHarnessId: "codex",
@@ -477,7 +632,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       runtimePlan,
     });
 
-    expect(result).toMatchObject({ ok: true });
+    expect(result, result.reason).toMatchObject({ ok: true });
     expect(selectAgentHarnessForPreparedModelProvidersMock).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: "openai",
@@ -784,11 +939,11 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     expect(acquireAgentRunPreparedModelRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ config: {}, workspaceDir: "/tmp/workspace" }),
+      expect.objectContaining({ config: {}, workspaceDir: join(TEST_WORKSPACE_DIR, "workspace") }),
     );
   });
 
@@ -815,7 +970,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           agentId: "marie-clawndo",
           sessionId: TEST_SESSION_ID,
           sessionKey: "agent:marie-clawndo:dashboard:session-1",
-          storePath: "/tmp/sessions.json",
+          storePath: join(TEST_WORKSPACE_DIR, "sessions.json"),
         },
       }),
     );
@@ -840,14 +995,14 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       allowGatewaySubagentBinding: true,
     });
 
     expect(acquireAgentRunPreparedModelRuntimeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         config: {},
-        workspaceDir: "/tmp/workspace",
+        workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
         allowGatewaySubagentBinding: true,
       }),
     );
@@ -859,14 +1014,14 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionKey: "agent:main:main",
       sandboxSessionKey: "agent:main:telegram:default:direct:12345",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     expect(resolveSandboxContextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         config: {},
         sessionKey: "agent:main:telegram:default:direct:12345",
-        workspaceDir: "/tmp/workspace",
+        workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       }),
     );
   });
@@ -876,7 +1031,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:subagent:worker",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     expect(listRegisteredPluginAgentPromptGuidanceMock).toHaveBeenCalledWith({
@@ -896,7 +1051,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:codex:acp:worker",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     expect(listRegisteredPluginAgentPromptGuidanceMock).toHaveBeenCalledWith({
@@ -911,26 +1066,38 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     );
   });
 
-  it("passes resolved agent context to compacted system prompt rebuilds", async () => {
+  it("passes resolved agent identity context to compacted system prompt rebuilds", async () => {
     resolveSessionAgentIdsMock.mockReturnValue({
       defaultAgentId: "main",
       sessionAgentId: "marketing-agent",
+    });
+    resolveAgentConfigMock.mockReturnValue({
+      identity: { name: "Campaign Navigator" },
     });
 
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: "agent:marketing-agent:session-1",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+      config: {
+        agents: {
+          list: [{ id: "marketing-agent", identity: { name: "Campaign Navigator" } }],
+        },
+      },
     });
 
     expect(buildEmbeddedSystemPromptMock).toHaveBeenCalledWith(
       expect.objectContaining({
         runtimeInfo: expect.objectContaining({
           agentId: "marketing-agent",
+          agentName: "Campaign Navigator",
           sessionKey: "agent:marketing-agent:session-1",
         }),
       }),
+    );
+    expect(buildEmbeddedSystemPromptMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ heartbeatPrompt: expect.anything() }),
     );
   });
 
@@ -941,7 +1108,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     const createdSession = (await createAgentSessionMock.mock.results[0]?.value) as {
@@ -963,16 +1130,22 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     );
   });
 
-  it.each(["direct", "queued"] as const)(
-    "tracks the provider request allowance for %s compaction",
-    async (mode) => {
-      const requestTimeoutMs = 420_000;
+  it.each([
+    { mode: "direct", providerTimeoutMs: 420_000, expectedTimeoutMs: 420_000 },
+    { mode: "queued", providerTimeoutMs: 420_000, expectedTimeoutMs: 420_000 },
+    { mode: "direct", expectedTimeoutMs: 30_000 },
+    { mode: "queued", expectedTimeoutMs: 30_000 },
+  ] as const)(
+    "tracks the owned request allowance for $mode compaction",
+    async ({ mode, expectedTimeoutMs, ...scenario }) => {
       const providerRequest = createDeferred<unknown>();
       const ref = { sessionId: TEST_SESSION_ID, sessionKey: TEST_SESSION_KEY };
       let activeSnapshot:
         | ReturnType<typeof diagnosticRunActivity.getDiagnosticSessionActivitySnapshot>
         | undefined;
-      mockResolvedModel({ requestTimeoutMs });
+      mockResolvedModel(
+        "providerTimeoutMs" in scenario ? { requestTimeoutMs: scenario.providerTimeoutMs } : {},
+      );
       resolveEmbeddedAgentStreamFnMock.mockReturnValue(vi.fn(() => providerRequest.promise));
       attemptServerEndpointCompactionMock.mockImplementationOnce(async (input: unknown) => {
         const { context, model, streamFn } = input as {
@@ -1015,7 +1188,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         expect(activeSnapshot).toMatchObject({
           activeWorkKind: "model_call",
           hasActiveEmbeddedRun: true,
-          activeModelCallRequestTimeoutMs: requestTimeoutMs,
+          activeModelCallRequestTimeoutMs: expectedTimeoutMs,
         });
         await diagnosticEvents.waitForDiagnosticEventsDrained();
         expect(
@@ -1056,8 +1229,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       modelId: "gpt-5.4",
       thinkLevel: "off",
       sessionAgentId: "main",
-      effectiveWorkspace: "/tmp/workspace",
-      agentDir: "/tmp/workspace",
+      effectiveWorkspace: join(TEST_WORKSPACE_DIR, "workspace"),
+      agentDir: join(TEST_WORKSPACE_DIR, "workspace"),
       runtimePlan: {
         auth: { forwardedAuthProfileId: "openai:profile-1" },
         transport: { resolveExtraParams: vi.fn(() => undefined) },
@@ -1076,13 +1249,13 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       undefined,
       "off",
       "main",
-      "/tmp/workspace",
+      join(TEST_WORKSPACE_DIR, "workspace"),
       expectRecordFields(mockCallArg(applyExtraParamsToAgentMock, 0, 8), {
         provider: "openai",
         id: "fake",
         api: "responses",
       }),
-      "/tmp/workspace",
+      join(TEST_WORKSPACE_DIR, "workspace"),
       undefined,
       expectRecordFields(mockCallArg(applyExtraParamsToAgentMock, 0, 11), {
         nativeWebSearchPolicyContext: {
@@ -1124,8 +1297,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       modelId: "gpt-5.6-sol",
       thinkLevel: "ultra",
       sessionAgentId: "main",
-      effectiveWorkspace: "/tmp/workspace",
-      agentDir: "/tmp/workspace",
+      effectiveWorkspace: join(TEST_WORKSPACE_DIR, "workspace"),
+      agentDir: join(TEST_WORKSPACE_DIR, "workspace"),
       runtimePlan: {
         auth: {},
         transport: { resolveExtraParams },
@@ -1143,9 +1316,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       undefined,
       "max",
       "main",
-      "/tmp/workspace",
+      join(TEST_WORKSPACE_DIR, "workspace"),
       expect.anything(),
-      "/tmp/workspace",
+      join(TEST_WORKSPACE_DIR, "workspace"),
       undefined,
       expect.anything(),
     );
@@ -1156,7 +1329,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       senderId: "sender-1",
       senderName: "Alice",
       senderUsername: "alice_u",
@@ -1171,28 +1344,59 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
   });
 
-  it("preserves the recorded session permission policy when building compaction tools", async () => {
+  it.each([
+    { execMode: "auto", permissionMode: "workspace" },
+    { execMode: "full", permissionMode: "full" },
+  ] as const)(
+    "uses the final $permissionMode permission policy for compaction tools",
+    async ({ execMode, permissionMode }) => {
+      await compactEmbeddedAgentSessionDirect(
+        wrappedCompactionArgs({
+          workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+          permissionMode: "full",
+          sessionRoot: join(TEST_WORKSPACE_DIR, "workspace"),
+          execOverrides: { mode: execMode },
+          sessionEntry: {
+            sessionId: "session-1",
+            permissionMode: "full",
+            sessionRoot: join(TEST_WORKSPACE_DIR, "workspace"),
+          },
+        }),
+      );
+
+      const toolOptions = expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
+        sessionPermissionPolicy: {
+          mode: permissionMode,
+          root: join(TEST_WORKSPACE_DIR, "workspace"),
+        },
+      });
+      expect(toolOptions.exec).toEqual(expect.objectContaining({ mode: execMode }));
+    },
+  );
+
+  it("defaults rootless compaction permissions to the canonical agent workspace", async () => {
+    const workspaceDir = tempDirs.make("openclaw-rootless-compaction-permission-");
+    const canonicalWorkspace = await realpath(workspaceDir);
+
     await compactEmbeddedAgentSessionDirect(
       wrappedCompactionArgs({
-        workspaceDir: "/tmp/workspace",
-        sessionEntry: {
-          sessionId: "session-1",
-          permissionMode: "full",
-          sessionRoot: "/tmp/workspace",
-        },
+        workspaceDir,
+        permissionMode: "workspace",
+        sessionEntry: { sessionId: "session-1", permissionMode: "workspace" },
       }),
     );
 
-    expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
-      sessionPermissionPolicy: { mode: "full", root: "/tmp/workspace" },
+    const toolOptions = expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
+      sessionPermissionPolicy: { mode: "workspace", root: canonicalWorkspace },
     });
+    expect(toolOptions.exec).toEqual(expect.objectContaining({ mode: "auto" }));
   });
 
   it("keeps manifest-profiled plugin tools executable during compaction", async () => {
     const toolName = "profiled_plugin_tool";
     const metadataSnapshot = {
       ...getCurrentPluginMetadataSnapshotMock(),
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       plugins: [
         {
           id: "profiled-plugin",
@@ -1202,9 +1406,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
           skills: [],
           hooks: [],
           origin: "workspace",
-          rootDir: "/tmp/workspace/profiled-plugin",
-          source: "/tmp/workspace/profiled-plugin/index.js",
-          manifestPath: "/tmp/workspace/profiled-plugin/openclaw.plugin.json",
+          rootDir: join(TEST_WORKSPACE_DIR, "workspace/profiled-plugin"),
+          source: join(TEST_WORKSPACE_DIR, "workspace/profiled-plugin/index.js"),
+          manifestPath: join(TEST_WORKSPACE_DIR, "workspace/profiled-plugin/openclaw.plugin.json"),
           contracts: { tools: [toolName] },
           toolMetadata: { [toolName]: { profiles: ["coding"] } },
         } satisfies PluginManifestRecord,
@@ -1212,9 +1416,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     };
     const preparedModelRuntime = {
       agentId: "main",
-      agentDir: "/tmp/agents/main/agent",
+      agentDir: join(TEST_WORKSPACE_DIR, "agents/main/agent"),
       config: { tools: { profile: "coding" } },
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       metadataSnapshot,
       configuredRuntimeModels: [],
       inlineProviderModels: [],
@@ -1238,7 +1442,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       config: { tools: { profile: "coding" } },
     });
 
@@ -1273,7 +1477,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         sessionId: "session-1",
         sessionKey: TEST_SESSION_KEY,
         sessionFile: TEST_SESSION_KEY,
-        workspaceDir: "/tmp/workspace",
+        workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       });
 
       expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), { modelHasVision });
@@ -1285,18 +1489,18 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
-      cwd: "/tmp/task-repo",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+      cwd: join(TEST_WORKSPACE_DIR, "task-repo"),
     });
 
     expectRecordFields(mockCallArg(createOpenClawCodingToolsMock), {
-      cwd: "/tmp/task-repo",
-      workspaceDir: "/tmp/workspace",
-      spawnWorkspaceDir: "/tmp/workspace",
+      cwd: join(TEST_WORKSPACE_DIR, "task-repo"),
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+      spawnWorkspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
     expectRecordFields(mockCallArg(createPreparedEmbeddedAgentSettingsManagerMock), {
-      cwd: "/tmp/task-repo",
-      agentDir: "/tmp/agents/main/agent",
+      cwd: join(TEST_WORKSPACE_DIR, "task-repo"),
+      agentDir: join(TEST_WORKSPACE_DIR, "agents/main/agent"),
     });
   });
 
@@ -1305,7 +1509,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       contextTokenBudget: 64_000,
     });
 
@@ -1323,6 +1527,34 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
   });
 
+  it("creates a distinct skill-instruction delivery cache for each compaction attempt", async () => {
+    await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: TEST_SESSION_KEY,
+      sessionFile: TEST_SESSION_KEY,
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+    });
+    const firstCache = expectRecordFields(
+      mockCallArg(createOpenClawCodingToolsMock),
+      {},
+    ).skillInstructionDeliveryCache;
+
+    await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-2",
+      sessionKey: TEST_SESSION_KEY,
+      sessionFile: TEST_SESSION_KEY,
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
+    });
+    const secondCache = expectRecordFields(
+      mockCallArg(createOpenClawCodingToolsMock, 1),
+      {},
+    ).skillInstructionDeliveryCache;
+
+    expect(firstCache).toBeInstanceOf(Map);
+    expect(secondCache).toBeInstanceOf(Map);
+    expect(secondCache).not.toBe(firstCache);
+  });
+
   it("skips runtime tool construction when the compaction model does not support tools", async () => {
     mockResolvedModel({ supportsTools: false });
 
@@ -1330,7 +1562,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
     });
 
     expect(createOpenClawCodingToolsMock).not.toHaveBeenCalled();
@@ -1368,7 +1600,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       runId: "run-tool-schema-quarantine",
     });
 
@@ -1386,7 +1618,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       contextTokenBudget: 64_000,
     });
 
@@ -1414,7 +1646,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-primary",
       trigger: "overflow",
@@ -1553,7 +1785,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-primary",
       agentHarnessId: "openclaw",
@@ -1597,7 +1829,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.6-sol",
       thinkLevel: "ultra" as const,
@@ -1606,6 +1838,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       config: {
         agents: {
           defaults: {
+            compaction: { thinkingLevel: "inherit" as const },
             models: {
               "openai/gpt-5.6-sol": { agentRuntime: { id: "openclaw" } },
             },
@@ -1664,7 +1897,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       authProfileId: "openai:default",
@@ -1774,7 +2007,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       agentHarnessId: "codex",
@@ -1833,7 +2066,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       config: {
         models: {
           providers: {
@@ -1871,7 +2104,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       runtimeAuthPlan: {
@@ -1908,7 +2141,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       agentHarnessId: "codex",
@@ -1990,7 +2223,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-5.5",
       authProfileId: "openai:work",
@@ -2066,7 +2299,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-primary",
       config: config as never,
@@ -2102,7 +2335,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-primary",
       config: {
@@ -2142,7 +2375,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
       sessionFile: TEST_SESSION_KEY,
-      workspaceDir: "/tmp/workspace",
+      workspaceDir: join(TEST_WORKSPACE_DIR, "workspace"),
       provider: "openai",
       model: "gpt-primary",
       config: {
@@ -2232,7 +2465,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
       sessionAgentId: "main",
-      workspaceDir: "/tmp",
+      workspaceDir: TEST_WORKSPACE_DIR,
       metrics: beforeMetrics,
     });
 
@@ -2262,7 +2495,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
       sessionAgentId: "main",
-      workspaceDir: "/tmp",
+      workspaceDir: TEST_WORKSPACE_DIR,
       metrics: beforeMetrics,
       onHookMessages,
     });
@@ -2272,7 +2505,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionAgentId: "main",
       hookSessionKey: hookState.hookSessionKey,
       missingSessionKey: hookState.missingSessionKey,
-      workspaceDir: "/tmp",
+      workspaceDir: TEST_WORKSPACE_DIR,
       messageCountAfter: 1,
       tokensAfter: 10,
       compactedCount: 1,
@@ -2643,8 +2876,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         headers: { Authorization: "Bearer ollama-cloud" },
       } as never,
       config: undefined,
-      agentDir: "/tmp",
-      effectiveWorkspace: "/tmp",
+      agentDir: TEST_WORKSPACE_DIR,
+      effectiveWorkspace: TEST_WORKSPACE_DIR,
       apiRegistry: {} as never,
     });
 
@@ -2654,8 +2887,8 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       unknown
     >;
     expectRecordFields(streamRegistration, {
-      agentDir: "/tmp",
-      workspaceDir: "/tmp",
+      agentDir: TEST_WORKSPACE_DIR,
+      workspaceDir: TEST_WORKSPACE_DIR,
     });
     expectRecordFields(streamRegistration.model, {
       provider: "ollama",
@@ -2766,7 +2999,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it("resolves the durable session key before invoking an owning context engine", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "openclaw-compaction-session-key-"));
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "openclaw-compaction-session-key-")));
     const storePath = join(dir, "sessions.json");
     const sessionId = "9d6c8436-7cb2-4bd5-a302-e33305bfc8c4";
     const sessionKey = "agent:main:telegram:direct:reporter";
@@ -2844,7 +3077,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           agentId: "marie-clawndo",
           sessionId: TEST_SESSION_ID,
           sessionKey: "agent:marie-clawndo:dashboard:session-1",
-          storePath: "/tmp/sessions.json",
+          storePath: join(TEST_WORKSPACE_DIR, "sessions.json"),
         },
       }),
     );
@@ -3124,7 +3357,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     } as never);
 
     const result = await compactEmbeddedAgentSession(
-      wrappedCompactionArgs({ cwd: "/tmp/task-repo" }),
+      wrappedCompactionArgs({ cwd: join(TEST_WORKSPACE_DIR, "task-repo") }),
     );
 
     expect(result.ok).toBe(true);
@@ -3192,7 +3425,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     } as never);
 
     const result = await compactEmbeddedAgentSession(
-      wrappedCompactionArgs({ cwd: "/tmp/task-repo" }),
+      wrappedCompactionArgs({ cwd: join(TEST_WORKSPACE_DIR, "task-repo") }),
     );
 
     expect(result.ok).toBe(true);
@@ -3204,7 +3437,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       sessionFile: TEST_SESSION_KEY,
     });
     expect(runtimeContext?.workspaceDir).toBe(TEST_WORKSPACE_DIR);
-    expect(runtimeContext?.cwd).toBe("/tmp/task-repo");
+    expect(runtimeContext?.cwd).toBe(join(TEST_WORKSPACE_DIR, "task-repo"));
     expect(runtimeContext?.rewriteTranscriptEntries).toBeTypeOf("function");
   });
 
@@ -3630,7 +3863,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it("routes a queued manual CLI session to backend-owned compaction", async () => {
-    const agentDir = await mkdtemp(join(tmpdir(), "openclaw-native-compaction-queued-"));
+    const agentDir = await realpath(
+      await mkdtemp(join(tmpdir(), "openclaw-native-compaction-queued-")),
+    );
     try {
       resolveCliBackendConfigMock.mockReturnValue({
         id: "claude-cli",
@@ -3677,7 +3912,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it("normalizes an omitted manual target before native harness compaction", async () => {
-    const agentDir = await mkdtemp(join(tmpdir(), "openclaw-native-compaction-target-"));
+    const agentDir = await realpath(
+      await mkdtemp(join(tmpdir(), "openclaw-native-compaction-target-")),
+    );
     try {
       resolveAgentHarnessPolicyMock.mockReturnValue({
         runtime: "codex",
@@ -4561,7 +4798,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it("runs native manual compaction before generic model auth preparation", async () => {
-    const agentDir = await mkdtemp(join(tmpdir(), "openclaw-native-compaction-authless-"));
+    const agentDir = await realpath(
+      await mkdtemp(join(tmpdir(), "openclaw-native-compaction-authless-")),
+    );
     try {
       resolveCliBackendConfigMock.mockReturnValue({
         id: "claude-cli",
@@ -5015,7 +5254,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     {
       identity: "session key",
       activeSessionKey: TEST_SESSION_KEY,
-      activeSessionFile: "/tmp/other-session.jsonl",
+      activeSessionFile: "other-session.jsonl",
     },
     {
       identity: "session file",
@@ -5024,6 +5263,10 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     },
   ])("rejects manual compaction matching an active $identity", async (active) => {
     const activeSessionId = "other-session";
+    const activeSessionFile =
+      active.activeSessionFile === TEST_SESSION_KEY
+        ? TEST_SESSION_KEY
+        : join(TEST_WORKSPACE_DIR, active.activeSessionFile);
     const existingHandle = {
       kind: "embedded" as const,
       queueMessage: async () => {},
@@ -5035,7 +5278,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       activeSessionId,
       existingHandle,
       active.activeSessionKey,
-      active.activeSessionFile,
+      activeSessionFile,
     );
     try {
       await expect(
@@ -5053,7 +5296,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         activeSessionId,
         existingHandle,
         active.activeSessionKey,
-        active.activeSessionFile,
+        activeSessionFile,
       );
     }
   });
@@ -5127,7 +5370,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       rewrittenEntries: 0,
     }));
     const delegatedSessionId = "delegated-session";
-    const storePath = "/tmp/custom-active-sessions.json";
+    const storePath = join(TEST_WORKSPACE_DIR, "custom-active-sessions.json");
     resolveContextEngineMock.mockResolvedValue({
       info: { ownsCompaction: false },
       compact: contextEngineCompactMock,
@@ -5165,11 +5408,12 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it.each([
-    ["session key", "agent:main:other", "/tmp/active-sessions.json"],
-    ["store path", TEST_SESSION_KEY, "/tmp/other-sessions.json"],
+    ["session key", "agent:main:other", "active-sessions.json"],
+    ["store path", TEST_SESSION_KEY, "other-sessions.json"],
   ])(
     "rejects a structured successor outside the active %s",
-    async (_label, sessionKey, storePath) => {
+    async (_label, sessionKey, storeName) => {
+      const storePath = join(TEST_WORKSPACE_DIR, storeName);
       resolveContextEngineMock.mockResolvedValue({
         info: { ownsCompaction: false },
         compact: contextEngineCompactMock,
@@ -5194,7 +5438,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
               agentId: "main",
               sessionId: TEST_SESSION_ID,
               sessionKey: TEST_SESSION_KEY,
-              storePath: "/tmp/active-sessions.json",
+              storePath: join(TEST_WORKSPACE_DIR, "active-sessions.json"),
             },
           }),
         ),
@@ -5205,7 +5449,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   it("rejects a deprecated session-key successor outside the active binding", async () => {
     const delegatedSessionId = "delegated-key-session";
     const delegatedSessionKey = "agent:main:delegated-key-session";
-    const dir = await mkdtemp(join(tmpdir(), "openclaw-compaction-successor-"));
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "openclaw-compaction-successor-")));
     const storePath = join(dir, "sessions.json");
     resolveContextEngineMock.mockResolvedValue({
       info: { ownsCompaction: false },
@@ -5247,7 +5491,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
   });
 
   it("rejects a deprecated session-key successor with a mismatched stored id", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "openclaw-compaction-successor-mismatch-"));
+    const dir = await realpath(
+      await mkdtemp(join(tmpdir(), "openclaw-compaction-successor-mismatch-")),
+    );
     const storePath = join(dir, "sessions.json");
     const delegatedSessionKey = "agent:main:delegated-key-mismatch";
     resolveContextEngineMock.mockResolvedValue({
@@ -5293,7 +5539,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       rewrittenEntries: 0,
     }));
     const delegatedSessionId = "delegated-marker-session";
-    const storePath = "/tmp/sessions.json";
+    const storePath = join(TEST_WORKSPACE_DIR, "sessions.json");
     const marker = `sqlite:main:${delegatedSessionId}:${storePath}`;
     resolveContextEngineMock.mockResolvedValue({
       info: { ownsCompaction: false },
@@ -5330,7 +5576,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       ok: true,
       compacted: true,
       result: {
-        sessionFile: "sqlite:main:marker-session:/tmp/sessions.json",
+        sessionFile: `sqlite:main:marker-session:${join(TEST_WORKSPACE_DIR, "sessions.json")}`,
         sessionId: TEST_SESSION_ID,
       },
     } as never);
@@ -5347,7 +5593,9 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       rewrittenEntries: 0,
     }));
     const delegatedSessionId = "delegated-marker-session";
-    const dir = await mkdtemp(join(tmpdir(), "openclaw-compaction-marker-successor-"));
+    const dir = await realpath(
+      await mkdtemp(join(tmpdir(), "openclaw-compaction-marker-successor-")),
+    );
     const storePath = join(dir, "sessions.json");
     const marker = `sqlite:main:${delegatedSessionId}:${storePath}`;
     resolveContextEngineMock.mockResolvedValue({
@@ -5409,7 +5657,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           agentId: "main",
           sessionId: "target-session",
           sessionKey: TEST_SESSION_KEY,
-          storePath: "/tmp/sessions.json",
+          storePath: join(TEST_WORKSPACE_DIR, "sessions.json"),
         },
       },
     } as never);
@@ -5428,7 +5676,7 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           agentId: "other",
           sessionId: "other-session",
           sessionKey: "agent:other:main",
-          storePath: "/tmp/other-sessions.json",
+          storePath: join(TEST_WORKSPACE_DIR, "other-sessions.json"),
         },
       }),
     );
