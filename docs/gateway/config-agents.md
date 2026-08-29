@@ -41,13 +41,24 @@ Default: `OPENCLAW_WORKSPACE_DIR` when set, otherwise `<state-dir>/workspace`. T
 
 An explicit `agents.defaults.workspace` value takes precedence over `OPENCLAW_WORKSPACE_DIR`. A sole agent uses this path directly. In a multi-agent fleet, agents without their own `workspace` use an agent-id subdirectory so no implicit owner claims the shared root.
 
+Path conventions for workspace settings (`agents.defaults.workspace` and
+`agents.entries.*.workspace`): a leading `~` expands to OpenClaw's effective
+home directory on every platform — `OPENCLAW_HOME` when set, otherwise the OS
+home — so the tilde examples in these docs are portable. On Windows with
+neither `OPENCLAW_HOME` nor `HOME` set, `~/.openclaw/workspace` resolves under
+the Windows profile directory (`USERPROFILE`, for example
+`C:\Users\<name>\.openclaw\workspace`). Absolute paths, including
+Windows drive paths such as `C:\openclaw\workspace`, are used as-is. Other
+path settings follow their own resolvers: `agents.defaults.repoRoot` and
+`OPENCLAW_WORKSPACE_DIR` are resolved as plain paths without tilde expansion.
+
 ### `agents.defaults.repoRoot`
 
 Optional repository root shown in the system prompt's Runtime line. If unset, OpenClaw auto-detects by walking upward from the workspace.
 
 ```json5
 {
-  agents: { defaults: { repoRoot: "~/Projects/openclaw" } },
+  agents: { defaults: { repoRoot: "/home/user/Projects/openclaw" } },
 }
 ```
 
