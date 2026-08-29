@@ -21,7 +21,13 @@ import {
   getUnitFastTimerTestFiles,
 } from "../../test/vitest/vitest.unit-fast-paths.mjs";
 import { boundaryTestFiles, isUnitConfigTestFile } from "../../test/vitest/vitest.unit-paths.mjs";
+import { readCompactGroupTimings } from "./ci-test-timings.mts";
 import { listTrackedTestFiles } from "./list-test-files.mts";
+import {
+  listVitestRuntimeConsumerFiles,
+  resolveVitestPretestBuildMode,
+  type VitestPretestBuildMode as NodeTestPretestBuildMode,
+} from "./vitest-build-prerequisites.mts";
 
 type NodeTestShardGroup = {
   shard_name: string;
@@ -58,15 +64,6 @@ type NodeTestPlanOptions = {
 };
 
 type CompactNodeTestPlanMode = "pull-request" | "push";
-type NodeTestPretestBuildMode = "private-qa" | "runtime";
-
-const PRETEST_RUNTIME_BUILD_FILES = new Set([
-  "test/e2e/qa-lab/runtime/gateway-support-export-runtime.test.ts",
-]);
-
-function resolvePretestBuildMode(paths: readonly string[]): NodeTestPretestBuildMode | undefined {
-  return paths.some((file) => PRETEST_RUNTIME_BUILD_FILES.has(file)) ? "runtime" : undefined;
-}
 
 type PolicyTestWatch = {
   ownerGlobs?: readonly string[];
@@ -137,7 +134,7 @@ type CompactNodeTestShard = Omit<NodeTestShard, "configs" | "groups"> & {
   groups: NodeTestShardGroup[];
 };
 
-type NodeTestSplitShard = Omit<NodeTestShard, "checkName" | "runner"> & {
+type NodeTestSplitShard = Omit<NodeTestShard, "checkName" | "runner" | "pretestBuildMode"> & {
   includeExternalConfigs?: boolean;
   runner?: string;
 };
@@ -211,14 +208,8 @@ const AGENTIC_GATEWAY_CORE_STRIPES = 3;
 const CORE_RUNTIME_MEDIA_UI_STRIPES = 3;
 const CORE_UNIT_SRC_SECURITY_STRIPES = 3;
 const UNIT_FAST_NODE_TEST_STRIPES = 2;
-// Advisory runtime estimates (seconds) per split shard: median [shard:*]
-// begin->end wall across nine successful hosted compact runs (31684307744,
-// 31683213137, 31682494259, 31682258389, 31681118857, 31680010311,
-// 31678309660, 31678086868, 31677305067). Admission and 4-vCPU striping
-// retain these weights so the bounded job count and runner advisory stay fixed.
-// agentic-commands-agent-channel uses the sole post-#122955 sample from run
-// 31684307744 because that landing removed a 79.5s test. Unknown shards fall
-// back to a per-file estimate.
+// Cold-start fallback when committed CI measurements are missing. Refresh
+// config/ci-test-timings.json with pnpm ci:timings:refit, not these literals.
 const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-agents-core-auth", 30],
   ["agentic-agents-core-isolated", 18],
@@ -277,6 +268,12 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-control-plane-startup-core", 31],
   ["agentic-control-plane-startup-health-runtime", 11],
   ["agentic-control-plane-startup-restart-close", 10],
+  // This group is small, but its job also runs `pnpm build:ci-artifacts`
+  // (~275s measured, run 33215955822). Weight it near the packing cap so the
+  // packer stops stacking partners onto the one job that pays that build, and
+  // keep it under COMPACT_GITHUB_MAX_PREDICTED_SECONDS so it is never striped
+  // into two jobs that would each build.
+  ["agentic-gateway-core-runtime", 145],
   ["agentic-gateway-core-1", 99],
   ["agentic-gateway-core-2", 99],
   ["agentic-gateway-core-3", 99],
@@ -478,6 +475,12 @@ const COMPACT_GITHUB_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-control-plane-startup-core", 51],
   ["agentic-control-plane-startup-health-runtime", 31],
   ["agentic-control-plane-startup-restart-close", 28],
+  // This group is small, but its job also runs `pnpm build:ci-artifacts`
+  // (~275s measured, run 33215955822). Weight it near the packing cap so the
+  // packer stops stacking partners onto the one job that pays that build, and
+  // keep it under COMPACT_GITHUB_MAX_PREDICTED_SECONDS so it is never striped
+  // into two jobs that would each build.
+  ["agentic-gateway-core-runtime", 145],
   ["agentic-gateway-core-1", 128],
   ["agentic-gateway-core-2", 149],
   ["agentic-gateway-core-3", 141],
@@ -646,7 +649,7 @@ const COMPACT_PUSH_EXCLUDED_SHARDS = new Set([
 // concurrent sibling Vitest run competes for the 4 vCPU runner. Pack them
 // into bins the shard runner executes at concurrency 1.
 const EXCLUSIVE_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^agentic-gateway-core-runtime$/u;
 // Exclusive bins run serially, so their packed estimate is their wall clock.
 const COMPACT_EXCLUSIVE_JOB_SECONDS = 150;
 
@@ -670,7 +673,9 @@ function applyCompactGroupWorkerPins(group: NodeTestShardGroup): NodeTestShardGr
 }
 
 function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
-  const hint = COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
+  const hint =
+    readCompactGroupTimings("blacksmith")[group.shard_name] ??
+    COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
   if (hint !== undefined) {
     return hint;
   }
@@ -710,6 +715,7 @@ function estimateCompactGroupSeconds(
     return defaultSeconds;
   }
   return (
+    readCompactGroupTimings("github")[group.shard_name] ??
     COMPACT_GITHUB_GROUP_SECONDS_HINTS.get(group.shard_name) ??
     Math.round(defaultSeconds * COMPACT_GITHUB_GROUP_SECONDS_SCALE)
   );
@@ -1588,19 +1594,12 @@ function createToolingSplitShards(): NodeTestSplitShard[] {
       listCompactToolingTestFiles(),
       COMPACT_TOOLING_NODE_TEST_GROUPS,
       stripeFileWeight,
-    ).map((includePatterns, index) => {
-      const pretestBuildMode = resolvePretestBuildMode(includePatterns);
-      const shard: NodeTestSplitShard = {
-        shardName: `core-tooling-${index + 1}`,
-        configs: [TOOLING_CONFIG],
-        includePatterns,
-        requiresDist: false,
-      };
-      if (pretestBuildMode) {
-        shard.pretestBuildMode = pretestBuildMode;
-      }
-      return shard;
-    }),
+    ).map((includePatterns, index) => ({
+      shardName: `core-tooling-${index + 1}`,
+      configs: [TOOLING_CONFIG],
+      includePatterns,
+      requiresDist: false,
+    })),
     {
       shardName: "core-tooling-isolated",
       configs: ["test/vitest/vitest.tooling-docker.config.ts", TOOLING_ISOLATED_CONFIG],
@@ -1701,15 +1700,35 @@ function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
   const packageFiles = ["packages/gateway-client/src", "packages/gateway-protocol/src"]
     .flatMap((rootDir) => listTestFiles(rootDir))
     .filter((file) => isStripeEligibleTestFile(file, unitFastFiles));
-  return createStripedSplitShards({
-    configs: [
-      "test/vitest/vitest.gateway-core.config.ts",
-      "test/vitest/vitest.gateway-client.config.ts",
-    ],
-    files: [...gatewayFiles, ...packageFiles],
-    shardName: "agentic-gateway-core",
-    stripeCount: AGENTIC_GATEWAY_CORE_STRIPES,
-  });
+  const configs = [
+    "test/vitest/vitest.gateway-core.config.ts",
+    "test/vitest/vitest.gateway-client.config.ts",
+  ];
+  // The pretest runtime build is charged per job, so a stripe holding one of
+  // these files pays it for the whole stripe. Striping spreads them, which made
+  // every gateway-core job pay a 275s build to run ~120s of tests. Keep them in
+  // one shard so exactly one job builds.
+  const runtimeFiles = new Set(listVitestRuntimeConsumerFiles(configs));
+  const allFiles = [...gatewayFiles, ...packageFiles];
+  const runtimeShardFiles = allFiles.filter((file) => runtimeFiles.has(file));
+  return [
+    ...createStripedSplitShards({
+      configs,
+      files: allFiles.filter((file) => !runtimeFiles.has(file)),
+      shardName: "agentic-gateway-core",
+      stripeCount: AGENTIC_GATEWAY_CORE_STRIPES,
+    }),
+    ...(runtimeShardFiles.length > 0
+      ? [
+          {
+            configs,
+            includePatterns: runtimeShardFiles,
+            requiresDist: false,
+            shardName: "agentic-gateway-core-runtime",
+          },
+        ]
+      : []),
+  ];
 }
 
 const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
@@ -1908,6 +1927,10 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
           return [];
         }
 
+        const pretestBuildMode = resolveVitestPretestBuildMode([
+          { configs: splitConfigs, includePatterns: splitShard.includePatterns },
+        ]);
+
         return [
           {
             checkName: formatNodeTestShardCheckName(splitShard.shardName),
@@ -1915,9 +1938,7 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
             configs: splitConfigs,
             ...(splitShard.env ? { env: splitShard.env } : {}),
             ...(splitShard.includePatterns ? { includePatterns: splitShard.includePatterns } : {}),
-            ...(splitShard.pretestBuildMode
-              ? { pretestBuildMode: splitShard.pretestBuildMode }
-              : {}),
+            ...(pretestBuildMode ? { pretestBuildMode } : {}),
             runner: splitShard.runner ?? DEFAULT_NODE_TEST_RUNNER,
             requiresDist: splitShard.requiresDist,
           },
@@ -1925,11 +1946,13 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
       });
     }
 
+    const pretestBuildMode = resolveVitestPretestBuildMode([{ configs }]);
     return [
       {
         checkName: formatNodeTestShardCheckName(shard.name),
         shardName: shard.name,
         configs,
+        ...(pretestBuildMode ? { pretestBuildMode } : {}),
         runner: DEFAULT_NODE_TEST_RUNNER,
         requiresDist: DIST_DEPENDENT_NODE_SHARD_NAMES.has(shard.name),
       },

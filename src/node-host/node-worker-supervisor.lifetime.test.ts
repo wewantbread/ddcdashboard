@@ -1,22 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { completeWorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+import {
+  buildWorkerProcessTurn,
+  serializeWorkerProcessInput,
+} from "../worker/worker-process-protocol.js";
 import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
 import {
   inspectNodeWorkerProcessIdentity,
   requireNodeWorkerProcessIdentity,
 } from "./node-worker-process-identity.js";
-import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
+import {
+  createNodeWorkerSupervisorFixture,
+  waitForNodeWorkerTerminal as waitForTerminal,
+} from "./node-worker-supervisor.fixture.test-support.js";
+import type { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
 import {
   TEST_WORKER_ENDPOINT,
   TEST_WORKER_SOURCE,
   testNodeWorkerEnvironmentIdentity,
   testNodeWorkerLaunchIdentity,
   testWorkerLaunchInput,
-  writeNodeWorkerFixture,
 } from "./node-worker-supervisor.test-support.js";
 import { NodeWorkerTurnStore } from "./node-worker-turn-store.js";
 
@@ -30,17 +39,8 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
 });
 
-function fixture(
-  options: {
-    capacity?: number;
-    capacityWaitMs?: number;
-    onCapacityChanged?: (capacity: { total: number; available: number }) => void;
-  } = {},
-) {
-  const root = tempDirs.make("node-worker-supervisor-");
-  const { bundleRoot, env, stateDir, workspaceDir } = writeNodeWorkerFixture(root);
-  const supervisor = createNodeWorkerSupervisor({ bundleRoot, env, ...options });
-  return { bundleRoot, env, root, stateDir, supervisor, workspaceDir };
+function fixture(options: Parameters<typeof createNodeWorkerSupervisor>[0] = {}) {
+  return createNodeWorkerSupervisorFixture(tempDirs.make("node-worker-supervisor-"), options);
 }
 
 function launchInput(workspaceDir: string, launchId: string, prompt = "success") {
@@ -48,20 +48,6 @@ function launchInput(workspaceDir: string, launchId: string, prompt = "success")
   input.descriptor.admission.environmentId = `environment-${launchId}`;
   input.descriptor.admission.sessionId = `session-${launchId}`;
   return input;
-}
-
-async function waitForTerminal(supervisor: NodeWorkerSupervisor, launchId: string) {
-  await vi.waitFor(
-    async () => {
-      expect((await supervisor.status(launchId))?.state).not.toMatch(/^(?:pending|running)$/u);
-    },
-    { timeout: 5_000 },
-  );
-  const receipt = await supervisor.status(launchId);
-  if (!receipt) {
-    throw new Error(`missing launch receipt ${launchId}`);
-  }
-  return receipt;
 }
 
 describe("node worker environment lifetime", () => {
@@ -107,6 +93,17 @@ describe("node worker environment lifetime", () => {
       ).toEqual({ pid: running.worker!.pid, starts: 1 });
 
       const poll = nextTurn("preview-poll", "background-poll");
+      poll.descriptor.assignment.systemPrompt = '"\\\0\n漢😀';
+      const encodePoll = () =>
+        serializeWorkerProcessInput(
+          buildWorkerProcessTurn(
+            completeWorkerLaunchDescriptor(poll.descriptor, TEST_WORKER_ENDPOINT),
+          ),
+        );
+      poll.descriptor.assignment.systemPrompt += "x".repeat(
+        WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES - (Buffer.byteLength(encodePoll()) - 1),
+      );
+      expect(Buffer.byteLength(encodePoll()) - 1).toBe(WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES);
       expect(await supervisor.launch(poll, TEST_WORKER_ENDPOINT)).toMatchObject({
         state: "running",
         worker: running.worker,

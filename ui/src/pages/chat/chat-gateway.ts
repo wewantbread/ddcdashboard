@@ -3,6 +3,7 @@ import {
   reduceSessionProjectionRunEvent,
 } from "@openclaw/gateway-client/browser";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { accumulatedStreamText } from "../../lib/chat/chat-types.ts";
 import { isAssistantHeartbeatAckForDisplay } from "../../lib/chat/heartbeat-display.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
 // Control UI page module reconciles Chat Gateway events into Chat state.
@@ -21,6 +22,7 @@ import {
   getChatSessionProjection,
   publishChatSessionProjectionMessages,
   readChatSessionProjectionScope,
+  setChatRunOwner,
   setChatSessionProjection,
 } from "./history-merge.ts";
 import { reconcileChatRunLifecycle, setChatRunError } from "./run-lifecycle.ts";
@@ -32,10 +34,12 @@ import {
 import {
   appendTerminalAssistantMessage,
   clearToolStreamSegments,
-  hasVisibleStreamParts,
   terminalMessageReplacesVisibleStream,
 } from "./stream-reconciliation.ts";
-import { discardStreamSegmentIndexes } from "./stream-segment-pruning.ts";
+import {
+  discardStreamSegmentIndexes,
+  reconcilePersistedAssistantStream,
+} from "./stream-segment-pruning.ts";
 import {
   authoritativeHistoryAppliedForRun,
   rememberLiveTerminalRun,
@@ -318,7 +322,7 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
       ) {
         // Late diagnostics belong to the active, pending, or latest locally terminal run;
         // publishing them over a newer response falsely marks the new run failed.
-        setChatRunError(state, resolveGatewayErrorText(payload, null));
+        setChatRunError(state, resolveGatewayErrorText(payload, null), payload.runId);
       }
       if (payload.state === "error") {
         reconcileOwnedTerminalRun();
@@ -339,11 +343,13 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   }
   if (
     !state.chatRunId &&
+    (!previousTerminalRun || previousTerminalRun.status === "streaming") &&
     sessionMatches &&
     typeof payload.runId === "string" &&
     (payload.state !== "status" || isPendingLocalChatRun(state, payload.runId))
   ) {
     state.chatRunId = payload.runId;
+    setChatRunOwner(state, payload.runId);
     state.chatRunError = null;
     state.chatStreamStartedAt ??= Date.now();
   }
@@ -387,13 +393,16 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     if (payload.runId && payload.runId === state.chatRunId) {
       state.chatRunStartup = { state: "activity", runId: payload.runId };
     }
-    const next = resolveDeltaChatStreamText(state.chatStream, payload);
+    const cumulativeText =
+      state.chatStream ?? accumulatedStreamText(state.chatStreamSegments ?? []);
+    const next = resolveDeltaChatStreamText(cumulativeText, payload);
     if (
       typeof next === "string" &&
       !isSilentReplyStream(next) &&
       !isAssistantHeartbeatAckForDisplay(payload.message)
     ) {
       state.chatStream = next;
+      reconcilePersistedAssistantStream(state);
     }
   } else if (payload.state === "final") {
     const finalMessage = normalizedFinalMessage;
@@ -423,15 +432,7 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
           publishChatSessionProjectionMessages(state, visibleMessages, { scope });
         }
       } else if (finalMessage && !shouldHideAssistantChatMessage(finalMessage)) {
-        let visibleMessages = state.chatMessages;
-        if (
-          hasVisibleStreamParts(state, {
-            includeCurrent: true,
-            isHiddenStreamText: isHiddenAssistantStreamText,
-          })
-        ) {
-          visibleMessages = materializeVisibleStream();
-        }
+        const visibleMessages = materializeVisibleStream();
         const liveFinal = rememberLiveTerminalRun(
           finalMessage,
           terminalRunId,
@@ -469,7 +470,7 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
       state.chatMessages = materializeVisibleStream();
     }
     if (payload.errorMessage?.trim()) {
-      setChatRunError(state, resolveGatewayErrorText(payload, null));
+      setChatRunError(state, resolveGatewayErrorText(payload, null), payload.runId);
     }
     reconcileOwnedTerminalRun();
   } else if (payload.state === "error") {
@@ -489,36 +490,22 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
             persistCommentary: state.settings?.chatPersistCommentary !== false,
           },
         );
-        if (replacesVisibleStream) {
-          if (
-            hasVisibleStreamParts(state, {
-              includeCurrent: false,
-              isHiddenStreamText: isHiddenAssistantStreamText,
-            })
-          ) {
-            state.chatMessages = materializeVisibleStream({ includeCurrent: false });
-          }
-          state.chatMessages = appendTerminalAssistantMessage(
-            state.chatMessages,
-            rememberLiveTerminalRun(
-              visiblePayloadMessage,
-              terminalRunId,
-              terminalAfterBoundaryRunId,
-              projectedRun?.currentRun?.status === "timeout" ? "timeout" : "error",
-            ),
-          );
-        } else {
-          state.chatMessages = materializeVisibleStream({ includeCurrent: true });
-          state.chatMessages = [
-            ...state.chatMessages,
-            rememberLiveTerminalRun(
-              visiblePayloadMessage,
-              terminalRunId,
-              terminalAfterBoundaryRunId,
-              projectedRun?.currentRun?.status === "timeout" ? "timeout" : "error",
-            ),
-          ];
-        }
+        const visibleMessages = materializeVisibleStream({
+          includeCurrent: !replacesVisibleStream,
+        });
+        const liveError = rememberLiveTerminalRun(
+          visiblePayloadMessage,
+          terminalRunId,
+          terminalAfterBoundaryRunId,
+          projectedRun?.currentRun?.status === "timeout" ? "timeout" : "error",
+        );
+        publishVisibleTerminal(
+          visiblePayloadMessage,
+          replacesVisibleStream
+            ? appendTerminalAssistantMessage(visibleMessages, liveError)
+            : [...visibleMessages, liveError],
+          terminalRunId,
+        );
       } else {
         state.chatMessages = materializeVisibleStream({ includeCurrent: true });
         const materialized = state.chatMessages.findLast(
@@ -538,6 +525,7 @@ function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     setChatRunError(
       state,
       resolveGatewayErrorText(payload, projectedErrorMessage ? visiblePayloadMessage : null),
+      payload.runId,
     );
   }
   if (payload.state !== "delta") {

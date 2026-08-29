@@ -413,9 +413,7 @@ export interface CurrentConversationBindings {
   parent_conversation_id: string | null;
   record_json: string;
   status: string;
-  target_agent_id: string;
   target_kind: string;
-  target_session_id: string | null;
   target_session_key: string;
   updated_at: number;
 }
@@ -906,7 +904,7 @@ export interface OperatorApprovalStandingGrants {
   agent_id: string;
   created_at_ms: number;
   cron_job_id: string;
-  expires_at_ms: number;
+  expires_at_ms: number | null;
   grant_id: string;
   job_config_revision: string;
   last_used_at_ms: number | null;

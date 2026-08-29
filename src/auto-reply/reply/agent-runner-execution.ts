@@ -17,6 +17,10 @@ import {
   isContextOverflowError,
 } from "../../agents/embedded-agent-helpers.js";
 import type { EmbeddedAgentExecutionPhase } from "../../agents/embedded-agent-runner/execution-phase.js";
+import {
+  createDeferredEmbeddedRunLifecycleManager,
+  type DeferredEmbeddedRunLifecycleManager,
+} from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import { renderRateLimitOrOverloadedCopy } from "../../agents/failover/user-copy.js";
@@ -123,6 +127,7 @@ async function executeAgentTurnInternalWithRetryState(
   commitMcpAppModelContext: () => void,
   preparedRunAdmission: PreparedAgentRunAdmission,
   admittedRunContext: { current?: AdmittedRunContext },
+  deferredLifecycle: DeferredEmbeddedRunLifecycleManager,
 ): Promise<AgentTurnInternalResult> {
   const heartbeatState = { didLogStrip: false };
   let autoCompactionCount = 0;
@@ -304,8 +309,10 @@ async function executeAgentTurnInternalWithRetryState(
   const consumeTransientHttpRetry = () => transientHttpRetriesRemaining-- > 0;
   let liveModelSwitchRetries = 0;
   const fallbackCycleState: AgentFallbackCycleState = {
+    deferredLifecycle,
     lifecycleGeneration,
     autoCompactionCount,
+    postCompactionModelAttempted: false,
     attemptedRuntimeProvider: fallbackProvider,
     attemptedRuntimeModel: fallbackModel,
     bootstrapPromptWarningSignaturesSeen: resolveBootstrapWarningSignaturesSeen(
@@ -341,7 +348,7 @@ async function executeAgentTurnInternalWithRetryState(
         runtimeConfig,
         liveModelSwitchRuntimeEntry,
         runId,
-        runAbortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
+        runAbortSignal: fallbackCycleState.deferredLifecycle.signal,
         currentTurnImages,
         state: fallbackCycleState,
         presentation,
@@ -433,6 +440,7 @@ async function executeAgentTurnInternalWithRetryState(
         payload: markAgentRunFailureReplyPayload({
           text: "⚠️ Context overflow — this conversation is too large for the model. Use /new to start a fresh session.",
         }),
+        postCompactionModelFailure: fallbackCycleState.postCompactionModelAttempted || undefined,
       };
     }
   }
@@ -489,7 +497,7 @@ async function executeAgentTurnInternalWithRetryState(
   const terminalFailurePayload = terminalRunFailed
     ? buildTerminalAgentRunFailureReplyPayload({
         isHeartbeat: params.isHeartbeat,
-        visibleReplyDelivered: false,
+        visibleReplyDelivered: (await params.resolveVisibleReplyDelivery?.()) === true,
         sessionCtx: params.sessionCtx,
         cfg: params.followupRun.run.config,
       })
@@ -509,6 +517,9 @@ async function executeAgentTurnInternalWithRetryState(
       (payload): payload is ReplyPayload => payload !== undefined,
     ),
     ...(terminalFailurePayload ? { terminalFailurePayload } : {}),
+    ...(terminalRunFailed && fallbackCycleState.postCompactionModelAttempted
+      ? { postCompactionModelFailure: true as const }
+      : {}),
   };
 }
 
@@ -541,6 +552,13 @@ async function executeAgentTurnInternal(
       admittedRunContext.current = context;
     },
   });
+  const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
+    runId,
+    sessionId: params.followupRun.run.sessionId,
+    sessionKey: params.sessionKey,
+    sessionFile: params.followupRun.run.sessionFile,
+    abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
+  });
   try {
     return await executeAgentTurnInternalWithRetryState(
       params,
@@ -549,8 +567,10 @@ async function executeAgentTurnInternal(
       commitMcpAppModelContext,
       preparedRunAdmission,
       admittedRunContext,
+      deferredLifecycle,
     );
   } finally {
+    await deferredLifecycle.complete();
     preparedRunAdmission.close();
     await cancelOverloadRetryNotice(overloadRetryState);
   }
@@ -620,6 +640,9 @@ async function executeAgentTurnOutcome(params: AgentTurnParams): Promise<AgentTu
           kind: "rejected",
           payload: internal.payload,
           resolved: internal.resolved,
+          ...(internal.postCompactionModelFailure
+            ? { postCompactionModelFailure: internal.postCompactionModelFailure }
+            : {}),
         },
       };
     }
@@ -636,11 +659,20 @@ async function executeAgentTurnOutcome(params: AgentTurnParams): Promise<AgentTu
       internal.fallbackModel ??
       internal.result.meta?.agentMeta?.model ??
       executionParams.followupRun.run.model;
+    const terminalStatus = internal.terminalFailurePayload
+      ? {
+          status: "failed" as const,
+          terminalFailurePayload: internal.terminalFailurePayload,
+          ...(internal.postCompactionModelFailure
+            ? { postCompactionModelFailure: internal.postCompactionModelFailure }
+            : {}),
+        }
+      : { status: "ok" as const };
     return {
       runId,
       outcome: {
         kind: "settled",
-        status: internal.terminalFailurePayload ? "failed" : "ok",
+        ...terminalStatus,
         ...(abortReason ? { abortReason } : {}),
         result: internal.result,
         resolved: { provider, model },
@@ -652,7 +684,6 @@ async function executeAgentTurnOutcome(params: AgentTurnParams): Promise<AgentTu
         didLogHeartbeatStrip: internal.didLogHeartbeatStrip,
         directlySentBlockKeys: internal.directlySentBlockKeys,
         directlySentBlockPayloads: internal.directlySentBlockPayloads,
-        terminalFailurePayload: internal.terminalFailurePayload,
       },
     };
   } catch (error) {

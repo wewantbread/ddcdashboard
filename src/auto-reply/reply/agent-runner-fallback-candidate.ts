@@ -232,6 +232,16 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           markAutoFallbackPrimaryProbe({ probe: activeProbe, sessionKey: turn.sessionKey });
         }
         turn.opts?.onModelSelected?.({ provider, model, thinkLevel: candidateThinkLevel });
+        const signalExecutionPhaseForCandidate: AgentFallbackCandidateCommonParams["signalExecutionPhaseForTyping"] =
+          (info) => {
+            if (
+              params.state.autoCompactionCount > 0 &&
+              (info.phase === "model_call_started" || info.phase === "process_spawned")
+            ) {
+              params.state.postCompactionModelAttempted = true;
+            }
+            params.signalExecutionPhaseForTyping(info);
+          };
         const common = {
           preparedRunAdmission: params.preparedRunAdmission,
           turn,
@@ -259,7 +269,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           bootstrapContextRunKind,
           bootstrapPromptWarningSignaturesSeen: params.state.bootstrapPromptWarningSignaturesSeen,
           currentTurnImages: params.currentTurnImages,
-          signalExecutionPhaseForTyping: params.signalExecutionPhaseForTyping,
+          signalExecutionPhaseForTyping: signalExecutionPhaseForCandidate,
           notifyAgentRunStart: params.notifyAgentRunStart,
           preserveProgressCallbackStartOrder,
           presentation: params.presentation,
@@ -267,8 +277,10 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           onLifecycleBackstop: (backstop: AgentLifecycleTerminalBackstop) => {
             params.state.pendingLifecycleTerminal = { provider, model, backstop };
           },
+          deferredLifecycle: params.state.deferredLifecycle,
         } satisfies AgentFallbackCandidateCommonParams;
         if (runtime.useCliExecution) {
+          params.state.deferredLifecycle.handoffToCli();
           const candidate = await runCliFallbackCandidate({
             ...common,
             cliExecutionProvider: runtime.cliExecutionProvider,
@@ -301,8 +313,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           },
           notifyUserAboutCompaction: params.notifyUserAboutCompaction,
           messageToolDeliveryState,
-          onCompactionCount: (count) => {
-            params.state.autoCompactionCount += count;
+          onCompactionFacts: (facts) => {
+            params.state.autoCompactionCount += facts.totalCount;
+            params.state.postCompactionModelAttempted ||= facts.postCompactionModelAttempted;
           },
         });
         params.state.bootstrapPromptWarningSignaturesSeen =

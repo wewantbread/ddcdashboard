@@ -7,6 +7,7 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
   SESSION_AGENT_ATTENTION_ICON_IDS,
+  SESSION_COLOR_IDS,
   SESSION_ICON_GLYPH_IDS,
 } from "../../../packages/gateway-protocol/src/session-agent-status.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
@@ -56,7 +57,6 @@ const ACTIONS = [
   "group_delete",
 ] as const;
 const GROUP_NAME_MAX_LENGTH = 512;
-const GROUP_NAMES_MAX_ITEMS = 200;
 const SELF_ARCHIVE_MAX_RETRY_DELAY_MS = 5_000;
 const SESSIONS_TOOL_RESULT_MAX_BYTES = 3_840;
 const RESOLVED_OMITTED_REASON = "response_budget_exceeded";
@@ -111,6 +111,11 @@ const SessionsToolSchema = Type.Object(
     icon: Type.Optional(
       Type.String({
         description: `Persistent sidebar icon: a single emoji, or a named icon: ${SESSION_ICON_GLYPH_DESCRIPTION}. Empty string clears it. Distinct from attention, which is temporary.`,
+      }),
+    ),
+    color: Type.Optional(
+      Type.String({
+        description: `Persistent sidebar color tint, one of: ${SESSION_COLOR_IDS.join(", ")}. Empty string clears it.`,
       }),
     ),
     category: Type.Optional(
@@ -219,9 +224,6 @@ function readGroupName(value: unknown, label: string): string {
 function readGroupNames(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new ToolInputError("names required");
-  }
-  if (value.length > GROUP_NAMES_MAX_ITEMS) {
-    throw new ToolInputError("Too many group names");
   }
   return value.map((name, index) => readGroupName(name, `names[${index}]`));
 }
@@ -508,6 +510,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
         ...lifecycleIdentity,
         ...(params.label !== undefined ? { label: readClearableString(params, "label") } : {}),
         ...(params.icon !== undefined ? { icon: readClearableString(params, "icon") } : {}),
+        ...(params.color !== undefined ? { color: readClearableString(params, "color") } : {}),
         ...(params.category !== undefined
           ? { category: readClearableString(params, "category") }
           : {}),

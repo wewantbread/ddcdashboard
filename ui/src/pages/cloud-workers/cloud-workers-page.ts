@@ -7,6 +7,7 @@ import { applicationContext, type ApplicationContext } from "../../app/context.t
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import {
   renderDocsLink,
+  renderLearnMoreLink,
   renderSettingsEmpty,
   renderSettingsPage,
   renderSettingsPageHeader,
@@ -161,7 +162,7 @@ class CloudWorkersPage extends OpenClawLightDomElement {
     if (!this.canManage()) {
       return;
     }
-    if (profile.providerId !== "crabbox") {
+    if (profile.providerId !== "crabbox" || !profile.machineClass) {
       this.context.navigate("advanced", { search: "?section=cloudWorkers" });
       return;
     }
@@ -556,8 +557,7 @@ class CloudWorkersPage extends OpenClawLightDomElement {
     return html`
       ${renderSettingsPageHeader({
         title: titleForRoute("cloud-workers"),
-        subtitle: html`${t("cloudWorkersPage.intro")}
-        ${renderDocsLink(CLOUD_WORKERS_DOCS_URL, t("common.learnMore"))}`,
+        subtitle: html`${t("cloudWorkersPage.intro")} ${renderLearnMoreLink(CLOUD_WORKERS_DOCS_URL)}`,
       })}
       ${renderSettingsWorkspace(body)}
     `;
