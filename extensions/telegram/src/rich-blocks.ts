@@ -22,7 +22,7 @@ import {
   type RichText,
   type TelegramRichBlocksDegradationReason,
 } from "./rich-block-model.js";
-import { findTelegramHtmlIslands } from "./rich-blocks-html-map.js";
+import { findTelegramHtmlIslands, parseIslandBlocks } from "./rich-blocks-html-map.js";
 import { parseInlineHtmlIslands } from "./rich-blocks-html.js";
 import {
   collectMarkdownRichListSources,
@@ -395,7 +395,12 @@ function findAuthoredHtmlIslands(ir: MarkdownIR, start: number, end: number) {
 
 // Gap emitter: agent-authored block HTML islands (details/lists/media/math/…)
 // become typed blocks; the text around them stays on the paragraph path.
-function emitGapBlocks(ir: MarkdownIR, start: number, end: number): InputRichBlock[] {
+function emitGapBlocks(
+  ir: MarkdownIR,
+  start: number,
+  end: number,
+  tables: readonly MarkdownTableMeta[],
+): InputRichBlock[] {
   if (end <= start) {
     return [];
   }
@@ -407,11 +412,88 @@ function emitGapBlocks(ir: MarkdownIR, start: number, end: number): InputRichBlo
   let cursor = start;
   for (const island of islands) {
     blocks.push(...splitParagraphs(ir, cursor, start + island.start));
-    blocks.push(...island.blocks);
+    blocks.push(...renderIslandBlocksWithTables(ir, start, island, tables));
     cursor = start + island.end;
   }
   blocks.push(...splitParagraphs(ir, cursor, end));
   return blocks;
+}
+
+type AuthoredHtmlIsland = ReturnType<typeof findAuthoredHtmlIslands>[number];
+
+function escapeTelegramHtmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Rebuild a markdown table as an HTML <table> island element. The IR removes
+ * markdown table source text (a zero-width placeholder remains), so island
+ * bodies would silently drop tables; the island fragment parser renders this
+ * element natively, including its over-wide-column ASCII degradation.
+ */
+function renderIslandTableHtml(table: MarkdownTableMeta): string {
+  const columnCount = Math.max(
+    table.headerCells.length,
+    ...table.rowCells.map((row) => row.length),
+    0,
+  );
+  const alignAttr = (index: number) => {
+    const align = table.aligns?.[index];
+    return align ? ` align="${align}"` : "";
+  };
+  const cellHtml = (cell: MarkdownTableCell | undefined, index: number, header: boolean) => {
+    const tag = header ? "th" : "td";
+    return `<${tag}${alignAttr(index)}>${escapeTelegramHtmlText(cell?.text ?? "")}</${tag}>`;
+  };
+  const headerRow =
+    table.headerCells.length > 0
+      ? `<tr>${table.headerCells.map((cell, index) => cellHtml(cell, index, true)).join("")}</tr>`
+      : "";
+  const bodyRows = table.rowCells
+    .map(
+      (row) =>
+        `<tr>${Array.from({ length: columnCount }, (_value, index) => cellHtml(row[index], index, false)).join("")}</tr>`,
+    )
+    .join("");
+  return `<table>${headerRow}${bodyRows}</table>`;
+}
+
+/**
+ * Island blocks for emission, with contained markdown tables re-projected into
+ * the island body. The island body paragraph has no stable position for an
+ * extracted table (the IR deleted its source text), so the table HTML goes
+ * back at the placeholder offset and the fragment is re-parsed.
+ */
+function renderIslandBlocksWithTables(
+  ir: MarkdownIR,
+  gapStart: number,
+  island: AuthoredHtmlIsland,
+  tables: readonly MarkdownTableMeta[],
+): InputRichBlock[] {
+  const islandStart = gapStart + island.start;
+  const islandEnd = gapStart + island.end;
+  const contained = tables
+    .filter((table) => table.placeholderOffset > islandStart && table.placeholderOffset < islandEnd)
+    .toSorted((left, right) => left.placeholderOffset - right.placeholderOffset);
+  if (contained.length === 0) {
+    return island.blocks;
+  }
+  const source = ir.text.slice(islandStart, islandEnd);
+  let html = "";
+  let cursor = 0;
+  for (const table of contained) {
+    const relativeOffset = table.placeholderOffset - islandStart;
+    html += source.slice(cursor, relativeOffset);
+    html += renderIslandTableHtml(table);
+    cursor = relativeOffset;
+  }
+  html += source.slice(cursor);
+  const blocks = parseIslandBlocks(html);
+  return blocks.length > 0 ? blocks : island.blocks;
 }
 
 function renderAsciiTableGrid(table: MarkdownTableMeta): string {
@@ -481,8 +563,16 @@ function collectStructuralSegments(
 ): StructuralSegment[] {
   const segments: StructuralSegment[] = [];
   const htmlIslands = findAuthoredHtmlIslands(ir, 0, ir.text.length);
+  // Structural blocks inside an authored HTML island belong to the island body:
+  // hoisting them out splits the island range across gaps, so the island never
+  // matches and its literal tags leak into the message.
+  const insideIsland = (start: number, end: number) =>
+    htmlIslands.some((island) => start >= island.start && end <= island.end);
   for (const span of ir.styles) {
     if (span.end <= span.start) {
+      continue;
+    }
+    if (insideIsland(span.start, span.end)) {
       continue;
     }
     const headingSize = resolveHeadingSize(span.style);
@@ -504,11 +594,25 @@ function collectStructuralSegments(
     }
   }
   for (const table of tables) {
+    // Tables are zero-width placeholders, so containment must be strict on
+    // both bounds: the IR deletes the table's source lines, which pulls later
+    // islands left until a neighboring island starts or ends exactly at the
+    // placeholder. Only a placeholder strictly between an opener and its
+    // closing tag is a table inside that island body; a boundary coincidence
+    // means the table preceded or followed the island and must stay a
+    // top-level segment or it would be silently dropped.
+    if (
+      htmlIslands.some(
+        (island) => table.placeholderOffset > island.start && table.placeholderOffset < island.end,
+      )
+    ) {
+      continue;
+    }
     const offset = Math.max(0, Math.min(table.placeholderOffset, ir.text.length));
     segments.push({ kind: "table", start: offset, end: offset, table });
   }
   for (const source of collectMarkdownRichListSources(ir)) {
-    if (htmlIslands.some((island) => source.start >= island.start && source.end <= island.end)) {
+    if (insideIsland(source.start, source.end)) {
       continue;
     }
     segments.push({ kind: "list", start: source.start, end: source.end, source });
@@ -531,6 +635,7 @@ function emitSegments(
   rangeStart: number,
   rangeEnd: number,
   degradationReasons: Set<TelegramRichBlocksDegradationReason>,
+  tables: readonly MarkdownTableMeta[],
 ): InputRichBlock[] {
   const blocks: InputRichBlock[] = [];
   let cursor = rangeStart;
@@ -541,7 +646,7 @@ function emitSegments(
       break;
     }
     if (segment.start > cursor) {
-      blocks.push(...emitGapBlocks(ir, cursor, segment.start));
+      blocks.push(...emitGapBlocks(ir, cursor, segment.start, tables));
     }
     // Segments nested inside this one (fences/headings/tables in a blockquote)
     // belong to it; consuming them here prevents a second top-level emission.
@@ -568,7 +673,14 @@ function emitSegments(
         break;
       }
       case "blockquote": {
-        const inner = emitSegments(ir, children, segment.start, segment.end, degradationReasons);
+        const inner = emitSegments(
+          ir,
+          children,
+          segment.start,
+          segment.end,
+          degradationReasons,
+          tables,
+        );
         if (inner.length > 0) {
           blocks.push({ type: "blockquote", blocks: inner });
         }
@@ -582,6 +694,7 @@ function emitSegments(
             start,
             end,
             degradationReasons,
+            tables,
           ),
         );
         if (rendered) {
@@ -595,6 +708,7 @@ function emitSegments(
               segment.start,
               segment.end,
               degradationReasons,
+              tables,
             ),
           );
         }
@@ -613,7 +727,7 @@ function emitSegments(
     index = next;
   }
   if (cursor < rangeEnd) {
-    blocks.push(...emitGapBlocks(ir, cursor, rangeEnd));
+    blocks.push(...emitGapBlocks(ir, cursor, rangeEnd, tables));
   }
   return blocks;
 }
@@ -643,11 +757,11 @@ export function markdownToTelegramRichBlocks(
   const segments = collectStructuralSegments(ir, tables);
   const hasMarkdownLists = segments.some((segment) => segment.kind === "list");
   const flattenedSegments = segments.filter((segment) => segment.kind !== "list");
-  let blocks = emitSegments(ir, segments, 0, ir.text.length, degradationReasons);
+  let blocks = emitSegments(ir, segments, 0, ir.text.length, degradationReasons, tables);
   if (hasMarkdownLists && maxInputRichBlockNesting(blocks) > 16) {
     degradationReasons = new Set<TelegramRichBlocksDegradationReason>();
     degradationReasons.add("list-limit");
-    blocks = emitSegments(ir, flattenedSegments, 0, ir.text.length, degradationReasons);
+    blocks = emitSegments(ir, flattenedSegments, 0, ir.text.length, degradationReasons, tables);
   }
 
   if (blocks.length === 0 && ir.text.trim()) {
@@ -656,7 +770,7 @@ export function markdownToTelegramRichBlocks(
 
   // Plain recovery remains byte-compatible with the pre-native-list path.
   const plainBlocks = hasMarkdownLists
-    ? emitSegments(ir, flattenedSegments, 0, ir.text.length, new Set())
+    ? emitSegments(ir, flattenedSegments, 0, ir.text.length, new Set(), tables)
     : blocks;
 
   return {

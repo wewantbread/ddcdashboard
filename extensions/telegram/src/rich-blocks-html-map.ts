@@ -535,6 +535,16 @@ type TelegramHtmlIsland = {
 };
 
 /**
+ * Parse a complete island fragment into typed blocks. Island discovery uses
+ * this for the raw island text; the markdown emitter re-parses augmented
+ * fragments through it so re-projected content (e.g. a markdown table whose
+ * source text the IR removed) renders through the same element mapping.
+ */
+export function parseIslandBlocks(fragment: string): InputRichBlock[] {
+  return htmlNodesToBlocks(parseHtmlFragment(fragment));
+}
+
+/**
  * Find supported block islands inside a text range. Returns non-overlapping
  * spans in order; text outside spans stays on the markdown paragraph path.
  */
@@ -622,7 +632,7 @@ export function findTelegramHtmlIslands(text: string): TelegramHtmlIsland[] {
         continue;
       }
     }
-    const blocks = htmlNodesToBlocks(parseHtmlFragment(text.slice(tag.start, end)));
+    const blocks = parseIslandBlocks(text.slice(tag.start, end));
     if (blocks.length > 0) {
       islands.push({ start: tag.start, end, blocks });
     }

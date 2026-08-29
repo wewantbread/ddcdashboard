@@ -48,6 +48,94 @@ describe("block HTML islands", () => {
     expect(serialized).not.toContain("<details>");
   });
 
+  it.each([
+    {
+      name: "headings",
+      markdown: "<details><summary>Title</summary>\n\n# Heading inside\n\n</details>",
+      expected: "Heading inside",
+    },
+    {
+      name: "code blocks",
+      markdown: "<details><summary>Title</summary>\n\n```js\nconsole.log(1)\n```\n\n</details>",
+      expected: "console.log(1)",
+    },
+    {
+      name: "blockquotes",
+      markdown: "<details><summary>Title</summary>\n\n> quoted line\n\n</details>",
+      expected: "quoted line",
+    },
+  ])("keeps Markdown $name inside <details> islands", ({ markdown, expected }) => {
+    const block = single(markdown);
+    expect(block.type).toBe("details");
+    if (block.type !== "details") {
+      return;
+    }
+    const serialized = JSON.stringify(block);
+    // The island stays a native details block: no literal tags leak, and the
+    // structural content stays in the island body instead of hoisting out.
+    expect(serialized).not.toContain("<details>");
+    expect(serialized).not.toContain("</details>");
+    expect(serialized).toContain(expected);
+  });
+
+  it("keeps a Markdown table inside a <details> island as a native table block", () => {
+    const block = single(
+      "<details><summary>Table</summary>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n</details>",
+    );
+    expect(block.type).toBe("details");
+    if (block.type !== "details") {
+      return;
+    }
+    const serialized = JSON.stringify(block);
+    expect(serialized).not.toContain("<details>");
+    expect(serialized).not.toContain("</details>");
+    expect(block.blocks).toEqual([
+      {
+        type: "table",
+        cells: [
+          [
+            { text: "a", is_header: true },
+            { text: "b", is_header: true },
+          ],
+          [{ text: "1" }, { text: "2" }],
+        ],
+        is_bordered: true,
+        is_striped: true,
+      },
+    ]);
+  });
+
+  it("keeps a Markdown table at its position between island body paragraphs", () => {
+    const block = single(
+      "<details><summary>Mix</summary>\n\nbefore\n\n| a |\n|---|\n| 1 |\n\nafter\n\n</details>",
+    );
+    expect(block.type).toBe("details");
+    if (block.type !== "details") {
+      return;
+    }
+    expect(block.blocks).toHaveLength(3);
+    expect(block.blocks[0]).toEqual({ type: "paragraph", text: " before " });
+    expect(block.blocks[1]?.type).toBe("table");
+    expect(block.blocks[2]).toMatchObject({ type: "paragraph" });
+    expect(JSON.stringify(block.blocks[2])).toContain("after");
+  });
+
+  it("keeps a Markdown table after a <details> island as a top-level table", () => {
+    const blocks = blocksFor(
+      "<details><summary>T</summary>\n\n# In\n\n</details>\n\n| a |\n|---|\n| 1 |",
+    );
+    expect(blocks.map((block) => block.type)).toEqual(["details", "table"]);
+    expect(JSON.stringify(blocks[1])).toContain('"text":"a"');
+  });
+
+  it("keeps a Markdown table between two <details> islands at its position", () => {
+    const blocks = blocksFor(
+      "<details><summary>A</summary>\n\n# x\n\n</details>\n\n| a |\n|---|\n| 1 |\n\n<details><summary>B</summary>\nbody\n</details>",
+    );
+    expect(blocks.map((block) => block.type)).toEqual(["details", "table", "details"]);
+    expect(JSON.stringify(blocks[1])).toContain('"text":"a"');
+  });
+
   it("maps <ul> with checkbox tasks", () => {
     const block = single(
       '<ul><li><input type="checkbox" checked/>Done</li><li><input type="checkbox"/>Todo</li><li>Plain</li></ul>',

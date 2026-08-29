@@ -1255,6 +1255,31 @@ describe("createTelegramDraftStream", () => {
     );
   });
 
+  it("sends a native details block for markdown structure inside <details>", async () => {
+    const api = createMockDraftApi();
+    const stream = createDraftStream(api, { richMessages: true });
+
+    stream.update(
+      "<details>\n<summary>Deploy checklist</summary>\n\n# Steps\n\n| item | done |\n|---|---|\n| lint | yes |\n\n</details>",
+    );
+    await stream.flush();
+
+    expect(api.raw.sendRichMessage).toHaveBeenCalledTimes(1);
+    const payload = api.raw.sendRichMessage.mock.calls[0]?.[0] as {
+      rich_message?: TelegramInputRichMessage;
+    };
+    const serialized = JSON.stringify(payload.rich_message);
+    expect(serialized).not.toContain("<details>");
+    expect(serialized).not.toContain("</details>");
+    const details = payload.rich_message?.blocks?.find((block) => block.type === "details");
+    expect(details?.type).toBe("details");
+    if (details?.type !== "details") {
+      return;
+    }
+    expect(details.blocks.some((block) => block.type === "table")).toBe(true);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("uses rich send and edit for previews when explicitly enabled", async () => {
     const api = createMockDraftApi();
     const stream = createDraftStream(api, { richMessages: true });
