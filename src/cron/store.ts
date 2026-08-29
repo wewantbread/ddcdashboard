@@ -34,7 +34,7 @@ import type {
   LoadedCronStore,
   QuarantinedCronConfigJob,
 } from "./store/types.js";
-import type { CronStoreFile } from "./types.js";
+import type { CronStoredJob, CronStoreFile } from "./types.js";
 export type {
   CronConfigJobRuntimeEntry,
   CronQuarantinedJob,
@@ -238,6 +238,7 @@ type SaveCronStoreOptions = {
 };
 
 type SaveCronJobsStoreOptions = SaveCronStoreOptions & {
+  preserveNewerRuntime?: boolean;
   quarantine?: {
     entries: readonly (QuarantinedCronConfigJob | CronQuarantinedJob)[];
     nowMs: number;
@@ -265,6 +266,7 @@ export async function saveCronJobsStore(
   if (!stateOnly) {
     assertCronStoreCanPersist(store);
   }
+  let committedJobs: CronStoredJob[] | undefined;
   runOpenClawStateWriteTransaction((database) => {
     opts?.transactionHooks?.beforeWrite?.(database.db);
     if (opts?.quarantine?.entries.length) {
@@ -282,10 +284,17 @@ export async function saveCronJobsStore(
       opts?.transactionHooks?.afterWrite?.(database.db);
       return;
     }
-    const normalizedJobs = replaceCronRows(database.db, storeKey, store);
+    const normalizedJobs = replaceCronRows(database.db, storeKey, store, {
+      preserveNewerRuntime: opts?.preserveNewerRuntime,
+    });
     replaceCronRuntimeAuthorityRows({ db: database.db, storeKey, jobs: normalizedJobs });
+    committedJobs = normalizedJobs;
     opts?.transactionHooks?.afterWrite?.(database.db);
   });
+  if (committedJobs) {
+    // Keep service responses and events aligned with the canonical rows that won the commit.
+    store.jobs = committedJobs;
+  }
   // Timeout outcomes may commit before their runner settles. Only after this
   // commit may a deferred receipt terminal request become externally visible.
   opts?.transactionHooks?.afterCommit?.();

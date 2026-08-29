@@ -1,5 +1,6 @@
 /** Converts cron jobs between public store shape and normalized SQLite rows. */
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
@@ -285,6 +286,7 @@ export function replaceCronRows(
   db: DatabaseSync,
   storeKey: string,
   store: CronStoreFile,
+  opts?: { preserveNewerRuntime?: boolean },
 ): CronStoredJob[] {
   const existingRows = executeSqliteQuerySync(
     db,
@@ -295,7 +297,11 @@ export function replaceCronRows(
   ).rows;
   const normalizedJobs: CronStoredJob[] = [];
   for (const [index, job] of store.jobs.entries()) {
-    normalizedJobs.push(upsertCronJobRow(db, storeKey, job, index));
+    normalizedJobs.push(
+      upsertCronJobRow(db, storeKey, job, index, {
+        preserveNewerRuntime: opts?.preserveNewerRuntime,
+      }),
+    );
   }
   const nextJobIds = new Set(normalizedJobs.map((job) => job.id));
   for (const row of existingRows) {
@@ -315,18 +321,64 @@ export function replaceCronRows(
   return normalizedJobs;
 }
 
+function cronRuntimeStateOwnerMatches(previous: CronStoredJob, next: CronStoredJob): boolean {
+  if (!isDeepStrictEqual(previous.trigger, next.trigger)) {
+    return false;
+  }
+  if (previous.payload.kind !== "script" && next.payload.kind !== "script") {
+    return true;
+  }
+  return isDeepStrictEqual(previous.payload, next.payload);
+}
+
 /** Upserts one persisted cron row without rewriting unrelated jobs in its store partition. */
 export function upsertCronJobRow(
   db: DatabaseSync,
   storeKey: string,
   job: CronStoredJob,
   sortOrder: number,
+  opts?: { preserveNewerRuntime?: boolean },
 ): CronStoredJob {
   const normalized = normalizeCronJobForSqlite(job);
   if (!normalized) {
     throw new Error(`Cannot persist invalid cron job ${job.id}`);
   }
-  const values = bindCronJobRow(storeKey, normalized, sortOrder);
+  let values = bindCronJobRow(storeKey, normalized, sortOrder);
+  let preservedRuntime = false;
+  const existing = executeSqliteQuerySync(
+    db,
+    getCronStoreKysely(db)
+      .selectFrom("cron_jobs")
+      .selectAll()
+      .where("store_key", "=", storeKey)
+      .where("job_id", "=", normalized.id),
+  ).rows[0];
+  const existingRuntimeJob = existing
+    ? rowToCronJob(existing, tryParseJsonObject(existing.job_json) ?? {})
+    : null;
+  const existingRuntimeUpdatedAt = normalizeNumber(existing?.runtime_updated_at_ms ?? null);
+  const incomingRuntimeUpdatedAt = normalizeNumber(values.runtime_updated_at_ms ?? null);
+  if (
+    opts?.preserveNewerRuntime === true &&
+    existing &&
+    typeof existing.schedule_identity === "string" &&
+    existing.schedule_identity === values.schedule_identity &&
+    existingRuntimeJob !== null &&
+    normalizeCronJobForSqlite(existingRuntimeJob) !== null &&
+    cronRuntimeStateOwnerMatches(existingRuntimeJob, normalized) &&
+    existingRuntimeUpdatedAt !== undefined &&
+    incomingRuntimeUpdatedAt !== undefined &&
+    existingRuntimeUpdatedAt > incomingRuntimeUpdatedAt
+  ) {
+    values = {
+      ...values,
+      updated_at: Math.max(existing.updated_at ?? 0, values.updated_at ?? 0),
+      state_json: existing.state_json,
+      runtime_updated_at_ms: existing.runtime_updated_at_ms,
+      schedule_identity: existing.schedule_identity,
+    };
+    preservedRuntime = true;
+  }
   executeSqliteQuerySync(
     db,
     getCronStoreKysely(db)
@@ -334,6 +386,18 @@ export function upsertCronJobRow(
       .values(values)
       .onConflict((conflict) => conflict.columns(["store_key", "job_id"]).doUpdateSet(values)),
   );
+  if (preservedRuntime) {
+    const preservedState = tryParseJsonObject(values.state_json ?? "");
+    return preservedState
+      ? {
+          ...normalized,
+          updatedAtMs:
+            normalizeNumber(values.runtime_updated_at_ms ?? null) ?? normalized.updatedAtMs,
+          // SAFETY: values.state_json was parsed by the same object codec used for persisted state.
+          state: preservedState as CronJobState,
+        }
+      : normalized;
+  }
   return normalized;
 }
 
