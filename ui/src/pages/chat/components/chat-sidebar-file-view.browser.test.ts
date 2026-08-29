@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import "../../../styles.css";
+import "../../../styles/chat.css";
 import "./chat-sidebar.ts";
 
 // The root jsdom ui shard also collects *.browser.test.ts files; CodeMirror
@@ -39,6 +40,7 @@ beforeAll(async () => {
 
 type DetailPanel = HTMLElement & {
   content: FileSidebarContent;
+  onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
   updateComplete: Promise<unknown>;
 };
 
@@ -84,6 +86,57 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(panel.querySelector(".cm-content")?.textContent).toContain("const second = 2;");
     const target = panel.querySelector(".file-view__line--target");
     expect(target?.getAttribute("data-line")).toBe("2");
+    expect(panel.querySelector(".sidebar-file-view__modes")).toBeNull();
+  });
+
+  it("renders large Markdown drafts in a responsive preview", async () => {
+    const initial = `# Audit\n\n[Guide](guide.md)\n\n- First item\n- Second item\n\n${"long prose ".repeat(4_500)}`;
+    expect(initial.length).toBeGreaterThan(40_000);
+    const panel = await mountFile({
+      kind: "file",
+      path: "notes/handoff.md",
+      name: "handoff.md",
+      content: initial,
+      edit: { hash: "hash-1", save: vi.fn(), fetchLatest: vi.fn() },
+    });
+    panel.style.width = "320px";
+    panel.style.height = "480px";
+    const openWorkspaceFile = vi.fn();
+    panel.onOpenWorkspaceFile = openWorkspaceFile;
+
+    await userEvent.click(button(panel, "Edit file"));
+    await userEvent.fill(
+      expectDefined(panel.querySelector<HTMLElement>(".cm-content"), "file editor"),
+      initial.replace("# Audit", "# Edited audit"),
+    );
+    await userEvent.click(button(panel, "Preview"));
+
+    const preview = expectDefined(
+      panel.querySelector<HTMLElement>(".sidebar-file-preview"),
+      "Markdown preview",
+    );
+    await expect.poll(() => preview.hidden).toBe(false);
+    const reader = expectDefined(
+      preview.querySelector<HTMLElement>(".sidebar-file-preview__content"),
+      "Markdown preview content",
+    );
+    expect(panel.querySelector<HTMLElement>(".file-view")?.hidden).toBe(true);
+    expect(reader.querySelector("h1")?.textContent).toBe("Edited audit");
+    expect(reader.querySelectorAll("li")).toHaveLength(2);
+    expect(reader.querySelector(".markdown-plain-text-fallback")).toBeNull();
+
+    const guideLink = expectDefined(
+      reader.querySelector<HTMLAnchorElement>('a[data-file-path="guide.md"]'),
+      "relative Markdown link",
+    );
+    await userEvent.click(guideLink);
+    expect(openWorkspaceFile).toHaveBeenCalledWith({ path: "notes/guide.md", line: null });
+    expect(getComputedStyle(reader).overflowWrap).toBe("anywhere");
+    expect(reader.scrollWidth).toBeLessThanOrEqual(reader.clientWidth + 1);
+
+    await userEvent.click(button(panel, "Source"));
+    await expect.poll(() => panel.querySelector<HTMLElement>(".file-view")?.hidden).toBe(false);
+    expect(panel.querySelector(".cm-content")?.textContent).toContain("# Edited audit");
   });
 
   it("enables save after an edit and keeps the saved content", async () => {
