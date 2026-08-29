@@ -1,11 +1,15 @@
+import { resolveExecModePolicy } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import {
   asNonArrayRecord,
   isRecord,
   asBoolean as readBoolean,
   normalizeOptionalString as readString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { collectPolicyAgentRoster } from "./policy-state-agent-roster.js";
 import { ocPathSegment } from "./policy-state-helpers.js";
 import type { PolicyToolPostureEvidence } from "./policy-state-types.js";
+
+type ExecMode = "deny" | "allowlist" | "ask" | "auto" | "full";
 
 export function scanPolicyToolPosture(
   cfg: Record<string, unknown>,
@@ -26,22 +30,19 @@ export function scanPolicyToolPosture(
     inheritedSourceBase: "oc://openclaw.config/tools",
   });
 
-  const list = Array.isArray(agents.list) ? agents.list : [];
-  list.forEach((agent, index) => {
+  collectPolicyAgentRoster(cfg).forEach(({ agentId, sourceBase, value: agent }) => {
     if (!isRecord(agent)) {
       return;
     }
-    const agentId =
-      typeof agent.id === "string" && agent.id.trim() !== "" ? agent.id.trim() : undefined;
     pushToolPostureEvidence(entries, {
-      id: agentId ?? `agent-${index}`,
+      id: agentId,
       scope: "agent",
       agentId,
       tools: asNonArrayRecord(agent.tools),
       inheritedTools: globalTools,
       sandbox: asNonArrayRecord(agent.sandbox),
       inheritedSandbox: defaultSandbox,
-      sourceBase: `oc://openclaw.config/agents/list/#${index}/tools`,
+      sourceBase: `${sourceBase}/tools`,
       inheritedSourceBase: "oc://openclaw.config/tools",
     });
   });
@@ -114,28 +115,72 @@ function pushToolExecPosture(
 
   const localSecurity = readString(localExec.security);
   const inheritedSecurity = readString(inheritedExec.security);
+  const localMode = readExecMode(localExec.mode);
+  const inheritedMode = readExecMode(inheritedExec.mode);
+  const localModePolicy =
+    localMode === undefined
+      ? undefined
+      : resolveExecModePolicy({ mode: localMode, security: "full", ask: "off" });
+  const inheritedModePolicy =
+    inheritedMode === undefined
+      ? undefined
+      : resolveExecModePolicy({ mode: inheritedMode, security: "full", ask: "off" });
   // Config conformance intentionally ignores exec-approvals.json runtime/operator state.
   const sandboxMode = readString(params.sandbox.mode) ?? readString(params.inheritedSandbox.mode);
   const sandboxCanApply = sandboxMode === "all";
+  const security =
+    localModePolicy?.security ??
+    localSecurity ??
+    inheritedModePolicy?.security ??
+    inheritedSecurity ??
+    (host === "sandbox" || (host === "auto" && sandboxCanApply) ? "deny" : "full");
+  const securitySource =
+    localModePolicy !== undefined
+      ? `${params.sourceBase}/exec/mode`
+      : localSecurity !== undefined
+        ? `${params.sourceBase}/exec/security`
+        : inheritedModePolicy !== undefined
+          ? `${params.inheritedSourceBase}/exec/mode`
+          : inheritedSecurity !== undefined
+            ? `${params.inheritedSourceBase}/exec/security`
+            : `${params.sourceBase}/exec/security`;
   pushToolPostureValue(entries, params, {
     suffix: "exec/security",
     kind: "execSecurity",
-    value:
-      localSecurity ??
-      inheritedSecurity ??
-      (host === "sandbox" || (host === "auto" && sandboxCanApply) ? "deny" : "full"),
-    explicit: localSecurity !== undefined || inheritedSecurity !== undefined,
-    inherited: localSecurity === undefined && inheritedSecurity !== undefined,
+    value: security,
+    source: securitySource,
+    explicit:
+      localModePolicy !== undefined ||
+      localSecurity !== undefined ||
+      inheritedModePolicy !== undefined ||
+      inheritedSecurity !== undefined,
+    inherited: false,
   });
 
   const localAsk = readString(localExec.ask);
   const inheritedAsk = readString(inheritedExec.ask);
+  const ask = localModePolicy?.ask ?? localAsk ?? inheritedModePolicy?.ask ?? inheritedAsk ?? "off";
+  const askSource =
+    localModePolicy !== undefined
+      ? `${params.sourceBase}/exec/mode`
+      : localAsk !== undefined
+        ? `${params.sourceBase}/exec/ask`
+        : inheritedModePolicy !== undefined
+          ? `${params.inheritedSourceBase}/exec/mode`
+          : inheritedAsk !== undefined
+            ? `${params.inheritedSourceBase}/exec/ask`
+            : `${params.sourceBase}/exec/ask`;
   pushToolPostureValue(entries, params, {
     suffix: "exec/ask",
     kind: "execAsk",
-    value: localAsk ?? inheritedAsk ?? "off",
-    explicit: localAsk !== undefined || inheritedAsk !== undefined,
-    inherited: localAsk === undefined && inheritedAsk !== undefined,
+    value: ask,
+    source: askSource,
+    explicit:
+      localModePolicy !== undefined ||
+      localAsk !== undefined ||
+      inheritedModePolicy !== undefined ||
+      inheritedAsk !== undefined,
+    inherited: false,
   });
 }
 
@@ -203,6 +248,7 @@ function pushToolPostureValue(
     readonly suffix: string;
     readonly kind: PolicyToolPostureEvidence["kind"];
     readonly value: boolean | string | undefined;
+    readonly source?: string;
     readonly explicit: boolean;
     readonly inherited: boolean;
   },
@@ -210,12 +256,28 @@ function pushToolPostureValue(
   entries.push({
     id: `${params.id}-${entry.suffix.replaceAll("/", "-")}`,
     kind: entry.kind,
-    source: `${entry.inherited ? params.inheritedSourceBase : params.sourceBase}/${entry.suffix}`,
+    source:
+      entry.source ??
+      `${entry.inherited ? params.inheritedSourceBase : params.sourceBase}/${entry.suffix}`,
     scope: params.scope,
     ...(params.agentId === undefined ? {} : { agentId: params.agentId }),
     ...(entry.value === undefined ? {} : { value: entry.value }),
     explicit: entry.explicit,
   });
+}
+
+function readExecMode(value: unknown): ExecMode | undefined {
+  const mode = readString(value)?.toLowerCase();
+  switch (mode) {
+    case "deny":
+    case "allowlist":
+    case "ask":
+    case "auto":
+    case "full":
+      return mode;
+    default:
+      return undefined;
+  }
 }
 
 function pushToolPostureList(
