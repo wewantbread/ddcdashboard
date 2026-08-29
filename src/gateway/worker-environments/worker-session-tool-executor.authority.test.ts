@@ -106,38 +106,70 @@ beforeEach(() => {
 });
 afterEach(() => resetGlobalHookRunner());
 
-it("fences an allowed send when delegated authority closes before dispatch", async () => {
-  const beforeToolCall = vi.fn(() => {
+function installPolicy(toolName: "sessions_send" | "sessions_spawn") {
+  const handler = vi.fn(() => {
     const receiptAuthority = getGatewayToolCallerIdentity()?.receiptAuthority;
     expect(receiptAuthority).toEqual(expect.any(Function));
     receiptAuthority?.();
   });
   initializeGlobalHookRunner(
-    createMockPluginRegistry([
-      { hookName: "before_tool_call", matcher: ["sessions_send"], handler: beforeToolCall },
-    ]),
+    createMockPluginRegistry([{ hookName: "before_tool_call", matcher: [toolName], handler }]),
   );
-  let completed: string | undefined;
-  const abandonOperation = vi.fn(() => true);
-  const placements = {
-    abandonWorkerSessionToolOperation: abandonOperation,
-    beginWorkerSessionToolOperation: () =>
-      completed
-        ? { kind: "completed", resultJson: completed }
-        : { kind: "execute", operationSeed: "operation-seed" },
-    completeWorkerSessionToolOperation: (operation: { resultJson: string }) => {
-      completed = operation.resultJson;
-      return true;
-    },
+  return handler;
+}
+
+function requestIdentity() {
+  return {
+    environmentId: fixture.claim.owner.environmentId,
+    ownerEpoch: fixture.claim.owner.ownerEpoch,
+    runId: fixture.claim.runId,
+    sessionId: fixture.claim.sessionId,
+    turnClaim: fixture.claim,
   };
-  const execute = createWorkerSessionToolExecutor({
+}
+
+function createExecutor(placements: object, overrides: object = {}) {
+  return createWorkerSessionToolExecutor({
     placements,
     resolveGatewayContext: () => undefined,
-    environments: {},
+    environments: {
+      get: () => ({
+        state: "attached",
+        ownerEpoch: fixture.claim.owner.ownerEpoch,
+        attachedSessionIds: [fixture.claim.sessionId],
+      }),
+    },
     dispatchChild: vi.fn(),
     githubPublication: {},
     portals: {},
+    ...overrides,
   } as never);
+}
+
+function terminalPlacements(operationSeed: string, extra: object = {}) {
+  let completed: string | undefined;
+  const abandon = vi.fn(() => true);
+  return {
+    abandon,
+    placements: {
+      ...extra,
+      abandonWorkerSessionToolOperation: abandon,
+      beginWorkerSessionToolOperation: () =>
+        completed
+          ? { kind: "completed", resultJson: completed }
+          : { kind: "execute", operationSeed },
+      completeWorkerSessionToolOperation: (operation: { resultJson: string }) => {
+        completed = operation.resultJson;
+        return true;
+      },
+    },
+  };
+}
+
+it("fences an allowed send when delegated authority closes before dispatch", async () => {
+  const beforeToolCall = installPolicy("sessions_send");
+  const store = terminalPlacements("operation-seed");
+  const execute = createExecutor(store.placements);
   let finishPreDispatch: (() => void) | undefined;
   sendOwner.execute.mockImplementation(
     async () =>
@@ -153,11 +185,7 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
       }),
   );
   const request = {
-    identity: {
-      runId: fixture.claim.runId,
-      sessionId: fixture.claim.sessionId,
-      turnClaim: fixture.claim,
-    },
+    identity: requestIdentity(),
     toolName: "sessions_send",
     request: {
       toolCallId: "authority-closed-during-policy",
@@ -179,49 +207,16 @@ it("fences an allowed send when delegated authority closes before dispatch", asy
   expect(fixture.run).toHaveBeenCalledOnce();
   expect(gatewayDispatch).not.toHaveBeenCalled();
   expect(sendOwner.execute).toHaveBeenCalledOnce();
-  expect(abandonOperation).not.toHaveBeenCalled();
+  expect(store.abandon).not.toHaveBeenCalled();
 });
 
 it("fences child creation when delegated authority closes before commit", async () => {
-  const beforeToolCall = vi.fn(() => {
-    const receiptAuthority = getGatewayToolCallerIdentity()?.receiptAuthority;
-    expect(receiptAuthority).toEqual(expect.any(Function));
-    receiptAuthority?.();
-  });
-  initializeGlobalHookRunner(
-    createMockPluginRegistry([
-      { hookName: "before_tool_call", matcher: ["sessions_spawn"], handler: beforeToolCall },
-    ]),
-  );
-  let completed: string | undefined;
-  const abandonOperation = vi.fn(() => true);
-  const placements = {
-    abandonWorkerSessionToolOperation: abandonOperation,
-    beginWorkerSessionToolOperation: () =>
-      completed
-        ? { kind: "completed", resultJson: completed }
-        : { kind: "execute", operationSeed: "spawn-operation-seed" },
+  const beforeToolCall = installPolicy("sessions_spawn");
+  const store = terminalPlacements("spawn-operation-seed", {
     bindWorkerSessionToolOperationChild: () => true,
-    completeWorkerSessionToolOperation: (operation: { resultJson: string }) => {
-      completed = operation.resultJson;
-      return true;
-    },
     isWorkerTurnToolAuthorized: () => true,
-  };
-  const execute = createWorkerSessionToolExecutor({
-    placements,
-    resolveGatewayContext: () => undefined,
-    environments: {
-      get: () => ({
-        state: "attached",
-        ownerEpoch: fixture.claim.owner.ownerEpoch,
-        attachedSessionIds: [fixture.claim.sessionId],
-      }),
-    },
-    dispatchChild: vi.fn(),
-    githubPublication: {},
-    portals: {},
-  } as never);
+  });
+  const execute = createExecutor(store.placements);
   let finishCommit: (() => void) | undefined;
   gatewayCreate.mockImplementation(
     async (_method, _params, _creation, options: { sessionMutationCommitGuard: () => void }) =>
@@ -237,13 +232,7 @@ it("fences child creation when delegated authority closes before commit", async 
       }),
   );
   const request = {
-    identity: {
-      environmentId: fixture.claim.owner.environmentId,
-      ownerEpoch: fixture.claim.owner.ownerEpoch,
-      runId: fixture.claim.runId,
-      sessionId: fixture.claim.sessionId,
-      turnClaim: fixture.claim,
-    },
+    identity: requestIdentity(),
     toolName: "sessions_spawn",
     request: { toolCallId: "spawn-authority-closed-before-commit", task: "must not create" },
   };
@@ -258,16 +247,11 @@ it("fences child creation when delegated authority closes before commit", async 
   expect(replay.resultJson).toContain("worker turn authority changed");
   expect(beforeToolCall).toHaveBeenCalledOnce();
   expect(gatewayCreate).toHaveBeenCalledOnce();
-  expect(abandonOperation).not.toHaveBeenCalled();
+  expect(store.abandon).not.toHaveBeenCalled();
 });
 
 it("fences existing-child provisioning when delegated authority closes", async () => {
-  const beforeToolCall = vi.fn(() => getGatewayToolCallerIdentity()?.receiptAuthority?.());
-  initializeGlobalHookRunner(
-    createMockPluginRegistry([
-      { hookName: "before_tool_call", matcher: ["sessions_spawn"], handler: beforeToolCall },
-    ]),
-  );
+  const beforeToolCall = installPolicy("sessions_spawn");
   const childSessionKey = "agent:main:dashboard:existing-child";
   const childSessionId = "existing-child-session";
   sessionStore.entry = {
@@ -305,28 +289,9 @@ it("fences existing-child provisioning when delegated authority closes", async (
         };
       }),
   );
-  const execute = createWorkerSessionToolExecutor({
-    placements,
-    resolveGatewayContext: () => undefined,
-    environments: {
-      get: () => ({
-        state: "attached",
-        ownerEpoch: fixture.claim.owner.ownerEpoch,
-        attachedSessionIds: [fixture.claim.sessionId],
-      }),
-    },
-    dispatchChild,
-    githubPublication: {},
-    portals: {},
-  } as never);
+  const execute = createExecutor(placements, { dispatchChild });
   const request = {
-    identity: {
-      environmentId: fixture.claim.owner.environmentId,
-      ownerEpoch: fixture.claim.owner.ownerEpoch,
-      runId: fixture.claim.runId,
-      sessionId: fixture.claim.sessionId,
-      turnClaim: fixture.claim,
-    },
+    identity: requestIdentity(),
     toolName: "sessions_spawn",
     request: { toolCallId: "existing-child-authority-closed", task: "must not provision" },
   };
