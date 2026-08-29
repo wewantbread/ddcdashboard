@@ -122,6 +122,43 @@ function pluginRuntime(params?: {
 }
 
 describe("Codex /codex plugins subcommand", () => {
+  it.each([{ rest: [] }, { rest: ["list"] }, { rest: ["menu"] }, { rest: ["help"] }])(
+    "offers hosted ChatGPT navigation without a configured plugin or runtime: $rest",
+    async ({ rest }) => {
+      const io = inMemoryIO({}, { enabled: false });
+      const mutate = vi.spyOn(io, "mutate");
+      const result = await handleCodexPluginsSubcommand(
+        { ...fakeCtx, senderIsOwner: false },
+        rest,
+        io,
+      );
+      const urls = result.presentation?.blocks
+        .flatMap((block) => (block.type === "buttons" ? block.buttons : []))
+        .filter((button) => button.action?.type === "url");
+      expect(urls).toEqual([
+        {
+          label: "Browse ChatGPT plugins",
+          action: { type: "url", url: "https://chatgpt.com/plugins" },
+        },
+        {
+          label: "Manage ChatGPT plugins",
+          action: { type: "url", url: "https://chatgpt.com/#settings/Plugins" },
+        },
+      ]);
+      for (const button of urls ?? []) {
+        if (button.action?.type === "url") {
+          expect(result.text).toContain(`${button.label}: ${button.action.url}`);
+        }
+      }
+      expect(result.text).toContain("same ChatGPT account and workspace");
+      expect(result.text).toContain("not every local or marketplace Codex plugin");
+      expect(result.text).toContain("does not change OpenClaw policy or confirm readiness");
+      expect(result.text).toContain("/new or /reset");
+      expect(result.presentationTextMode).toBe("fallback");
+      expect(mutate).not.toHaveBeenCalled();
+    },
+  );
+
   it("lists a configured plugin with its enabled marker and explains the underlying file", async () => {
     const io = inMemoryIO({
       "google-calendar": {
