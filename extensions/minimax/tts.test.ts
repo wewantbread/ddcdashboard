@@ -126,6 +126,49 @@ describe("minimaxTTS", () => {
 
     expect(audio.toString()).toBe("real-audio");
   });
+
+  it("rejects a null response body with a malformed-response error", async () => {
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response("null", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+      release: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      minimaxTTS({
+        text: "hello",
+        apiKey: "sk-test",
+        baseUrl: "https://api.minimax.io",
+        model: "speech-2.8-hd",
+        voiceId: "English_expressive_narrator",
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toThrow("minimax.tts: malformed JSON response");
+  });
+
+  it("rejects a primitive string response body with a malformed-response error", async () => {
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response('"not-an-object"', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+      release: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      minimaxTTS({
+        text: "hello",
+        apiKey: "sk-test",
+        baseUrl: "https://api.minimax.io",
+        model: "speech-2.8-hd",
+        voiceId: "English_expressive_narrator",
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toThrow("minimax.tts: malformed JSON response");
+  });
+
 });
 
 type MinimaxWireFixture = {
