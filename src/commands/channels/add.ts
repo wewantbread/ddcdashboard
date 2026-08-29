@@ -163,19 +163,17 @@ async function channelsAddCommandImpl(
     } = await import("./add-wizard.js");
     const prompter = createClackPrompter();
     const interactive = isTerminalInteractive();
-    const agentId = interactive
-      ? await selectChannelSetupAgentId(cfg, prompter)
-      : resolveAgentOperationAgentId(cfg);
-    const target = await resolveInitialWizardChannelTarget(opts.channel, cfg, agentId);
-    if (target.kind === "unresolved") {
-      runtime.error(target.message);
-      runtime.exit(1);
-      return;
-    }
     if (!interactive) {
       runtime.error(
         "Interactive channel setup requires a TTY. Use `openclaw channels add --channel <id> --use-env` or pass the channel's credential flags for non-interactive setup.",
       );
+      runtime.exit(1);
+      return;
+    }
+    const agentId = await selectChannelSetupAgentId(cfg, prompter);
+    const target = await resolveInitialWizardChannelTarget(opts.channel, cfg, agentId);
+    if (target.kind === "unresolved") {
+      runtime.error(target.message);
       runtime.exit(1);
       return;
     }

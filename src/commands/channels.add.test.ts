@@ -547,6 +547,32 @@ describe("channelsAddCommand", () => {
     expect(channelWizardMocks.setupChannels).not.toHaveBeenCalled();
   });
 
+  it("keeps no-TTY guidance for an explicit ownerless agent fleet", async () => {
+    terminalMocks.isTerminalInteractive.mockReturnValue(false);
+    const config: OpenClawConfig = {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          main: { workspace: "/tmp/openclaw-main-workspace" },
+          helper: { workspace: "/tmp/openclaw-helper-workspace" },
+        },
+      },
+    };
+    configMocks.readConfigFileSnapshot.mockResolvedValue({
+      ...baseConfigSnapshot,
+      sourceConfig: config,
+      config,
+    });
+
+    await channelsAddCommand({ channel: "telegram" }, runtime, { hasFlags: false });
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("channels add --channel <id> --use-env"),
+    );
+    expect(runtime.exit).toHaveBeenCalledWith(1);
+    expect(channelWizardMocks.setupChannels).not.toHaveBeenCalled();
+  });
+
   it.each(
     [true, false].flatMap((interactive) => [
       { label: "empty", channel: "", expectedChannel: "", interactive },
@@ -567,7 +593,9 @@ describe("channelsAddCommand", () => {
       await channelsAddCommand({ channel }, runtime, { hasFlags: false });
 
       expect(runtime.error).toHaveBeenCalledWith(
-        `Unknown channel "${expectedChannel}". Run \`openclaw channels list --all\` to see configured and installable channels.`,
+        interactive
+          ? `Unknown channel "${expectedChannel}". Run \`openclaw channels list --all\` to see configured and installable channels.`
+          : expect.stringContaining("channels add --channel <id> --use-env"),
       );
       expect(runtime.exit).toHaveBeenCalledWith(1);
       expect(runtime.log).not.toHaveBeenCalled();
