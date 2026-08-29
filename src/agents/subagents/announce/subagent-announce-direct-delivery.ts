@@ -222,7 +222,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         disposition: "intentional_non_delivery",
       };
     }
-    const tryTextCompletionDirectDelivery = () =>
+    const tryTextCompletionDirectDelivery = (agentResult?: { payloads?: unknown }) =>
       deliverCompletionDirect({
         cfg,
         requesterSessionKey: canonicalRequesterSessionKey,
@@ -230,6 +230,7 @@ export async function sendSubagentAnnounceDirectly(params: {
         directIdempotencyKey: params.directIdempotencyKey,
         deliveryTarget,
         internalEvents: params.internalEvents,
+        agentResult,
         onDeliveryResult: params.onDeliveryResult,
         isSourceSessionEffectsAllowed: isCompletionDeliveryAllowed,
       });
@@ -478,7 +479,7 @@ export async function sendSubagentAnnounceDirectly(params: {
       !hasVisibleNonSilentGatewayPayload &&
       !hasMessagingToolDelivery
     ) {
-      const textDelivery = await tryTextCompletionDirectDelivery();
+      const textDelivery = await tryTextCompletionDirectDelivery(directAnnounceResult ?? undefined);
       if (textDelivery) {
         return textDelivery;
       }
@@ -521,7 +522,9 @@ export async function sendSubagentAnnounceDirectly(params: {
         };
       }
       if (subagentDirectMessageCompletionRequiresMessageTool) {
-        const textDelivery = await tryTextCompletionDirectDelivery();
+        const textDelivery = await tryTextCompletionDirectDelivery(
+          directAnnounceResult ?? undefined,
+        );
         if (textDelivery) {
           return textDelivery;
         }

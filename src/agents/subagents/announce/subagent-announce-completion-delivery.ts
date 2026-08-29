@@ -3,7 +3,9 @@
  */
 import { sanitizePendingFinalDeliveryText } from "../../../auto-reply/reply/pending-final-delivery.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { normalizeOutboundReplyPayloadCore } from "../../../infra/outbound/reply-payload-normalize.js";
 import { sourceDeliveryTargetsMatch } from "../../../infra/outbound/source-delivery-plan.js";
+import { splitMediaFromOutput } from "../../../media/parse.js";
 import { deriveSessionChatTypeFromKey } from "../../../sessions/session-chat-type-shared.js";
 import { isNonTerminalAgentRunStatus } from "../../../shared/agent-run-status.js";
 import { sanitizeAgentRunTerminalReplyText } from "../../agent-run-terminal-reply.js";
@@ -13,6 +15,7 @@ import {
   hasUnaccountedMessagingToolAggregateEvidence,
   resolveExplicitFinalSourceReplyDeliveryEvidence,
 } from "../../embedded-agent-runner/delivery-evidence.js";
+import { hasVisibleAgentPayload } from "../../embedded-agent-runner/message-visibility.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import {
   sourceOwnerChangedResult,
@@ -47,21 +50,67 @@ export function isDirectMessageDeliveryTarget(
   return deriveSessionChatTypeFromKey(requesterSessionKey) === "direct";
 }
 
-function resolveTextCompletionDirectFallback(events: readonly AgentInternalEvent[] | undefined) {
-  for (let index = (events?.length ?? 0) - 1; index >= 0; index -= 1) {
-    const event = events?.[index];
-    if (event?.type !== "task_completion" || event.source !== "subagent") {
+type DirectCompletionContent = { content: string; mediaUrls: string[] };
+
+function collectDirectCompletionContent(params: {
+  agentResult?: { payloads?: unknown };
+  events: readonly AgentInternalEvent[] | undefined;
+}): DirectCompletionContent | undefined {
+  const collect = (payloads: readonly unknown[]): DirectCompletionContent | undefined => {
+    const textParts: string[] = [];
+    const mediaUrls = new Set<string>();
+    for (const payload of payloads) {
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        continue;
+      }
+      // SAFETY: The object/array guard above narrows payload to a plain record boundary.
+      const record = payload as Record<string, unknown>;
+      if (
+        !hasVisibleAgentPayload(
+          { payloads: [record] },
+          {
+            includeErrorPayloads: false,
+            includeReasoningPayloads: false,
+            includeSilentReplyPayloads: false,
+            requireTerminalContent: true,
+          },
+        )
+      ) {
+        continue;
+      }
+      const normalized = normalizeOutboundReplyPayloadCore(record);
+      const parsed = splitMediaFromOutput(normalized.text ?? "");
+      const text = sanitizeAgentRunTerminalReplyText(sanitizePendingFinalDeliveryText(parsed.text));
+      if (text && text !== "(no output)") {
+        textParts.push(text);
+      }
+      for (const mediaUrl of [
+        ...(normalized.mediaUrl ? [normalized.mediaUrl] : []),
+        ...(normalized.mediaUrls ?? []),
+        ...(parsed.mediaUrls ?? []),
+      ]) {
+        mediaUrls.add(mediaUrl);
+      }
+    }
+    return textParts.length > 0 || mediaUrls.size > 0
+      ? { content: textParts.join("\n\n"), mediaUrls: [...mediaUrls] }
+      : undefined;
+  };
+
+  const payloadContent = Array.isArray(params.agentResult?.payloads)
+    ? collect(params.agentResult.payloads)
+    : undefined;
+  if (payloadContent && payloadContent.mediaUrls.length > 0) {
+    return payloadContent;
+  }
+  for (let index = (params.events?.length ?? 0) - 1; index >= 0; index -= 1) {
+    const event = params.events?.[index];
+    if (event?.type !== "task_completion" || event.source !== "subagent" || event.status !== "ok") {
       continue;
     }
-    if (event.status !== "ok") {
-      continue;
-    }
-    const result =
-      typeof event.result === "string"
-        ? sanitizeAgentRunTerminalReplyText(sanitizePendingFinalDeliveryText(event.result))
-        : "";
-    if (result && result !== "(no output)") {
-      return result;
+    const eventContent = collect([{ text: event.result }]);
+    if (eventContent) {
+      return eventContent;
     }
   }
   return undefined;
@@ -94,12 +143,16 @@ export async function deliverCompletionDirect(params: {
     threadId?: string;
   };
   internalEvents?: readonly AgentInternalEvent[];
+  agentResult?: { payloads?: unknown };
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void;
   isSourceSessionEffectsAllowed?: () => boolean;
 }): Promise<SubagentAnnounceDeliveryResult | undefined> {
-  const content = resolveTextCompletionDirectFallback(params.internalEvents);
+  const completionContent = collectDirectCompletionContent({
+    agentResult: params.agentResult,
+    events: params.internalEvents,
+  });
   if (
-    !content ||
+    !completionContent ||
     !params.deliveryTarget.deliver ||
     !params.deliveryTarget.channel ||
     !params.deliveryTarget.to ||
@@ -130,7 +183,8 @@ export async function deliverCompletionDirect(params: {
       requesterSessionKey: params.requesterSessionKey,
       agentId,
       conversationType: "direct",
-      content,
+      content: completionContent.content,
+      ...(completionContent.mediaUrls.length > 0 ? { mediaUrls: completionContent.mediaUrls } : {}),
       idempotencyKey,
       onDeliveryResult: () => {
         if (committedDelivery) {
