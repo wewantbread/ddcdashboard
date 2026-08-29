@@ -116,6 +116,33 @@ export function serializeSessionCleanupResult(params: {
         : single;
     }
   }
+  // Zero-summary single-target partial failure: the target failed before any summary
+  // was produced (e.g., during lifecycle/artifact/disk-budget). Build a minimal synthetic
+  // summary from the partialError so the scalar shape is retained and the failure is
+  // signaled via partialError (instead of emitting an allAgents envelope that misreports
+  // the requested scope).
+  if (!params.allAgents && summaries.length === 0 && params.partialError) {
+    const synthetic: SessionCleanupSummary = {
+      agentId: params.partialError.failingAgentId,
+      storePath: resolveSqliteTargetFromSessionStorePath(params.partialError.failingStorePath, {
+        agentId: params.partialError.failingAgentId,
+      }).path,
+      mode: params.mode,
+      dryRun: params.dryRun,
+      beforeCount: 0,
+      afterCount: 0,
+      missing: 0,
+      dmScopeRetired: 0,
+      modelRunPruned: 0,
+      pruned: 0,
+      capped: 0,
+      archived: 0,
+      unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+      diskBudget: null,
+      wouldMutate: false,
+    };
+    return { ...synthetic, partialError: resolvePartialErrorDetail(params.partialError) };
+  }
   return {
     allAgents: true,
     mode: params.mode,

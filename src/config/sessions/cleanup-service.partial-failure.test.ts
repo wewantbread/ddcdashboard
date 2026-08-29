@@ -272,6 +272,31 @@ describe("serializeSessionCleanupResult single-store shape", () => {
       }),
     );
   });
+
+  it("returns a scalar with synthetic summary and partialError for zero-summary single-target failure", () => {
+    const partialError = {
+      failingAgentId: "main",
+      failingStorePath: "/tmp/openclaw-test-store",
+      message: "lifecycle commit failed",
+    };
+    const serialized = serializeSessionCleanupResult({
+      mode: "enforce",
+      dryRun: false,
+      allAgents: false,
+      summaries: [],
+      partialError,
+    });
+    expect((serialized as { allAgents?: boolean }).allAgents).toBeUndefined();
+    expect((serialized as { partialError?: unknown }).partialError).toMatchObject({
+      failingAgentId: "main",
+      failingStorePath: "/tmp/openclaw-test-store.sqlite",
+      message: "lifecycle commit failed",
+    });
+    const scalar = serialized as SessionCleanupSummary;
+    expect(scalar.agentId).toBe("main");
+    expect(scalar.beforeCount).toBe(0);
+    expect(scalar.wouldMutate).toBe(false);
+  });
 });
 
 describe("isSessionsCleanupResult closed-shape guard", () => {

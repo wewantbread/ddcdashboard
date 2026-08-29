@@ -300,6 +300,13 @@ function asGatewayPartialCleanupResult(error: unknown): SessionsCleanupResult | 
   if (!isSessionsCleanupResult(details)) {
     return null;
   }
+  // Only treat as a partial result if the Gateway explicitly carried a partialError marker.
+  // A bare successful summary in a rejected response would otherwise be rendered as success
+  // with exit 0 (silent failure). The partialError field is the authoritative signal that
+  // the RPC failed after committing some work.
+  if (!("partialError" in details)) {
+    return null;
+  }
   return details;
 }
 

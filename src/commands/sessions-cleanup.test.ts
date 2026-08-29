@@ -885,4 +885,83 @@ describe("sessionsCleanupCommand", () => {
     expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
     process.exitCode = prevExit;
   });
+
+  it("rethrows when a rejected Gateway response carries a bare scalar summary without partialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayBareScalar = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 3,
+        afterCount: 1,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 2,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: true,
+        applied: true,
+        appliedCount: 1,
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayBareScalar);
+
+    const { runtime } = makeRuntime();
+    await expect(
+      sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime),
+    ).rejects.toBe(gatewayBareScalar);
+
+    expect(process.exitCode).toBe(0);
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
+  });
+
+  it("exits nonzero for a zero-summary one-target Gateway partial failure with synthetic summary", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayZeroSummary = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 0,
+        afterCount: 0,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 0,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: false,
+        partialError: {
+          failingAgentId: "main",
+          failingStorePath: "/resolved/openclaw-agent.sqlite",
+          message: "lifecycle commit failed",
+        },
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayZeroSummary);
+
+    const { runtime, logs } = makeRuntime();
+    await sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime);
+
+    expect(process.exitCode).toBe(1);
+    expect(logs).toHaveLength(1);
+    const parsed = JSON.parse(logs[0] ?? "{}");
+    expect(parsed.agentId).toBe("main");
+    expect(parsed.partialError).toMatchObject({
+      failingAgentId: "main",
+      message: "lifecycle commit failed",
+    });
+    expect(parsed.beforeCount).toBe(0);
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
+  });
 });
