@@ -2,6 +2,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { ApplicationContext, ApplicationGateway } from "../app/context.ts";
 import { i18n } from "../i18n/index.ts";
 import {
@@ -19,6 +20,7 @@ type RuntimeConfigHarness = {
   patch: ReturnType<
     typeof vi.fn<(options: { raw: Record<string, unknown>; note: string }) => Promise<boolean>>
   >;
+  refresh: ReturnType<typeof vi.fn<() => Promise<void>>>;
 };
 
 function createGateway(options: { connected?: boolean; admin?: boolean } = {}): ApplicationGateway {
@@ -59,6 +61,7 @@ function createRuntimeConfig(config: Record<string, unknown>): RuntimeConfigHarn
   const patch = vi.fn<
     (options: { raw: Record<string, unknown>; note: string }) => Promise<boolean>
   >(async () => true);
+  const refresh = vi.fn(async () => undefined);
   const listeners = new Set<() => void>();
   const state = {
     configSnapshot: { sourceConfig: config, hash: "base" },
@@ -83,13 +86,13 @@ function createRuntimeConfig(config: Record<string, unknown>): RuntimeConfigHarn
     ensureLoaded,
     patch,
     patchFromSnapshot,
-    refresh: vi.fn(async () => undefined),
+    refresh,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
   } as unknown as ApplicationContext["runtimeConfig"];
-  return { runtimeConfig, ensureLoaded, patch };
+  return { runtimeConfig, ensureLoaded, patch, refresh };
 }
 
 async function mountCard(
@@ -413,5 +416,60 @@ describe("openclaw-mcp-servers-card", () => {
     expect(controls.every((button) => button.title.includes("operator.admin"))).toBe(true);
     actionButton(card, "Disable").click();
     expect(harness.patch).not.toHaveBeenCalled();
+  });
+
+  it("retires pending mutation state when the runtime config source changes", async () => {
+    const pending = createDeferred<boolean>();
+    const { card, provider, harness } = await mountCard({
+      config: { mcp: { servers: { docs: { url: "https://mcp.example.com/mcp" } } } },
+    });
+    harness.patch.mockReturnValueOnce(pending.promise);
+    actionButton(card, "Disable").click();
+    await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
+
+    const replacement = createRuntimeConfig({
+      mcp: { servers: { local: { command: "node" } } },
+    });
+    provider.setContext({
+      gateway: createGateway(),
+      runtimeConfig: replacement.runtimeConfig,
+      basePath: "",
+    } as unknown as ApplicationContext);
+    await waitForFast(() => expect(card.querySelector('[data-mcp-name="local"]')).not.toBeNull());
+    const replacementToggle = expectDefined(
+      card.querySelector<HTMLButtonElement>(
+        '[data-mcp-name="local"] button.btn:not(.mcp-server-remove)',
+      ),
+      "replacement MCP toggle",
+    );
+    const replacementControlEnabled = !replacementToggle.disabled;
+
+    pending.resolve(true);
+    await waitForFast(() => expect(harness.refresh).toHaveBeenCalledOnce());
+    await card.updateComplete;
+
+    expect({
+      replacementControlEnabled,
+      staleMessage: card.querySelector('[role="status"]')?.textContent ?? null,
+    }).toEqual({ replacementControlEnabled: true, staleMessage: null });
+  });
+
+  it("does not restore mutation feedback that settled while disconnected", async () => {
+    const pending = createDeferred<boolean>();
+    const { card, provider, harness } = await mountCard({
+      config: { mcp: { servers: { docs: { url: "https://mcp.example.com/mcp" } } } },
+    });
+    harness.patch.mockReturnValueOnce(pending.promise);
+    actionButton(card, "Disable").click();
+    await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
+
+    card.remove();
+    pending.resolve(true);
+    await waitForFast(() => expect(harness.refresh).toHaveBeenCalledOnce());
+    provider.append(card);
+    await card.updateComplete;
+
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    expect(actionButton(card, "Disable").disabled).toBe(false);
   });
 });
