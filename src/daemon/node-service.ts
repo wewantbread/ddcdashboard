@@ -9,10 +9,17 @@ function withNodeServiceEnv(
 ): Record<string, string | undefined> {
   // Node services reuse gateway platform installers; env overrides select the
   // node-specific labels, logs, task script, and service marker.
-  return {
+  const merged = {
     ...env,
     ...resolveNodeServiceIdentityEnvironment(),
   };
+  // On macOS, fence Node's compile cache so the LaunchAgent does not inherit
+  // an unsuitable NODE_COMPILE_CACHE from the launchd manager (#130020).
+  if (process.platform === "darwin") {
+    delete merged.NODE_COMPILE_CACHE;
+    merged.NODE_DISABLE_COMPILE_CACHE = "1";
+  }
+  return merged;
 }
 
 function withNodeInstallEnv(args: GatewayServiceInstallArgs): GatewayServiceInstallArgs {
