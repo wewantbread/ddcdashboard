@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { SessionsCleanupPartialError } from "../config/sessions.js";
 import type { SessionCleanupSummary, SessionStoreTarget } from "../config/sessions.js";
+import type { SessionsCleanupOptions } from "../config/sessions.js";
 import { GatewayTransportError } from "../gateway/transport-error.js";
 import type { RuntimeEnv } from "../runtime.js";
-import type { SessionsCleanupOptions } from "./sessions-cleanup.js";
 
 const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(),
