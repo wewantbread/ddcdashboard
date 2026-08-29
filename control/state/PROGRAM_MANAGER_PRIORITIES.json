@@ -1,0 +1,7 @@
+{
+  "priorities": [],
+  "verificationStatus": "unknown",
+  "lastVerifiedAt": null,
+  "source": "No approved trusted truth source assigned",
+  "stalenessPolicy": "Unknown until priorities are verified from an approved source."
+}

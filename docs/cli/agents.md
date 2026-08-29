@@ -73,6 +73,20 @@ Options: `--force`, `--json`.
 - When the Gateway is reachable, deletion routes through the Gateway so config and session-store cleanup share the same writer as runtime traffic. If the Gateway is unreachable, the CLI falls back to the offline local path and removes the agent's scheduled jobs transactionally. If Gateway credentials are unavailable before the CLI can test reachability, deletion still falls back locally but warns that cron cleanup was skipped because a live scheduler may own the store.
 - If another agent's workspace is the same path, inside this workspace, or contains this workspace, the workspace is retained, and `--json` reports `workspaceRetained`, `workspaceRetainedReason`, and `workspaceSharedWith`.
 
+## Agent role evals
+
+OpenClaw includes a reusable agent role eval harness for local operator checks:
+
+```bash
+node scripts/agent-role-eval.mjs
+node scripts/agent-role-eval.mjs --contracts-only
+node scripts/agent-role-eval.mjs --live -- --agent judge --timeout 180
+node scripts/agent-role-eval.mjs --live -- --model ollama/glm-4.7-flash
+node scripts/agent-role-eval.mjs --live --self-contained -- --agent judge --model ollama/qwen3.5:4b
+```
+
+`node scripts/agent-role-eval.mjs` is deterministic and checks configured agents against role contracts, model references, workspace identity docs, runtime directories, and tool-policy sanity. `node scripts/agent-role-eval.mjs --contracts-only` validates only the checked-in role contract catalog, so it can run in shared local and CI gates without private operator state. `node scripts/agent-role-eval.mjs --live` is opt-in and runs real local agent turns against the same contracts. `node scripts/agent-role-eval.mjs --live --self-contained` creates temporary workspaces, agent runtime directories, and config for the selected contracts before running the live turn, which makes opt-in local/manual proof independent of private operator state. Scheduled CI runs the static catalog only and never hydrates live provider or Codex credentials. The self-contained live fixture pins low-variance stream params (`temperature: 0`, `maxTokens: 64`) so small local models stay focused on the strict five-line role contract. Set `OPENCLAW_AGENT_ROLE_EVAL_REPORT_DIR` when running the workflow helper to write summary JSON, summary Markdown, per-agent JSON results, and raw stdout/stderr logs for durable evidence; run `node scripts/agent-role-eval-workflow.mjs verify-report <dir>` with the same live-agent/model/timeout environment to fail closed on missing, malformed, incomplete, mismatched, or failed reports.
+
 ## Routing bindings
 
 Use routing bindings to pin inbound channel traffic to a specific agent.

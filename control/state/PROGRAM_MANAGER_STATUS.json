@@ -1,0 +1,8 @@
+{
+  "status": "UNKNOWN",
+  "completionClaim": "Unknown",
+  "verificationStatus": "unknown",
+  "lastVerifiedAt": null,
+  "source": "No approved trusted truth source assigned",
+  "stalenessPolicy": "Do not claim current status from this fixture."
+}

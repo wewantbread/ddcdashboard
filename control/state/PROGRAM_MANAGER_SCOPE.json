@@ -1,0 +1,8 @@
+{
+  "objective": "Coordinate evidence-backed planning and status reporting.",
+  "scope": ["planning", "status", "verification planning", "structured handoffs"],
+  "verificationStatus": "unknown",
+  "lastVerifiedAt": null,
+  "source": "No approved trusted truth source assigned",
+  "stalenessPolicy": "Treat status as Unknown until a trusted source is verified."
+}

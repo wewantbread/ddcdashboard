@@ -1,0 +1,7 @@
+{
+  "blockers": [],
+  "verificationStatus": "unknown",
+  "lastVerifiedAt": null,
+  "source": "No approved trusted truth source assigned",
+  "stalenessPolicy": "An empty list is not proof that no blockers exist."
+}
