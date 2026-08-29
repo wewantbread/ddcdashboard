@@ -1,6 +1,12 @@
 // Sessions cleanup tests cover stale session cleanup and runtime output.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
+import {
+  SessionsCleanupPartialError,
+  type SessionCleanupSummary,
+  type SessionStoreTarget,
+  type SessionsCleanupOptions,
+} from "../config/sessions.js";
 import { GatewayTransportError } from "../gateway/transport-error.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -26,7 +32,8 @@ vi.mock("./session-store-targets.js", () => ({
   resolveSessionStoreTargetsOrExit: mocks.resolveSessionStoreTargetsOrExit,
 }));
 
-vi.mock("../config/sessions.js", () => ({
+vi.mock("../config/sessions.js", async () => ({
+  ...(await vi.importActual<typeof import("../config/sessions.js")>("../config/sessions.js")),
   resolveSessionCleanupAction: mocks.resolveSessionCleanupAction,
   runSessionsCleanup: mocks.runSessionsCleanup,
   serializeSessionCleanupResult: mocks.serializeSessionCleanupResult,
@@ -782,5 +789,179 @@ describe("sessionsCleanupCommand", () => {
         },
       ],
     });
+  });
+
+  it("exits nonzero and surfaces partialError when runSessionsCleanup throws SessionsCleanupPartialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    mocks.callGateway.mockImplementation(() => {
+      // Force the local path: a pre-connect close means the Gateway never ran it.
+      throw gatewayTransportError("closed");
+    });
+    mocks.runSessionsCleanup.mockImplementation(() => {
+      throw new SessionsCleanupPartialError({
+        mode: "warn",
+        previewResults: [],
+        appliedSummaries: [
+          {
+            agentId: "main",
+            storePath: "/resolved/main-sessions.sqlite",
+            mode: "warn",
+            dryRun: false,
+            beforeCount: 3,
+            afterCount: 2,
+            missing: 0,
+            dmScopeRetired: 0,
+            modelRunPruned: 0,
+            pruned: 1,
+            capped: 0,
+            unreferencedArtifacts: { pruned: 0, byKind: {} },
+            diskBudget: null,
+            wouldMutate: true,
+          } as unknown as SessionCleanupSummary,
+        ],
+        failingTarget: {
+          agentId: "work",
+          storePath: "/resolved/work-sessions.sqlite",
+        } as unknown as SessionStoreTarget,
+        cause: new Error("disk failure"),
+        lifecycleCommitted: true,
+      });
+    });
+    mocks.resolveSessionStoreTargetsOrExit.mockReturnValue({ stores: [] } as never);
+    mocks.loadConfig.mockReturnValue({} as never);
+
+    const { runtime } = makeRuntime();
+    await sessionsCleanupCommand({ json: true } as SessionsCleanupOptions, runtime);
+
+    expect(mocks.serializeSessionCleanupResult).toHaveBeenCalledTimes(1);
+    const callArg = mocks.serializeSessionCleanupResult.mock.calls[0]?.[0] as {
+      partialError?: { failingAgentId: string };
+    };
+    expect(callArg.partialError).toBeDefined();
+    expect(callArg.partialError?.failingAgentId).toBe("work");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = prevExit;
+  });
+
+  it("exits nonzero when a single-target Gateway partial failure carries a scalar summary with partialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayPartialError = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 3,
+        afterCount: 1,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 2,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: true,
+        applied: true,
+        appliedCount: 1,
+        partialError: {
+          failingAgentId: "work",
+          failingStorePath: "/resolved/work-sessions.work.sqlite",
+          message: "disk budget overage",
+        },
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayPartialError);
+
+    const { runtime, logs } = makeRuntime();
+    await sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime);
+
+    expect(process.exitCode).toBe(1);
+    expect(logs).toHaveLength(1);
+    const parsed = JSON.parse(logs[0] ?? "{}");
+    expect(parsed.agentId).toBe("main");
+    expect(parsed.partialError).toMatchObject({ failingAgentId: "work" });
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
+  });
+
+  it("rethrows when a rejected Gateway response carries a bare scalar summary without partialError", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayBareScalar = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 3,
+        afterCount: 1,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 2,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: true,
+        applied: true,
+        appliedCount: 1,
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayBareScalar);
+
+    const { runtime } = makeRuntime();
+    await expect(
+      sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime),
+    ).rejects.toBe(gatewayBareScalar);
+
+    expect(process.exitCode).toBe(0);
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
+  });
+
+  it("exits nonzero for a zero-summary one-target Gateway partial failure with synthetic summary", async () => {
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const gatewayZeroSummary = Object.assign(new Error("partial sessions cleanup"), {
+      details: {
+        agentId: "main",
+        storePath: "/resolved/openclaw-agent.sqlite",
+        mode: "enforce",
+        dryRun: false,
+        beforeCount: 0,
+        afterCount: 0,
+        missing: 0,
+        dmScopeRetired: 0,
+        modelRunPruned: 0,
+        pruned: 0,
+        capped: 0,
+        unreferencedArtifacts: { scannedFiles: 0, removedFiles: 0, freedBytes: 0, olderThanMs: 0 },
+        diskBudget: null,
+        wouldMutate: false,
+        partialError: {
+          failingAgentId: "main",
+          failingStorePath: "/resolved/openclaw-agent.sqlite",
+          message: "lifecycle commit failed",
+        },
+      },
+    });
+    mocks.callGateway.mockRejectedValue(gatewayZeroSummary);
+
+    const { runtime, logs } = makeRuntime();
+    await sessionsCleanupCommand({ json: true, enforce: true } as SessionsCleanupOptions, runtime);
+
+    expect(process.exitCode).toBe(1);
+    expect(logs).toHaveLength(1);
+    const parsed = JSON.parse(logs[0] ?? "{}");
+    expect(parsed.agentId).toBe("main");
+    expect(parsed.partialError).toMatchObject({
+      failingAgentId: "main",
+      message: "lifecycle commit failed",
+    });
+    expect(parsed.beforeCount).toBe(0);
+    expect(mocks.runLocalSessionsCleanup).not.toHaveBeenCalled();
+    process.exitCode = prevExit;
   });
 });

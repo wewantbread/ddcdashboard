@@ -12,8 +12,11 @@ import {
   resolveSessionCleanupAction,
   runSessionsCleanup,
   serializeSessionCleanupResult,
+  SessionsCleanupPartialError,
+  isSessionsCleanupResult,
   type SessionCleanupSummary,
   type SessionsCleanupOptions,
+  type SessionsCleanupPartialErrorDetail,
   type SessionsCleanupResult,
 } from "../config/sessions.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -274,8 +277,37 @@ async function maybeRunGatewayCleanup(
       // mutation; timeouts and established closes must not replay it locally.
       return { delegated: false };
     }
+    const partialCleanup = asGatewayPartialCleanupResult(error);
+    if (partialCleanup) {
+      // The Gateway rejects partial cleanup with ok:false and carries the typed
+      // partial result in the error details; surface it like the local path.
+      return { delegated: true, result: partialCleanup };
+    }
     throw error;
   }
+}
+
+/** Extracts a typed partial-cleanup result from a rejected Gateway response. */
+function asGatewayPartialCleanupResult(error: unknown): SessionsCleanupResult | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  // Gateway error envelopes are untyped; validate the closed SessionsCleanupResult shape
+  // before rendering. Nonconforming or older responses return null so the caller rethrows
+  // the original error instead of rendering a garbage partial result.
+  // SAFETY: error envelopes are untyped `unknown`; only the validated `details` field is read.
+  const details = (error as { details?: unknown }).details;
+  if (!isSessionsCleanupResult(details)) {
+    return null;
+  }
+  // Only treat as a partial result if the Gateway explicitly carried a partialError marker.
+  // A bare successful summary in a rejected response would otherwise be rendered as success
+  // with exit 0 (silent failure). The partialError field is the authoritative signal that
+  // the RPC failed after committing some work.
+  if (!("partialError" in details)) {
+    return null;
+  }
+  return details;
 }
 
 /** Runs session cleanup, optionally using the live gateway for active stores. */
@@ -284,8 +316,13 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
   if (gatewayCleanup.delegated) {
     // The Gateway owns this path. Preserve its syntax because resolving a remote
     // Windows path on a POSIX client (or vice versa) would fabricate a local path.
+    const partialErrObj =
+      "partialError" in gatewayCleanup.result ? gatewayCleanup.result.partialError : null;
     if (opts.json) {
       writeRuntimeJson(runtime, gatewayCleanup.result);
+      if (partialErrObj) {
+        process.exitCode = 1;
+      }
       return;
     }
     renderAppliedSummaries({
@@ -294,6 +331,11 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
       runtime,
       locallyOwned: false,
     });
+    if (partialErrObj) {
+      const msg = partialErrObj.message || "Session cleanup failed partially on Gateway.";
+      runtime.error(`[error] ${msg}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -312,14 +354,37 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
     return;
   }
   const cleanupParams = { cfg, opts, targets };
-  let cleanupResult;
-  if (opts.dryRun) {
-    cleanupResult = await runSessionsCleanup(cleanupParams);
-  } else {
-    const { runLocalSessionsCleanup } = await import("./sessions-cleanup.runtime.js");
-    cleanupResult = await runLocalSessionsCleanup(cleanupParams, runtime);
+  let mode: SessionCleanupSummary["mode"];
+  let previewResults: Awaited<ReturnType<typeof runSessionsCleanup>>["previewResults"];
+  let appliedSummaries: Awaited<ReturnType<typeof runSessionsCleanup>>["appliedSummaries"];
+  let partialError: SessionsCleanupPartialErrorDetail | null = null;
+
+  try {
+    let cleanupResult;
+    if (opts.dryRun) {
+      cleanupResult = await runSessionsCleanup(cleanupParams);
+    } else {
+      const { runLocalSessionsCleanup } = await import("./sessions-cleanup.runtime.js");
+      cleanupResult = await runLocalSessionsCleanup(cleanupParams, runtime);
+    }
+    mode = cleanupResult.mode;
+    previewResults = cleanupResult.previewResults;
+    appliedSummaries = cleanupResult.appliedSummaries;
+  } catch (error) {
+    if (error instanceof SessionsCleanupPartialError) {
+      partialError = {
+        failingAgentId: error.failingTarget.agentId,
+        failingStorePath: error.failingTarget.storePath,
+        message: error.message,
+        lifecycleCommitted: error.lifecycleCommitted,
+      };
+      mode = error.mode;
+      previewResults = error.previewResults;
+      appliedSummaries = error.appliedSummaries;
+    } else {
+      throw error;
+    }
   }
-  const { mode, previewResults, appliedSummaries } = cleanupResult;
 
   if (opts.dryRun) {
     if (opts.json) {
@@ -328,6 +393,7 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
         serializeSessionCleanupResult({
           mode,
           dryRun: true,
+          allAgents: opts.allAgents ?? false,
           summaries: previewResults.map((result) => toDisplayedCleanupSummary(result.summary)),
         }),
       );
@@ -355,11 +421,25 @@ export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runti
       serializeSessionCleanupResult({
         mode,
         dryRun: false,
+        allAgents: opts.allAgents ?? false,
         summaries: appliedSummaries.map(toDisplayedCleanupSummary),
+        ...(partialError ? { partialError } : {}),
       }),
     );
+    if (partialError) {
+      process.exitCode = 1;
+    }
     return;
   }
 
-  renderAppliedSummaries({ summaries: appliedSummaries, runtime, locallyOwned: true });
+  if (appliedSummaries.length > 0) {
+    renderAppliedSummaries({ summaries: appliedSummaries, runtime, locallyOwned: true });
+  }
+  if (partialError) {
+    if (appliedSummaries.length > 0) {
+      runtime.log("");
+    }
+    runtime.error(`[error] ${partialError.message}`);
+    process.exitCode = 1;
+  }
 }

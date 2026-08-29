@@ -19,6 +19,7 @@ import {
   resolveSessionStorePathCore,
   runSessionsCleanup,
   serializeSessionCleanupResult,
+  SessionsCleanupPartialError,
   type SessionEntry,
 } from "../../config/sessions.js";
 import { listSessionEntriesReadOnly } from "../../config/sessions/session-accessor.js";
@@ -78,6 +79,7 @@ import {
   createSessionPlacementBatchProjector,
   readSessionPlacementFields,
 } from "./session-placement-read-projection.js";
+import { respondSessionsCleanupPartialFailure } from "./sessions-cleanup-partial.js";
 import { respondWithCachedSessionList } from "./sessions-list-cache.js";
 import { resolveSessionSearchScope } from "./sessions-search-scope.js";
 import { loadSessionEntriesForTarget, requireSessionKey } from "./sessions-shared.js";
@@ -510,6 +512,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       const result = serializeSessionCleanupResult({
         mode,
         dryRun: false,
+        allAgents: params.allAgents ?? false,
         summaries: appliedSummaries,
       });
       respond(true, result, undefined);
@@ -522,6 +525,15 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         }
       }
     } catch (error) {
+      if (error instanceof SessionsCleanupPartialError) {
+        respondSessionsCleanupPartialFailure({
+          error,
+          allAgents: params.allAgents ?? false,
+          context,
+          respond,
+        });
+        return;
+      }
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));
     }
   },
