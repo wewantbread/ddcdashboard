@@ -82,6 +82,7 @@ export type CoreHealthCheckDeps = {
   readonly detectUnavailableSkills: typeof detectUnavailableSkillsWithRuntime;
   readonly collectSecurityWarnings: (
     cfg: OpenClawConfig,
+    options?: { env?: NodeJS.ProcessEnv; allowExecSecretRefs?: boolean },
   ) => Promise<readonly SecurityAuditFinding[]>;
   readonly collectWorkspaceSuggestionNotes: (workspaceDir: string) => Promise<readonly string[]>;
   readonly collectRuntimeToolSchemaFindings: (
@@ -109,9 +110,10 @@ async function detectUnavailableSkillsWithRuntime(
 
 async function collectSecurityWarningsWithRuntime(
   cfg: OpenClawConfig,
+  options?: { env?: NodeJS.ProcessEnv; allowExecSecretRefs?: boolean },
 ): Promise<readonly SecurityAuditFinding[]> {
   const { collectSecurityWarnings } = await import("../commands/doctor-security.js");
-  return collectSecurityWarnings(cfg);
+  return collectSecurityWarnings(cfg, options?.env, options);
 }
 
 async function collectWorkspaceSuggestionNotesWithRuntime(
@@ -833,7 +835,10 @@ function createSecurityCheck(deps: CoreHealthCheckDeps): HealthCheck {
     description: "Security posture checks produce structured findings.",
     source: "doctor",
     async detect(ctx) {
-      const findings = await deps.collectSecurityWarnings(ctx.cfg);
+      const findings = await deps.collectSecurityWarnings(ctx.cfg, {
+        env: ctx.env,
+        allowExecSecretRefs: ctx.allowExecSecretRefs,
+      });
       return findings.map(securityAuditFindingToHealthFinding);
     },
   };

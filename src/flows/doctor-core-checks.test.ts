@@ -592,6 +592,29 @@ describe("CORE_HEALTH_CHECKS", () => {
     ]);
   });
 
+  it("forwards environment and exec permission to security checks", async () => {
+    const collectSecurityWarnings = vi.fn(async () => []);
+    const check = getCheck(
+      createCoreHealthChecks(createDeps({ collectSecurityWarnings })),
+      "core/doctor/security",
+    );
+    const env = { OPENCLAW_GATEWAY_PASSWORD: "test-password" };
+    const cfg = { gateway: { auth: { mode: "trusted-proxy" } } } satisfies OpenClawConfig;
+
+    await check.detect({
+      mode: "lint",
+      runtime,
+      cfg,
+      env,
+      allowExecSecretRefs: true,
+    });
+
+    expect(collectSecurityWarnings).toHaveBeenCalledWith(cfg, {
+      env,
+      allowExecSecretRefs: true,
+    });
+  });
+
   it("reports disabled Codex plugin routes as core health findings", async () => {
     const check = getCheck(
       createCoreHealthChecks(createDeps()),

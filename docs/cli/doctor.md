@@ -14,6 +14,8 @@ When Gateway status reports degraded SecretRef owners, doctor prints a **Secret 
 
 When channel ingress events are dead-lettered, doctor names each affected channel account and points to [`openclaw channels dead-letters list`](/cli/channels#inbound-dead-letters) for inspection and recovery.
 
+For a non-loopback Gateway using `gateway.auth.mode="trusted-proxy"`, Doctor reports a network-access warning only after runtime-aligned local checks find the configured bind, host-scoped proxy sources, identity headers, browser origins, and startup authentication internally usable. Incomplete or unusable proxy settings stay critical. Doctor cannot verify that the live proxy overwrites forwarding and identity headers or is the only ingress path, and it does not execute an active exec-backed SecretRef unless you explicitly pass `--allow-exec`.
+
 When the Gateway has exporter health facts, doctor reports the latest trusted
 per-signal state and transport under **Telemetry exporters**. The summary is
 redacted and does not include endpoint values, headers, certificates, payloads,

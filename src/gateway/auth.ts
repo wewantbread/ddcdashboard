@@ -209,17 +209,31 @@ function authorizeTrustedProxy(params: {
   if (!req) {
     return { reason: "trusted_proxy_no_request" };
   }
+  return authorizeTrustedProxyIdentity({
+    remoteAddress: req.socket?.remoteAddress,
+    headers: req.headers,
+    trustedProxies,
+    trustedProxyConfig,
+  });
+}
 
-  const remoteAddr = req.socket?.remoteAddress;
-  if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {
+/** Evaluate trusted-proxy identity facts without requiring a synthetic HTTP request. */
+export function authorizeTrustedProxyIdentity(params: {
+  remoteAddress?: string;
+  headers: IncomingMessage["headers"];
+  trustedProxies?: string[];
+  trustedProxyConfig: GatewayTrustedProxyConfig;
+}): { user: string } | { reason: string } {
+  const { remoteAddress, headers, trustedProxies, trustedProxyConfig } = params;
+  if (!remoteAddress || !isTrustedProxyAddress(remoteAddress, trustedProxies)) {
     return { reason: "trusted_proxy_untrusted_source" };
   }
-  const remoteIsLoopback = isLoopbackAddress(remoteAddr);
+  const remoteIsLoopback = isLoopbackAddress(remoteAddress);
   if (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) {
     return { reason: "trusted_proxy_loopback_source" };
   }
   if (!remoteIsLoopback) {
-    const localInterfaceMatch = resolveLocalInterfaceAddressMatch(remoteAddr);
+    const localInterfaceMatch = resolveLocalInterfaceAddressMatch(remoteAddress);
     if (localInterfaceMatch === undefined) {
       return { reason: "trusted_proxy_local_interface_check_failed" };
     }
@@ -230,14 +244,14 @@ function authorizeTrustedProxy(params: {
 
   const requiredHeaders = trustedProxyConfig.requiredHeaders ?? [];
   for (const header of requiredHeaders) {
-    const value = headerValue(req.headers[normalizeLowercaseStringOrEmpty(header)]);
+    const value = headerValue(headers[normalizeLowercaseStringOrEmpty(header)]);
     if (!value || value.trim() === "") {
       return { reason: `trusted_proxy_missing_header_${header}` };
     }
   }
 
   const userHeaderValue = headerValue(
-    req.headers[normalizeLowercaseStringOrEmpty(trustedProxyConfig.userHeader)],
+    headers[normalizeLowercaseStringOrEmpty(trustedProxyConfig.userHeader)],
   );
   if (!userHeaderValue || userHeaderValue.trim() === "") {
     return { reason: "trusted_proxy_user_missing" };
