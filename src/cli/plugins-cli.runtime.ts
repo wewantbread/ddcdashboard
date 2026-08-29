@@ -220,27 +220,24 @@ async function runPluginsEnableCommandUnlocked(
     );
     return defaultRuntime.exit(1);
   }
-  if (!plugin.enabled) {
-    const { resolvePluginCapabilityConsent } = await import("../plugins/capability-consent.js");
-    const { ManagedPluginLifecycleError } =
-      await import("../plugins/management-lifecycle-error.js");
-    const consent = resolvePluginCapabilityConsentCliOptions({
-      acceptCapabilities: opts.acceptCapabilities,
-      action: "enable",
+  const { resolvePluginCapabilityConsent } = await import("../plugins/capability-consent.js");
+  const { ManagedPluginLifecycleError } = await import("../plugins/management-lifecycle-error.js");
+  const consent = resolvePluginCapabilityConsentCliOptions({
+    acceptCapabilities: opts.acceptCapabilities,
+    action: "enable",
+  });
+  try {
+    await resolvePluginCapabilityConsent({
+      config: cfg,
+      pluginId: id,
+      ...consent,
     });
-    try {
-      await resolvePluginCapabilityConsent({
-        config: cfg,
-        pluginId: id,
-        ...consent,
-      });
-    } catch (error) {
-      if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
-        throw error;
-      }
-      defaultRuntime.error(error.message);
-      return defaultRuntime.exit(1);
+  } catch (error) {
+    if (!(error instanceof ManagedPluginLifecycleError) || !error.capabilityConsent) {
+      throw error;
     }
+    defaultRuntime.error(error.message);
+    return defaultRuntime.exit(1);
   }
 
   const { applySlotSelectionForPlugin } = await loadPluginSlotSelection();
