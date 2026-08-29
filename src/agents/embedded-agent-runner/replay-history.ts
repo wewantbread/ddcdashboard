@@ -2,6 +2,10 @@
  * Sanitizes and validates replayed session history before model calls.
  */
 import { isDeepStrictEqual } from "node:util";
+import {
+  hasOnlyAssistantReasoningContent,
+  isReasoningOnlyLengthAssistantTurn,
+} from "@openclaw/ai/internal/shared";
 import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
 import { asFiniteNumber as toFiniteCostNumber } from "@openclaw/normalization-core/number-coercion";
 import { stripInternalMetadataForDisplay } from "../../auto-reply/reply/display-text-sanitize.js";
@@ -34,10 +38,6 @@ import {
   validateGeminiTurns,
 } from "../embedded-agent-helpers.js";
 import { resolveImageSanitizationLimits } from "../image-sanitization.js";
-import {
-  hasOnlyAssistantReasoningContent,
-  isReasoningOnlyLengthAssistantTurn,
-} from "../replay-turn-classification.js";
 import type { AgentMessage } from "../runtime/index.js";
 import {
   sanitizeToolCallInputs,

@@ -1,3 +1,4 @@
+import { hasOnlyAssistantReasoningContent } from "@openclaw/ai/internal/shared";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { isReplayUnsafeAssistantError } from "../../../llm/utils/retry.js";
@@ -15,7 +16,6 @@ import {
   pickFallbackThinkingLevel,
 } from "../../embedded-agent-helpers.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
-import { hasOnlyAssistantReasoningContent } from "../../replay-turn-classification.js";
 import {
   resolveSessionSuspensionReason,
   type SessionSuspensionParams,
