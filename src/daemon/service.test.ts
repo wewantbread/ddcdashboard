@@ -103,7 +103,11 @@ describe("resolveGatewayService", () => {
       // rejects for the unsupported platform) proves the guard was not applied.
       setPlatform("aix");
       await expect(
-        startGatewayServiceAfterFailedUpdate({ env: process.env, stdout: process.stdout }),
+        startGatewayServiceAfterFailedUpdate({
+          env: process.env,
+          stdout: process.stdout,
+          expectedCommandFingerprint: "stopped-service-pin",
+        }),
       ).rejects.toThrow("Gateway service install not supported on aix");
     } finally {
       envSnapshot.restore();
@@ -139,7 +143,11 @@ describe("resolveGatewayService", () => {
 
     // Failed-update recovery skips the version guard but not ownership.
     await expect(
-      startGatewayServiceAfterFailedUpdate({ env, stdout: process.stdout }),
+      startGatewayServiceAfterFailedUpdate({
+        env,
+        stdout: process.stdout,
+        expectedCommandFingerprint: "stopped-service-pin",
+      }),
     ).rejects.toThrow("gateway lifecycle is managed by an external supervisor");
   });
 
