@@ -37,8 +37,8 @@ import {
   deleteVolatileSessionTab,
   forgetColdNativeActivity,
   normalizeBrowserSessionKey,
-  readColdNativeActivity,
   rememberColdNativeActivity,
+  replaceColdNativeActivityOwner,
   sameVolatileSessionTab,
   type SessionTabInteractionIdentity as InteractionIdentity,
   type VolatileSessionTab as VolatileTab,
@@ -55,6 +55,7 @@ import {
   getBrowserSessionTabStore,
   getOptionalBrowserSessionTabStore,
   parseBrowserSessionTabRecord,
+  retireBrowserSessionTabProcessState,
   sameBrowserSessionTabRecord,
   updateBrowserSessionTab,
   withoutBrowserSessionTabCleanup,
@@ -258,8 +259,7 @@ function deleteDurableCandidate(tab: DurableTab): boolean {
     return Boolean(record && sameBrowserSessionTabRecord(record, tab));
   });
   if (deleted) {
-    clearDurableTabAliases(tab.storageKey);
-    activeDurableStorageKeys().delete(tab.storageKey);
+    retireBrowserSessionTabProcessState(tab);
   }
   return deleted;
 }
@@ -308,9 +308,14 @@ export function trackSessionBrowserTab(params: SessionTabParams & { now?: number
     profileFingerprint: ownership.profileFingerprint,
     browserInstanceFingerprint: ownership.browserInstanceFingerprint,
   });
+  const usesNativeTarget = identity.targetId === ownership.nativeTargetId;
   let persistedProfileAliases: string[] = [];
+  let previousNativeIdentity: string | undefined;
   updateBrowserSessionTab(storageKey, (current) => {
     const existing = parseBrowserSessionTabRecord(current);
+    if (existing?.interactionTargetKind === "native") {
+      previousNativeIdentity = browserSessionTabNativeIdentity(existing);
+    }
     persistedProfileAliases = normalizeProfileAliases([
       ...(existing?.profileAliases ?? []),
       existing?.profile,
@@ -324,11 +329,19 @@ export function trackSessionBrowserTab(params: SessionTabParams & { now?: number
       ...(persistedProfileAliases.length > 0 ? { profileAliases: persistedProfileAliases } : {}),
       profileFingerprint: ownership.profileFingerprint,
       browserInstanceFingerprint: ownership.browserInstanceFingerprint,
-      interactionTargetKind: identity.targetId === ownership.nativeTargetId ? "native" : "opaque",
+      interactionTargetKind: usesNativeTarget ? "native" : "opaque",
       trackedAt: existing?.trackedAt ?? now,
       lastUsedAt: now,
     };
   });
+  const nativeIdentity = usesNativeTarget
+    ? browserSessionTabNativeIdentity({
+        sessionKey: identity.sessionKey,
+        profile,
+        nativeTargetId: ownership.nativeTargetId,
+      })
+    : undefined;
+  replaceColdNativeActivityOwner(previousNativeIdentity, nativeIdentity);
   rememberDurableTabAliases(identity, params.aliases ?? [], storageKey, persistedProfileAliases);
   activeDurableStorageKeys().add(storageKey);
   deleteVolatileMatching(identity);
@@ -405,15 +418,13 @@ export function touchSessionBrowserTab(params: SessionTabParams & { now?: number
       profile: identity.profile,
       nativeTargetId,
     });
-    if (
-      readColdNativeActivity(coldIdentity) !== undefined ||
-      readDurableTabs().some(
-        (tab) =>
-          tab.interactionTargetKind === "native" &&
-          browserSessionTabNativeIdentity(tab) === coldIdentity,
-      )
-    ) {
-      rememberColdNativeActivity(coldIdentity, now);
+    const durableOwnerCount = readDurableTabs().filter(
+      (tab) =>
+        tab.interactionTargetKind === "native" &&
+        browserSessionTabNativeIdentity(tab) === coldIdentity,
+    ).length;
+    if (durableOwnerCount > 0) {
+      rememberColdNativeActivity(coldIdentity, now, durableOwnerCount);
     }
   }
 }
