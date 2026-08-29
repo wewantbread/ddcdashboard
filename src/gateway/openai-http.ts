@@ -11,6 +11,11 @@ import {
 import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
 import { z } from "zod";
 import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
+import {
+  buildAgentRunTerminalOutcomeFromLifecycleEvent,
+  mergeAgentRunTerminalOutcome,
+  type AgentRunTerminalOutcome,
+} from "../agents/agent-run-terminal-outcome.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
@@ -74,11 +79,11 @@ import {
 } from "./http-utils.js";
 import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import { resolveAgentRunUsage } from "./openai-agent-run-usage.js";
+import { resolveOpenAiCompatError, validateOpenAiSamplingParams } from "./openai-compat-errors.js";
 import {
-  isFailedOpenAiAgentRun,
-  resolveOpenAiCompatError,
-  validateOpenAiSamplingParams,
-} from "./openai-compat-errors.js";
+  resolveOpenAiHttpAgentRunTerminalOutcome,
+  resolveOpenAiHttpResultText,
+} from "./openai-http-terminal-outcome.js";
 import {
   isToolChoiceConstraintSatisfied,
   resolveUnsatisfiedToolChoiceMessage,
@@ -720,29 +725,6 @@ function buildAgentPrompt(
   };
 }
 
-function resolveAgentResponseText(result: unknown): string {
-  const payloads = (result as { payloads?: Array<{ text?: string }> } | null)?.payloads;
-  if (!Array.isArray(payloads) || payloads.length === 0) {
-    return "No response from OpenClaw.";
-  }
-  const content = payloads
-    .map((p) => (typeof p.text === "string" ? p.text : ""))
-    .filter(Boolean)
-    .join("\n\n");
-  return content || "No response from OpenClaw.";
-}
-
-function resolveAgentResponseCommentary(result: unknown): string {
-  const payloads = (result as { payloads?: Array<{ text?: string }> } | null)?.payloads;
-  if (!Array.isArray(payloads) || payloads.length === 0) {
-    return "";
-  }
-  return payloads
-    .map((p) => (typeof p.text === "string" ? p.text : ""))
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 type PendingToolCall = {
   id?: unknown;
   name?: unknown;
@@ -1079,11 +1061,15 @@ export async function handleOpenAiHttpRequest(
         return true;
       }
 
-      const meta = (result as { meta?: { error?: unknown; stopReason?: unknown } } | null)?.meta;
-      if (isFailedOpenAiAgentRun(result)) {
-        throw new Error("agent run failed");
+      if (resolveOpenAiHttpAgentRunTerminalOutcome(result).reason !== "completed") {
+        sendJson(res, 502, {
+          error: { message: "internal error", type: "api_error" },
+        });
+        return true;
       }
+
       const usage = resolveChatCompletionUsage(result);
+      const meta = (result as { meta?: unknown } | null)?.meta;
       const { stopReason, pendingToolCalls } = resolveStopReasonAndPendingToolCalls(meta);
 
       // `tool_choice` is an HTTP client-tool contract. The provider may still
@@ -1106,7 +1092,7 @@ export async function handleOpenAiHttpRequest(
       }
 
       if (stopReason === "tool_calls" && pendingToolCalls && pendingToolCalls.length > 0) {
-        const commentary = resolveAgentResponseCommentary(result);
+        const commentary = resolveOpenAiHttpResultText(result);
         sendJson(res, 200, {
           id: runId,
           object: "chat.completion",
@@ -1131,7 +1117,7 @@ export async function handleOpenAiHttpRequest(
         });
         return true;
       }
-      const content = resolveAgentResponseText(result);
+      const content = resolveOpenAiHttpResultText(result) || "No response from OpenClaw.";
 
       sendJson(res, 200, {
         id: runId,
@@ -1180,20 +1166,48 @@ export async function handleOpenAiHttpRequest(
   let bufferedReplaceableAssistantContent = "";
   let finalUsage: OpenAiChatCompletionsUsage | undefined;
   let finalizeRequested = false;
-  let finalizeScheduled = false;
   let finalizeFinishReason: "stop" | "tool_calls" = "stop";
+  let terminalOutcome: AgentRunTerminalOutcome | undefined;
+  let finalizeScheduled = false;
   let resultResolved = false;
   let closed = false;
   let observedTerminalLifecycle = false;
-  let terminalStreamError: { message: string; type: string; code?: string } | undefined;
+  let terminalProtocolError: { message: string; type: string; code?: string } | undefined;
+  let terminalLifecycleError: { message: string; type: string; code?: string } | undefined;
+  // A lifecycle error can describe one failed fallback attempt; only a later
+  // lifecycle end recovers it. Append-only protocol errors remain terminal.
+  let lifecycleErrorRecovered = false;
   let terminalLifecyclePhase: "end" | "error" = "end";
+  let unsubscribe = () => {};
   let stopWatchingDisconnect = () => {};
+  const readActiveStreamError = () =>
+    terminalProtocolError ?? (lifecycleErrorRecovered ? undefined : terminalLifecycleError);
 
-  const maybeFinalize = () => {
-    if (closed || finalizeScheduled || !finalizeRequested) {
+  const finishStreamWithError = (
+    error: { message: string; type: string; code?: string },
+    includeUsage = false,
+  ) => {
+    if (closed) {
       return;
     }
-    if (!resultResolved) {
+    closed = true;
+    stopWatchingDisconnect();
+    unsubscribe();
+    if (includeUsage && streamIncludeUsage && finalUsage) {
+      writeUsageChunk(res, { ...streamIdentity, usage: finalUsage });
+    }
+    writeSse(res, { error });
+    writeDone(res);
+    res.end();
+  };
+
+  const maybeFinalize = () => {
+    if (closed || finalizeScheduled || !finalizeRequested || !resultResolved) {
+      return;
+    }
+    // Resolved preserved errors are failures, not successful assistant stops.
+    if (terminalOutcome?.reason && terminalOutcome.reason !== "completed") {
+      finishStreamWithError({ message: "internal error", type: "api_error" }, true);
       return;
     }
     if (streamIncludeUsage && !finalUsage) {
@@ -1206,8 +1220,14 @@ export async function handleOpenAiHttpRequest(
       if (closed) {
         return;
       }
-      if (terminalStreamError) {
-        finishStreamWithError(terminalStreamError);
+      if (terminalOutcome?.reason && terminalOutcome.reason !== "completed") {
+        finalizeScheduled = false;
+        maybeFinalize();
+        return;
+      }
+      const streamError = readActiveStreamError();
+      if (streamError) {
+        finishStreamWithError(streamError);
         return;
       }
       closed = true;
@@ -1225,15 +1245,26 @@ export async function handleOpenAiHttpRequest(
     });
   };
 
-  const requestFinalize = (finishReason: "stop" | "tool_calls" = "stop") => {
-    if (!finalizeRequested || finishReason === "tool_calls") {
+  const requestFinalize = (
+    finishReason: "stop" | "tool_calls" = "stop",
+    outcome?: AgentRunTerminalOutcome,
+  ) => {
+    // Failed attempts remain provisional until a recovered fallback settles.
+    if (finishReason === "tool_calls") {
       finalizeFinishReason = finishReason;
     }
+    terminalOutcome = outcome ?? terminalOutcome;
     finalizeRequested = true;
     maybeFinalize();
   };
 
-  const unsubscribe = onAgentEventForRun(runId, (evt) => {
+  const requestFailedStream = (outcome: AgentRunTerminalOutcome) => {
+    terminalOutcome = outcome;
+    finalizeRequested = true;
+    maybeFinalize();
+  };
+
+  unsubscribe = onAgentEventForRun(runId, (evt) => {
     if (evt.runId !== runId) {
       return;
     }
@@ -1263,7 +1294,7 @@ export async function handleOpenAiHttpRequest(
         !toolChoiceConstraint &&
         !text.startsWith(streamedAssistantText)
       ) {
-        terminalStreamError ??= {
+        terminalProtocolError ??= {
           message: "Assistant output cannot be represented as an append-only response stream.",
           type: "api_error",
         };
@@ -1310,27 +1341,29 @@ export async function handleOpenAiHttpRequest(
       if (phase === "end" || phase === "error") {
         observedTerminalLifecycle = true;
         if (phase === "error" && terminalLifecyclePhase !== "error") {
-          terminalStreamError ??= {
-            message: normalizeOptionalString(evt.data?.error) ?? "Agent run failed",
+          lifecycleErrorRecovered = false;
+          terminalLifecycleError ??= {
+            // Provider diagnostics are operator logs, not part of the public OpenAI API contract.
+            message: "Agent run failed",
             type: "api_error",
           };
         }
-        requestFinalize();
+        const incomingOutcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({
+          phase,
+          data: evt.data,
+        });
+        const outcome = mergeAgentRunTerminalOutcome(terminalOutcome, incomingOutcome);
+        if (phase === "end" && terminalLifecycleError && outcome.reason === "completed") {
+          lifecycleErrorRecovered = true;
+        }
+        if (outcome.reason === "completed") {
+          requestFinalize("stop", outcome);
+        } else {
+          requestFailedStream(outcome);
+        }
       }
     }
   });
-
-  const finishStreamWithError = (error: { message: string; type: string; code?: string }) => {
-    if (closed) {
-      return;
-    }
-    closed = true;
-    stopWatchingDisconnect();
-    unsubscribe();
-    writeSse(res, { error });
-    writeDone(res);
-    res.end();
-  };
 
   // Agent cleanup and deferred SSE delivery have independent lifetimes;
   // shutdown must wait until both have settled, whichever finishes last.
@@ -1367,18 +1400,20 @@ export async function handleOpenAiHttpRequest(
         return;
       }
 
-      if (isFailedOpenAiAgentRun(result)) {
-        terminalLifecyclePhase = "error";
-        finishStreamWithError({ message: "internal error", type: "api_error" });
-        return;
-      }
-
-      if (terminalStreamError) {
-        finishStreamWithError(terminalStreamError);
-        return;
-      }
-
       finalUsage = resolveChatCompletionUsage(result);
+      const outcome = resolveOpenAiHttpAgentRunTerminalOutcome(result, terminalOutcome);
+      terminalOutcome = outcome;
+      const streamError = readActiveStreamError();
+      if (streamError) {
+        finishStreamWithError(streamError, true);
+        return;
+      }
+      if (outcome.reason !== "completed") {
+        terminalLifecyclePhase = "error";
+        requestFailedStream(outcome);
+        return;
+      }
+
       const meta = (result as { meta?: unknown } | null)?.meta;
       const { stopReason, pendingToolCalls } = resolveStopReasonAndPendingToolCalls(meta);
 
@@ -1407,7 +1442,7 @@ export async function handleOpenAiHttpRequest(
         if (!sawAssistantDelta) {
           const commentary =
             bufferedAssistantContent ||
-            resolveAgentResponseCommentary(result) ||
+            resolveOpenAiHttpResultText(result) ||
             bufferedReplaceableAssistantContent;
           if (commentary) {
             sawAssistantDelta = true;
@@ -1432,9 +1467,8 @@ export async function handleOpenAiHttpRequest(
         }
 
         const content =
-          resolveAgentResponseCommentary(result) ||
+          resolveOpenAiHttpResultText(result) ||
           bufferedReplaceableAssistantContent ||
-          resolveAgentResponseText(result) ||
           "No response from OpenClaw.";
 
         sawAssistantDelta = true;
@@ -1463,8 +1497,9 @@ export async function handleOpenAiHttpRequest(
         finishStreamWithError(mapped.error);
         return;
       }
-      if (terminalStreamError) {
-        finishStreamWithError(terminalStreamError);
+      const streamError = terminalProtocolError ?? terminalLifecycleError;
+      if (streamError) {
+        finishStreamWithError(streamError);
         return;
       }
       finishStreamWithError({ message: "internal error", type: "api_error" });
