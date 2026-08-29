@@ -40,6 +40,8 @@ export const USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY = 32;
 
 export type UsageCostTranscriptFile = {
   filePath: string;
+  /** Durable identity when filePath is a transient archive materialization. */
+  sourcePath?: string;
   kind: "jsonl" | "sqlite";
   size: number;
   mtimeMs: number;
@@ -99,6 +101,7 @@ async function listUsageCountedTranscriptFileStats(
           const materializedStats = await fs.promises.stat(materialized);
           return {
             filePath: materialized,
+            sourcePath: filePath,
             kind: "jsonl",
             size: materializedStats.size,
             mtimeMs: stats.mtimeMs,
@@ -183,7 +186,9 @@ export async function listUsageCountedTranscriptStats(
   const sqliteBacked = listUsageCountedSqliteTranscriptStats(agentId, params);
   const sqliteSessionIds = new Set(sqliteBacked.map((file) => file.sessionId).filter(Boolean));
   const canonicalFileBacked = fileBacked.filter((file) => {
-    const sessionId = parseUsageCountedSessionIdFromFileName(path.basename(file.filePath));
+    const sessionId = parseUsageCountedSessionIdFromFileName(
+      path.basename(file.sourcePath ?? file.filePath),
+    );
     return !sessionId || !sqliteSessionIds.has(sessionId);
   });
   return [...canonicalFileBacked, ...sqliteBacked];
@@ -216,6 +221,7 @@ export async function resolveUsageCostTranscriptFile(
       const materializedStats = await fs.promises.stat(materialized);
       return {
         filePath: materialized,
+        sourcePath: sessionFile,
         kind: "jsonl",
         size: materializedStats.size,
         mtimeMs: archiveStats.mtimeMs,

@@ -2301,6 +2301,37 @@ describe("session cost usage", () => {
     });
   });
 
+  it("discovers compressed archives under their durable session identity", async () => {
+    const root = await makeSessionCostRoot("discover-compressed-archive");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const encoded = encodeSessionArchiveContent(
+      transcriptText("sess-compressed", {
+        type: "message",
+        timestamp: "2026-02-12T10:00:00.000Z",
+        message: { role: "user", content: "compressed transcript" },
+      }),
+    );
+    if (!encoded.suffix) {
+      return;
+    }
+    const archivePath = path.join(
+      sessionsDir,
+      `sess-compressed.jsonl.deleted.2026-02-12T12-00-00.000Z${encoded.suffix}`,
+    );
+    await fs.writeFile(archivePath, encoded.bytes);
+
+    await withStateDir(root, async () => {
+      const sessions = await discoverAllSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]).toMatchObject({
+        sessionId: "sess-compressed",
+        sessionFile: archivePath,
+        firstUserMessage: "compressed transcript",
+      });
+    });
+  });
+
   it("deduplicates discovered sessions by sessionId and keeps the newest archive", async () => {
     const root = await makeSessionCostRoot("discover-dedupe");
     const sessionsDir = path.join(root, "agents", "main", "sessions");
