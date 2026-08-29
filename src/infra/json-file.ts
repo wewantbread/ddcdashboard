@@ -21,7 +21,7 @@ function resolveJsonSymlinkTarget(pathname: string): string | undefined {
   return path.resolve(path.dirname(pathname), fs.readlinkSync(pathname));
 }
 
-function resolveJsonSaveTarget(pathname: string): string {
+export function resolveJsonSaveTarget(pathname: string): string {
   const target = resolveJsonSymlinkTarget(pathname);
   if (!target) {
     return pathname;

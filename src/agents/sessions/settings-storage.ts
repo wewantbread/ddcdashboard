@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { acquireFileLockSyncWithRetry } from "../../infra/file-lock-sync.js";
+import { resolveJsonSaveTarget } from "../../infra/json-file.js";
+import { replaceFileAtomicSync } from "../../infra/replace-file.js";
 import type { Transport } from "../../llm/types.js";
 import { CONFIG_DIR_NAME } from "../config.js";
 
@@ -157,7 +159,18 @@ export class FileSettingsStorage implements SettingsStorage {
         if (!release) {
           release = acquireFileLockSyncWithRetry(path);
         }
-        writeFileSync(path, next, "utf-8");
+        // Write via a same-directory temp file + rename so a mid-write failure
+        // (ENOSPC/kill) cannot tear settings.json; the lock is already held.
+        // An existing final symlink keeps its operator-managed target: replace
+        // the target, matching the pre-atomic writeFileSync-through-link behavior.
+        const savePath = resolveJsonSaveTarget(path);
+        replaceFileAtomicSync({
+          filePath: savePath,
+          content: next,
+          mode: 0o644,
+          preserveExistingMode: true,
+          tempPrefix: basename(savePath),
+        });
       }
     } finally {
       release?.();
