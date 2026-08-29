@@ -51,6 +51,7 @@ type RawTranscriptReseedReason =
   | "cwd"
   | "mcp"
   | "missing-transcript"
+  | "no-native-session"
   | "orphaned-tool-use"
   | "session-expired";
 
@@ -62,6 +63,7 @@ const RAW_TRANSCRIPT_RESEED_ALLOWED_REASONS = new Set<RawTranscriptReseedReason>
   "cwd",
   "mcp",
   "session-expired",
+  "no-native-session",
 ]);
 
 /** Resolves how much prior transcript text may reseed a fresh CLI session. */
