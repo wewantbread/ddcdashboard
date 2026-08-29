@@ -54,6 +54,52 @@ afterEach(() => {
 });
 
 describe("new session draft route ownership", () => {
+  it("leaves shortcuts, composition, and other form controls alone", async () => {
+    const page = await mount(routeData("research"));
+    const textarea = page.querySelector<HTMLTextAreaElement>(".new-session-page__message");
+
+    for (const init of [
+      { key: "x", ctrlKey: true },
+      { key: "x", metaKey: true },
+      { key: "Tab" },
+      { key: "Escape" },
+      { key: "Process", isComposing: true },
+    ]) {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { ...init, bubbles: true, composed: true }),
+      );
+      expect(document.activeElement).not.toBe(textarea);
+    }
+
+    const menuItem = document.createElement("div");
+    menuItem.setAttribute("role", "menuitemradio");
+    menuItem.tabIndex = -1;
+    const openOverlay = Object.assign(document.createElement("div"), { open: true });
+    const overlayItem = document.createElement("div");
+    openOverlay.append(overlayItem);
+    for (const control of [
+      document.createElement("input"),
+      document.createElement("select"),
+      document.createElement("textarea"),
+      Object.assign(document.createElement("div"), { contentEditable: "true" }),
+      Object.assign(document.createElement("div"), { tabIndex: 0 }),
+      menuItem,
+    ]) {
+      page.append(control);
+      control.focus();
+      control.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "x", bubbles: true, composed: true }),
+      );
+      expect(document.activeElement).toBe(control);
+    }
+
+    page.append(openOverlay);
+    overlayItem.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "x", bubbles: true, composed: true }),
+    );
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
   it("labels the message input independently of its placeholder", async () => {
     const page = await mount(routeData("research"));
     const textarea = page.querySelector<HTMLTextAreaElement>(".new-session-page__message");
