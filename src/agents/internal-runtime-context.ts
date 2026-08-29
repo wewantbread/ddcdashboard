@@ -389,3 +389,25 @@ export function relocateCurrentRuntimeContextCarrierToTail<T>(messages: T[]): T[
   const carriers = messages.filter(isOpenClawRuntimeContextCustomMessage);
   return [...rest, ...carriers];
 }
+
+/**
+ * Resolves whether the current-turn runtime context carrier should be relocated to the tail.
+ * Local/self-hosted backends (e.g. Ollama, vLLM, LM Studio) parse messages chronologically
+ * and do not use Anthropic-style prompt cache billing; relocating carriers to the tail causes
+ * models to treat internal metadata as the active user turn.
+ */
+export function shouldRelocateRuntimeContextCarrierToTail(provider?: string): boolean {
+  if (!provider) {
+    return true;
+  }
+  const normalized = provider.trim().toLowerCase();
+  if (
+    normalized === "ollama" ||
+    normalized === "vllm" ||
+    normalized === "lmstudio" ||
+    normalized === "local"
+  ) {
+    return false;
+  }
+  return true;
+}

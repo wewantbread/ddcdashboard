@@ -588,4 +588,76 @@ describe("prepareEmbeddedAttemptSessionBoundary", () => {
     expect(onUserMessagePersistenceInvalidated).toHaveBeenCalledOnce();
     expect(activeSession.agent.state.messages).toBe(repairedMessages);
   });
+
+  it("does not relocate runtime context carrier to tail when provider is ollama", async () => {
+    const { activeSession } = createActiveSession();
+    prepareEmbeddedAttemptSessionBoundary({
+      activeSession,
+      attempt: { prompt: "hi", provider: "ollama" },
+      getUserTranscriptContexts: () => undefined,
+      isRawModelRun: false,
+      preparedUserTurnMessage: undefined,
+      sessionManager: createSessionManager(),
+      setActiveSessionSystemPrompt: vi.fn(),
+    });
+
+    const carrierMessage = {
+      role: "custom",
+      customType: "openclaw.runtime-context",
+      content: "internal context",
+      details: { runtimeContextCarrier: true },
+      timestamp: 1,
+    } as unknown as AgentMessage;
+    const userMessage = {
+      role: "user",
+      content: "hi",
+      timestamp: 2,
+    } as unknown as AgentMessage;
+
+    const converted = (await activeSession.agent.convertToLlm([
+      carrierMessage,
+      userMessage,
+    ])) as unknown as Array<{
+      role: string;
+      customType?: string;
+    }>;
+    expect(converted[0]?.customType).toBe("openclaw.runtime-context");
+    expect(converted[1]?.role).toBe("user");
+  });
+
+  it("relocates runtime context carrier to tail for cloud providers like anthropic", async () => {
+    const { activeSession } = createActiveSession();
+    prepareEmbeddedAttemptSessionBoundary({
+      activeSession,
+      attempt: { prompt: "hi", provider: "anthropic" },
+      getUserTranscriptContexts: () => undefined,
+      isRawModelRun: false,
+      preparedUserTurnMessage: undefined,
+      sessionManager: createSessionManager(),
+      setActiveSessionSystemPrompt: vi.fn(),
+    });
+
+    const carrierMessage = {
+      role: "custom",
+      customType: "openclaw.runtime-context",
+      content: "internal context",
+      details: { runtimeContextCarrier: true },
+      timestamp: 1,
+    } as unknown as AgentMessage;
+    const userMessage = {
+      role: "user",
+      content: "hi",
+      timestamp: 2,
+    } as unknown as AgentMessage;
+
+    const converted = (await activeSession.agent.convertToLlm([
+      carrierMessage,
+      userMessage,
+    ])) as unknown as Array<{
+      role: string;
+      customType?: string;
+    }>;
+    expect(converted[0]?.role).toBe("user");
+    expect(converted[1]?.customType).toBe("openclaw.runtime-context");
+  });
 });

@@ -16,6 +16,7 @@ import {
   OPENCLAW_RUNTIME_CONTEXT_NOTICE,
   OPENCLAW_RUNTIME_EVENT_HEADER,
   relocateCurrentRuntimeContextCarrierToTail,
+  shouldRelocateRuntimeContextCarrierToTail,
   stripInternalRuntimeContext,
 } from "./internal-runtime-context.js";
 
@@ -226,5 +227,22 @@ describe("relocateCurrentRuntimeContextCarrierToTail", () => {
   it("leaves a carrier in place when there is no active user turn to anchor after", () => {
     const messages = [carrier("meta"), assistant("reply")];
     expect(relocateCurrentRuntimeContextCarrierToTail(messages)).toBe(messages);
+  });
+});
+
+describe("shouldRelocateRuntimeContextCarrierToTail", () => {
+  it("returns false for local/self-hosted providers", () => {
+    expect(shouldRelocateRuntimeContextCarrierToTail("ollama")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("Ollama")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("vllm")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("lmstudio")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("local")).toBe(false);
+  });
+
+  it("returns true for cloud providers or unspecified provider", () => {
+    expect(shouldRelocateRuntimeContextCarrierToTail("anthropic")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail("openai")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail("openrouter")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail(undefined)).toBe(true);
   });
 });
