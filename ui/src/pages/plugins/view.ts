@@ -1015,9 +1015,14 @@ function renderClawHubGroup(props: PluginsViewProps) {
       ${props.searchError}
     </div>`;
   } else if (props.searchResults && props.searchResults.length === 0) {
-    body = html`${renderSettingsEmpty(t("pluginsPage.noClawHubResultsBody", { query }))}`;
+    body = html`<div class="plugins-search-state" role="status" aria-live="polite">
+      ${t("pluginsPage.noClawHubResultsBody", { query })}
+    </div>`;
   } else {
     body = html`
+      <div class="plugins-search-state" role="status" aria-live="polite">
+        ${t("pluginsPage.searchResultCount", { count: String(props.searchResults?.length ?? 0) })}
+      </div>
       ${repeat(
         props.searchResults ?? [],
         (item) => item.package.name,

@@ -498,10 +498,8 @@ describeControlUiE2e("Control UI Plugins mocked Gateway E2E", () => {
 
         if (tab === "discover") {
           const searchRequest = await gateway.waitForRequest("plugins.search");
-          expect(requestParams(searchRequest)).toEqual({
-            query: "@openclaw/workboard",
-            limit: 20,
-          });
+          expect(requestParams(searchRequest)).toEqual({ query: "@openclaw/workboard", limit: 20 });
+          expect(await page.getByRole("status").textContent()).toContain("ClawHub has no results");
         }
       } finally {
         await context.close();
