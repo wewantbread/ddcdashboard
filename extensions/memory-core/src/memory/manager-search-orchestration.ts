@@ -8,6 +8,7 @@ import {
 import {
   MEMORY_INDEX_FTS_TABLE,
   MEMORY_INDEX_VECTOR_TABLE,
+  type MemoryProviderStatus,
   type MemorySearchManager,
   type MemorySearchResult,
   type MemorySource,
@@ -32,10 +33,27 @@ const SNIPPET_MAX_CHARS = 700;
 const VECTOR_TABLE = MEMORY_INDEX_VECTOR_TABLE;
 const FTS_TABLE = MEMORY_INDEX_FTS_TABLE;
 const log = createSubsystemLogger("memory");
-type MemoryIndexSearchOptions = NonNullable<Parameters<MemorySearchManager["search"]>[1]>;
+type FreshnessSnapshot = Pick<MemoryProviderStatus, "dirty" | "pendingSyncSources" | "custom">;
+
+type MemoryIndexSearchOptions = NonNullable<Parameters<MemorySearchManager["search"]>[1]> & {
+  /**
+   * When true, a dirty-index refresh triggered by this search runs in the
+   * background instead of blocking the search. Internal scheduling option for
+   * the deadline-bounded gateway tool path; not part of the exported
+   * MemorySearchManager contract.
+   */
+  nonblockingRefresh?: boolean;
+  /**
+   * Receives a freshness snapshot captured after any synchronous dirty-index
+   * sync, so the caller's staleness warning reflects the index state that
+   * supplied the search results.
+   */
+  onFreshness?: (snapshot: FreshnessSnapshot) => void;
+};
 
 export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
   protected abstract sessionWarm: Set<string>;
+  abstract status(): MemoryProviderStatus;
 
   protected async warmSession(sessionKey?: string): Promise<void> {
     if (!this.settings.sync.onSessionStart) {
@@ -141,11 +159,13 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
         enabled: this.settings.sync.onSearch,
         dirty: this.dirty,
         sessionsDirty: this.sessionsDirty,
+        nonblocking: opts?.nonblockingRefresh,
         sync: async (params) => await this.syncAdmitted(params),
         onError: (err) => {
           log.warn(`memory sync failed (search): ${String(err)}`);
         },
       });
+      opts?.onFreshness?.(this.status());
       if (
         !embeddingBootstrapKeywordOnly &&
         preflight.shouldInitializeProvider &&
