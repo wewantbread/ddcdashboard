@@ -123,6 +123,7 @@ const selectedGlobalSessions = {
       ...gatewayInjectedSessions.sessions[0],
       displayName: "Selected global",
       key: "global",
+      kind: "global",
       label: "Selected global",
       modelProvider: "openai",
     },
@@ -465,6 +466,7 @@ suite.define(() => {
           "sessions.list": selectedGlobalSessions,
         },
         sessionKey: "global",
+        sessionScope: "global",
       });
       await page.goto(controlUiSessionUrl(suite.server.baseUrl, "global"));
       const connectRequest = await gateway.waitForRequest("connect");
@@ -475,6 +477,10 @@ suite.define(() => {
         .poll(async () => (await gateway.getRequests("models.authStatus")).length)
         .toBe(2);
 
+      expect((await gateway.waitForRequest("chat.startup")).params).toMatchObject({
+        sessionKey: "global",
+        agentId: "main",
+      });
       let popover = await openVisibleQuotaPopover(page);
       expect(
         await page
