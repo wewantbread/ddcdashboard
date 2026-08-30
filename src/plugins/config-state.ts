@@ -2,6 +2,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /** Normalizes plugin config and resolves effective enablement, slots, and activation sources. */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginEntryConfig } from "../config/types.plugins.js";
+import { mergeDeep } from "../infra/deep-merge.js";
 import {
   createEffectiveEnableStateResolver,
   createPluginEnableStateResolver,
@@ -72,6 +74,46 @@ export function resolveSelectedContextEnginePluginIdFromConfig(
     return undefined;
   }
   return pluginId;
+}
+
+/**
+ * Merges every raw entry resolving to one plugin id into a single persisted entry.
+ *
+ * The raw entries are the base, because they are already in persisted shape. The normalized
+ * entry is not: it carries derived policy such as `hasAllowedModelsConfig`, which the strict
+ * config schema forbids, and it replaces the `allowedModels` list those flags were derived
+ * from. Only `enabled` is taken from it, because raw entries are applied in file order, so a
+ * later alias saying `enabled: true` beats a canonical `false` and the plugin is running;
+ * folding with canonical last would write that `false` back and switch it off.
+ *
+ * Aliases fold first and the canonical entry last so canonical values win a key clash
+ * regardless of the order the two sit in the file.
+ */
+export function mergePluginEntryAliases(
+  config: OpenClawConfig,
+  pluginId: string,
+): PluginEntryConfig {
+  const resolvedId = normalizePluginId(pluginId);
+  const matching = Object.entries(config.plugins?.entries ?? {})
+    .filter(([entryId]) => normalizePluginId(entryId) === resolvedId)
+    .toSorted(([leftId], [rightId]) => {
+      if (leftId === resolvedId) {
+        return rightId === resolvedId ? 0 : 1;
+      }
+      if (rightId === resolvedId) {
+        return -1;
+      }
+      return leftId.localeCompare(rightId, "en");
+    });
+  let merged: PluginEntryConfig = {};
+  for (const [, entry] of matching) {
+    merged = mergeDeep(merged, entry) as PluginEntryConfig;
+  }
+  const effectiveEnabled = normalizePluginsConfig(config.plugins).entries[resolvedId]?.enabled;
+  return {
+    ...merged,
+    ...(effectiveEnabled === undefined ? {} : { enabled: effectiveEnabled }),
+  };
 }
 
 /** Canonicalizes one plugin entry and its policy-list ids before a targeted mutation. */
