@@ -1,4 +1,5 @@
 /** Resolves and emits cron failure-alert notifications. */
+import { randomUUID } from "node:crypto";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -19,6 +20,7 @@ import type {
   CronJob,
   CronMessageChannel,
 } from "../types.js";
+import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
 import type { CronServiceState, DeferredCronNotifications } from "./state.js";
 import { enqueueCronNotification } from "./wake.js";
 
@@ -192,6 +194,66 @@ export function resolveFailureAlert(
   };
 }
 
+/**
+ * Commits the settled failure-alert send outcome onto the authoritative cron
+ * row through the row-scoped runtime transaction. The write is fenced to the
+ * alert identity captured at dispatch, so a superseding alert or run cannot
+ * be overwritten by a late completion, and a recipient already reached is
+ * never downgraded to not-delivered.
+ */
+function recordFailureNotificationDeliveryOutcome(
+  state: CronServiceState,
+  params: {
+    jobId: string;
+    alertAtMs: number | undefined;
+    attemptId: string | undefined;
+    delivered: boolean;
+    error?: string;
+  },
+): void {
+  try {
+    const committedJob = commitCronRuntimeRows({
+      state,
+      jobIds: [params.jobId],
+      operationLabel: "cron.failure-alert-outcome",
+      mutate: ({ jobs }) => {
+        const job = jobs.get(params.jobId);
+        if (!job) {
+          return { value: undefined };
+        }
+        const rowAttemptId = job.state.lastFailureNotificationAttemptId;
+        const staleRow =
+          // A later cooldown-suppressed run reset the fields to not-requested.
+          job.state.lastFailureNotificationDeliveryStatus === "not-requested" ||
+          // An earlier settled attempt of this alert already reached the recipient.
+          job.state.lastFailureNotificationDelivered === true ||
+          // A newer alert attempt owns the delivery fields now.
+          (rowAttemptId !== undefined && rowAttemptId !== params.attemptId) ||
+          // Legacy row written before this attempt identity was persisted: only
+          // trust a completion while the alert timestamp still matches exactly.
+          (rowAttemptId === undefined && job.state.lastFailureAlertAtMs !== params.alertAtMs);
+        if (staleRow) {
+          return { value: undefined };
+        }
+        job.state.lastFailureNotificationDelivered = params.delivered;
+        job.state.lastFailureNotificationDeliveryStatus = params.delivered
+          ? "delivered"
+          : "not-delivered";
+        job.state.lastFailureNotificationDeliveryError = params.error;
+        return { upsertJobIds: [job.id], value: job };
+      },
+    });
+    if (committedJob) {
+      applyCronRuntimeRowsToState(state, [committedJob]);
+    }
+  } catch (err: unknown) {
+    state.deps.log.warn(
+      { jobId: params.jobId, err: String(err) },
+      "cron: failure alert delivery outcome persist failed",
+    );
+  }
+}
+
 function transportFailureAlert(
   state: CronServiceState,
   params: {
@@ -201,15 +263,24 @@ function transportFailureAlert(
     route: ResolvedFailureAlert;
   },
 ): void {
+  const alertAtMs = params.job.state.lastFailureAlertAtMs;
+  const attemptId = params.job.state.lastFailureNotificationAttemptId;
   let pendingFallback = true;
-  const fallback = (reachedRecipient = false) => {
-    if (pendingFallback && !reachedRecipient) {
+  let reachedRecipient = false;
+  const fallback = (reached = false) => {
+    if (pendingFallback && !reached) {
       enqueueCronNotification(state, params.job, params.payload.text ?? "", "failure-alert");
     }
     pendingFallback = false;
   };
   if (!state.deps.sendCronFailureAlert) {
     fallback();
+    recordFailureNotificationDeliveryOutcome(state, {
+      jobId: params.job.id,
+      alertAtMs,
+      attemptId,
+      delivered: false,
+    });
     return;
   }
   void state.deps
@@ -223,7 +294,20 @@ function transportFailureAlert(
       accountId: params.route.accountId,
       threadId: params.route.threadId,
       ...(params.route.alternateRoute ? { inheritSessionThread: false as const } : {}),
-      onDeliveryAttempt: fallback,
+      onDeliveryAttempt: (reached) => {
+        if (reached) {
+          reachedRecipient = true;
+        }
+        fallback(reached);
+      },
+    })
+    .then(() => {
+      recordFailureNotificationDeliveryOutcome(state, {
+        jobId: params.job.id,
+        alertAtMs,
+        attemptId,
+        delivered: reachedRecipient,
+      });
     })
     .catch((err: unknown) => {
       state.deps.log.warn(
@@ -231,6 +315,15 @@ function transportFailureAlert(
         "cron: failure alert delivery failed",
       );
       fallback();
+      // The recipient-reached callback is the delivery fact; a later
+      // transport exception does not un-deliver an alert that landed.
+      recordFailureNotificationDeliveryOutcome(state, {
+        jobId: params.job.id,
+        alertAtMs,
+        attemptId,
+        delivered: reachedRecipient,
+        ...(reachedRecipient ? {} : { error: err instanceof Error ? err.message : String(err) }),
+      });
     });
 }
 
@@ -304,6 +397,7 @@ function requestFailureNotification(
   job.state.lastFailureNotificationDelivered = undefined;
   job.state.lastFailureNotificationDeliveryStatus = "unknown";
   job.state.lastFailureNotificationDeliveryError = undefined;
+  job.state.lastFailureNotificationAttemptId = randomUUID();
   job.state.lastFailureAlertAtMs = now;
   return true;
 }
