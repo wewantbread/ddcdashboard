@@ -1,8 +1,13 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  resolveActiveEmbeddedRunOwnerByRunId,
+  resolveEmbeddedAgentMessageInjectionTarget,
+  type EmbeddedAgentMessageInjectionTarget,
+} from "../agents/embedded-agent-runner/runs.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../talk/agent-run-control-shared.js";
 import {
-  controlRealtimeVoiceAgentRun,
+  controlOwnedRealtimeVoiceAgentRun,
   type RealtimeVoiceAgentControlResult,
 } from "../talk/agent-run-control.js";
 import { registerClientVoiceConsultRun } from "../talk/client-voice-session.js";
@@ -470,6 +475,30 @@ export async function flushTalkRealtimeRelayVoiceWrites(params: {
   await session.voiceTranscriptQueue.flush();
 }
 
+export function captureTalkRealtimeRelayAgentRunControlTarget(params: {
+  relaySessionId: string;
+  connId: string;
+}): EmbeddedAgentMessageInjectionTarget | null {
+  const session = getRelaySession(params.relaySessionId, params.connId);
+  const sessionKey = session.sessionKey;
+  if (!sessionKey) {
+    return null;
+  }
+  for (const [runId, key] of session.activeAgentRuns) {
+    if (key !== sessionKey) {
+      continue;
+    }
+    const activeOwner = resolveActiveEmbeddedRunOwnerByRunId(runId);
+    const target = activeOwner
+      ? resolveEmbeddedAgentMessageInjectionTarget(activeOwner)
+      : undefined;
+    if (target) {
+      return target;
+    }
+  }
+  return null;
+}
+
 /** Applies realtime voice-control text to the active agent-consult chat run. */
 export async function steerTalkRealtimeRelayAgentRun(params: {
   relaySessionId: string;
@@ -477,6 +506,7 @@ export async function steerTalkRealtimeRelayAgentRun(params: {
   sessionKey?: string;
   text: string;
   mode?: string;
+  controlTarget?: EmbeddedAgentMessageInjectionTarget | null;
 }): Promise<RealtimeVoiceAgentControlResult> {
   const session = getRelaySession(params.relaySessionId, params.connId);
   const sessionKey = session.sessionKey;
@@ -487,12 +517,20 @@ export async function steerTalkRealtimeRelayAgentRun(params: {
   if (requestedSessionKey && requestedSessionKey !== sessionKey) {
     throw new Error("Realtime relay steering session key does not match the relay session");
   }
-  const result = await controlRealtimeVoiceAgentRun({
+  const target =
+    params.controlTarget !== undefined
+      ? (params.controlTarget ?? undefined)
+      : (captureTalkRealtimeRelayAgentRunControlTarget({
+          relaySessionId: params.relaySessionId,
+          connId: params.connId,
+        }) ?? undefined);
+  const controlParams = {
     sessionKey,
     text: params.text,
     mode: params.mode,
     recentEvents: session.harness.talk.recentEvents,
-  });
+  };
+  const result = await controlOwnedRealtimeVoiceAgentRun(controlParams, target);
   if (relaySessions.get(session.id) !== session) {
     throw new Error("Realtime relay session closed while steering the agent run");
   }

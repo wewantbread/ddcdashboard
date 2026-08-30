@@ -4,7 +4,10 @@
  * The shared module owns classification and message contracts; this adapter
  * binds those contracts to embedded-run abort, status, and steering primitives.
  */
-import type { EmbeddedAgentQueueMessageOutcome } from "../agents/embedded-agent-runner/runs.js";
+import type {
+  EmbeddedAgentMessageInjectionTarget,
+  EmbeddedAgentQueueMessageOutcome,
+} from "../agents/embedded-agent-runner/runs.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
 import {
   buildRealtimeVoiceAgentCancelProviderResult,
@@ -36,6 +39,9 @@ export {
 
 type RealtimeVoiceAgentControlDeps = {
   abortEmbeddedAgentRun: (sessionId: string) => boolean;
+  abortEmbeddedAgentMessageInjectionTarget: (
+    target: EmbeddedAgentMessageInjectionTarget,
+  ) => boolean;
   queueEmbeddedAgentMessageWithOutcomeAsync: (
     sessionId: string,
     text: string,
@@ -51,16 +57,45 @@ type RealtimeVoiceAgentControlDeps = {
     sessionKey?: string;
   }) => RealtimeVoiceAgentRunActivity;
   resolveActiveEmbeddedRunSessionId: (sessionKey: string) => string | undefined;
+  queueEmbeddedAgentMessageInjectionTarget: (
+    target: EmbeddedAgentMessageInjectionTarget,
+    text: string,
+    options?: {
+      steeringMode?: "all";
+      debounceMs?: number;
+      isInboundUserMessage?: boolean;
+      taskSuggestionDeliveryMode?: undefined;
+    },
+  ) => Promise<EmbeddedAgentQueueMessageOutcome>;
+};
+
+type RealtimeVoiceAgentControlParams = {
+  sessionKey: string;
+  text: string;
+  mode?: unknown;
+  recentEvents?: readonly TalkEvent[];
 };
 
 /** Apply a spoken status, cancel, steer, or follow-up request to an active run. */
 export async function controlRealtimeVoiceAgentRun(
-  params: {
-    sessionKey: string;
-    text: string;
-    mode?: unknown;
-    recentEvents?: readonly TalkEvent[];
-  },
+  params: RealtimeVoiceAgentControlParams,
+  providedDeps?: RealtimeVoiceAgentControlDeps,
+): Promise<RealtimeVoiceAgentControlResult> {
+  return controlRealtimeVoiceAgentRunWithTarget(params, undefined, false, providedDeps);
+}
+
+/** Apply control from an ingress that already proved ownership of this exact opaque run. */
+export async function controlOwnedRealtimeVoiceAgentRun(
+  params: RealtimeVoiceAgentControlParams,
+  target: EmbeddedAgentMessageInjectionTarget | undefined,
+): Promise<RealtimeVoiceAgentControlResult> {
+  return controlRealtimeVoiceAgentRunWithTarget(params, target, true);
+}
+
+async function controlRealtimeVoiceAgentRunWithTarget(
+  params: RealtimeVoiceAgentControlParams,
+  target: EmbeddedAgentMessageInjectionTarget | undefined,
+  exactTargetRequired: boolean,
   providedDeps?: RealtimeVoiceAgentControlDeps,
 ): Promise<RealtimeVoiceAgentControlResult> {
   // Provider registration consumes the shared policy without starting the agent runtime.
@@ -72,7 +107,9 @@ export async function controlRealtimeVoiceAgentRun(
   const text = params.text.trim();
   const intent = resolveRealtimeVoiceAgentControlIntent({ text, mode: params.mode });
   const mode = intent.mode;
-  const sessionId = deps.resolveActiveEmbeddedRunSessionId(sessionKey);
+  const sessionId = exactTargetRequired
+    ? target?.sessionId
+    : deps.resolveActiveEmbeddedRunSessionId(sessionKey);
   const activity = deps.getDiagnosticSessionActivitySnapshot({ sessionId, sessionKey });
   const active = Boolean(sessionId || activity.activeWorkKind || activity.hasActiveEmbeddedRun);
 
@@ -113,7 +150,9 @@ export async function controlRealtimeVoiceAgentRun(
         suppress: false,
       };
     }
-    const aborted = deps.abortEmbeddedAgentRun(sessionId);
+    const aborted = target
+      ? deps.abortEmbeddedAgentMessageInjectionTarget(target)
+      : deps.abortEmbeddedAgentRun(sessionId);
     const message = aborted
       ? "Cancelled the active OpenClaw run."
       : "OpenClaw could not cancel the active run.";
@@ -151,7 +190,20 @@ export async function controlRealtimeVoiceAgentRun(
   // Steering and follow-up both enqueue to the active run; follow-up is wrapped
   // so the runner treats it as deferred context instead of an immediate pivot.
   const steerText = mode === "followup" ? buildRealtimeVoiceAgentFollowupSteeringText(text) : text;
-  const outcome = await deps.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, steerText, {
+  const queueMessage = target
+    ? (
+        message: string,
+        options: Parameters<
+          RealtimeVoiceAgentControlDeps["queueEmbeddedAgentMessageInjectionTarget"]
+        >[2],
+      ) => deps.queueEmbeddedAgentMessageInjectionTarget(target, message, options)
+    : (
+        message: string,
+        options: Parameters<
+          RealtimeVoiceAgentControlDeps["queueEmbeddedAgentMessageWithOutcomeAsync"]
+        >[2],
+      ) => deps.queueEmbeddedAgentMessageWithOutcomeAsync(sessionId, message, options);
+  const outcome = await queueMessage(steerText, {
     steeringMode: "all",
     debounceMs: 0,
     isInboundUserMessage: true,
