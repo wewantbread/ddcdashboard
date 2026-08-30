@@ -9,16 +9,23 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import type { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import type { ModelFallbackAttemptProvenance } from "../../agents/model-fallback.types.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
   readSessionTranscriptActiveStats,
   readTranscriptStatsSync,
+  replaceSessionEntry,
   upsertSessionEntryCore,
+  updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptReadScope,
+  toDatabaseOptions,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
+import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import {
   clearMemoryPluginState,
   registerMemoryCapability,
@@ -27,6 +34,7 @@ import {
 } from "../../plugins/memory-state.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ReplyPayload } from "../types.js";
 import {
   runMemoryFlushIfNeeded as runMemoryFlushIfNeededRaw,
@@ -41,6 +49,21 @@ import {
 } from "./agent-runner.test-fixtures.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { createSourceReplyDeliveryRuntime } from "./source-reply-delivery-runtime.js";
+
+const preflightCompactionWarnMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (subsystem: string) => {
+      const logger = actual.createSubsystemLogger(subsystem);
+      return subsystem === "auto-reply/preflight-compaction"
+        ? { ...logger, warn: preflightCompactionWarnMock }
+        : logger;
+    },
+  };
+});
 
 const compactEmbeddedAgentSessionMock = vi.fn();
 const runWithModelFallbackMock = vi.fn();
@@ -73,6 +96,14 @@ async function runMemoryFlushIfNeeded(params: MemoryFlushTestParams) {
 
 type PreflightCompactionTestParams = Parameters<typeof runSessionCompactionIfNeededRaw>[0] & {
   modelContextTokens?: number;
+};
+
+type TestUpdateSessionEntryParams = {
+  storePath: string;
+  sessionKey: string;
+  skipMaintenance?: boolean;
+  takeCacheOwnership?: boolean;
+  update: Parameters<typeof updateSessionEntry>[1];
 };
 
 async function runSessionCompactionIfNeeded(params: PreflightCompactionTestParams) {
@@ -408,8 +439,46 @@ describe("runMemoryFlushIfNeeded", () => {
     return { followupRun, result, sessionKey, storePath };
   }
 
+  async function createOversizedByteCompactionFixture() {
+    const storePath = path.join(rootDir, "sessions.json");
+    const sessionKey = "main";
+    await writeTestSessionTranscript({
+      rootDir,
+      events: [{ type: "message", message: { role: "user", content: "x".repeat(256) } }],
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 10,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      compactionCount: 0,
+    };
+    const run = async (
+      entry: SessionEntry,
+      maxActiveTranscriptBytes = "10b",
+      withSessionStore = true,
+      onCompactionNotice?: PreflightCompactionTestParams["onCompactionNotice"],
+    ) =>
+      await runSessionCompactionIfNeeded({
+        cfg: { agents: { defaults: { compaction: { maxActiveTranscriptBytes } } } },
+        followupRun: createTestFollowupRun({ sessionId: "session", sessionKey }),
+        defaultModel: "anthropic/claude-opus-4-6",
+        modelContextTokens: 100_000,
+        sessionEntry: entry,
+        sessionStore: withSessionStore ? { [sessionKey]: entry } : undefined,
+        sessionKey,
+        storePath,
+        isHeartbeat: false,
+        ...createCompactionLifecycle(createReplyOperation()),
+        onCompactionNotice,
+      });
+    return { run, sessionEntry, storePath };
+  }
+
   beforeEach(async () => {
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-unit-"));
+    preflightCompactionWarnMock.mockReset();
     registerMemoryFlushPlanResolverForTest(createMemoryFlushPlan);
     runWithModelFallbackMock.mockReset().mockImplementation(async ({ provider, model, run }) => ({
       result: await run(provider, model, {
@@ -3362,6 +3431,308 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactCall.sessionFile).toBe("main");
   });
 
+  it("does not repeat byte-triggered compaction when the compacted transcript stays oversized", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+
+    await fixture.run(fixture.sessionEntry);
+    await fixture.run(loadMainSessionEntry(fixture.storePath));
+
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the byte-compaction latch while the active projection rebuilds", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const scope = {
+      agentId: "main",
+      sessionId: "session",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    await fixture.run(fixture.sessionEntry);
+    const latchedEntry = loadMainSessionEntry(fixture.storePath);
+    const databaseOptions = toDatabaseOptions(resolveSqliteTranscriptReadScope(scope));
+    openOpenClawAgentDatabase(databaseOptions)
+      .db.prepare(
+        "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
+      )
+      .run(scope.sessionId);
+
+    await fixture.run(latchedEntry);
+    const duringRebuild = loadMainSessionEntry(fixture.storePath);
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
+    await fixture.run(duringRebuild);
+
+    expect(duringRebuild.transcriptByteCompactionLatch).toEqual(
+      latchedEntry.transcriptByteCompactionLatch,
+    );
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms byte-triggered compaction after the latched transcript grows by another threshold", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+
+    await fixture.run(fixture.sessionEntry);
+    await replaceTranscriptEvents(
+      {
+        agentId: "main",
+        sessionId: "session",
+        sessionKey: "main",
+        storePath: fixture.storePath,
+      },
+      [{ type: "message", message: { role: "user", content: "x".repeat(512) } }],
+    );
+    await fixture.run(loadMainSessionEntry(fixture.storePath));
+
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("still compacts for token pressure while byte-triggered compaction is latched", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+
+    await fixture.run(fixture.sessionEntry);
+    const tokenHeavyEntry: SessionEntry = {
+      ...loadMainSessionEntry(fixture.storePath),
+      totalTokens: 90_000,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+    };
+    await fixture.run(tokenHeavyEntry);
+
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(requireCompactEmbeddedAgentSessionCall(1).preflightCompactionTrigger).toBe("tokens");
+  });
+
+  it("invalidates the byte-compaction latch when the configured threshold changes", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+
+    await fixture.run(fixture.sessionEntry, "10b");
+    await fixture.run(loadMainSessionEntry(fixture.storePath), "20b");
+
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(2);
+    expect(requireCompactEmbeddedAgentSessionCall(1).preflightCompactionTrigger).toBe(
+      "transcript_bytes",
+    );
+  });
+
+  it("latches a rotated oversized successor without an in-memory session store", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const successorScope = {
+      agentId: "main",
+      sessionId: "successor",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    compactEmbeddedAgentSessionMock.mockImplementationOnce(async () => {
+      await upsertSessionEntryCore(successorScope, { sessionId: "successor", updatedAt: 20 });
+      await replaceTranscriptEvents(successorScope, [
+        { type: "message", message: { role: "user", content: "x".repeat(256) } },
+      ]);
+      return {
+        ok: true,
+        compacted: true,
+        result: { sessionId: "successor", tokensAfter: 42 },
+      };
+    });
+
+    const successor = await fixture.run(fixture.sessionEntry, "10b", false);
+    await fixture.run(loadMainSessionEntry(fixture.storePath), "10b", false);
+
+    expect(successor?.sessionId).toBe("successor");
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("latches a durable rotated successor when the in-memory store is stale", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const sourceScope = {
+      agentId: "main",
+      sessionId: "session",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    const successorScope = { ...sourceScope, sessionId: "successor" };
+    const initialEntry: SessionEntry = {
+      ...fixture.sessionEntry,
+      lifecycleRevision: "lifecycle",
+    };
+    await upsertSessionEntryCore(sourceScope, initialEntry);
+    compactEmbeddedAgentSessionMock.mockImplementationOnce(async () => {
+      await upsertSessionEntryCore(successorScope, {
+        lifecycleRevision: "lifecycle",
+        sessionId: "successor",
+        updatedAt: 20,
+      });
+      await replaceTranscriptEvents(successorScope, [
+        { type: "message", message: { role: "user", content: "x".repeat(256) } },
+      ]);
+      return {
+        ok: true,
+        compacted: true,
+        result: { sessionId: "successor", tokensAfter: 42 },
+      };
+    });
+
+    const successor = await fixture.run(initialEntry);
+    const persisted = loadMainSessionEntry(fixture.storePath);
+    await fixture.run(persisted);
+
+    expect(successor?.sessionId).toBe("successor");
+    expect(persisted.compactionCount).toBe(1);
+    expect(persisted.transcriptByteCompactionLatch?.sessionId).toBe("successor");
+    expect(incrementCompactionCountMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        compactionSourceEntry: expect.objectContaining({ sessionId: "session" }),
+        sessionEntry: expect.objectContaining({ sessionId: "successor" }),
+      }),
+    );
+    expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not latch an undeclared same-lifecycle successor", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const sourceScope = {
+      agentId: "main",
+      sessionId: "session",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    const rogueScope = { ...sourceScope, sessionId: "rogue" };
+    const initialEntry: SessionEntry = {
+      ...fixture.sessionEntry,
+      lifecycleRevision: "lifecycle",
+    };
+    await upsertSessionEntryCore(sourceScope, initialEntry);
+    compactEmbeddedAgentSessionMock.mockImplementationOnce(async () => {
+      await upsertSessionEntryCore(rogueScope, {
+        lifecycleRevision: "lifecycle",
+        sessionId: "rogue",
+        updatedAt: 20,
+      });
+      await replaceTranscriptEvents(rogueScope, [
+        { type: "message", message: { role: "user", content: "x".repeat(256) } },
+      ]);
+      return {
+        ok: true,
+        compacted: true,
+        result: { sessionId: "declared", tokensAfter: 42 },
+      };
+    });
+
+    const activeEntry = await fixture.run(initialEntry);
+    const persisted = loadMainSessionEntry(fixture.storePath);
+
+    expect(activeEntry?.sessionId).toBe("rogue");
+    expect(persisted.compactionCount ?? 0).toBe(0);
+    expect(persisted.transcriptByteCompactionLatch).toBeUndefined();
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+    expect(preflightCompactionWarnMock).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a byte-compaction latch across a lifecycle reset", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const scope = {
+      agentId: "main",
+      sessionId: "session",
+      sessionKey: "main",
+      storePath: fixture.storePath,
+    };
+    const initialEntry: SessionEntry = {
+      ...fixture.sessionEntry,
+      lifecycleRevision: "before-reset",
+    };
+    await upsertSessionEntryCore(scope, initialEntry);
+    compactEmbeddedAgentSessionMock.mockImplementationOnce(async () => {
+      await upsertSessionEntryCore(scope, {
+        lifecycleRevision: "after-reset",
+        sessionId: "session",
+        updatedAt: 20,
+      });
+      await replaceTranscriptEvents(scope, []);
+      return { ok: true, compacted: true, result: { tokensAfter: 42 } };
+    });
+
+    const activeEntry = await fixture.run(initialEntry);
+
+    const persisted = loadMainSessionEntry(fixture.storePath);
+    expect(activeEntry?.lifecycleRevision).toBe("after-reset");
+    expect(persisted.lifecycleRevision).toBe("after-reset");
+    expect(persisted.compactionCount ?? 0).toBe(0);
+    expect(persisted.transcriptByteCompactionLatch).toBeUndefined();
+    expect(preflightCompactionWarnMock).not.toHaveBeenCalled();
+  });
+
+  it("adopts a lifecycle reset that rejects a latch write without an in-memory store", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const initialEntry: SessionEntry = {
+      ...fixture.sessionEntry,
+      lifecycleRevision: "before-reset",
+    };
+    const resetEntry: SessionEntry = {
+      lifecycleRevision: "after-reset",
+      sessionId: "session",
+      updatedAt: 20,
+    };
+    await replaceSessionEntry({ sessionKey: "main", storePath: fixture.storePath }, initialEntry);
+    let resetInjected = false;
+    setAgentRunnerMemoryTestDeps({
+      compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock as never,
+      incrementCompactionCount: incrementCompactionCountMock as never,
+      refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock as never,
+      updateSessionEntry: async (params: TestUpdateSessionEntryParams) => {
+        if (!resetInjected) {
+          resetInjected = true;
+          await replaceSessionEntry(
+            { sessionKey: params.sessionKey, storePath: params.storePath },
+            resetEntry,
+          );
+        }
+        return await updateSessionEntry(
+          { sessionKey: params.sessionKey, storePath: params.storePath },
+          params.update,
+          {
+            skipMaintenance: params.skipMaintenance,
+            takeCacheOwnership: params.takeCacheOwnership,
+          },
+        );
+      },
+    });
+
+    const activeEntry = await fixture.run(initialEntry, "10b", false);
+
+    expect(resetInjected).toBe(true);
+    expect(activeEntry?.lifecycleRevision).toBe("after-reset");
+    expect(loadMainSessionEntry(fixture.storePath).lifecycleRevision).toBe("after-reset");
+    expect(preflightCompactionWarnMock).not.toHaveBeenCalled();
+  });
+
+  it("revalidates durable state after terminal compaction callbacks", async () => {
+    const fixture = await createOversizedByteCompactionFixture();
+    const initialEntry: SessionEntry = {
+      ...fixture.sessionEntry,
+      lifecycleRevision: "before-reset",
+    };
+    await replaceSessionEntry({ sessionKey: "main", storePath: fixture.storePath }, initialEntry);
+
+    const activeEntry = await fixture.run(initialEntry, "10b", true, async (phase) => {
+      if (phase !== "end") {
+        return;
+      }
+      await replaceSessionEntry(
+        { sessionKey: "main", storePath: fixture.storePath },
+        {
+          lifecycleRevision: "after-terminal-reset",
+          sessionId: "session",
+          updatedAt: 30,
+        },
+      );
+    });
+
+    const persisted = loadMainSessionEntry(fixture.storePath);
+    expect(activeEntry?.lifecycleRevision).toBe("after-terminal-reset");
+    expect(activeEntry?.transcriptByteCompactionLatch).toBeUndefined();
+    expect(persisted.lifecycleRevision).toBe("after-terminal-reset");
+    expect(persisted.transcriptByteCompactionLatch).toBeUndefined();
+  });
+
   it.each([
     ["fresh session selected from the outset", "fresh", "codex"],
     ["upgraded session with historical embedded ownership", "upgraded", "openclaw"],
@@ -3390,33 +3761,40 @@ describe("runMemoryFlushIfNeeded", () => {
       const sessionStore = { [sessionKey]: sessionEntry };
       const replyOperation = createReplyOperation();
 
-      const entry = await runSessionCompactionIfNeeded({
-        cfg: {
-          agents: {
-            defaults: {
-              compaction: { maxActiveTranscriptBytes: "10b" },
+      const runPreflight = async (entry: SessionEntry) =>
+        await runSessionCompactionIfNeeded({
+          cfg: {
+            agents: {
+              defaults: {
+                compaction: { maxActiveTranscriptBytes: "10b" },
+              },
             },
           },
-        },
-        followupRun: createTestFollowupRun({
-          provider: "openai",
-          model: "gpt-5.5",
-          sessionId: "session",
+          followupRun: createTestFollowupRun({
+            provider: "openai",
+            model: "gpt-5.5",
+            sessionId: "session",
+            sessionKey,
+          }),
+          defaultModel: "gpt-5.5",
+          modelContextTokens: 1_000_000,
+          sessionEntry: entry,
+          sessionStore,
           sessionKey,
-        }),
-        defaultModel: "gpt-5.5",
-        modelContextTokens: 1_000_000,
-        sessionEntry,
-        sessionStore,
-        sessionKey,
-        storePath,
-        isHeartbeat: false,
-        ...createCompactionLifecycle(replyOperation),
-      });
+          storePath,
+          isHeartbeat: false,
+          ...createCompactionLifecycle(replyOperation),
+        });
 
-      expect(entry?.compactionCount).toBe(1);
+      const firstEntry = await runPreflight(sessionEntry);
+      const secondEntry = await runPreflight(firstEntry ?? sessionEntry);
+
+      expect(firstEntry?.compactionCount).toBe(1);
+      expect(secondEntry?.compactionCount).toBe(2);
+      expect(secondEntry?.transcriptByteCompactionLatch).toBeUndefined();
+      expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(2);
       expect(replyOperation.setPhase).toHaveBeenCalledWith("preflight_compacting");
-      expect(requireCompactEmbeddedAgentSessionCall()).toMatchObject({
+      expect(requireCompactEmbeddedAgentSessionCall(1)).toMatchObject({
         agentHarnessId: "codex",
         contextTokenBudget: 1_000_000,
         deferOwningContextEngineCompaction: false,

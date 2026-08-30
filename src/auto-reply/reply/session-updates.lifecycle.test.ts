@@ -122,6 +122,37 @@ describe("session-updates lifecycle hooks", () => {
     expect(startContext?.agentId).toBe("main");
   });
 
+  it("emits rotation hooks when the compactor already persisted the successor", async () => {
+    const { storePath, sessionKey, sessionStore, entry } = await createFixture();
+    const sourceEntry = { ...entry, lifecycleRevision: "lifecycle" };
+    const successorEntry = {
+      ...sourceEntry,
+      sessionId: "s2",
+      updatedAt: entry.updatedAt + 1,
+    };
+    await replaceSessionEntry({ storePath, sessionKey }, successorEntry);
+    sessionStore[sessionKey] = successorEntry;
+
+    await incrementCompactionCount({
+      cfg: { session: { store: storePath } } as OpenClawConfig,
+      compactionSourceEntry: sourceEntry,
+      expectedSession: { sessionId: "s2", lifecycleRevision: "lifecycle" },
+      sessionEntry: successorEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      newSessionId: "s2",
+    });
+
+    expect(hookRunnerMocks.runSessionEnd).toHaveBeenCalledTimes(1);
+    expect(hookRunnerMocks.runSessionStart).toHaveBeenCalledTimes(1);
+    expect(firstSessionEndCall()[0]?.sessionId).toBe("s1");
+    expect(firstSessionEndCall()[0]?.nextSessionId).toBe("s2");
+    expect(firstSessionStartCall()[0]?.sessionId).toBe("s2");
+    expect(firstSessionStartCall()[0]?.resumedFrom).toBe("s1");
+    expect(sessionStore[sessionKey]?.usageFamilySessionIds).toEqual(["s1", "s2"]);
+  });
+
   it("keeps compaction lifecycle hooks root-admitted until both settle", async () => {
     const { storePath, sessionKey, sessionStore, entry } = await createFixture();
     const releases: Array<() => void> = [];

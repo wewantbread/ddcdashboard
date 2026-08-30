@@ -330,6 +330,8 @@ export async function incrementCompactionCount(params: {
   /** Session id after compaction when a context engine changed identity. */
   newSessionId?: string;
   compactionKind?: EmbeddedAgentCompactResult["compactionKind"];
+  /** Source entry when the compactor already persisted its successor before accounting. */
+  compactionSourceEntry?: SessionEntry;
   expectedSession?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
   authorize?: () => boolean;
 }): Promise<number | undefined> {
@@ -345,6 +347,7 @@ export async function incrementCompactionCount(params: {
     tokensAfter,
     newSessionId,
     compactionKind,
+    compactionSourceEntry,
     expectedSession,
     authorize,
   } = params;
@@ -373,12 +376,19 @@ export async function incrementCompactionCount(params: {
   if (compactionKind === "context-engine") {
     clearAllCliSessions(updates);
   }
-  const sessionIdChanged = Boolean(newSessionId && newSessionId !== entry.sessionId);
+  const lifecycleSourceEntry = compactionSourceEntry ?? entry;
+  const sessionIdChanged = Boolean(newSessionId && newSessionId !== lifecycleSourceEntry.sessionId);
   if (sessionIdChanged && newSessionId) {
     updates.sessionId = newSessionId;
-    updates.usageFamilyKey = entry.usageFamilyKey ?? sessionKey;
+    updates.usageFamilyKey =
+      entry.usageFamilyKey ?? lifecycleSourceEntry.usageFamilyKey ?? sessionKey;
     updates.usageFamilySessionIds = Array.from(
-      new Set([...(entry.usageFamilySessionIds ?? []), entry.sessionId, newSessionId]),
+      new Set([
+        ...(entry.usageFamilySessionIds ?? []),
+        ...(lifecycleSourceEntry.usageFamilySessionIds ?? []),
+        lifecycleSourceEntry.sessionId,
+        newSessionId,
+      ]),
     );
   }
   const tokensAfterCompaction = resolveNonNegativeTokenCount(tokensAfter);
@@ -444,7 +454,7 @@ export async function incrementCompactionCount(params: {
       cfg,
       sessionKey,
       storePath: effectiveStorePath,
-      previousEntry: entry,
+      previousEntry: lifecycleSourceEntry,
       nextEntry: sessionStore[sessionKey],
     });
   }
