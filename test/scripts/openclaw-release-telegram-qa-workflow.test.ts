@@ -926,6 +926,27 @@ describe("release Telegram QA workflow", () => {
     );
   });
 
+  it("returns the settled SUT tree to the trusted cleanup owner", () => {
+    const createSut = requireRun(
+      "run_telegram",
+      "Create isolated Telegram SUT identity and launcher",
+    );
+    const launcher = extractHereDocument(createSut, "LAUNCHER");
+    expect(launcher).toContain('exec sudo -n -- "$0" --root-release-temp-root "$@"');
+    expect(launcher).toContain('if [[ "${1:-}" == "--root-release-temp-root" ]]; then');
+    const quiescenceCheck = launcher.indexOf("if sut_uid_processes_alive; then");
+    const ownershipReturn = launcher.indexOf(
+      'chown -R -h -- "$RUNNER_UID:$RUNNER_GID" "$requested_temp_root"',
+    );
+    expect(quiescenceCheck).toBeGreaterThan(-1);
+    expect(ownershipReturn).toBeGreaterThan(quiescenceCheck);
+    expect(launcher).not.toContain('chown -R -h -- "$RUNNER_UID:$RUNNER_GID" "$temp_root"');
+    expect(createSut).toContain(
+      'echo "Telegram SUT temp-root release accepted a live isolated UID." >&2',
+    );
+    expect(createSut).toContain('echo "Telegram SUT privileged temp-root release proof passed."');
+  });
+
   it("lets the SUT create suite locks without exposing the runner-owned config", () => {
     const createSut = requireRun(
       "run_telegram",

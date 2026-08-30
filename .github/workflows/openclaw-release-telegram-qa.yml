@@ -1425,6 +1425,11 @@ jobs:
             exec sudo -n -- "$0" --root-terminate-uid
           fi
 
+          if [[ "${1:-}" == "--release-temp-root" ]]; then
+            shift
+            exec sudo -n -- "$0" --root-release-temp-root "$@"
+          fi
+
           if [[ "${1:-}" == "--verify" ]]; then
             shift
             exec sudo -n -- "$0" --root-verify "$@"
@@ -1493,6 +1498,29 @@ jobs:
             [[ "$EUID" == "0" ]]
             source /etc/openclaw-telegram-sut.conf
             terminate_sut_uid
+            exit 0
+          fi
+
+          if [[ "${1:-}" == "--root-release-temp-root" ]]; then
+            [[ "$EUID" == "0" ]]
+            source /etc/openclaw-telegram-sut.conf
+            shift
+            requested_temp_root="$(readlink -f -- "${1:?}")"
+            case "$requested_temp_root" in
+              "$RUNTIME_ROOT"/tmp/openclaw-qa-suite-*|"$RUNTIME_ROOT"/tmp/openclaw-"$RUNNER_UID"/openclaw-qa-suite-*) ;;
+              *) echo "Refusing Telegram SUT temp-root release outside the runtime root." >&2; exit 1 ;;
+            esac
+            [[ -d "$requested_temp_root" && ! -L "$requested_temp_root" ]]
+            # Revalidate the authoritative UID at the privileged use itself;
+            # earlier process-group settlement is not a transferable claim.
+            for _ in 1 2; do
+              if sut_uid_processes_alive; then
+                echo "Refusing Telegram SUT temp-root release while its UID is alive." >&2
+                exit 1
+              fi
+              sleep 1
+            done
+            chown -R -h -- "$RUNNER_UID:$RUNNER_GID" "$requested_temp_root"
             exit 0
           fi
 
@@ -1909,6 +1937,31 @@ jobs:
           LAUNCHER
           sudo chown root:root "$launcher"
           sudo chmod 0755 "$launcher"
+
+          # Exercise the real sudo boundary before credentials or channel work:
+          # a live isolated UID must block handoff, then quiescence must permit it.
+          release_proof_root="${runtime_root}/tmp/openclaw-qa-suite-release-proof"
+          mkdir -p "$release_proof_root/state"
+          sudo chown -R "$sut_uid:$sut_gid" "$release_proof_root/state"
+          sudo chmod 0700 "$release_proof_root/state"
+          sudo -u "$sut_user" -- setsid sleep 30 &
+          release_proof_pid=$!
+          for _ in $(seq 1 20); do
+            pgrep -U "$sut_uid" >/dev/null 2>&1 && break
+            sleep 0.1
+          done
+          pgrep -U "$sut_uid" >/dev/null 2>&1
+          if "$launcher" --release-temp-root "$release_proof_root"; then
+            echo "Telegram SUT temp-root release accepted a live isolated UID." >&2
+            exit 1
+          fi
+          [[ "$(stat -c '%u:%g' "$release_proof_root/state")" == "$sut_uid:$sut_gid" ]]
+          "$launcher" --terminate-uid
+          wait "$release_proof_pid" 2>/dev/null || true
+          "$launcher" --release-temp-root "$release_proof_root"
+          [[ "$(stat -c '%u:%g' "$release_proof_root/state")" == "$runner_uid:$runner_gid" ]]
+          rm -rf -- "$release_proof_root"
+          echo "Telegram SUT privileged temp-root release proof passed."
 
           forwarded_env_keys="$(
             sed -n '/^transport_keys=(/,/^)/p' "$launcher" |
