@@ -1,5 +1,6 @@
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
+import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
@@ -25,6 +26,62 @@ export type FollowupExecutionResult = {
     drain(): Promise<void>;
   };
 };
+
+async function drainFollowupPendingWork(params: {
+  pendingProgressTasks: Set<Promise<void>>;
+  pendingToolTasks: Set<Promise<void>>;
+  pendingToolTaskWatchers: Set<Promise<void>>;
+  drainIdleTimeoutMs?: number;
+}): Promise<void> {
+  const budgetMs = params.drainIdleTimeoutMs ?? 30_000;
+  const deadlineAt = Date.now() + budgetMs;
+  const snapshotPending = () => [
+    ...params.pendingProgressTasks,
+    ...params.pendingToolTasks,
+    ...params.pendingToolTaskWatchers,
+  ];
+
+  while (true) {
+    const pending = snapshotPending();
+    if (pending.length === 0) {
+      return;
+    }
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      logVerbose(
+        "followup pending work exceeded the drain deadline; proceeding to avoid session deadlock",
+      );
+      return;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timeoutId = setTimeout(() => resolve("timeout"), remainingMs);
+      timeoutId.unref?.();
+    });
+    const outcome = await Promise.race<{ kind: "settled"; task: Promise<void> } | "timeout">([
+      timeoutPromise,
+      ...pending.map((task) =>
+        task.then(
+          () => ({ kind: "settled" as const, task }),
+          () => ({ kind: "settled" as const, task }),
+        ),
+      ),
+    ]);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+    if (outcome === "timeout") {
+      logVerbose(
+        "followup pending work exceeded the drain deadline; proceeding to avoid session deadlock",
+      );
+      return;
+    }
+    params.pendingProgressTasks.delete(outcome.task);
+    params.pendingToolTasks.delete(outcome.task);
+    params.pendingToolTaskWatchers.delete(outcome.task);
+  }
+}
 
 function buildFollowupTemplateContext(turn: AdmittedFollowupTurn): TemplateContext {
   const queued = turn.queued;
@@ -70,8 +127,10 @@ export async function executeFollowupTurn(params: {
   defaults: FollowupRunnerParams;
   onToolResult: (payload: ReplyPayload, execution: { runId: string }) => Promise<void>;
   onCompactionNoticePayload: (payload: ReplyPayload, execution: { runId: string }) => Promise<void>;
+  drainIdleTimeoutMs?: number;
 }): Promise<FollowupExecutionResult> {
   const { turn, defaults } = params;
+  const drainIdleTimeoutMs = params.drainIdleTimeoutMs;
   const sourceOpts = defaults.opts;
   const roomEvent = turn.queued.currentInboundEventKind === "room_event";
   const progressAllowed = () => turn.sendPolicy === "allow" && !roomEvent;
@@ -371,17 +430,12 @@ export async function executeFollowupTurn(params: {
           ),
       });
     } catch (error) {
-      while (
-        pendingProgressTasks.size > 0 ||
-        pendingToolTasks.size > 0 ||
-        pendingToolTaskWatchers.size > 0
-      ) {
-        await Promise.allSettled([
-          ...pendingProgressTasks,
-          ...pendingToolTasks,
-          ...pendingToolTaskWatchers,
-        ]);
-      }
+      await drainFollowupPendingWork({
+        pendingProgressTasks,
+        pendingToolTasks,
+        pendingToolTaskWatchers,
+        drainIdleTimeoutMs,
+      });
       if (!hasReplyOperationExecutionStarted(turn.operation)) {
         throw error;
       }
@@ -408,20 +462,13 @@ export async function executeFollowupTurn(params: {
     pendingToolTasks,
     progress: {
       drain: async () => {
-        let firstFailure: unknown = pendingProgressTaskFailure ?? pendingToolTaskFailure;
-        while (
-          pendingProgressTasks.size > 0 ||
-          pendingToolTasks.size > 0 ||
-          pendingToolTaskWatchers.size > 0
-        ) {
-          const results = await Promise.allSettled([
-            ...pendingProgressTasks,
-            ...pendingToolTasks,
-            ...pendingToolTaskWatchers,
-          ]);
-          firstFailure ??= results.find((result) => result.status === "rejected")?.reason;
-        }
-        firstFailure ??= pendingProgressTaskFailure ?? pendingToolTaskFailure;
+        await drainFollowupPendingWork({
+          pendingProgressTasks,
+          pendingToolTasks,
+          pendingToolTaskWatchers,
+          drainIdleTimeoutMs,
+        });
+        const firstFailure: unknown = pendingProgressTaskFailure ?? pendingToolTaskFailure;
         if (firstFailure !== undefined) {
           throw firstFailure instanceof Error
             ? firstFailure
