@@ -18,11 +18,13 @@ import {
   emitCoreModelRequestStartedDiagnosticEvent,
 } from "../infra/diagnostic-model-request.js";
 import { emitCoreSemanticRunProgressDiagnosticEvent } from "../infra/diagnostic-semantic-run-progress.js";
+import { markDiagnosticOutstandingBackgroundWork } from "./diagnostic-outstanding-background-work.js";
 import {
   BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   clearDiagnosticEmbeddedRunActivityForSession,
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
+  getDiagnosticEmbeddedRunActivitySequence,
   getDiagnosticSessionActivitySnapshot,
   markDiagnosticArgumentChurnObservation,
   markDiagnosticEmbeddedRunEnded,
@@ -1029,6 +1031,68 @@ describe("repeated request liveness", () => {
     stopDiagnosticRunActivityTracking();
     startDiagnosticRunActivityTracking();
     expect(getDiagnosticSessionActivitySnapshot(ref)).toEqual({});
+  });
+});
+
+describe("outstanding CLI background-work liveness fact", () => {
+  const ref = { sessionId: "bg-session", sessionKey: "agent:main:bg" };
+
+  it("exposes run-bound background work on the session activity snapshot", () => {
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "bg-run" });
+
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "bg-run", count: 2 });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
+
+    // Zero counts clear the fact; unknown runs never clear another run's fact.
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "other-run", count: 0 });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
+
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "bg-run", count: 0 });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+
+    // Ending the embedded run clears any outstanding fact for the lane.
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "bg-run", count: 1 });
+    markDiagnosticEmbeddedRunEnded(ref);
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+  });
+
+  it("clears outstanding background work on run completion", async () => {
+    startDiagnosticRunActivityTracking();
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "bg-run" });
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "bg-run", count: 1 });
+
+    emitDiagnosticEvent({
+      type: "run.completed",
+      ...ref,
+      runId: "bg-run",
+      durationMs: 1,
+      outcome: "completed",
+    });
+    await waitForDiagnosticEventsDrained();
+
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+  });
+
+  it("clears recovered background work but preserves a replacement owner's fact", () => {
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "bg-run", count: 1 });
+
+    // Stale recovery without a newer owner clears the recovered run's fact.
+    clearDiagnosticEmbeddedRunActivityForSession(ref);
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+
+    // A replacement run re-arms with its own background work before an older
+    // recovery outcome lands; the newer-owner guard must preserve that fact
+    // so the replacement run keeps its recovery grace (#118386).
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "old-run" });
+    const oldRunSequence = getDiagnosticEmbeddedRunActivitySequence();
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "new-run" });
+    markDiagnosticOutstandingBackgroundWork({ ...ref, runId: "new-run", count: 1 });
+
+    const blockedParams = { ...ref, recoveryStartedAfterEmbeddedRunSequence: oldRunSequence };
+    const blocked = clearDiagnosticEmbeddedRunActivityForSession(blockedParams);
+
+    expect(blocked.blockedByActiveEmbeddedRun).toBe(true);
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
   });
 });
 

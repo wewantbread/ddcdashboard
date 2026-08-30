@@ -19,9 +19,11 @@ export type DiagnosticSessionActivitySnapshot = {
   lastProgressReason?: string;
   repeatedRequestNoProgressAgeMs?: number;
   activeModelCallRequestTimeoutMs?: number;
+  hasOutstandingBackgroundWork?: boolean;
 };
 
 type SnapshotTool = {
+  runId?: string;
   toolName: string;
   toolCallId?: string;
   startedAt: number;
@@ -29,13 +31,68 @@ type SnapshotTool = {
 };
 type SnapshotActivity = DiagnosticArgumentChurnActivity &
   DiagnosticRepeatedRequestActivity & {
-    activeEmbeddedRuns: ReadonlyMap<string, { runId: string; sequence: number }>;
-    activeModelCalls: ReadonlyMap<string, unknown>;
-    activeCoreModelCalls: ReadonlyMap<object, ReadonlyMap<string, { requestTimeoutMs?: number }>>;
+    activeEmbeddedRuns: ReadonlyMap<
+      string,
+      { runId: string; sequence: number; generation?: unknown }
+    >;
+    activeModelCalls: ReadonlyMap<string, { runId?: string }>;
+    activeCoreModelCalls: ReadonlyMap<
+      object,
+      ReadonlyMap<string, { runId?: string; requestTimeoutMs?: number }>
+    >;
     activeTools: ReadonlyMap<string, SnapshotTool>;
+    outstandingBackgroundWork: Map<unknown, { runId: string; count: number }>;
     lastProgressAt: number;
     lastProgressReason?: string;
   };
+
+// A background-work fact only certifies the run that reported it. Grace must
+// never leak from a departed run's leftover entry to its successor (#118386).
+function hasActiveMarkerForRun(activity: SnapshotActivity, runId: string): boolean {
+  for (const run of activity.activeEmbeddedRuns.values()) {
+    if (run.runId === runId) {
+      return true;
+    }
+  }
+  for (const tool of activity.activeTools.values()) {
+    if (tool.runId === runId) {
+      return true;
+    }
+  }
+  for (const call of activity.activeModelCalls.values()) {
+    if (call.runId === runId) {
+      return true;
+    }
+  }
+  for (const calls of activity.activeCoreModelCalls.values()) {
+    for (const call of calls.values()) {
+      if (call.runId === runId) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasActiveOutstandingBackgroundWork(activity: SnapshotActivity): boolean {
+  for (const [lifetime, fact] of activity.outstandingBackgroundWork) {
+    if (fact.count <= 0) {
+      continue;
+    }
+    if (typeof lifetime !== "object" || lifetime === null) {
+      if (hasActiveMarkerForRun(activity, String(lifetime))) {
+        return true;
+      }
+      continue;
+    }
+    for (const run of activity.activeEmbeddedRuns.values()) {
+      if (run.generation === lifetime) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 export function buildDiagnosticSessionActivitySnapshot(
   activity: SnapshotActivity,
@@ -89,6 +146,7 @@ export function buildDiagnosticSessionActivitySnapshot(
       now,
     ),
     activeModelCallRequestTimeoutMs,
+    ...(hasActiveOutstandingBackgroundWork(activity) ? { hasOutstandingBackgroundWork: true } : {}),
   };
 }
 

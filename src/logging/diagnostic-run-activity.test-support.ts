@@ -11,16 +11,22 @@ type DiagnosticRunProgressActivityEvent = Pick<
   "runId" | "sessionId" | "sessionKey" | "reason"
 > & { progressKind?: "semantic" | "liveness" };
 
+type DiagnosticToolStartedActivityEvent = {
+  sessionId?: string;
+  sessionKey?: string;
+  runId?: string;
+  toolName: string;
+  toolCallId?: string;
+};
+
 type DiagnosticRunActivityTestApi = {
-  markDiagnosticModelStartedForTest(params: DiagnosticModelStartedActivityEvent): void;
-  markDiagnosticRunProgressForTest(params: DiagnosticRunProgressActivityEvent): void;
-  markDiagnosticToolStartedForTest(params: {
-    sessionId?: string;
-    sessionKey?: string;
-    runId?: string;
-    toolName: string;
-    toolCallId?: string;
-  }): void;
+  applyRunProgress(params: DiagnosticRunProgressActivityEvent, semantic?: boolean): void;
+  recordModelStarted(
+    params: DiagnosticModelStartedActivityEvent,
+    provenance: undefined,
+    coreRequestForTest: boolean,
+  ): void;
+  recordToolStarted(params: DiagnosticToolStartedActivityEvent): void;
 };
 
 function getTestApi(): DiagnosticRunActivityTestApi {
@@ -32,15 +38,13 @@ function getTestApi(): DiagnosticRunActivityTestApi {
 export function markDiagnosticModelStartedForTest(
   params: DiagnosticModelStartedActivityEvent,
 ): void {
-  getTestApi().markDiagnosticModelStartedForTest(params);
+  getTestApi().recordModelStarted(params, undefined, true);
 }
 
 export function markDiagnosticRunProgressForTest(params: DiagnosticRunProgressActivityEvent): void {
-  getTestApi().markDiagnosticRunProgressForTest(params);
+  getTestApi().applyRunProgress(params, params.progressKind === "semantic");
 }
 
-export function markDiagnosticToolStartedForTest(
-  params: Parameters<DiagnosticRunActivityTestApi["markDiagnosticToolStartedForTest"]>[0],
-): void {
-  getTestApi().markDiagnosticToolStartedForTest(params);
+export function markDiagnosticToolStartedForTest(params: DiagnosticToolStartedActivityEvent): void {
+  getTestApi().recordToolStarted(params);
 }
