@@ -35,6 +35,7 @@ import {
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { CatalogIconLoader } from "../plugins/catalog-icon-loader.ts";
 import { renderPluginsHubHeader } from "../plugins/plugins-hub-header.ts";
 import { PLUGINS_HUB_PANEL_ID, type PluginsHubTab } from "../plugins/plugins-hub.ts";
 import { renderSkills, type SkillDetailTab, type SkillsStatusFilter } from "./view.ts";
@@ -68,6 +69,7 @@ class SkillsPage extends OpenClawLightDomElement {
   @state() skillsDetailKey: string | null = null;
   @state() skillsDetailTab: SkillDetailTab = "overview";
   @state() clawhubSearchQuery = "";
+  @state() clawhubIconUrls: Record<string, string> = {};
   @state() clawhubDetail: ClawHubSkillDetail | null = null;
   @state() clawhubDetailRef: string | null = null;
   @state() clawhubDetailLoading = false;
@@ -100,6 +102,11 @@ class SkillsPage extends OpenClawLightDomElement {
   private routeDataInitialized = false;
   private routeDataEnabled = true;
   private debouncedClawHubSearchQuery = "";
+  private readonly clawhubIconLoader = new CatalogIconLoader(
+    () => this.context,
+    (iconUrl) => this.currentClawHubIconUrls().has(iconUrl),
+    (urls) => (this.clawhubIconUrls = urls),
+  );
   private readonly gateway = new GatewayPageController(this, {
     getGateway: () => this.context?.gateway,
     invalidateRequests: () => this.resetLoadedSkillState(),
@@ -136,12 +143,17 @@ class SkillsPage extends OpenClawLightDomElement {
     }
   }
 
+  override updated() {
+    this.syncClawHubIcons();
+  }
+
   override disconnectedCallback() {
     this.subscriptions.clear();
     if (this.clawhubSearchTimer) {
       clearTimeout(this.clawhubSearchTimer);
       this.clawhubSearchTimer = null;
     }
+    this.clawhubIconLoader.reset();
     super.disconnectedCallback();
   }
 
@@ -159,6 +171,7 @@ class SkillsPage extends OpenClawLightDomElement {
 
   private resetLoadedSkillState() {
     void this.clawhubSearchTask.run([null, ""]);
+    this.clawhubIconLoader.reset();
     if (this.clawhubSearchTimer) {
       clearTimeout(this.clawhubSearchTimer);
       this.clawhubSearchTimer = null;
@@ -189,6 +202,24 @@ class SkillsPage extends OpenClawLightDomElement {
     this.skillCardContentKeys = {};
     this.skillCardLoadingKey = null;
     this.skillCardErrors = {};
+  }
+
+  private currentClawHubIconUrls(): Set<string> {
+    if (!this.connected) {
+      return new Set();
+    }
+    return new Set(
+      [
+        ...(this.clawhubSearchResults ?? []).map((result) => result.icon),
+        this.clawhubDetail?.skill?.icon,
+      ].flatMap((icon) => (icon ? [icon] : [])),
+    );
+  }
+
+  // Blob URLs and pending requests belong only to visible registry results;
+  // revoke or abort removed entries so stale searches cannot publish artwork.
+  private syncClawHubIcons() {
+    this.clawhubIconLoader.reconcile(this.currentClawHubIconUrls());
   }
 
   private applyRouteData() {
@@ -392,6 +423,7 @@ class SkillsPage extends OpenClawLightDomElement {
             skillCardErrors: this.skillCardErrors,
             clawhubQuery: this.clawhubSearchQuery,
             clawhubResults: this.clawhubSearchResults,
+            clawhubIconUrls: this.clawhubIconUrls,
             clawhubSearchLoading: this.clawhubSearchLoading,
             clawhubSearchError: this.clawhubSearchError,
             clawhubDetail: this.clawhubDetail,
