@@ -6,10 +6,12 @@ import {
   EVENT_MANAGER_REPLAY_KEY_LIMIT,
 } from "../manager.test-harness.js";
 import type { VoiceCallProvider } from "../providers/base.js";
-import type { CallRecord, HangupCallInput, NormalizedEvent } from "../types.js";
+import type { AnswerCallInput, CallRecord, HangupCallInput, NormalizedEvent } from "../types.js";
 import { processEvent } from "./events.js";
+import { finalizeCall } from "./lifecycle.js";
 import { speakInitialMessage } from "./outbound.js";
 import { MAX_CALL_REPLAY_KEYS } from "./replay-keys.js";
+import { findCallMatchesInStore, getCallHistoryFromStore, persistCallRecord } from "./store.js";
 
 const logSpy = vi.hoisted(() => {
   const logEntries: string[] = [];
@@ -510,6 +512,212 @@ describe("processEvent (functional)", () => {
       waiterResolved: false,
     });
     expect(replayResult).toEqual({ kind: "ignored" });
+  });
+
+  it("does not birth a phantom record for a late status callback on a finalized call", async () => {
+    // Reproduces #130059: after finalizeCall removes a record from the active
+    // maps, a late provider "completed" status callback arrives with a fresh
+    // dedupe key (the local end never records one for the provider's eventual
+    // status callback). findCall misses the now-removed record, so the
+    // auto-register branch must consult the persistent store instead of
+    // fabricating a phantom zero-duration record under the default agent.
+    const now = Date.now();
+    const ctx = createContext();
+    const providerCallId = "CA-late-callback";
+    const realCall: CallRecord = {
+      callId: "call-real-agent",
+      providerCallId,
+      provider: "twilio",
+      direction: "outbound",
+      state: "answered",
+      from: "+15550000000",
+      to: "+15550000001",
+      agentId: "agent-sales",
+      startedAt: now - 30_000,
+      answeredAt: now - 25_000,
+      transcript: [],
+      processedEventIds: [],
+    };
+    ctx.activeCalls.set(realCall.callId, realCall);
+    ctx.providerCallIdMap.set(providerCallId, realCall.callId);
+
+    // The realtime/bot end closes the lifecycle: finalizeCall transitions to a
+    // terminal state, persists the terminal snapshot, and removes the record
+    // from the active maps (it remains only in the persistent store).
+    finalizeCall({ ctx, call: realCall, endReason: "hangup-bot" });
+    expect(ctx.activeCalls.size).toBe(0);
+    expect(ctx.providerCallIdMap.has(providerCallId)).toBe(false);
+
+    // The provider's eventual "completed" status callback arrives late, with a
+    // fresh dedupe key the local end never recorded.
+    const result = processEvent(ctx, {
+      id: "evt-late-completed",
+      type: "call.ended",
+      callId: providerCallId,
+      providerCallId,
+      timestamp: now,
+      direction: "outbound",
+      reason: "completed",
+      from: "+15550000000",
+      to: "+15550000001",
+    });
+    expect(result.kind).toBe("processed");
+
+    // No phantom: the store owns only snapshots of the original real call —
+    // retaining its agent — not a freshly-minted default-agent zero-duration
+    // phantom with a new callId.
+    const matches = await findCallMatchesInStore(ctx.storePath, providerCallId);
+    const owner = matches.byProviderCallId;
+    expect(owner).toBeDefined();
+    expect(owner!.callId).toBe("call-real-agent");
+    expect(owner!.agentId).toBe("agent-sales");
+    const history = await getCallHistoryFromStore(ctx.storePath, 50);
+    expect(history.every((call) => call.callId === "call-real-agent")).toBe(true);
+  });
+
+  it("does not answer a late inbound call.initiated on a finalized call", async () => {
+    // Sibling coverage for #130059: a late provider callback that folds into a
+    // terminal record must not re-run live side effects. The call.initiated
+    // handler queues answerCall for inbound calls; on an already-ended call
+    // that would send an answer action to the carrier for a dead call.
+    const now = Date.now();
+    const answerCalls: AnswerCallInput[] = [];
+    const provider = createProvider({
+      answerCall: async (input: AnswerCallInput): Promise<void> => {
+        answerCalls.push(input);
+      },
+    });
+    const ctx = createContext({
+      config: VoiceCallConfigSchema.parse({
+        enabled: true,
+        provider: "plivo",
+        fromNumber: "+15550000000",
+        inboundPolicy: "open",
+      }),
+      provider,
+    });
+    const providerCallId = "CA-late-inbound";
+    const realCall: CallRecord = {
+      callId: "call-real-inbound",
+      providerCallId,
+      provider: "plivo",
+      direction: "inbound",
+      state: "answered",
+      from: "+15550001234",
+      to: "+15550000000",
+      agentId: "agent-sales",
+      startedAt: now - 30_000,
+      answeredAt: now - 25_000,
+      transcript: [],
+      processedEventIds: [],
+    };
+    ctx.activeCalls.set(realCall.callId, realCall);
+    ctx.providerCallIdMap.set(providerCallId, realCall.callId);
+
+    finalizeCall({ ctx, call: realCall, endReason: "completed" });
+    expect(ctx.activeCalls.size).toBe(0);
+    expect(ctx.providerCallIdMap.has(providerCallId)).toBe(false);
+
+    // The provider's late "initiated" status echo arrives after finalization.
+    const result = processEvent(ctx, {
+      id: "evt-late-initiated",
+      type: "call.initiated",
+      callId: providerCallId,
+      providerCallId,
+      timestamp: now,
+      direction: "inbound",
+      from: "+15550001234",
+      to: "+15550000000",
+    });
+    expect(result.kind).toBe("processed");
+    // No answer request to the carrier for an already-ended call.
+    expect(answerCalls).toHaveLength(0);
+
+    // No phantom: the store owns only snapshots of the original real call.
+    const matches = await findCallMatchesInStore(ctx.storePath, providerCallId);
+    const owner = matches.byProviderCallId;
+    expect(owner).toBeDefined();
+    expect(owner!.callId).toBe("call-real-inbound");
+    expect(owner!.agentId).toBe("agent-sales");
+  });
+
+  it("folds a late alias callback into the terminal snapshot instead of the stale pre-terminal one", async () => {
+    // Sibling coverage for #130145 Finding 2: Plivo transitions a call's
+    // providerCallId from request_uuid to CallUUID across its lifecycle, and
+    // the store appends a snapshot per event rather than upserting. After a
+    // restart clears the in-memory maps, a late status callback still carrying
+    // the old request_uuid must resolve to the terminal snapshot (and absorb) —
+    // not the stale pre-terminal snapshot it directly matches, which would
+    // re-run call.initiated side effects (answerCall) on an already-ended call.
+    const now = Date.now();
+    const answerCalls: AnswerCallInput[] = [];
+    const provider = createProvider({
+      answerCall: async (input: AnswerCallInput): Promise<void> => {
+        answerCalls.push(input);
+      },
+    });
+    const ctx = createContext({
+      config: VoiceCallConfigSchema.parse({
+        enabled: true,
+        provider: "plivo",
+        fromNumber: "+15550000000",
+        inboundPolicy: "open",
+      }),
+      provider,
+    });
+    const callId = "call-plivo-alias";
+    // R1: the snapshot persisted under the original request_uuid (pre-terminal).
+    const requestUuidSnapshot: CallRecord = {
+      callId,
+      providerCallId: "request-uuid",
+      provider: "plivo",
+      direction: "inbound",
+      state: "initiated",
+      from: "+15550001234",
+      to: "+15550000000",
+      agentId: "agent-sales",
+      startedAt: now - 30_000,
+      transcript: [],
+      processedEventIds: [],
+    };
+    persistCallRecord(ctx.storePath, requestUuidSnapshot);
+    // R3: the terminal snapshot a later CallUUID callback finalized under.
+    persistCallRecord(ctx.storePath, {
+      ...requestUuidSnapshot,
+      providerCallId: "CallUUID",
+      state: "completed",
+      answeredAt: now - 25_000,
+      endedAt: now - 5_000,
+      endReason: "completed",
+    });
+
+    // In-memory maps are empty (post-restart); the late callback still carries
+    // the old request_uuid alias and must consult the store.
+    const result = processEvent(ctx, {
+      id: "evt-late-alias",
+      type: "call.initiated",
+      callId: "request-uuid",
+      providerCallId: "request-uuid",
+      timestamp: now,
+      direction: "inbound",
+      from: "+15550001234",
+      to: "+15550000000",
+    });
+
+    expect(result.kind).toBe("processed");
+    // Pre-fix: the old alias resolves to the stale initiated snapshot, which is
+    // non-terminal, so the switch re-runs and queues answerCall (1). Post-fix:
+    // the alias resolves to the terminal snapshot and absorbs (0).
+    expect(answerCalls).toHaveLength(0);
+
+    // The folded record keeps the canonical CallUUID, and the store still owns
+    // only the real call's snapshots (no phantom, no canonical-id downgrade).
+    const matches = await findCallMatchesInStore(ctx.storePath, "request-uuid");
+    const owner = matches.byProviderCallId;
+    expect(owner).toBeDefined();
+    expect(owner!.callId).toBe(callId);
+    expect(owner!.state).toBe("completed");
+    expect(owner!.providerCallId).toBe("CallUUID");
   });
 
   it.each([

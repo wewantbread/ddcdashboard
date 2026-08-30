@@ -6,7 +6,7 @@ import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { isAllowlistedCaller, normalizePhoneNumber } from "../allowlist.js";
 import { resolveVoiceCallEffectiveConfig, resolveVoiceCallSessionKey } from "../config.js";
-import type { CallRecord, NormalizedEvent } from "../types.js";
+import { TerminalStates, type CallRecord, type NormalizedEvent } from "../types.js";
 import type { CallManagerContext } from "./context.js";
 import { finalizeCall } from "./lifecycle.js";
 import { findCall } from "./lookup.js";
@@ -18,7 +18,7 @@ import {
   reserveRejectedProviderCall,
 } from "./replay-keys.js";
 import { addTranscriptEntry, transitionState } from "./state.js";
-import { persistCallRecord } from "./store.js";
+import { findCallByProviderCallIdInStore, persistCallRecord } from "./store.js";
 import { resolveTranscriptWaiter, startMaxDurationTimer } from "./timers.js";
 
 const log = createSubsystemLogger("voice-call/events");
@@ -168,6 +168,9 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): Process
     providerCallIdMap: ctx.providerCallIdMap,
     callIdOrProviderCallId: event.callId,
   });
+  // Set when a late provider callback folds into a persisted terminal record;
+  // such an echo must not re-run live event side effects (see try block).
+  let foldedTerminalRecord = false;
 
   const providerCallId = event.providerCallId;
   const eventDirection =
@@ -212,13 +215,24 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): Process
       return { kind: "processed" };
     }
 
-    call = createWebhookCall({
-      ctx,
-      providerCallId,
-      direction: eventDirection === "outbound" ? "outbound" : "inbound",
-      from: event.from || "unknown",
-      to: event.to || ctx.config.fromNumber || "unknown",
-    });
+    // A late provider status callback can arrive after finalizeCall removed the
+    // record from the active maps; the local end records no dedupe key for the
+    // provider's eventual terminal callback, so findCall misses. Consult the
+    // store before fabricating — otherwise a phantom zero-duration call is
+    // birthed under the default agent. Fold into an existing owner instead.
+    const persisted = findCallByProviderCallIdInStore(ctx.storePath, providerCallId);
+    if (persisted) {
+      call = persisted;
+      foldedTerminalRecord = TerminalStates.has(persisted.state);
+    } else {
+      call = createWebhookCall({
+        ctx,
+        providerCallId,
+        direction: eventDirection === "outbound" ? "outbound" : "inbound",
+        from: event.from || "unknown",
+        to: event.to || ctx.config.fromNumber || "unknown",
+      });
+    }
 
     // Normalize event to internal ID for downstream consumers.
     event.callId = call.callId;
@@ -270,11 +284,30 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): Process
   };
 
   try {
-    if (event.providerCallId && event.providerCallId !== activeCall.providerCallId) {
+    // Update the record when a callback reveals the canonical provider id
+    // (e.g. a Plivo CallUUID arriving on a record still keyed by request_uuid).
+    // Skip the mutation for a folded terminal echo: that record already carries
+    // its newest canonical id, and a stale-alias callback must not downgrade it.
+    if (
+      event.providerCallId &&
+      event.providerCallId !== activeCall.providerCallId &&
+      !foldedTerminalRecord
+    ) {
       activeCall.providerCallId = event.providerCallId;
     }
     if (shouldCommitReplayKey) {
       appendCallReplayKey(activeCall.processedEventIds, dedupeKey);
+    }
+
+    // A late provider callback folded into a terminal record is a stale status
+    // echo. Absorb it (persist + dedupe) without re-running live side effects —
+    // answerCall, duration timers, onCallAnswered — on an already-ended call.
+    if (foldedTerminalRecord) {
+      persistCallRecord(ctx.storePath, activeCall);
+      if (shouldCommitReplayKey) {
+        rememberManagerReplayKey(ctx.processedEventIds, dedupeKey);
+      }
+      return { kind: "processed" };
     }
 
     switch (event.type) {
