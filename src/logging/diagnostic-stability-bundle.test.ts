@@ -217,6 +217,43 @@ describe("diagnostic stability bundles", () => {
     expect(files[1]).toContain("12-00-03");
   });
 
+  it("retains the just-published bundle when an older file has a future mtime", () => {
+    const older = writeDiagnosticStabilityBundleForFailureSync(
+      "gateway.startup_failed",
+      undefined,
+      {
+        stateDir: tempDir,
+        retention: 1,
+        now: new Date("2026-04-22T12:00:00.000Z"),
+      },
+    );
+    if (older.status !== "written") {
+      throw new Error(`expected written bundle, got ${older.status}`);
+    }
+    const future = new Date("2036-04-22T12:00:00.000Z");
+    fs.utimesSync(older.path, future, future);
+
+    const current = writeDiagnosticStabilityBundleForFailureSync(
+      "gateway.restart_respawn_failed",
+      undefined,
+      {
+        stateDir: tempDir,
+        retention: 1,
+        now: new Date("2026-04-22T12:00:01.000Z"),
+      },
+    );
+
+    expect(current.status).toBe("written");
+    if (current.status !== "written") {
+      return;
+    }
+    expect(fs.existsSync(current.path)).toBe(true);
+    expect(current.message).toContain(current.path);
+    expect(fs.readdirSync(path.dirname(current.path))).toEqual([path.basename(current.path)]);
+    const latest = readLatestDiagnosticStabilityBundleSync({ stateDir: tempDir });
+    expect(latest.status === "found" ? latest.path : "").toBe(current.path);
+  });
+
   it("reads the newest retained bundle", () => {
     startDiagnosticStabilityRecorder();
     emitDiagnosticEvent({ type: "webhook.received", channel: "telegram" });
