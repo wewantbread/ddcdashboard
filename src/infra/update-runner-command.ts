@@ -5,6 +5,7 @@ import type {
   CommandRunner,
   RunStepOptions,
   UpdateRunResult,
+  UpdateStepAdvisory,
   UpdateStepInfo,
   UpdateStepResult,
 } from "./update-runner-types.js";
@@ -79,6 +80,28 @@ export function normalizeFallbackFailureReason(
     default:
       return "unexpected-error";
   }
+}
+
+/**
+ * Blocking post-install Doctor or packaged-install verification is runtime
+ * rejection, not package-swap provenance. Without this, failed-update
+ * recovery can start a candidate the verifier already refused.
+ */
+export function resolvePackageUpdateRecovery(
+  failedStep: { name: string; advisory?: UpdateStepAdvisory } | null | undefined,
+): UpdateRunResult["recovery"] | undefined {
+  if (!failedStep || failedStep.advisory !== undefined) {
+    return undefined;
+  }
+  // CLI names this `$cliName doctor`; the shared runner uses `openclaw doctor`.
+  if (
+    failedStep.name !== "global install verify" &&
+    failedStep.name !== "openclaw doctor" &&
+    !failedStep.name.endsWith(" doctor")
+  ) {
+    return undefined;
+  }
+  return { serviceRestartSafe: false, reason: "runtime-verification-failed" };
 }
 
 export async function buildUpdateCommandRunner(
