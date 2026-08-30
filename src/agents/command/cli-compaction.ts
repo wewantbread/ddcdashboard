@@ -50,8 +50,6 @@ import {
   recordCliCompactionInStore as recordCliCompactionInStoreImpl,
 } from "./session-store.js";
 
-const CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON = "codex app-server owns automatic compaction";
-
 type SessionManagerLike = ReturnType<typeof SessionManager.open>;
 type SettingsManagerLike = {
   getCompactionReserveTokens: () => number;
@@ -194,16 +192,6 @@ function isUnsupportedNativeHarnessCompaction(
   result: EmbeddedAgentCompactResult | undefined,
 ): boolean {
   return result?.ok === false && result.failure?.reason === "unsupported_harness_compaction";
-}
-
-function isIntentionalNativeAutoCompactionSkip(
-  result: EmbeddedAgentCompactResult | undefined,
-): boolean {
-  return (
-    result?.ok === true &&
-    !result.compacted &&
-    result.reason === CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON
-  );
 }
 
 function readAgentIdFromSessionKey(sessionKey: string): string | undefined {
@@ -535,19 +523,10 @@ async function compactNativeHarnessCliTranscript(params: {
       );
       return { compacted: false };
     }
-    if (isIntentionalNativeAutoCompactionSkip(result)) {
-      // Codex owns automatic thread compaction (codex-rs runs it inline during
-      // turns); falling back to context-engine compaction here fought that
-      // ownership and failed OAuth-only sessions with "No API key found".
-      log.info(
-        `CLI native harness compaction skipped for ${params.provider}/${params.model}: ${CODEX_APP_SERVER_OWNS_AUTO_COMPACTION_REASON}`,
-      );
-      return { compacted: false };
-    }
     const recoverableBindingFailure = isRecoverableNativeHarnessBindingFailure(result);
+    const modelLocked = params.sessionEntry.modelSelectionLocked === true;
     const fallbackToContextEngine =
-      params.sessionEntry.modelSelectionLocked !== true &&
-      (isUnsupportedNativeHarnessCompaction(result) || recoverableBindingFailure);
+      !modelLocked && (isUnsupportedNativeHarnessCompaction(result) || recoverableBindingFailure);
     // Native harness binding failures can be repaired by clearing the stored CLI
     // session binding and falling back to the context engine for this turn.
     log.warn(
@@ -556,8 +535,7 @@ async function compactNativeHarnessCliTranscript(params: {
     return {
       compacted: false,
       fallbackToContextEngine,
-      clearCliSessionBinding:
-        params.sessionEntry.modelSelectionLocked !== true && recoverableBindingFailure,
+      clearCliSessionBinding: !modelLocked && recoverableBindingFailure,
       failureReason: result?.reason ?? "native harness compaction did not reduce context",
     };
   }

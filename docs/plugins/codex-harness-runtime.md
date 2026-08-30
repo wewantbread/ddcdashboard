@@ -246,6 +246,15 @@ notifications and OpenClaw adapter state, not native Codex hook commands.
 adapter-level observations, not byte-for-byte captures of Codex's internal
 request or compaction payloads.
 
+Codex owns inline automatic compaction for a bound thread. When an automatic
+(non-manual) trigger drives a native compaction and the bound thread has been
+retired, codex-rs answers `thread/compact/start` with "thread not found".
+OpenClaw clears the dead thread binding so the next turn lazily rebinds a fresh
+thread, and returns an honest `ok:false` recoverable-binding failure
+(`failure.reason: "stale_thread_binding"`). Manual `/compact` leaves the binding
+untouched and surfaces the failure so the operator sees it rather than a silent
+skip.
+
 Codex native `hook/started` and `hook/completed` app-server notifications are
 projected as `codex_app_server.hook` agent events for trajectory and
 debugging. They do not invoke OpenClaw plugin hooks.

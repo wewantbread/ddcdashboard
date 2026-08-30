@@ -535,7 +535,10 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("skips native app-server compaction for automatic budget triggers", async () => {
+  it("compacts a live bound thread on automatic budget triggers", async () => {
+    // #119977: an automatic budget trigger with a present, live binding compacts
+    // natively over the bound thread instead of blindly deferring. codex compacts
+    // its own transcript, so this is the ownership cooperation, not a fight with it.
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const sessionFile = await writeTestBinding();
@@ -551,17 +554,50 @@ describe("maybeCompactCodexAppServerSession", () => {
       }),
     );
 
-    expect(fake.request).not.toHaveBeenCalled();
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
     expect(result.ok).toBe(true);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toBe("codex app-server owns automatic compaction");
+    expect(result.compacted).toBe(true);
     expect(result.result?.tokensBefore).toBe(456);
     expect(compactDetails(result)).toMatchObject({
       backend: "codex-app-server",
-      skipped: true,
-      reason: "non_manual_trigger",
+      threadId: "thread-1",
+      signal: "thread/compact/start",
+      pending: false,
+      completed: true,
+      request: "before_context_engine",
       trigger: "budget",
     });
+  });
+
+  it("reports a missing binding on automatic triggers instead of deferring to codex-rs", async () => {
+    // #119977: the automatic ownership deferral reads the binding first, so a
+    // missing thread binding surfaces for recovery instead of being trusted
+    // indefinitely as a benign "codex owns automatic compaction" no-op.
+    const fake = createFakeCodexClient();
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = path.join(tempDir, "missing-auto-binding.jsonl");
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      }),
+    );
+
+    expect(fake.request).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("no codex app-server thread binding");
+    expect(result.failure?.reason).toBe("missing_thread_binding");
+    expect(result.result).toBeUndefined();
   });
 
   it("starts native app-server compaction for post-context-engine budget requests", async () => {
@@ -591,7 +627,7 @@ describe("maybeCompactCodexAppServerSession", () => {
           trigger: "budget",
           currentTokenCount: 456,
         },
-        { allowNonManualNativeRequest: true },
+        { nativeCompactionRequest: "after_context_engine" },
       ),
     );
 
@@ -724,7 +760,6 @@ describe("maybeCompactCodexAppServerSession", () => {
           currentTokenCount: 456,
         },
         {
-          allowNonManualNativeRequest: true,
           nativeCompactionRequest: "required_preflight",
         },
       ),
@@ -748,6 +783,97 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
+  it("runs guarded compaction on the retained bound owner without acquiring a generic client", async () => {
+    // Regression proof for #127148/#119977: automatic compaction must reuse the
+    // exact physical client that owns the bound thread, never a generic pooled
+    // client that would hit "thread not found" and drop the preflight turn.
+    const sharedClientRuntime = await import("./shared-client.js");
+    const bound = createFakeCodexClient();
+    const release = vi.fn();
+    const retainSpy = vi
+      .spyOn(sharedClientRuntime, "retainBoundCodexAppServerClient")
+      .mockReturnValue({ client: bound.client, release });
+    const genericFactory = vi.fn<CodexAppServerClientFactory>(async () => {
+      throw new Error("generic acquisition must not run while the bound owner is live");
+    });
+    const sessionFile = await writeTestBinding({ clientId: "bound-owner-client" });
+    try {
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession(
+          {
+            sessionId: "session-1",
+            sessionKey: "agent:main:session-1",
+            sessionFile,
+            workspaceDir: tempDir,
+            trigger: "budget",
+            preflightRequired: true,
+            currentTokenCount: 456,
+          },
+          { clientFactory: genericFactory, nativeCompactionRequest: "required_preflight" },
+        ),
+      );
+
+      expect(retainSpy).toHaveBeenCalledWith("bound-owner-client");
+      expect(genericFactory).not.toHaveBeenCalled();
+      expect(bound.request).toHaveBeenCalledWith(
+        "thread/compact/start",
+        { threadId: "thread-1" },
+        { timeoutMs: 60_000 },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.compacted).toBe(true);
+      // The bound lease is released exactly once when compaction finishes.
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      retainSpy.mockRestore();
+    }
+  });
+
+  it("falls back to generic acquisition when the bound owner is dead, leaving no stale binding", async () => {
+    const sharedClientRuntime = await import("./shared-client.js");
+    const retainSpy = vi
+      .spyOn(sharedClientRuntime, "retainBoundCodexAppServerClient")
+      .mockReturnValue(undefined);
+    const fake = createFakeCodexClient();
+    const genericFactory = vi.fn<CodexAppServerClientFactory>(async () => fake.client);
+    const sessionFile = await writeTestBinding({ clientId: "dead-owner-client" });
+    try {
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession(
+          {
+            sessionId: "session-1",
+            sessionKey: "agent:main:session-1",
+            sessionFile,
+            workspaceDir: tempDir,
+            trigger: "budget",
+            preflightRequired: true,
+            currentTokenCount: 456,
+          },
+          { clientFactory: genericFactory, nativeCompactionRequest: "required_preflight" },
+        ),
+      );
+
+      expect(retainSpy).toHaveBeenCalledWith("dead-owner-client");
+      // No live owner remained, so acquisition falls through to the generic path
+      // exactly once and compaction still completes on that client.
+      expect(genericFactory).toHaveBeenCalledTimes(1);
+      expect(fake.request).toHaveBeenCalledWith(
+        "thread/compact/start",
+        { threadId: "thread-1" },
+        { timeoutMs: 60_000 },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.compacted).toBe(true);
+      // A clean fallback leaves the live binding intact — no stale detach.
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+        threadId: "thread-1",
+        clientId: "dead-owner-client",
+      });
+    } finally {
+      retainSpy.mockRestore();
+    }
+  });
+
   it("preserves projection when aborted before guarded native compaction", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
@@ -768,18 +894,15 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
 
     const result = requireCompactResult(
-      await maybeCompactCodexAppServerSession(
-        {
-          sessionId: "session-1",
-          sessionKey: "agent:main:session-1",
-          sessionFile,
-          workspaceDir: tempDir,
-          trigger: "budget",
-          currentTokenCount: 456,
-          abortSignal: abortController.signal,
-        },
-        { allowNonManualNativeRequest: true },
-      ),
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+        abortSignal: abortController.signal,
+      }),
     );
 
     expect(fake.request).not.toHaveBeenCalled();
@@ -790,7 +913,7 @@ describe("maybeCompactCodexAppServerSession", () => {
       backend: "codex-app-server",
       skipped: true,
       reason: "aborted_before_native_compaction",
-      request: "after_context_engine",
+      request: "before_context_engine",
       trigger: "budget",
       expectedThreadId: "thread-1",
       currentThreadId: "thread-1",
@@ -806,7 +929,10 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("skips post-context-engine native compaction when the binding changes before projection clear", async () => {
+  it("surfaces a recoverable stale binding when the thread binding changes before native compaction", async () => {
+    // The binding-changed race must never clobber the concurrently-rebound live thread:
+    // recovery surfaces stale_thread_binding but leaves the new thread-2 binding intact
+    // (the guarded dead-thread clear only targets the original threadId, #119977).
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const originalContextEngine = {
@@ -857,23 +983,18 @@ describe("maybeCompactCodexAppServerSession", () => {
           trigger: "budget",
           currentTokenCount: 456,
         },
-        { allowNonManualNativeRequest: true, bindingStore },
+        { bindingStore },
       ),
     );
 
     expect(fake.request).not.toHaveBeenCalled();
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("codex app-server binding changed before native compaction");
-    expect(compactDetails(result)).toMatchObject({
-      backend: "codex-app-server",
-      skipped: true,
-      reason: "binding_changed_before_native_compaction",
-      request: "after_context_engine",
-      trigger: "budget",
-      expectedThreadId: "thread-1",
-      currentThreadId: "thread-2",
-    });
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    expect(result.result).toBeUndefined();
+    // A concurrent turn already rebound to a live thread, so no live stale binding remains
+    // and the guarded dead-thread clear never clobbers the new thread-2 binding.
     expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
       threadId: "thread-2",
       contextEngine: {
@@ -938,7 +1059,6 @@ describe("maybeCompactCodexAppServerSession", () => {
           currentTokenCount: 456,
         },
         {
-          allowNonManualNativeRequest: true,
           nativeCompactionRequest: "required_preflight",
           bindingStore,
         },
@@ -1010,17 +1130,14 @@ describe("maybeCompactCodexAppServerSession", () => {
     })();
 
     const result = requireCompactResult(
-      await maybeCompactCodexAppServerSession(
-        {
-          sessionId: "session-1",
-          sessionKey: "agent:main:session-1",
-          sessionFile,
-          workspaceDir: tempDir,
-          trigger: "budget",
-          currentTokenCount: 456,
-        },
-        { allowNonManualNativeRequest: true },
-      ),
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      }),
     );
 
     await externalWrite;
@@ -1085,17 +1202,14 @@ describe("maybeCompactCodexAppServerSession", () => {
     })();
 
     const result = requireCompactResult(
-      await maybeCompactCodexAppServerSession(
-        {
-          sessionId: "session-1",
-          sessionKey: "agent:main:session-1",
-          sessionFile,
-          workspaceDir: tempDir,
-          trigger: "budget",
-          currentTokenCount: 456,
-        },
-        { allowNonManualNativeRequest: true },
-      ),
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      }),
     );
 
     await externalClear;
@@ -1109,7 +1223,7 @@ describe("maybeCompactCodexAppServerSession", () => {
     await expect(readCodexAppServerBinding(sessionFile)).resolves.toBeUndefined();
   });
 
-  it("skips native app-server compaction when trigger is omitted", async () => {
+  it("compacts a live bound thread when the trigger is omitted", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const sessionFile = await writeTestBinding();
@@ -1124,15 +1238,19 @@ describe("maybeCompactCodexAppServerSession", () => {
       }),
     );
 
-    expect(fake.request).not.toHaveBeenCalled();
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
     expect(result.ok).toBe(true);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toBe("codex app-server owns automatic compaction");
+    expect(result.compacted).toBe(true);
     expect(result.result?.tokensBefore).toBe(789);
     expect(compactDetails(result)).toMatchObject({
       backend: "codex-app-server",
-      skipped: true,
-      reason: "non_manual_trigger",
+      threadId: "thread-1",
+      signal: "thread/compact/start",
+      request: "before_context_engine",
       trigger: "unknown",
     });
   });
@@ -1879,7 +1997,6 @@ describe("maybeCompactCodexAppServerSession", () => {
           preflightRequired: true,
         },
         {
-          allowNonManualNativeRequest: true,
           nativeCompactionRequest: "required_preflight",
         },
       ),
@@ -1928,8 +2045,170 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(result.reason).toBe("thread not found: thread-1");
     expect(result.failure?.reason).toBe("stale_thread_binding");
     expect(result.result).toBeUndefined();
+    // Manual /compact surfaces the failure for operator-driven recovery and leaves the
+    // binding untouched.
     expect(fake.closeAndWait).not.toHaveBeenCalled();
   });
+
+  it("surfaces a dead thread as a recoverable stale binding and clears it on automatic budget triggers", async () => {
+    // #119977: an automatic (non-manual) budget trigger for a retired thread must
+    // reach stale_thread_binding and clear the dead binding so the next turn rebinds,
+    // not a benign no-op. The RPC rejection travels the guarded withLease route.
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding();
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "budget",
+        currentTokenCount: 456,
+      }),
+    );
+
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("thread not found: thread-1");
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    expect(result.result).toBeUndefined();
+    // The guarded (automatic) trigger owns recovery: the dead binding is cleared so the
+    // next turn lazily rebinds instead of re-probing a thread codex-rs cannot resume.
+    expect(await readCodexAppServerBinding(sessionFile)).toBeUndefined();
+  });
+
+  it("keeps a same-thread new-client rebind that lands after the guarded lease releases", async () => {
+    // #119977 regression: the dead-thread recovery clear must run inside the binding
+    // lease. If it runs after the lease releases, a concurrent startOrResumeThread can
+    // rebind {same threadId, new clientId} in the post-request window and a
+    // threadId-only clear would clobber that live replacement. The clear now runs
+    // under the lease and is gated on the exact failed owner, so the peer rebind
+    // survives. This fails against the pre-fix (clear-after-lease) placement.
+    const fake = createFakeCodexClient();
+    fake.request.mockRejectedValueOnce(
+      new CodexAppServerRpcError(
+        { code: -32_600, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    );
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding({ clientId: "client-before-compaction" });
+
+    let peerRebindWritten = false;
+    const bindingStore = {
+      ...testCodexAppServerBindingStore,
+      withLease: (async <T>(
+        identity: Parameters<typeof testCodexAppServerBindingStore.withLease>[0],
+        run: () => Promise<T>,
+      ): Promise<T> => {
+        const result = await testCodexAppServerBindingStore.withLease(identity, run);
+        if (!peerRebindWritten) {
+          peerRebindWritten = true;
+          // A concurrent turn takes the freed lease and rebinds the same native
+          // thread to a fresh pooled client immediately after the guarded request.
+          seedCodexTestBinding(sessionFile, {
+            threadId: "thread-1",
+            clientId: "client-after-compaction",
+            cwd: tempDir,
+          });
+        }
+        return result;
+      }) as typeof testCodexAppServerBindingStore.withLease,
+    };
+
+    const result = requireCompactResult(
+      await maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        },
+        { bindingStore },
+      ),
+    );
+
+    expect(fake.request).toHaveBeenCalledWith(
+      "thread/compact/start",
+      { threadId: "thread-1" },
+      { timeoutMs: 60_000 },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("thread not found: thread-1");
+    expect(result.failure?.reason).toBe("stale_thread_binding");
+    // The replacement survives: the dead-thread clear ran under the lease against the
+    // exact retired owner and never clobbers a rebind that lands after release.
+    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+      threadId: "thread-1",
+      clientId: "client-after-compaction",
+    });
+  });
+
+  it.each([
+    {
+      name: "wrong RPC code",
+      error: new CodexAppServerRpcError(
+        // Right message, wrong code (INTERNAL_ERROR, not INVALID_REQUEST).
+        { code: -32_603, message: "thread not found: thread-1" },
+        "thread/compact/start",
+      ),
+    },
+    {
+      name: "unrelated RPC message",
+      error: new CodexAppServerRpcError(
+        // Right code, but not the codex-rs load_thread "thread not found" message.
+        { code: -32_600, message: "compaction temporarily unavailable" },
+        "thread/compact/start",
+      ),
+    },
+  ])(
+    "does not clear the binding on automatic triggers for a non-thread-not-found RPC error ($name)",
+    async ({ error }) => {
+      // #119977: the stale_thread_binding self-heal is gated on the full structured
+      // codex-rs contract (CodexAppServerRpcError + code -32600 + "thread not found").
+      // An RPC error missing the exact code or the exact message must surface as a
+      // generic failure and must NOT clear the live binding; otherwise an automatic
+      // trigger would discard a healthy thread on an unrelated server error.
+      const fake = createFakeCodexClient();
+      fake.request.mockRejectedValueOnce(error);
+      setCodexAppServerClientFactoryForTest(async () => fake.client);
+      const sessionFile = await writeTestBinding();
+
+      const result = requireCompactResult(
+        await maybeCompactCodexAppServerSession({
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "budget",
+          currentTokenCount: 456,
+        }),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.compacted).toBe(false);
+      expect(result.reason).toBe(error.message);
+      // Not the stale-binding recovery path, so no recovery failure and no binding clear.
+      expect(result.failure).toBeUndefined();
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({ threadId: "thread-1" });
+    },
+  );
 
   it("retires the client before releasing an unconfirmed compaction start", async () => {
     const fake = createFakeCodexClient();
@@ -1986,7 +2265,6 @@ describe("maybeCompactCodexAppServerSession", () => {
           trigger: "budget",
         },
         {
-          allowNonManualNativeRequest: true,
           clientFactory: async () => fake.client,
           pluginConfig: {
             appServer: { transport: "websocket", url: "ws://127.0.0.1:45001" },

@@ -630,28 +630,38 @@ async function compactResolvedContextEngine(
           },
         )
       : undefined;
-  // A model lock normally makes the native harness result terminal: the
-  // persisted runtime is authoritative and must not be swapped for
-  // context-engine compaction. Required preflight permits a harness-declared
-  // exception: missing or stale thread bindings can be recoverable and would
-  // otherwise drop the user's turn, so they fall through to the shared
-  // context-engine fallback below while `preparedHarnessRuntime` keeps the
-  // lock intact. Authorization comes from the private native capability that
-  // core actually dispatched; public result fields cannot escape the lock.
-  if (
-    lockedNativeHarness &&
-    !(
-      preparedParams.preflightRequired === true &&
-      requiredPreflightNativeCapabilityUsed &&
-      shouldFallbackAfterHarnessCompaction(harnessResult)
-    )
-  ) {
-    return harnessResult ?? lockedCompactionRuntimeFailure(selectedHarnessRuntime);
+  // A model lock normally makes the native harness result terminal: the persisted
+  // runtime is authoritative and must not be swapped for context-engine compaction.
+  // Required preflight permits one harness-declared exception: when the native
+  // capability core actually dispatched surfaces a recoverable (missing/stale/dead)
+  // thread binding, the turn would otherwise be dropped, so it falls through to the
+  // shared context-engine fallback below while `preparedHarnessRuntime` keeps the lock
+  // intact. Authorization comes from that private native capability, never a public
+  // result field.
+  const recoverableBinding = shouldFallbackAfterHarnessCompaction(harnessResult);
+  const preflightAuthorizedContextEngineFallback =
+    preparedParams.preflightRequired === true &&
+    requiredPreflightNativeCapabilityUsed &&
+    recoverableBinding;
+  if (lockedNativeHarness && !preflightAuthorizedContextEngineFallback) {
+    // Outside the authorized required-preflight fallback, a model-locked native result is
+    // terminal: it cannot reach the context engine (no API key) and codex-rs cannot resume
+    // a retired thread. A recoverable binding failure is returned as-is (honest ok:false,
+    // e.g. failure.reason:"stale_thread_binding"), mirroring the CLI sibling (compact.ts /
+    // cli-compaction.ts). The dead binding is already invalidated upstream by the codex
+    // plugin before this point, so the next turn rebinds a fresh thread and #119977 stays
+    // fixed; manual /compact still surfaces the failure to the operator.
+    return harnessResult
+      ? { ...harnessResult, compactionKind: "native-harness" }
+      : lockedCompactionRuntimeFailure(selectedHarnessRuntime);
   }
   if (harnessResult) {
     if (!shouldFallbackAfterHarnessCompaction(harnessResult)) {
       return { ...harnessResult, compactionKind: "native-harness" };
     }
+    // A missing/stale binding — including a dead thread the native request surfaced
+    // as "thread not found" — falls back to context-engine compaction, which
+    // recompacts a live transcript or exposes the stale binding for recovery.
     log.warn(
       `native harness compaction could not use its session binding; falling back to context engine: ${harnessResult.reason ?? "unknown"}`,
     );

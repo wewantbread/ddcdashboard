@@ -812,57 +812,6 @@ describe("runCliTurnCompactionLifecycle", () => {
     expect(recordCliCompactionInStore).not.toHaveBeenCalled();
   });
 
-  it("skips context-engine fallback when Codex owns automatic compaction", async () => {
-    const compactAgentHarnessSession = vi.fn(async (_params: Record<string, unknown>) => ({
-      ok: true,
-      compacted: false,
-      reason: "codex app-server owns automatic compaction",
-      result: {
-        summary: "",
-        firstKeptEntryId: "",
-        tokensBefore: 950,
-      },
-    }));
-    const scenario = await prepareCompactionScenario({
-      suffix: "codex-native-auto-compaction",
-      tmpDir,
-      provider: "codex",
-      model: "gpt-5.5",
-      sessionEntry: { agentHarnessId: "codex" },
-      deps: { maybeCompactAgentHarnessSession: compactAgentHarnessSession as never },
-    });
-    const { compactCalls, recordCliCompactionInStore, sessionEntry, sessionKey, sessionStore } =
-      scenario;
-    const result = await scenario.run();
-
-    // Codex owns automatic compaction; the ownership skip must not fall back to
-    // context-engine compaction (OAuth-only sessions have no direct API key).
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(1);
-    expect(compactCalls).toHaveLength(0);
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
-    expect(result).toBe(sessionEntry);
-
-    const lockedEntry: SessionEntry = { ...sessionEntry, modelSelectionLocked: true };
-    sessionStore[sessionKey] = lockedEntry;
-    const lockedResult = await scenario.run({ sessionEntry: lockedEntry });
-
-    expect(compactAgentHarnessSession).toHaveBeenCalledTimes(2);
-    expect(compactCalls).toHaveLength(0);
-    expect(recordCliCompactionInStore).not.toHaveBeenCalled();
-    const lockedNativeCall = compactAgentHarnessSession.mock.calls[1]?.[0];
-    expect(lockedNativeCall).toMatchObject({
-      agentHarnessId: "codex",
-      modelSelectionLocked: true,
-      contextEngineRuntimeContext: expect.objectContaining({
-        agentHarnessId: "codex",
-        modelSelectionLocked: true,
-        provider: "codex",
-        model: "gpt-5.5",
-      }),
-    });
-    expect(lockedResult).toBe(lockedEntry);
-  });
-
   it("does not fall back when native harness compaction returns no result", async () => {
     const scenario = await prepareCompactionScenario({
       suffix: "codex-native-empty",

@@ -4827,11 +4827,91 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     });
   });
 
+  it("compacts a forced preflight with one guarded native request, never the context engine", async () => {
+    // #119977 / #119971: a required preflight compaction on a live bound thread
+    // compacts natively over its own OAuth in a single guarded request. It must
+    // not fall back to context-engine compaction (which fails an OAuth-only Codex
+    // session with "No API key found"); no ownership-deferral escalation is
+    // needed because the native request itself drives compaction.
+    resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "codex" });
+    resolveContextEngineMock.mockResolvedValue({
+      info: { ownsCompaction: false },
+      compact: contextEngineCompactMock,
+    } as never);
+    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: {
+        summary: "native-guarded",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 333,
+        tokensAfter: 40,
+      },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.4",
+        agentHarnessId: "codex",
+        trigger: "budget",
+        force: true,
+        forcePreflight: true,
+        preflightRequired: true,
+        currentTokenCount: 333,
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(result.result?.summary).toBe("native-guarded");
+    // The native request compacted the live thread; no context-engine fallback.
+    expect(contextEngineCompactMock).not.toHaveBeenCalled();
+    expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls a forced preflight back to the context engine when the native thread is dead", async () => {
+    // #119977: when the guarded native request finds the bound thread gone it
+    // surfaces a recoverable stale binding; only then does the forced preflight
+    // fall back to context-engine compaction to repair/rebind for the next turn.
+    resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "codex" });
+    resolveContextEngineMock.mockResolvedValue({
+      info: { ownsCompaction: false },
+      compact: contextEngineCompactMock,
+    } as never);
+    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+      ok: false,
+      compacted: false,
+      reason: "thread not found: thread-1",
+      failure: { reason: "stale_thread_binding" },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.4",
+        agentHarnessId: "codex",
+        trigger: "budget",
+        force: true,
+        forcePreflight: true,
+        preflightRequired: true,
+        currentTokenCount: 333,
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(result.result?.summary).toBe("engine-summary");
+    // The native request ran first; only the dead thread reached the engine.
+    expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
+    expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["missing_thread_binding", "no codex app-server thread binding"],
     ["stale_thread_binding", "thread not found"],
   ])(
-    "fails model-locked Codex compaction on %s without a context-engine fallback",
+    "returns the raw recoverable-binding failure for model-locked Codex compaction without a context-engine fallback",
     async (failureReason, reason) => {
       resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "openclaw" });
       maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
@@ -4847,13 +4927,19 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
           model: "gpt-5.5",
           agentHarnessId: "codex",
           modelSelectionLocked: true,
+          trigger: "budget",
           currentTokenCount: 333,
         }),
       );
 
+      // The queued layer no longer launders a locked recoverable-binding failure into a
+      // harness-owned safe skip. It returns the honest ok:false failure as-is; the caller
+      // (required-preflight in agent-runner-memory / the CLI sibling) decides safe-continue.
+      // A model-locked session still cannot fall back to the context engine.
       expect(result).toMatchObject({
         ok: false,
         compacted: false,
+        reason,
         failure: { reason: failureReason },
       });
       expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
@@ -5018,6 +5104,47 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     },
   );
 
+  it.each([
+    ["missing_thread_binding", "no codex app-server thread binding"],
+    ["stale_thread_binding", "thread not found"],
+  ])(
+    "surfaces a manual model-locked Codex compaction failure on %s instead of a safe skip",
+    async (failureReason, reason) => {
+      // #119977: manual /compact must not take the harness-owned safe-skip path. The
+      // operator asked to compact now, and the command UI renders an ok:true
+      // non-compacted result as "Compaction skipped", which would silently hide a dead
+      // binding. A manual trigger falls through to the ok:false binding failure so the
+      // UI reports "Compaction failed".
+      resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "openclaw" });
+      maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+
+      const result = await compactEmbeddedAgentSession(
+        wrappedCompactionArgs({
+          provider: "openai",
+          model: "gpt-5.5",
+          agentHarnessId: "codex",
+          modelSelectionLocked: true,
+          trigger: "manual",
+          currentTokenCount: 333,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        compacted: false,
+        reason,
+        failure: { reason: failureReason },
+      });
+      expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
+      expect(contextEngineCompactMock).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([undefined, "auto"])(
     "fails a model-locked session with unavailable persisted harness %s",
     async (agentHarnessId) => {
@@ -5155,6 +5282,39 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       compacted: false,
       failure: { reason: "model_selection_locked" },
     });
+    expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
+    expect(contextEngineCompactMock).not.toHaveBeenCalled();
+  });
+
+  it("compacts a model-locked forced preflight with one guarded native request, never the engine", async () => {
+    // #119977: a model lock forbids a context-engine fallback, so a locked forced
+    // preflight compacts the locked thread with a single guarded native request
+    // rather than dropping the turn; the ownership no-op never appears for a live
+    // thread.
+    resolveAgentHarnessPolicyMock.mockReturnValue({ runtime: "codex" });
+    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: true,
+      result: { summary: "native-locked", firstKeptEntryId: "entry-1", tokensBefore: 333 },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.5",
+        agentHarnessId: "codex",
+        modelSelectionLocked: true,
+        trigger: "budget",
+        force: true,
+        forcePreflight: true,
+        preflightRequired: true,
+        currentTokenCount: 333,
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(result.result?.summary).toBe("native-locked");
     expect(maybeCompactAgentHarnessSessionMock).toHaveBeenCalledTimes(1);
     expect(contextEngineCompactMock).not.toHaveBeenCalled();
   });

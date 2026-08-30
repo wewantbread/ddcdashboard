@@ -50,6 +50,7 @@ import {
 import {
   getLeasedSharedCodexAppServerClient,
   releaseLeasedSharedCodexAppServerClient,
+  retainBoundCodexAppServerClient,
   type CodexAppServerClientFactory,
 } from "./shared-client.js";
 import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
@@ -60,11 +61,14 @@ import { resumeCodexAppServerThread } from "./thread-resume.js";
 const warnedIgnoredCompactionOverrides = createDedupeCache({ ttlMs: 0, maxSize: 4096 });
 const codexNativeCompactionQueue = new KeyedAsyncQueue();
 const CODEX_NATIVE_COMPACTION_INTERRUPT_GRACE_MS = 30_000;
+
 type CodexAppServerCompactOptions = {
   bindingStore: CodexAppServerBindingStore;
   pluginConfig?: unknown;
   clientFactory?: CodexAppServerClientFactory;
-  allowNonManualNativeRequest?: boolean;
+  // The harness native-compaction bridge sets this: required_preflight for a
+  // forced preflight, after_context_engine for the secondary post-engine pass.
+  // The primary/manual pass omits it and records the "before_context_engine" stage.
   nativeCompactionRequest?: "required_preflight" | "after_context_engine";
   nativeCompletionTimeoutMs?: number;
   nativeInterruptGraceMs?: number;
@@ -423,24 +427,36 @@ async function compactCodexNativeThread(
   params: CompactEmbeddedAgentSessionParams,
   options: CodexAppServerCompactOptions,
 ): Promise<EmbeddedAgentCompactResult | undefined> {
-  if (params.trigger !== "manual" && !options.allowNonManualNativeRequest) {
-    embeddedAgentLog.info("skipping codex app-server compaction for non-manual trigger", {
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey,
-      trigger: params.trigger,
-    });
-    return codexNativeCompactionResult(params, {
-      compacted: false,
-      reason: "codex app-server owns automatic compaction",
-      details: {
-        backend: "codex-app-server",
-        skipped: true,
-        reason: "non_manual_trigger",
-        trigger: params.trigger ?? "unknown",
-      },
+  const bindingIdentity: CodexAppServerBindingIdentity = sessionBindingIdentity({
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    config: params.config,
+  });
+  const initialBinding = await options.bindingStore.read(bindingIdentity);
+  // Read the binding before any request so its two failure modes stay distinct:
+  //   - Missing binding (no threadId): return missing_thread_binding for recovery.
+  //     Deferring to codex-rs inline compaction is safe only while a bound thread
+  //     exists, so a missing binding must surface rather than no-op.
+  //   - Dead thread (binding present, thread retired): reach the native request below,
+  //     where thread/compact/start surfaces "thread not found" (stale_thread_binding)
+  //     for recovery. Compacting the bound thread natively is the ownership-cooperation
+  //     itself, so an automatic trigger does not blindly defer to a thread that may be gone.
+  if (!initialBinding?.threadId) {
+    return failedCodexThreadBindingCompactionResult(params, {
+      reason: "no codex app-server thread binding",
+      recovery: "missing_thread_binding",
     });
   }
+  // Non-manual (automatic/preflight) triggers take the guarded native request that
+  // rereads the binding under lease and clears the projection marker before
+  // compacting; manual triggers issue the request directly.
+  const guardedNativeRequest = params.trigger !== "manual";
   const sandbox = (params as typeof params & { sandbox?: SandboxContext | null }).sandbox;
+  // The recorded native-compaction stage. The harness bridge sets the request
+  // explicitly (required_preflight or after_context_engine); the primary/manual
+  // pass omits it and records "before_context_engine".
+  const nativeCompactionStage = options.nativeCompactionRequest ?? "before_context_engine";
   const nativeExecutionBlock = resolveCodexNativeExecutionBlock({
     config: params.config,
     sessionKey: params.sandboxSessionKey ?? params.sessionKey,
@@ -451,19 +467,6 @@ async function compactCodexNativeThread(
   });
   if (nativeExecutionBlock) {
     return { ok: false, compacted: false, reason: nativeExecutionBlock };
-  }
-  const bindingIdentity: CodexAppServerBindingIdentity = sessionBindingIdentity({
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    agentId: params.agentId,
-    config: params.config,
-  });
-  const initialBinding = await options.bindingStore.read(bindingIdentity);
-  if (!initialBinding?.threadId) {
-    return failedCodexThreadBindingCompactionResult(params, {
-      reason: "no codex app-server thread binding",
-      recovery: "missing_thread_binding",
-    });
   }
   if (
     params.nativeToolSurface === "host-isolated" ||
@@ -517,7 +520,7 @@ async function compactCodexNativeThread(
     // with another profile risks operating on a different Codex account.
     return { ok: false, compacted: false, reason: "auth profile mismatch for session binding" };
   }
-  const shouldReleaseDefaultLease = !options.clientFactory;
+  const usesDefaultAcquisition = !options.clientFactory;
   const clientFactory = options.clientFactory ?? getLeasedSharedCodexAppServerClient;
   const runtimeAuthPlan = params.runtimeAuthPlan ?? params.runtimePlan?.auth;
   // A user-home app-server keeps its native Codex account; injecting a prepared key
@@ -539,14 +542,35 @@ async function compactCodexNativeThread(
       binding.threadId,
       params.abortSignal,
       async () => {
-        const client = await clientFactory({
-          startOptions: appServer.start,
-          ...(preparedApiKey
-            ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
-            : { authProfileId: connection.clientAuthProfileId }),
-          agentDir: params.agentDir,
-          config: params.config,
-        });
+        // Guarded (automatic/preflight) compaction must run on the exact
+        // physical client that owns the bound thread; a generic pooled client
+        // hits "thread not found" and drops the turn (#127148/#119977). Retain
+        // the bound owner first, falling back to generic acquisition only when
+        // none is live. KNOWN BOUNDARY: retainBoundCodexAppServerClient takes the
+        // entry lease synchronously, so nothing evicts the owner between the
+        // liveness check and the retain; a binding that changes before the
+        // guarded lease re-read below is still caught by isSameNativeCompactionBinding.
+        const boundClientLease = guardedNativeRequest
+          ? retainBoundCodexAppServerClient(binding.clientId)
+          : undefined;
+        let releaseClient: (() => void) | undefined;
+        let client: CodexAppServerClient;
+        if (boundClientLease) {
+          client = boundClientLease.client;
+          releaseClient = boundClientLease.release;
+        } else {
+          client = await clientFactory({
+            startOptions: appServer.start,
+            ...(preparedApiKey
+              ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
+              : { authProfileId: connection.clientAuthProfileId }),
+            agentDir: params.agentDir,
+            config: params.config,
+          });
+          if (usesDefaultAcquisition) {
+            releaseClient = () => releaseLeasedSharedCodexAppServerClient(client);
+          }
+        }
         let releaseThreadSubscription: (() => Promise<void>) | undefined;
         let retainedThreadOwnership: CodexAppServerLiveThreadOwnership | undefined;
         let compactionSucceeded = false;
@@ -634,7 +658,7 @@ async function compactCodexNativeThread(
           const guardedResult = await options.bindingStore.withLease(bindingIdentity, async () => {
             const currentBinding = await options.bindingStore.read(bindingIdentity);
             if (params.abortSignal?.aborted) {
-              if (!options.allowNonManualNativeRequest) {
+              if (!guardedNativeRequest) {
                 params.abortSignal.throwIfAborted();
               }
               return {
@@ -642,7 +666,7 @@ async function compactCodexNativeThread(
                 result: skippedCodexNativeCompactionResult(params, {
                   reason: "codex app-server compaction aborted before native compaction",
                   code: "aborted_before_native_compaction",
-                  request: options.nativeCompactionRequest ?? "after_context_engine",
+                  request: nativeCompactionStage,
                   expectedThreadId: binding.threadId,
                   currentThreadId: currentBinding?.threadId,
                 }),
@@ -659,33 +683,34 @@ async function compactCodexNativeThread(
                 },
               );
               // A binding change between the initial read and the native request
-              // is a stale-binding race. For required-preflight (and the
-              // non-manual CLI path) it must surface as the canonical
-              // recoverable failure so the caller falls back to the context
-              // engine instead of treating an uncompacted ok:true skip as a
-              // completed turn. Only a genuine post-context-engine request may
-              // skip, because the context engine has already compacted.
-              const isRequiredPreflight = options.nativeCompactionRequest === "required_preflight";
+              // is a stale-binding race. Only a genuine post-context-engine
+              // request may treat it as a benign skip, because the context engine
+              // has already compacted. Required-preflight and the primary
+              // (before-context-engine) passes have not compacted yet, so a stale
+              // binding must surface as the canonical recoverable failure that
+              // lets the caller fall back to the context engine instead of
+              // treating an uncompacted ok:true skip as a completed turn (#119977).
+              const isPostContextEngineRequest =
+                options.nativeCompactionRequest === "after_context_engine";
               return {
                 started: false as const,
-                result:
-                  options.allowNonManualNativeRequest && !isRequiredPreflight
-                    ? skippedCodexNativeCompactionResult(params, {
-                        reason: "codex app-server binding changed before native compaction",
-                        code: "binding_changed_before_native_compaction",
-                        request: options.nativeCompactionRequest ?? "after_context_engine",
-                        expectedThreadId: binding.threadId,
-                        currentThreadId: currentBinding?.threadId,
-                      })
-                    : failedCodexThreadBindingCompactionResult(params, {
-                        threadId: currentBinding?.threadId ?? binding.threadId,
-                        reason: "codex app-server binding changed before native compaction",
-                        recovery: "stale_thread_binding",
-                      }),
+                result: isPostContextEngineRequest
+                  ? skippedCodexNativeCompactionResult(params, {
+                      reason: "codex app-server binding changed before native compaction",
+                      code: "binding_changed_before_native_compaction",
+                      request: nativeCompactionStage,
+                      expectedThreadId: binding.threadId,
+                      currentThreadId: currentBinding?.threadId,
+                    })
+                  : failedCodexThreadBindingCompactionResult(params, {
+                      threadId: currentBinding?.threadId ?? binding.threadId,
+                      reason: "codex app-server binding changed before native compaction",
+                      recovery: "stale_thread_binding",
+                    }),
               };
             }
             binding = currentBinding;
-            const guardedRequestTimeoutMs = options.allowNonManualNativeRequest
+            const guardedRequestTimeoutMs = guardedNativeRequest
               ? Math.min(
                   appServer.requestTimeoutMs,
                   CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
@@ -712,12 +737,33 @@ async function compactCodexNativeThread(
               return { started: true as const, accepted: true as const };
             } catch (error) {
               if (error instanceof CodexAppServerRpcError) {
-                // A server rejection proves native history was untouched; an
-                // ambiguous transport failure must never restore stale context.
-                await options.bindingStore.mutate(bindingIdentity, {
-                  kind: "set",
-                  binding,
-                });
+                if (guardedNativeRequest && isCodexThreadNotFoundError(error)) {
+                  // Guarded (automatic/preflight) recovery clears the dead binding
+                  // under this same lease. Deferring the clear until the lease
+                  // releases would let a concurrent startOrResumeThread rebind
+                  // {same threadId, new clientId} in the post-request window, and a
+                  // threadId-only clear would then clobber that live replacement
+                  // (#119977). Gate on the exact stored owner — threadId AND clientId
+                  // — that just failed the request, never the current request client
+                  // (a fresh pooled id can never equal the retired owner's clientId).
+                  const storedOwnerNow = await options.bindingStore.read(bindingIdentity);
+                  if (isSameCodexAppServerThreadOwner(storedOwnerNow, binding)) {
+                    await clearDeadCodexThreadBinding(
+                      options.bindingStore,
+                      bindingIdentity,
+                      binding.threadId,
+                    );
+                  }
+                } else {
+                  // A server rejection proves native history was untouched; an
+                  // ambiguous transport failure must never restore stale context.
+                  // Manual thread-not-found also restores so operator-driven
+                  // recovery still sees the binding.
+                  await options.bindingStore.mutate(bindingIdentity, {
+                    kind: "set",
+                    binding,
+                  });
+                }
                 compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
               }
               // Retirement can acquire this same generation lease.
@@ -767,6 +813,9 @@ async function compactCodexNativeThread(
           compactionSucceeded = true;
         } catch (error) {
           if (isCodexThreadNotFoundError(error)) {
+            // Guarded (automatic/preflight) triggers already cleared the dead
+            // binding under the request lease; manual triggers surface the failure
+            // and leave the binding for operator-driven recovery.
             return failedCodexThreadBindingCompactionResult(params, {
               threadId: binding.threadId,
               reason: coerceErrorMessage(error),
@@ -817,9 +866,7 @@ async function compactCodexNativeThread(
               await releaseThreadSubscription?.();
             }
           } finally {
-            if (shouldReleaseDefaultLease) {
-              releaseLeasedSharedCodexAppServerClient(client);
-            }
+            releaseClient?.();
           }
         }
         const details: JsonObject = {
@@ -828,9 +875,9 @@ async function compactCodexNativeThread(
           signal: "thread/compact/start",
           pending: false,
           completed: true,
-          ...(options.allowNonManualNativeRequest
+          ...(guardedNativeRequest
             ? {
-                request: options.nativeCompactionRequest ?? "after_context_engine",
+                request: nativeCompactionStage,
                 trigger: params.trigger ?? "unknown",
               }
             : {}),
@@ -840,11 +887,11 @@ async function compactCodexNativeThread(
     );
   } catch (error) {
     if (params.abortSignal?.aborted) {
-      if (options.allowNonManualNativeRequest) {
+      if (guardedNativeRequest) {
         return skippedCodexNativeCompactionResult(params, {
           reason: "codex app-server compaction aborted before native compaction",
           code: "aborted_before_native_compaction",
-          request: options.nativeCompactionRequest ?? "after_context_engine",
+          request: nativeCompactionStage,
           expectedThreadId: initialBinding.threadId,
           currentThreadId: binding.threadId,
         });
@@ -861,7 +908,12 @@ async function compactCodexNativeThread(
 
 function codexNativeCompactionResult(
   params: CompactEmbeddedAgentSessionParams,
-  outcome: { compacted: boolean; reason?: string; tokensAfter?: number; details: JsonObject },
+  outcome: {
+    compacted: boolean;
+    reason?: string;
+    tokensAfter?: number;
+    details: JsonObject;
+  },
 ): EmbeddedAgentCompactResult {
   return {
     ok: true,
@@ -882,7 +934,7 @@ function skippedCodexNativeCompactionResult(
   skipped: {
     reason: string;
     code: string;
-    request?: "required_preflight" | "after_context_engine";
+    request: "required_preflight" | "after_context_engine" | "before_context_engine";
     expectedThreadId?: string;
     currentThreadId?: string;
   },
@@ -894,7 +946,7 @@ function skippedCodexNativeCompactionResult(
       backend: "codex-app-server",
       skipped: true,
       reason: skipped.code,
-      request: skipped.request ?? "after_context_engine",
+      request: skipped.request,
       trigger: params.trigger ?? "unknown",
       ...(skipped.expectedThreadId ? { expectedThreadId: skipped.expectedThreadId } : {}),
       ...(skipped.currentThreadId ? { currentThreadId: skipped.currentThreadId } : {}),
@@ -974,15 +1026,48 @@ function isSameNativeCompactionBinding(
   );
 }
 
+async function clearDeadCodexThreadBinding(
+  bindingStore: CodexAppServerBindingStore,
+  identity: CodexAppServerBindingIdentity,
+  deadThreadId: string,
+): Promise<void> {
+  // Clear a confirmed-dead thread binding so the next turn lazily rebinds instead of
+  // re-probing a thread codex-rs can no longer resume (load_thread → "thread not
+  // found"). Callers hold the request lease and have already confirmed this exact
+  // owner (threadId + clientId) still owns the row, so the threadId-guarded CAS
+  // clear only ever retires the binding that just failed; the re-read keeps the
+  // no-op safe if the row already moved on (mirrors the retirement clear in
+  // retireUnconfirmed).
+  const cleared = await bindingStore.mutate(identity, { kind: "clear", threadId: deadThreadId });
+  if (cleared) {
+    return;
+  }
+  const currentBinding = await bindingStore.read(identity);
+  if (currentBinding?.threadId !== deadThreadId) {
+    return;
+  }
+  embeddedAgentLog.warn("codex app-server dead thread binding could not be cleared", {
+    sessionId: identity.kind === "session" ? identity.sessionId : identity.bindingId,
+    threadId: deadThreadId,
+  });
+}
+
 function isCodexThreadNotFoundError(error: unknown): boolean {
-  // codex-rs exposes no dedicated error code for a missing compaction thread:
-  // thread/compact/start returns generic INVALID_REQUEST (-32600), and the
-  // app-server's own contract/test asserts the "thread not found" MESSAGE as
-  // the discriminator (thread_processor.rs load_thread → invalid_request;
-  // compaction.rs asserts message.contains("thread not found")). So the message
-  // is the authoritative positive signal here, not the generic code. This is a
-  // self-heal recovery gate, not user-facing classification.
-  return coerceErrorMessage(error).toLowerCase().includes("thread not found");
+  // Structured retired-thread gate for the stale_thread_binding self-heal. codex-rs
+  // maps a missing compaction thread through the app-server load_thread path
+  // (thread_processor.rs get_thread failure → invalid_request) to a JSON-RPC
+  // INVALID_REQUEST error: code -32600 (error_code.rs INVALID_REQUEST_ERROR_CODE)
+  // with message "thread not found: <id>". The app-server contract test asserts
+  // BOTH facts (app-server/tests/suite/v2/compaction.rs: code == INVALID_REQUEST
+  // and message.contains("thread not found")), so this recovery gate enforces the
+  // full structured contract — a real RPC error, that exact code, and that
+  // message. Matching the message alone would let an unrelated server error or a
+  // wrong-code failure clear a live binding and discard a healthy thread.
+  return (
+    error instanceof CodexAppServerRpcError &&
+    error.code === -32_600 &&
+    error.message.toLowerCase().includes("thread not found")
+  );
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
