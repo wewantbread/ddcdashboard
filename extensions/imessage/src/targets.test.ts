@@ -8,7 +8,9 @@ import {
 } from "./group-policy.js";
 import { imessageDmPolicy } from "./setup-core.js";
 import { parseIMessageAllowFromEntries } from "./setup-surface.js";
+import type { IMessageService, IMessageTarget } from "./targets.js";
 import {
+  assertDeliverableIMessageHandle,
   formatIMessageChatTarget,
   inferIMessageTargetChatType,
   isAllowedIMessageReplyContextSender,
@@ -201,6 +203,57 @@ describe("imessage targets", () => {
       kind: "chat_identifier",
       chatIdentifier: identifier,
     });
+  });
+
+  it("parses bare numeric handles structurally; deliverability is a send-layer verdict (#125461)", () => {
+    // Parsing stays structural so a configured `service: "sms"` short code can
+    // reach the SMS transport; the send layer owns the deliverability verdict.
+    expect(parseIMessageTarget("5")).toEqual({ kind: "handle", to: "5", service: "auto" });
+  });
+
+  it("reports undeliverable bare numeric handles unless the effective service is sms (#125461)", () => {
+    // A bare digit string looks like a Messages chat row id, not a phone
+    // handle; pre-fix it normalized to `+<digits>` and the channel send
+    // silently failed (-1728). The error must steer the caller to chat_id /
+    // full E.164 / sms:.
+    const bareTarget = parseIMessageTarget("5");
+    const shortE164 = parseIMessageTarget("+123456");
+    const rejectedAsHandle = (target: IMessageTarget, service: IMessageService) =>
+      expect(() => assertDeliverableIMessageHandle({ target, service }));
+    rejectedAsHandle(bareTarget, "auto").toThrow(/chat_id/);
+    rejectedAsHandle(bareTarget, "auto").toThrow(/sms:/);
+    rejectedAsHandle(shortE164, "imessage").toThrow(/chat_id/);
+    // An SMS short code is a legitimate target once the service resolves to
+    // sms, whether from the typed prefix or the account configuration.
+    expect(() =>
+      assertDeliverableIMessageHandle({ target: bareTarget, service: "sms" }),
+    ).not.toThrow();
+    expect(() =>
+      assertDeliverableIMessageHandle({
+        target: parseIMessageTarget("sms:12345"),
+        service: "sms",
+      }),
+    ).not.toThrow();
+    // Full E.164 handles and non-phone targets stay deliverable.
+    expect(() =>
+      assertDeliverableIMessageHandle({
+        target: parseIMessageTarget("+15552223333"),
+        service: "auto",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertDeliverableIMessageHandle({
+        target: parseIMessageTarget("user@example.com"),
+        service: "auto",
+      }),
+    ).not.toThrow();
+    // Chat-scoped targets never hit the handle verdict.
+    expect(() =>
+      assertDeliverableIMessageHandle({
+        target: parseIMessageTarget("chat_id:5"),
+        service: "auto",
+      }),
+    ).not.toThrow();
   });
 });
 
