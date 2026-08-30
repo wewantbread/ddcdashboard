@@ -118,7 +118,9 @@ export interface TelegramMessagePipeline {
     msg: Message,
     providerObservedThread?: TelegramThreadSpec,
     botUserId?: number,
+    botUsername?: string,
   ) => Promise<TelegramCachedMessageNode>;
+  removeMessageFromReplyChain: (msg: Message) => Promise<boolean>;
   recordMessageResolvedMedia: (params: {
     msg: Message;
     media: TelegramResolvedMedia;
@@ -209,6 +211,7 @@ export function createTelegramMessagePipeline({
   const { resolveTelegramSessionState, resolvePromptContextAmbientWatermark } = sessionRuntime;
   const {
     recordMessageForReplyChain,
+    removeMessageFromReplyChain,
     recordMessageResolvedMedia,
     recordReplyMessageResolvedMedia,
     resolveCachedMessageThreadSpec,
@@ -644,6 +647,7 @@ export function createTelegramMessagePipeline({
     resolveTelegramSessionState,
     resolvePromptContextAmbientWatermark,
     recordMessageForReplyChain,
+    removeMessageFromReplyChain,
     recordMessageResolvedMedia,
     resolveCachedMessageThreadSpec,
     processMessageWithReplyChain,

@@ -1,6 +1,7 @@
 import type { Context } from "grammy";
 import type { Message } from "grammy/types";
 import type { TelegramGroupConfig } from "openclaw/plugin-sdk/config-contracts";
+import { resolveNativeCommandsEnabled } from "openclaw/plugin-sdk/native-command-config-runtime";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import type { TelegramHandlerAuthorization } from "./bot-handlers.inbound-authorization.js";
@@ -24,12 +25,14 @@ import {
   TelegramPairingStoreReadError,
 } from "./bot/helpers.js";
 import type { TelegramContext, TelegramGetChat } from "./bot/types.js";
+import { hasTelegramCustomCommand } from "./command-config.js";
+import { resolveTelegramIgnoreDisposition, TELEGRAM_IGNORE_HELP_TEXT } from "./ignore-command.js";
 import { emitTelegramLiveLocationMessageHook } from "./location-message-hook.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
 
 type TelegramMessageHandlerParams = Pick<
   RegisterTelegramHandlerParams,
-  "accountId" | "bot" | "shouldSkipUpdate"
+  "accountId" | "bot" | "cfg" | "shouldSkipUpdate" | "telegramCfg"
 > & {
   opts: Pick<RegisterTelegramHandlerParams["opts"], "botInfo">;
   runtime: Pick<RegisterTelegramHandlerParams["runtime"], "error">;
@@ -44,6 +47,7 @@ type TelegramMessageHandlerRuntime = Pick<
   | "buildSyntheticContext"
   | "resolveTelegramSessionState"
   | "resolvePromptContextAmbientWatermark"
+  | "removeMessageFromReplyChain"
 > & {
   recordMessageForReplyChain: (
     ...args: Parameters<TelegramMessagePipeline["recordMessageForReplyChain"]>
@@ -58,7 +62,15 @@ interface TelegramInboundHandlers {
 }
 
 function createTelegramInboundHandlers(
-  { accountId, bot, opts, runtime, shouldSkipUpdate }: TelegramMessageHandlerParams,
+  {
+    accountId,
+    bot,
+    cfg,
+    opts,
+    runtime,
+    shouldSkipUpdate,
+    telegramCfg,
+  }: TelegramMessageHandlerParams,
   messageRuntime: TelegramMessageHandlerRuntime,
   authorizationRuntime: Pick<TelegramHandlerAuthorization, "authorizeInboundMessage">,
   inboundRuntime: Pick<TelegramInboundProcessing, "processInboundMessage">,
@@ -72,9 +84,20 @@ function createTelegramInboundHandlers(
     resolveTelegramSessionState,
     resolvePromptContextAmbientWatermark,
     recordMessageForReplyChain,
+    removeMessageFromReplyChain,
   } = messageRuntime;
   const { authorizeInboundMessage } = authorizationRuntime;
   const { processInboundMessage } = inboundRuntime;
+  const ignoreEnabled =
+    resolveNativeCommandsEnabled({
+      providerId: "telegram",
+      providerSetting: telegramCfg.commands?.native,
+      globalSetting: cfg.commands?.native,
+    }) &&
+    !hasTelegramCustomCommand({
+      commands: telegramCfg.customCommands,
+      command: "ignore",
+    });
   const getChat: TelegramGetChat = bot.api.getChat.bind(bot.api);
   const resolveBotUserId = (ctx: { me?: { id?: number } }): number => {
     const botUserId = ctx.me?.id ?? opts.botInfo?.id;
@@ -129,6 +152,7 @@ function createTelegramInboundHandlers(
     msg: Message;
     requireConfiguredGroup: boolean;
     botUserId: number;
+    botUsername?: string;
     providerUpdate?: { id: number; kind: "edited_message" | "edited_channel_post" };
   }) => {
     if (shouldSkipUpdate(params.ctxForDedupe)) {
@@ -158,7 +182,19 @@ function createTelegramInboundHandlers(
     if (!gate.allowed) {
       return;
     }
-    await recordMessageForReplyChain(normalizedMsg, gate.context.threadSpec, params.botUserId);
+    if (
+      ignoreEnabled &&
+      resolveTelegramIgnoreDisposition(normalizedMsg, params.botUsername) !== "keep"
+    ) {
+      await removeMessageFromReplyChain(normalizedMsg);
+      return;
+    }
+    await recordMessageForReplyChain(
+      normalizedMsg,
+      gate.context.threadSpec,
+      params.botUserId,
+      params.botUsername,
+    );
     if (params.providerUpdate) {
       emitTelegramLiveLocationMessageHook({
         accountId,
@@ -189,6 +225,28 @@ function createTelegramInboundHandlers(
         dmAccess: "challenge",
       });
       if (!gate.allowed) {
+        return { kind: "ignored" };
+      }
+      const ignoreDisposition = ignoreEnabled
+        ? resolveTelegramIgnoreDisposition(
+            event.msg,
+            event.ctx.me?.username ?? opts.botInfo?.username,
+          )
+        : "keep";
+      if (ignoreDisposition !== "keep" && !event.msg.media_group_id) {
+        if (ignoreDisposition === "help") {
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            runtime,
+            fn: () =>
+              bot.api.sendMessage(event.chatId, TELEGRAM_IGNORE_HELP_TEXT, {
+                reply_parameters: {
+                  message_id: event.msg.message_id,
+                  allow_sending_without_reply: true,
+                },
+              }),
+          }).catch(() => {});
+        }
         return { kind: "ignored" };
       }
       const { effectiveDmAllow } = gate;
@@ -226,11 +284,19 @@ function createTelegramInboundHandlers(
         return { kind: "ignored" };
       }
       dispatchDedupeClaims = dispatchDedupe.claims;
-      await recordMessageForReplyChain(event.msg, gate.context.threadSpec, event.botUserId);
+      if (!event.msg.media_group_id) {
+        await recordMessageForReplyChain(
+          event.msg,
+          gate.context.threadSpec,
+          event.botUserId,
+          event.ctx.me?.username ?? opts.botInfo?.username,
+        );
+      }
       return await processInboundMessage({
         authorizationCfg: gate.context.cfg,
         ctx: event.ctx,
         msg: event.msg,
+        ignoreEnabled,
         chatId: event.chatId,
         isGroup: event.isGroup,
         isForum: event.isForum,
@@ -328,6 +394,7 @@ function createTelegramInboundHandlers(
       msg,
       requireConfiguredGroup: false,
       botUserId: resolveBotUserId(ctx),
+      botUsername: ctx.me?.username ?? opts.botInfo?.username,
       providerUpdate:
         typeof ctx.update?.update_id === "number"
           ? { id: ctx.update.update_id, kind: "edited_message" }
@@ -377,6 +444,7 @@ function createTelegramInboundHandlers(
       msg: normalizeChannelPostMessage(post),
       requireConfiguredGroup: true,
       botUserId: resolveBotUserId(ctx),
+      botUsername: ctx.me?.username ?? opts.botInfo?.username,
       providerUpdate:
         typeof ctx.update?.update_id === "number"
           ? { id: ctx.update.update_id, kind: "edited_channel_post" }

@@ -51,6 +51,9 @@ function createMemoryStore(maxEntries = TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_ME
           entries.delete(oldest);
         }
       },
+      async delete(key) {
+        return entries.delete(key);
+      },
       async entries() {
         return Array.from(entries, ([key, value]) => ({ key, value: structuredClone(value) }));
       },
@@ -115,6 +118,7 @@ const cacheFor = (bucketKey: string, persistentStore: PersistentStore) =>
 function entryStore(store: PersistentStore, key: string, value: unknown): PersistentStore {
   return {
     register: (nextKey, nextValue) => store.register(nextKey, nextValue),
+    delete: (nextKey) => store.delete(nextKey),
     entries: async () => [{ key, value }],
   } as PersistentStore;
 }
@@ -146,6 +150,19 @@ const projection = (transcriptMessageId: string) => ({
 });
 
 describe("telegram message cache", () => {
+  it("removes a cached message from memory and persistent storage", async () => {
+    const { bucketKey, entries, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    await record(cache, message(9000, "Nora", { text: "private detail" }));
+
+    await expect(
+      cache.remove({ accountId: "default", chatId: 7, messageId: "9000" }),
+    ).resolves.toBe(true);
+    await expect(get(cache, "9000")).resolves.toBeNull();
+    expect(entries).toHaveLength(0);
+    await expect(reloadGet(bucketKey, store, "9000")).resolves.toBeNull();
+  });
+
   it("persists resolved media with its source message and drops it when the media changes", async () => {
     const { bucketKey, entries, store } = createMemoryStore();
     const cache = cacheFor(bucketKey, store);
@@ -227,6 +244,91 @@ describe("telegram message cache", () => {
       expect(hasProviderObservedTelegramThreadBinding(node, 77)).toBe(true);
       expect(resolveProviderObservedTelegramThreadSpec(node)).toEqual({ scope: "forum", id: 77 });
     }
+  });
+
+  it("shows an ignored live reply target without persisting it", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    const ignored = message(920, "Ada", {
+      text: "/ignore side chatter",
+      entities: [{ type: "bot_command", offset: 0, length: 7 }],
+    });
+    const reply = message(921, "Grace", {
+      text: "This reply intentionally restores it",
+      reply_to_message: ignored,
+    });
+
+    await record(cache, reply, { botUsername: "OurBot" });
+
+    expect((await replyChain(cache, reply)).map((entry) => entry.body)).toContain(
+      "/ignore side chatter",
+    );
+    expect(await get(cache, "920")).toBeNull();
+    expect(await reloadGet(bucketKey, store, "920")).toBeNull();
+  });
+
+  it("filters an addressed ignored reply target when the cache reloads", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const ignored = message(922, "Ada", {
+      text: "/ignore@OurBot side chatter",
+      entities: [{ type: "bot_command", offset: 0, length: 14 }],
+    });
+    const reply = message(923, "Grace", {
+      text: "Reply after restart",
+      reply_to_message: ignored,
+    });
+    const cache = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      botUsername: "OurBot",
+      ignoreEnabled: true,
+    });
+    await record(cache, reply);
+
+    expect((await replyChain(cache, reply)).map((entry) => entry.body)).toContain(
+      "/ignore@OurBot side chatter",
+    );
+    expect(await get(cache, "922")).toBeNull();
+
+    resetCache();
+    const reloaded = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+    });
+
+    expect(await get(reloaded, "922")).toBeNull();
+    const reloadedReply = await get(reloaded, "923");
+    expect(reloadedReply?.replyToId).toBeUndefined();
+    expect(reloadedReply?.sourceMessage.reply_to_message).toBeUndefined();
+  });
+
+  it("keeps a command-shaped reply target when native commands are disabled", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const commandShaped = message(924, "Ada", {
+      text: "/ignore ordinary text",
+      entities: [{ type: "bot_command", offset: 0, length: 7 }],
+    });
+    const reply = message(925, "Grace", {
+      text: "Reply after restart",
+      reply_to_message: commandShaped,
+    });
+    const cache = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      ignoreEnabled: false,
+    });
+    await record(cache, reply);
+
+    resetCache();
+    const reloaded = createTelegramMessageCache({
+      bucketKey,
+      persistentStore: store,
+      ignoreEnabled: false,
+    });
+    expect((await get(reloaded, "924"))?.body).toBe("/ignore ordinary text");
+    const reloadedReply = await get(reloaded, "925");
+    expect(reloadedReply?.replyToId).toBe("924");
+    expect(reloadedReply?.sourceMessage.reply_to_message?.message_id).toBe(924);
   });
 
   it("keeps an authoritative supplied thread ahead of conflicting root message metadata", async () => {
@@ -593,6 +695,9 @@ describe("telegram message cache", () => {
     const bucketKey = `test:${process.pid}:${Date.now()}:${persistentStoreId++}`;
     const persistentStore: PersistentStore = {
       async register() {
+        throw new Error("state store unavailable");
+      },
+      async delete() {
         throw new Error("state store unavailable");
       },
       async entries() {

@@ -17,6 +17,7 @@ import {
   normalizeForwardedContext,
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
+import { resolveTelegramIgnoreDisposition } from "./ignore-command.js";
 import {
   isTelegramMessageCacheSourceMessage,
   parseTelegramResolvedMedia,
@@ -59,6 +60,7 @@ type TelegramMessageCache = {
     chatId: string | number;
     msg: Message;
     botUserId?: number;
+    botUsername?: string;
     promptContextProjection?: TelegramPromptContextProjection;
     /** Set only while recording an authenticated provider event or response. */
     providerObservedThread?: TelegramThreadSpec;
@@ -71,6 +73,11 @@ type TelegramMessageCache = {
     messageId: string;
     media: TelegramResolvedMedia & { path?: string; fileName?: string };
   }) => Promise<void>;
+  remove: (params: {
+    accountId: string;
+    chatId: string | number;
+    messageId: string;
+  }) => Promise<boolean>;
   get: (params: {
     accountId: string;
     chatId: string | number;
@@ -140,6 +147,7 @@ function getPersistedMessageCacheBuckets(): Map<string, TelegramMessageCacheBuck
 
 type TelegramMessageCachePersistentStore = {
   register(key: string, value: PersistedTelegramMessageCacheValue): Promise<void>;
+  delete(key: string): Promise<boolean>;
   entries(): Promise<Array<{ key: string; value: unknown }>>;
 };
 
@@ -169,6 +177,28 @@ function resolveReplyMessage(msg: Message): Message | undefined {
 
 function resolveEmbeddedReplyMessage(msg: Message): Message | undefined {
   return msg.reply_to_message;
+}
+
+/**
+ * Telegram embeds a reply target's full payload in every reply. Keep the live payload available
+ * to the current turn, but do not persist an ignored target (or a dangling replyToId) in cache.
+ */
+function detachIgnoredReplyTarget(
+  msg: Message,
+  botUsername: string | undefined,
+  ignoreEnabled: boolean,
+): Message {
+  const replyMessage = resolveEmbeddedReplyMessage(msg);
+  if (
+    !ignoreEnabled ||
+    !replyMessage ||
+    resolveTelegramIgnoreDisposition(replyMessage, botUsername) === "keep"
+  ) {
+    return msg;
+  }
+  const cacheable = { ...msg };
+  delete cacheable.reply_to_message;
+  return cacheable;
 }
 
 export function isTelegramMessageFromCurrentBot(msg: Message, botUserId?: number): boolean {
@@ -208,6 +238,7 @@ function normalizeMessageNode(
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker;
     resolvedMedia?: TelegramResolvedMedia;
     threadBinding?: TelegramMessageThreadBinding;
+    botUsername?: string;
   },
 ): TelegramCachedMessageNode {
   const media = resolveTelegramPrimaryMedia(msg);
@@ -294,6 +325,8 @@ function normalizeMessageNodes(
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker;
     resolvedMedia?: TelegramResolvedMedia;
     threadBinding?: TelegramMessageThreadBinding;
+    botUsername?: string;
+    ignoreEnabled?: boolean;
   },
 ): TelegramCachedMessageObservation[] {
   const observations: TelegramCachedMessageObservation[] = [];
@@ -301,13 +334,18 @@ function normalizeMessageNodes(
   const nodeThreadId = (node: TelegramCachedMessageNode) =>
     parseTelegramMessageThreadId(node.threadId);
   const visit = (
-    message: Message,
+    observed: Message,
     inheritedThreadId: number | undefined,
     mode: TelegramMessageObservationMode,
     promptContextProjectionMarker?: TelegramPromptContextProjectionMarker,
     threadBinding?: TelegramMessageThreadBinding,
     resolvedMedia?: TelegramResolvedMedia,
   ) => {
+    const message = detachIgnoredReplyTarget(
+      observed,
+      params.botUsername,
+      params.ignoreEnabled === true,
+    );
     const embeddedThreadId = parseTelegramMessageThreadId(
       (message as { message_thread_id?: unknown }).message_thread_id,
     );
@@ -612,7 +650,11 @@ export function createTelegramMessageCache(params?: {
   scope?: string;
   persistentStore?: TelegramMessageCachePersistentStore;
   bucketKey?: string;
+  botUsername?: string;
+  ignoreEnabled?: boolean;
 }): TelegramMessageCache {
+  const botUsername = params?.botUsername;
+  const ignoreEnabled = params?.ignoreEnabled !== false;
   const persistentStore = params?.persistentStore ?? resolveDefaultPersistentStore();
   const maxMessages =
     params?.maxMessages ??
@@ -670,12 +712,14 @@ export function createTelegramMessageCache(params?: {
     record: async ({
       accountId,
       botUserId,
+      botUsername: observedBotUsername,
       chatId,
       msg,
       promptContextProjection,
       providerObservedThread,
       threadId,
     }) => {
+      const effectiveBotUsername = observedBotUsername ?? botUsername;
       await hydrateMessageCacheBucket(bucket, maxMessages, scopeKey);
       const threadBinding = createTelegramMessageThreadBinding(providerObservedThread);
       const observations = normalizeMessageNodes(msg, {
@@ -689,6 +733,8 @@ export function createTelegramMessageCache(params?: {
             }
           : {}),
         ...(threadBinding ? { threadBinding } : {}),
+        ...(effectiveBotUsername ? { botUsername: effectiveBotUsername } : {}),
+        ignoreEnabled,
       });
       const currentObservation = observations.at(-1)!;
       let recordedEntry = currentObservation.node;
@@ -731,6 +777,21 @@ export function createTelegramMessageCache(params?: {
         node: resolvedNode,
         ...(botUserId !== undefined ? { botUserId } : {}),
       });
+    },
+    remove: async ({ accountId, chatId, messageId }) => {
+      await hydrateMessageCacheBucket(bucket, maxMessages, scopeKey);
+      const key = telegramMessageCacheKey({ scopeKey, accountId, chatId, messageId });
+      const removedFromMemory = messages.delete(key);
+      if (!bucket.persistentStore) {
+        return removedFromMemory;
+      }
+      try {
+        const removedFromStore = await bucket.persistentStore.delete(key);
+        return removedFromMemory || removedFromStore;
+      } catch (error) {
+        logVerbose(`telegram: failed to remove message from persistent cache: ${String(error)}`);
+        throw error;
+      }
     },
     get,
     recentBefore: async ({ accountId, chatId, messageId, threadId, limit }) => {

@@ -55,6 +55,7 @@ type TelegramInboundMessage = {
   authorizationCfg: OpenClawConfig;
   ctx: TelegramContext;
   msg: Message;
+  ignoreEnabled: boolean;
   chatId: number;
   isGroup: boolean;
   isForum: boolean;
@@ -126,6 +127,7 @@ export function createTelegramInboundProcessing({
       authorizationCfg,
       ctx,
       msg,
+      ignoreEnabled,
       chatId,
       isGroup,
       isForum,
@@ -200,6 +202,7 @@ export function createTelegramInboundProcessing({
         authorizationCfg,
         ctx,
         msg,
+        ignoreEnabled,
         chatId,
         isGroup,
         isForum,
