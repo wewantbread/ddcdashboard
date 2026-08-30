@@ -211,29 +211,46 @@ describeNonWin("exec script preflight", () => {
     });
   });
 
-  it("blocks shell env var injection tokens in python scripts before execution", async () => {
-    await withTempDir("openclaw-exec-preflight-", async (tmp) => {
-      const pyPath = path.join(tmp, "bad.py");
+  it.each(["$A", "$DM_JSON"])(
+    "blocks shell env var injection token %s in python scripts before execution",
+    async (token) => {
+      await withTempDir("openclaw-exec-preflight-", async (tmp) => {
+        const pyPath = path.join(tmp, "bad.py");
 
+        await fs.writeFile(
+          pyPath,
+          [
+            "import json",
+            "# model accidentally wrote shell syntax:",
+            `payload = ${token}`,
+            "print(payload)",
+          ].join("\n"),
+          "utf-8",
+        );
+
+        const tool = createPreflightTool();
+
+        await expect(
+          tool.execute("call1", {
+            command: "python bad.py",
+            workdir: tmp,
+          }),
+        ).rejects.toThrow(`exec preflight: detected likely shell variable injection (${token})`);
+      });
+    },
+  );
+
+  it("allows valid one-character dollar-prefixed identifiers in node scripts", async () => {
+    await withTempDir("openclaw-exec-preflight-", async (tmp) => {
       await fs.writeFile(
-        pyPath,
-        [
-          "import json",
-          "# model accidentally wrote shell syntax:",
-          "payload = $DM_JSON",
-          "print(payload)",
-        ].join("\n"),
+        path.join(tmp, "valid.js"),
+        'const $A = "node"; const $_ = "ok"; process.stdout.write(`${$A}-${$_}`);',
         "utf-8",
       );
 
-      const tool = createPreflightTool();
+      const result = await runExecPreflight({ command: "node valid.js", workdir: tmp });
 
-      await expect(
-        tool.execute("call1", {
-          command: "python bad.py",
-          workdir: tmp,
-        }),
-      ).rejects.toThrow(/exec preflight: detected likely shell variable injection \(\$DM_JSON\)/);
+      expect(result.details).toMatchObject({ status: "completed", aggregated: "node-ok" });
     });
   });
 
