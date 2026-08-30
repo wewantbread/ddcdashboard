@@ -48,7 +48,6 @@ export type { SessionSystemPromptReport } from "./session-system-prompt-report.j
 export type SessionScope = "per-sender" | "global";
 export type SessionChatType = ChatType;
 export const SESSION_TOTAL_TOKENS_VERSION = 1 as const;
-type SessionVisibility = "shared" | "read-only" | "suggest" | "draft";
 
 export type SessionOrigin = {
   label?: string;
@@ -291,7 +290,7 @@ type SessionEntryCore = SessionRestartRecoveryState &
   SessionEntryProvenance &
   Pick<SessionRow, "permissionMode" | "sessionRoot"> & {
     /** Collaboration mode. Missing legacy values are equivalent to "shared". */
-    visibility?: SessionVisibility;
+    visibility?: SessionRow["visibility"];
     /**
      * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
      * Stored on the main session entry.
