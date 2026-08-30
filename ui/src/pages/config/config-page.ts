@@ -451,6 +451,13 @@ export class ConfigPage extends OpenClawLightDomElement {
     this.hiddenSessionCatalogIds = loadStoredHiddenSessionCatalogIds();
   };
 
+  private retirePendingMediaPermissionRefreshes() {
+    // Passive discovery may settle after its Appearance owner has left. Drop
+    // queued gesture upgrades so they cannot open a stale permission prompt.
+    this.microphonePermissionRefreshPending = false;
+    this.cameraPermissionRefreshPending = false;
+  }
+
   override connectedCallback() {
     super.connectedCallback();
     this.hiddenSessionCatalogsChanged();
@@ -479,6 +486,7 @@ export class ConfigPage extends OpenClawLightDomElement {
       this.hiddenSessionCatalogsChanged,
     );
     this.customThemeImportOwner.retireImport();
+    this.retirePendingMediaPermissionRefreshes();
     this.mediaDeviceWatch?.();
     this.mediaDeviceWatch = null;
     this.systemInfoPolling.stop();
@@ -496,6 +504,7 @@ export class ConfigPage extends OpenClawLightDomElement {
   override willUpdate(changed: PropertyValues) {
     if (changed.get("pageId") === "appearance" && this.pageId !== "appearance") {
       this.customThemeImportOwner.retireImport();
+      this.retirePendingMediaPermissionRefreshes();
     }
     if (changed.has("pageId") || changed.has("routeData")) {
       this.syncRouteData();

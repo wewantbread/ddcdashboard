@@ -161,6 +161,102 @@ suite.define(() => {
     }
   });
 
+  it("does not request media permission after navigation leaves Appearance", async () => {
+    const context = await suite.newBrowserContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+      viewport: { height: 900, width: 1440 },
+    });
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      let releasePassiveDiscovery!: () => void;
+      const passiveDiscovery = new Promise<MediaDeviceInfo[]>((resolve) => {
+        releasePassiveDiscovery = () => resolve([]);
+      });
+      const probe = {
+        enumerateCalls: 0,
+        permissionRequests: 0,
+        releasePassiveDiscovery,
+      };
+      Object.defineProperty(globalThis, "mediaPermissionLifecycleProbe", { value: probe });
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: {
+          addEventListener: () => undefined,
+          enumerateDevices: () => {
+            probe.enumerateCalls += 1;
+            return probe.enumerateCalls === 1 ? passiveDiscovery : Promise.resolve([]);
+          },
+          getUserMedia: async () => {
+            probe.permissionRequests += 1;
+            return { getTracks: () => [] };
+          },
+          removeEventListener: () => undefined,
+        },
+      });
+    });
+    await installMockGateway(page);
+
+    try {
+      expect((await page.goto(`${suite.server.baseUrl}settings/appearance`))?.status()).toBe(200);
+      await waitForControlUiSettingsTakeover(page);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => Reflect.get(globalThis, "mediaPermissionLifecycleProbe")?.enumerateCalls ?? 0,
+          ),
+        )
+        .toBe(2);
+
+      await page.locator("[data-settings-microphone]").dispatchEvent("pointerdown", {
+        button: 0,
+        isPrimary: true,
+        pointerType: "mouse",
+      });
+      await page.locator('.settings-sidebar__item[href="/settings/security"]').click();
+      await expect.poll(() => new URL(page.url()).pathname).toBe("/settings/security");
+      await expect.poll(() => page.locator(".page-title").textContent()).toBe("Privacy & Security");
+
+      const verdict = await page.evaluate(async () => {
+        const probe = Reflect.get(globalThis, "mediaPermissionLifecycleProbe") as {
+          enumerateCalls: number;
+          permissionRequests: number;
+          releasePassiveDiscovery: () => void;
+        };
+        probe.releasePassiveDiscovery();
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        return {
+          enumerateCalls: probe.enumerateCalls,
+          path: location.pathname,
+          permissionRequests: probe.permissionRequests,
+        };
+      });
+
+      expect(verdict).toEqual({
+        enumerateCalls: 2,
+        path: "/settings/security",
+        permissionRequests: 0,
+      });
+      console.info(
+        `[control-ui-e2e] MEDIA_PERMISSION_LIFECYCLE_VERDICT ${JSON.stringify({
+          ...verdict,
+          pass: true,
+        })}`,
+      );
+      await captureSettingsSidebarUiProof(
+        page.locator(".settings-sidebar"),
+        "media-permission-retired-after-navigation.png",
+      );
+    } finally {
+      await suite.closeBrowserContext(context);
+    }
+  });
+
   it.each([
     { mode: "standalone", webChrome: false },
     { mode: "native web chrome", webChrome: true },

@@ -520,6 +520,46 @@ describe("ConfigPage media discovery", () => {
       expect(enumerateDevices).toHaveBeenCalledTimes(2);
     }
   });
+
+  async function expectQueuedPermissionRefreshRetired(retire: (page: ConfigPage) => void) {
+    for (const method of ["refreshMicrophones", "refreshCameras"] as const) {
+      const passiveDiscovery = deferred<MediaDeviceInfo[]>();
+      const enumerateDevices = vi
+        .fn()
+        .mockImplementationOnce(() => passiveDiscovery.promise)
+        .mockResolvedValue([]);
+      const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [] });
+      vi.stubGlobal("navigator", { mediaDevices: { enumerateDevices, getUserMedia } });
+      const page = new ConfigPage();
+      const state = page as unknown as Record<
+        typeof method,
+        (requestPermission: boolean) => Promise<void>
+      >;
+
+      const passive = state[method](false);
+      await state[method](true);
+      retire(page);
+      passiveDiscovery.resolve([]);
+      await passive;
+
+      expect(getUserMedia).not.toHaveBeenCalled();
+    }
+  }
+
+  it("retires queued permission refreshes when the page disconnects", async () => {
+    await expectQueuedPermissionRefreshRetired((page) => page.disconnectedCallback());
+  });
+
+  it("retires queued permission refreshes when navigation leaves Appearance", async () => {
+    await expectQueuedPermissionRefreshRetired((page) => {
+      const state = page as unknown as {
+        pageId: "appearance" | "security";
+        willUpdate: (changed: Map<string, unknown>) => void;
+      };
+      state.pageId = "security";
+      state.willUpdate(new Map([["pageId", "appearance"]]));
+    });
+  });
 });
 
 describe("ConfigPage camera selection", () => {
