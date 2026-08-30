@@ -35,15 +35,34 @@ function createService(overrides: Partial<GatewayService> = {}): GatewayService 
 
 describe("resolveGatewayService", () => {
   it.each([
-    { platform: "darwin" as const, label: "LaunchAgent", loadedText: "loaded" },
-    { platform: "linux" as const, label: "systemd user", loadedText: "enabled" },
-    { platform: "win32" as const, label: "Scheduled Task", loadedText: "registered" },
-  ])("returns the registered adapter for $platform", ({ platform, label, loadedText }) => {
-    setPlatform(platform);
-    const service = resolveGatewayService();
-    expect(service.label).toBe(label);
-    expect(service.loadedText).toBe(loadedText);
-  });
+    {
+      platform: "darwin" as const,
+      label: "LaunchAgent",
+      loadedText: "loaded",
+      restartIntentReason: "gateway.restart.launchd",
+    },
+    {
+      platform: "linux" as const,
+      label: "systemd user",
+      loadedText: "enabled",
+      restartIntentReason: undefined,
+    },
+    {
+      platform: "win32" as const,
+      label: "Scheduled Task",
+      loadedText: "registered",
+      restartIntentReason: undefined,
+    },
+  ])(
+    "returns the registered adapter for $platform",
+    ({ platform, label, loadedText, restartIntentReason }) => {
+      setPlatform(platform);
+      const service = resolveGatewayService();
+      expect(service.label).toBe(label);
+      expect(service.loadedText).toBe(loadedText);
+      expect(service.restartIntentReason).toBe(restartIntentReason);
+    },
+  );
 
   it("returns a read-only unsupported-platform adapter", async () => {
     setPlatform("aix");

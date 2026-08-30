@@ -86,6 +86,8 @@ export function runTailscaleRouteOwner(
     resolveExit = resolve;
   });
   const child = spawn(command, args, {
+    // Give the route command its own group so the detached worker can terminate
+    // wrappers and descendants without signalling itself.
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -143,6 +145,9 @@ if (process.argv[2] === TAILSCALE_ROUTE_OWNER_ARG) {
       process.once(signal, owner.stop);
     }
     process.once("disconnect", owner.stop);
+    if (!process.connected) {
+      owner.stop();
+    }
     process.once("message", (message: unknown) => {
       if (isRecord(message) && message.type === "stop") {
         owner.stop();

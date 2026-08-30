@@ -23,6 +23,7 @@ export {
   consumeGatewayRestartIntentPayloadSync,
   consumeGatewayRestartIntentSync,
 } from "../../infra/restart-intent.js";
+export { GATEWAY_LAUNCHD_RESTART_REASON } from "../../infra/restart-reasons.js";
 export { writeGatewayRestartHandoffSync } from "../../infra/restart-handoff.js";
 export {
   cancelManagedServiceUpdateHandoff,
@@ -36,6 +37,7 @@ export { markUpdateRestartSentinelFailure } from "../../infra/restart-sentinel.j
 export {
   detectGatewayRespawnSupervisor,
   detectRespawnSupervisor,
+  resolveGatewayLaunchdExitTimeoutMs,
 } from "../../infra/supervisor-markers.js";
 export { writeDiagnosticStabilityBundleForFailureSync } from "../../logging/diagnostic-stability-bundle.js";
 export {

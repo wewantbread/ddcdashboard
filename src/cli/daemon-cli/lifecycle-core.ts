@@ -496,7 +496,7 @@ export async function runServiceRestart(params: {
     const runtime = await params.service.readRuntime(process.env).catch(() => null);
     wroteRestartIntent = writeGatewayRestartIntentSync({
       targetPid: runtime?.pid,
-      reason: "gateway.restart",
+      reason: params.service.restartIntentReason ?? "gateway.restart",
       ...(restartIntent ? { intent: restartIntent } : {}),
     });
   };

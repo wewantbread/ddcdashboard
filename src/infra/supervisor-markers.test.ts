@@ -1,10 +1,27 @@
 // Covers supervisor marker files used to identify managed OpenClaw processes.
-import { describe, expect, it } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   detectGatewayRespawnSupervisor,
   detectRespawnSupervisor,
+  resolveGatewayLaunchdExitTimeoutMs,
   SUPERVISOR_HINT_ENV_VARS,
 } from "./supervisor-markers.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+function writeLaunchAgent(exitTimeoutSeconds: number): NodeJS.ProcessEnv {
+  const home = tempDirs.make("openclaw-launchd-timeout-");
+  const launchAgents = path.join(home, "Library", "LaunchAgents");
+  mkdirSync(launchAgents, { recursive: true });
+  writeFileSync(
+    path.join(launchAgents, "ai.openclaw.gateway.plist"),
+    `<plist><dict><key>ExitTimeOut</key><integer>${exitTimeoutSeconds}</integer></dict></plist>`,
+  );
+  return { HOME: home, OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway" };
+}
 
 describe("SUPERVISOR_HINT_ENV_VARS", () => {
   it("includes the cross-platform supervisor hint env vars", () => {
@@ -142,5 +159,43 @@ describe("detectGatewayRespawnSupervisor", () => {
 
     expect(detectGatewayRespawnSupervisor(env, "darwin")).toBe("external");
     expect(detectRespawnSupervisor(env, "darwin")).toBe("launchd");
+  });
+});
+
+describe("resolveGatewayLaunchdExitTimeoutMs", () => {
+  it("reads a custom ExitTimeOut from the installed LaunchAgent", () => {
+    expect(resolveGatewayLaunchdExitTimeoutMs(writeLaunchAgent(37))).toBe(37_000);
+  });
+
+  it("preserves launchd's unbounded ExitTimeOut value", () => {
+    expect(resolveGatewayLaunchdExitTimeoutMs(writeLaunchAgent(0))).toBeUndefined();
+  });
+
+  it("uses an expired deadline when the active job's plist is unavailable", () => {
+    const home = tempDirs.make("openclaw-launchd-timeout-");
+    expect(
+      resolveGatewayLaunchdExitTimeoutMs({
+        HOME: home,
+        OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway",
+      }),
+    ).toBe(0);
+  });
+
+  it("uses an expired deadline when the active job's plist lacks ExitTimeOut", () => {
+    const home = tempDirs.make("openclaw-launchd-timeout-");
+    const launchAgentsDir = path.join(home, "Library", "LaunchAgents");
+    mkdirSync(launchAgentsDir, { recursive: true });
+    writeFileSync(
+      path.join(launchAgentsDir, "ai.openclaw.gateway.plist"),
+      "<plist><dict></dict></plist>",
+      "utf8",
+    );
+
+    expect(
+      resolveGatewayLaunchdExitTimeoutMs({
+        HOME: home,
+        OPENCLAW_LAUNCHD_LABEL: "ai.openclaw.gateway",
+      }),
+    ).toBe(0);
   });
 });

@@ -709,6 +709,20 @@ describe("runServiceRestart token drift", () => {
     expect(service.restart).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the service adapter restart reason for a launchd-managed restart", async () => {
+    service.readRuntime.mockResolvedValue({ status: "running", pid: 1234 });
+
+    await runServiceRestart({
+      ...createServiceRunArgs(),
+      service: { ...service, restartIntentReason: "gateway.restart.launchd" },
+    });
+
+    expect(writeGatewayRestartIntentSync).toHaveBeenCalledWith({
+      targetPid: 1234,
+      reason: "gateway.restart.launchd",
+    });
+  });
+
   it("captures service restart warnings in json restart output", async () => {
     service.restart.mockImplementationOnce(async (args?: GatewayServiceControlArgs) => {
       args?.warn?.(

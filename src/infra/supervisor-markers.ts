@@ -1,5 +1,9 @@
 // Defines process supervisor marker labels for gateway diagnostics.
+import { readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { GATEWAY_LAUNCH_AGENT_LABEL, resolveGatewayLaunchAgentLabel } from "../daemon/constants.js";
+import { parseLaunchdPlistExitTimeoutSeconds } from "../daemon/launchd-plist.js";
 import { isGatewayExternallySupervised } from "./gateway-supervision.js";
 
 const SUPERVISOR_HINTS = {
@@ -90,4 +94,31 @@ export function detectGatewayRespawnSupervisor(
     return "external";
   }
   return detectRespawnSupervisor(env, platform, options);
+}
+
+export function resolveGatewayLaunchdExitTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const label =
+    env.OPENCLAW_LAUNCHD_LABEL?.trim() || resolveGatewayLaunchAgentLabel(env.OPENCLAW_PROFILE);
+  const home = env.HOME?.trim() || os.homedir();
+  try {
+    const contents = readFileSync(
+      path.join(home, "Library", "LaunchAgents", `${label}.plist`),
+      "utf8",
+    );
+    const seconds = parseLaunchdPlistExitTimeoutSeconds(contents);
+    if (seconds === 0) {
+      return undefined;
+    }
+    if (seconds !== null) {
+      return seconds * 1_000;
+    }
+  } catch {
+    // Fall through to the conservative unknown-deadline path below.
+  }
+  // The loaded job can outlive a removed, replaced, or unreadable plist and
+  // may have a shorter custom ExitTimeOut. Treat an unknown deadline as
+  // already expired instead of substituting the generated default.
+  return 0;
 }
