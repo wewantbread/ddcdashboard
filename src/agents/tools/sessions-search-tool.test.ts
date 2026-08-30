@@ -11,6 +11,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { callGateway as gatewayCall } from "../../gateway/call.js";
 import { createSessionVisibilityChecker } from "../../plugin-sdk/session-visibility.js";
+import { normalizeToolParameters } from "../agent-tools.schema.js";
 import { describeSessionLinkRule } from "../tool-description-presets.js";
 import { compactToolOutputHint } from "../tool-schema-hints.js";
 import { createSessionsSearchTool } from "./sessions-search-tool.js";
@@ -198,6 +199,31 @@ describe("sessions_search tool", () => {
     expect(querySchema.description).toContain("non-empty");
     expect(querySchema.description).not.toContain("sessions_list");
     expect(querySchema.description).not.toContain("sessions_history");
+  });
+
+  it("keeps the blank-query guarantee after provider schema normalization", async () => {
+    // Gemini-family finalization strips `pattern` (and other unsupported
+    // keywords), so the schema guard is provider-dependent. The finalized
+    // schema for Google no longer rejects blank queries at the catalog, and
+    // the executor must still reject them with an actionable error there.
+    const finalizedForGoogle = normalizeToolParameters(createTool({}), {
+      modelProvider: "google",
+    });
+    const googleQuerySchema = (finalizedForGoogle.parameters as TObject).properties.query as Record<
+      string,
+      unknown
+    >;
+    expect(googleQuerySchema.pattern).toBeUndefined();
+    expect(Value.Check(finalizedForGoogle.parameters, { query: "" })).toBe(true);
+    await expect(finalizedForGoogle.execute!("t1", { query: "   " })).rejects.toThrow(
+      /query must not be empty; retry with non-empty keywords/,
+    );
+
+    // Providers that keep `pattern` reject the blank query at the catalog.
+    const finalizedForOpenAi = normalizeToolParameters(createTool({}), {
+      modelProvider: "openai",
+    });
+    expect(Value.Check(finalizedForOpenAi.parameters, { query: "" })).toBe(false);
   });
 
   it("filters invisible hits before applying the limit", async () => {

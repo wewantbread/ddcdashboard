@@ -364,7 +364,12 @@ export function createSessionsSearchTool(opts?: {
       const params = args as Record<string, unknown>;
       const query = readToolStringParam(params, "query")?.trim() ?? "";
       if (!query) {
-        throw new ToolInputError("query must not be empty");
+        // Gemini-family finalization strips the schema `pattern`, so blank
+        // queries from those providers land here instead of the catalog
+        // validator; the error must stay model-actionable on that path.
+        throw new ToolInputError(
+          "query must not be empty; retry with non-empty keywords to match in past session text",
+        );
       }
       if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
         throw new ToolInputError(
