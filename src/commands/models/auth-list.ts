@@ -76,6 +76,8 @@ function summarizeProfile(params: {
   const expiresAt = resolveProfileExpiry(params.profile);
   const blockedActive = isActiveUnusableWindow(params.usage?.blockedUntil, Date.now());
   const blockedUntil = blockedActive ? formatTimestamp(params.usage?.blockedUntil) : undefined;
+  const blockedModel =
+    params.usage?.blockedScope === "model" ? params.usage.blockedModel : undefined;
   const cooldownUntil = formatTimestamp(params.usage?.cooldownUntil);
   const disabledUntil = formatTimestamp(params.usage?.disabledUntil);
   const disabledActive = Boolean(disabledUntil);
@@ -110,10 +112,8 @@ function summarizeProfile(params: {
           blockedUntil,
           ...(params.usage?.blockedReason ? { blockedReason: params.usage.blockedReason } : {}),
           ...(params.usage?.blockedSource ? { blockedSource: params.usage.blockedSource } : {}),
-          blockedScope: params.usage?.blockedScope === "model" ? "model" : "profile",
-          ...(params.usage?.blockedScope === "model" && params.usage.blockedModel
-            ? { blockedModel: params.usage.blockedModel }
-            : {}),
+          blockedScope: blockedModel ? "model" : "profile",
+          ...(blockedModel ? { blockedModel } : {}),
         }
       : {}),
     ...(cooldownUntil ? { cooldownUntil } : {}),

@@ -220,6 +220,7 @@ describe("modelsAuthListCommand", () => {
       profiles: {
         "openai:profile-wide": profile,
         "openai:model-scoped": profile,
+        "openai:model-scope-without-model": profile,
         "openai:expired": profile,
         "openai:invalid": profile,
       },
@@ -236,6 +237,12 @@ describe("modelsAuthListCommand", () => {
           blockedSource: "wham",
           blockedScope: "model",
           blockedModel: "gpt-5.5",
+        },
+        "openai:model-scope-without-model": {
+          blockedUntil: NOW + 180_000,
+          blockedReason: "subscription_limit",
+          blockedSource: "wham",
+          blockedScope: "model",
         },
         "openai:expired": {
           blockedUntil: NOW - 1,
@@ -262,6 +269,9 @@ describe("modelsAuthListCommand", () => {
     expect(textRuntime.logs.find((line) => line.includes("openai:model-scoped"))).toContain(
       "blocked:subscription_limit via wham for model gpt-5.5 until 2026-08-30T00:02:00.000Z",
     );
+    expect(
+      textRuntime.logs.find((line) => line.includes("openai:model-scope-without-model")),
+    ).toContain("blocked:subscription_limit via wham for profile until 2026-08-30T00:03:00.000Z");
     for (const id of ["openai:expired", "openai:invalid"]) {
       expect(textRuntime.logs.find((line) => line.includes(id))).not.toContain("blocked:");
     }
@@ -288,6 +298,13 @@ describe("modelsAuthListCommand", () => {
       blockedScope: "profile",
     });
     expect(byId["openai:profile-wide"]).not.toHaveProperty("blockedModel");
+    expect(byId["openai:model-scope-without-model"]).toMatchObject({
+      blockedUntil: "2026-08-30T00:03:00.000Z",
+      blockedReason: "subscription_limit",
+      blockedSource: "wham",
+      blockedScope: "profile",
+    });
+    expect(byId["openai:model-scope-without-model"]).not.toHaveProperty("blockedModel");
     for (const id of ["openai:expired", "openai:invalid"]) {
       const profileEntry = byId[id];
       expect(profileEntry).toBeDefined();
