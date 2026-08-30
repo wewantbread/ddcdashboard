@@ -441,6 +441,21 @@ describe("deliverAgentCommandResult payload normalization", () => {
     });
   });
 
+  it("keeps Gateway reset status notices through the durable delivery handoff", async () => {
+    deliverOutboundPayloadsMock.mockResolvedValue([{ channel: "slack", messageId: "msg-1" }]);
+
+    await deliverAgentCommandResultForTest({
+      payloads: [{ text: "✅ New session started.", isStatusNotice: true }] as never,
+    });
+
+    expect(latestOutboundDeliveryArgs().payloads).toEqual([
+      expect.objectContaining({
+        text: "✅ New session started.",
+        isStatusNotice: true,
+      }),
+    ]);
+  });
+
   it("renders response prefix templates with the selected runtime model", async () => {
     const delivered = await deliverAgentCommandResult({
       cfg: {

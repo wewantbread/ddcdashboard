@@ -27,6 +27,7 @@ const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
 type HookEvent = {
   sessionKey?: string;
   nextSessionKey?: string;
+  reason?: string;
 };
 
 function firstHookEvent(mock: { mock: { calls: unknown[][] } }): HookEvent {
@@ -110,6 +111,7 @@ test("sessions.create accepts an explicit successor with a minted dashboard key"
   const endEvent = firstHookEvent(sessionLifecycleHookMocks.runSessionEnd);
   expect(endEvent.sessionKey).toBe("agent:main:main");
   expect(endEvent.nextSessionKey).toBe(result.payload?.key);
+  expect(endEvent.reason).toBe("new");
   expect(firstHookEvent(sessionLifecycleHookMocks.runSessionStart).sessionKey).toBe(
     result.payload?.key,
   );
