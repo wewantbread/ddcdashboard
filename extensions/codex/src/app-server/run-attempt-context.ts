@@ -173,6 +173,12 @@ export async function prepareCodexAttemptContext(
   const captureNativeProjectInstructions =
     nativeProjectInstructionSnapshotAllowed &&
     storedAgentWorkspaceDeveloperInstructions === undefined;
+  // Sandbox-native sources may be unavailable to the Gateway, but only the
+  // native thread/start response can distinguish that from an empty selection.
+  const projectInstructionsUnavailableToGateway =
+    workspaceBootstrapContext.agentWorkspaceDeveloperInstructionsAllowed &&
+    !workspaceBootstrapContext.nativeProjectDocNeedsOpenClawCarrier &&
+    !workspaceBootstrapContext.nativeProjectInstructionSnapshotAllowed;
   const nativeProjectDocsDisabledOnResume =
     nativeProjectInstructionSnapshotAllowed &&
     storedAgentWorkspaceDeveloperInstructions !== undefined;
@@ -249,6 +255,7 @@ export async function prepareCodexAttemptContext(
     workspaceBootstrapContext,
     agentWorkspaceDeveloperInstructions,
     captureNativeProjectInstructions,
+    projectInstructionsUnavailableToGateway,
     nativeProjectDocsDisabledOnResume,
     frozenNativeProjectInstructions,
     baseDeveloperInstructions,

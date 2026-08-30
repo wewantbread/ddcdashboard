@@ -39,6 +39,7 @@ export function forkResponse(threadId = "thread-forked") {
     cwd: "/tmp",
     model: "gpt-5.6-luna",
     modelProvider: "openai",
+    instructionSources: [],
     sandbox: { type: "dangerFullAccess" },
     thread: {
       id: threadId,

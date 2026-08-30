@@ -163,6 +163,7 @@ export async function startCodexAttemptThread(params: {
   agentWorkspaceDeveloperInstructions?: string;
   agentWorkspaceDeveloperInstructionsAllowed: boolean;
   captureNativeProjectInstructions?: boolean;
+  projectInstructionsUnavailableToGateway?: boolean;
   nativeProjectDocsDisabledOnResume?: boolean;
   finalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["finalConfigPatch"];
   buildFinalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["buildFinalConfigPatch"];
@@ -479,6 +480,9 @@ export async function startCodexAttemptThread(params: {
                 agentWorkspaceDeveloperInstructionsAllowed:
                   params.agentWorkspaceDeveloperInstructionsAllowed,
                 captureNativeProjectInstructions: params.captureNativeProjectInstructions,
+                projectInstructionsUnavailableToGateway:
+                  params.projectInstructionsUnavailableToGateway === true &&
+                  Boolean(startupEnvironmentSelection?.length),
                 nativeProjectDocsDisabledOnResume: params.nativeProjectDocsDisabledOnResume,
                 config: threadConfig,
                 shellEnvironment: params.shellEnvironment,

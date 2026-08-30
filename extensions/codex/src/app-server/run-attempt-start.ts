@@ -128,6 +128,7 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
       agentWorkspaceDeveloperInstructionsAllowed:
         context.workspaceBootstrapContext.agentWorkspaceDeveloperInstructionsAllowed,
       captureNativeProjectInstructions: context.captureNativeProjectInstructions,
+      projectInstructionsUnavailableToGateway: context.projectInstructionsUnavailableToGateway,
       nativeProjectDocsDisabledOnResume: context.nativeProjectDocsDisabledOnResume,
       buildFinalConfigPatch: buildNativeHookRelayFinalConfigPatch,
       nativeHookRelayRequired:

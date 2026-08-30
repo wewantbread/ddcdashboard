@@ -40,6 +40,7 @@ import {
   readActiveCodexTurnIdsFromResume,
 } from "./thread-fingerprints.js";
 import {
+  assertCodexProjectInstructionColdResumeAllowed,
   CodexAdoptedThreadActiveError,
   CodexRestrictedToolSurfaceAttestationError,
   CodexThreadBindingConflictError,
@@ -99,6 +100,7 @@ export async function resumeExistingCodexThread(
   params: CodexStartOrResumeThreadParams,
   context: ResumeThreadContext,
 ): Promise<CodexAppServerThreadLifecycleBinding | undefined> {
+  assertCodexProjectInstructionColdResumeAllowed(context.binding);
   const {
     binding: resumeBinding,
     bindingIdentity,
@@ -587,7 +589,11 @@ export async function startFreshCodexThread(
       cwd: params.cwd,
       ...(rolloutPath ? { rolloutPath } : {}),
       authProfileId: params.params.authProfileId,
-      ...captureAgentInstructions(params, capturedAgentWorkspaceDeveloperInstructions),
+      ...captureAgentInstructions(
+        params,
+        capturedAgentWorkspaceDeveloperInstructions,
+        response.instructionSources,
+      ),
       model: response.model ?? startParams.model ?? params.params.modelId,
       modelProvider: bindingModelProvider,
       dynamicToolsFingerprint,

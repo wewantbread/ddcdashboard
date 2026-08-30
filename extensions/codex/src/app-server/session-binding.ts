@@ -35,6 +35,12 @@ export const CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY = [
   "The original root-to-working-directory Codex project-document hierarchy was empty when this thread started. Project-instruction files created later do not apply to this existing thread.",
 ].join("\n");
 
+export const CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY = [
+  "## Unavailable Codex Project Instructions",
+  "",
+  "The original project-document hierarchy belongs to the selected execution environment and is unavailable to this Gateway. This thread must not continue outside that live environment.",
+].join("\n");
+
 export {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
@@ -223,6 +229,9 @@ const threadBindingSchema = z
     // empty snapshot is a nonblank no-op authority string so prior readers retain
     // rollback readability; undefined identifies a legacy binding.
     agentWorkspaceDeveloperInstructions: optionalNonBlankStringSchema,
+    // Codex loaded the hierarchy inside a selected execution environment, so
+    // the Gateway cannot authoritatively replay it on a physical cold resume.
+    projectInstructionsUnavailableToGateway: z.literal(true).optional().catch(undefined),
     model: optionalStringSchema,
     // Codex App Server owns selection for supervised and adopted threads. Keep
     // this marker across resumes so OpenClaw never substitutes a default or fallback.
@@ -294,6 +303,29 @@ const threadBindingSchema = z
       .catch(undefined),
   })
   .superRefine((binding, context) => {
+    if (binding.projectInstructionsUnavailableToGateway === true) {
+      if (
+        binding.agentWorkspaceDeveloperInstructions !== CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "unavailable project instructions require the rollback-safe authority marker",
+        });
+      }
+      if (!binding.environmentSelectionFingerprint) {
+        context.addIssue({
+          code: "custom",
+          message: "unavailable project instructions require their selected environment identity",
+        });
+      }
+    } else if (
+      binding.agentWorkspaceDeveloperInstructions === CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "the unavailable project-instruction marker requires its durable authority fact",
+      });
+    }
     if (binding.connectionScope === "supervision") {
       if (!binding.supervisionSourceThreadId) {
         context.addIssue({
