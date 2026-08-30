@@ -40,10 +40,12 @@ Source generation fails if a present channel secret-contract artifact cannot loa
 - `skills.entries.*.apiKey`
 - `memory.search.remote.apiKey`
 - `agents.entries.*.tts.providers.*.apiKey`
+- `agents.entries.*.tts.personas.*.providers.*.apiKey`
 - `agents.entries.*.memory.search.remote.apiKey`
 - `talk.providers.*.apiKey`
 - `talk.realtime.providers.*.apiKey`
 - `tts.providers.*.apiKey`
+- `tts.personas.*.providers.*.apiKey`
 - `plugins.entries.acpx.config.mcpServers.*.env.*`
 - `plugins.entries.brave.config.webSearch.apiKey`
 - `plugins.entries.codex.config.appServer.authToken`
@@ -98,10 +100,12 @@ Source generation fails if a present channel secret-contract artifact cannot loa
 - `channels.discord.pluralkit.token`
 - `channels.discord.voice.realtime.providers.*.apiKey`
 - `channels.discord.voice.tts.providers.*.apiKey`
+- `channels.discord.voice.tts.personas.*.providers.*.apiKey`
 - `channels.discord.accounts.*.token`
 - `channels.discord.accounts.*.pluralkit.token`
 - `channels.discord.accounts.*.voice.realtime.providers.*.apiKey`
 - `channels.discord.accounts.*.voice.tts.providers.*.apiKey`
+- `channels.discord.accounts.*.voice.tts.personas.*.providers.*.apiKey`
 - `channels.irc.password`
 - `channels.irc.nickserv.password`
 - `channels.irc.accounts.*.password`
