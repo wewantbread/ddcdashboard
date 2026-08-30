@@ -41,6 +41,7 @@ import {
   showLoadingAnimation,
 } from "./send.js";
 import { buildTemplateMessageFromPayload } from "./template-messages.js";
+import { resolveLineTextChunkLimit } from "./text-chunk-limit.js";
 import type { LineChannelData, ResolvedLineAccount } from "./types.js";
 import { createLineNodeWebhookHandler, readLineWebhookRequestBody } from "./webhook-node.js";
 import { LineWebhookTerminalDeliveryError } from "./webhook-spool.js";
@@ -198,7 +199,7 @@ export async function monitorLineProvider(
           : undefined;
 
       try {
-        const textLimit = 5000;
+        const textLimit = resolveLineTextChunkLimit({ cfg: config, accountId: ctx.accountId });
         const core = getLineRuntime();
         const turnResult = await core.channel.inbound.run({
           channel: "line",
