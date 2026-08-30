@@ -3,6 +3,7 @@
  * Owns request/wait routing, embedded approval bridging, deferred approvals,
  * timeout classification, and owner-provided approval outcomes.
  */
+import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { addTimerTimeoutGraceMs } from "@openclaw/normalization-core/number-coercion";
 import { GatewayClientRequestError } from "../gateway/client.js";
 import { sanitizeApprovalScope } from "../infra/approval-scope.js";
@@ -582,12 +583,13 @@ function toApprovalErrorObject(value: unknown, fallbackMessage: string): Error {
   if (value instanceof Error) {
     return value;
   }
+  // Preserve the original cause on string rejections (the canonical
+  // toErrorObject drops it); the structured-object path shares the canonical
+  // __proto__-safe enumerable copy so a parsed own __proto__ cannot replace the
+  // Error's prototype — that replacement made `err instanceof Error` fail at
+  // the catch site and misclassified run aborts as gateway failures.
   if (typeof value === "string") {
     return new Error(value, { cause: value });
   }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
+  return toErrorObject(value, fallbackMessage);
 }
