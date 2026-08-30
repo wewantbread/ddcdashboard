@@ -19,6 +19,7 @@ import {
   estimateMessagesTokens,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
+  sanitizeCompactionMessages,
   SUMMARIZATION_OVERHEAD_TOKENS,
 } from "./compaction-planning.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
@@ -26,7 +27,8 @@ import { isTimeoutError } from "./failover-error.js";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "./runtime/index.js";
 import type { SessionModelUsageSink } from "./sessions/compaction/runtime.js";
 import type { ExtensionContext } from "./sessions/index.js";
-import { generateSummary } from "./sessions/index.js";
+import { generateSummary, serializeConversation } from "./sessions/index.js";
+import { convertToLlm } from "./sessions/messages.js";
 
 export {
   BASE_CHUNK_RATIO,
@@ -74,6 +76,7 @@ type CompactionSummaryParams = {
   signal: AbortSignal;
   reserveTokens: number;
   maxChunkTokens: number;
+  maxChunkTokensSource?: "adaptive" | "explicit";
   contextWindow: number;
   customInstructions?: string;
   summarizationInstructions?: CompactionSummarizationInstructions;
@@ -107,6 +110,33 @@ function buildCompactionSummarizationInstructions(
   return identifierPreservation
     ? `${identifierPreservation}\n\nAdditional focus:\n${custom}`
     : `Additional focus:\n${custom}`;
+}
+
+/**
+ * Uses the model's full context only when the complete summary request has
+ * conservative room for its serialized input and output budget.
+ */
+function resolveSummaryChunkTokens(params: CompactionSummaryParams): number {
+  const serializedHistory = serializeConversation(
+    convertToLlm(sanitizeCompactionMessages(params.messages)),
+  );
+  const effectiveInstructions = buildCompactionSummarizationInstructions(
+    params.customInstructions,
+    params.summarizationInstructions,
+  );
+  const dynamicRequestText = [serializedHistory, params.previousSummary, effectiveInstructions]
+    .filter((text): text is string => Boolean(text))
+    .join("\n\n");
+  const dynamicInputTokens = estimateMessagesTokens([
+    { role: "user", content: dynamicRequestText, timestamp: 0 },
+  ]);
+  const requestTokens =
+    Math.ceil(dynamicInputTokens * SAFETY_MARGIN) +
+    SUMMARIZATION_OVERHEAD_TOKENS +
+    Math.max(0, Math.ceil(params.reserveTokens));
+  return requestTokens <= params.contextWindow && params.maxChunkTokensSource === "adaptive"
+    ? params.contextWindow
+    : params.maxChunkTokens;
 }
 
 async function summarizeChunks(params: CompactionSummaryParams): Promise<string> {
@@ -297,16 +327,18 @@ export async function summarizeInStages(
     return await summarizeWithFallback(params);
   }
 
+  const maxChunkTokens = resolveSummaryChunkTokens(params);
+
   const plan = await buildStageSplitPlanWithWorker({
     messages,
-    maxChunkTokens: params.maxChunkTokens,
+    maxChunkTokens,
     parts: params.parts,
     minMessagesForSplit: params.minMessagesForSplit,
     signal: params.signal,
   });
 
   if (plan.mode === "single") {
-    return await summarizeWithFallback(params);
+    return await summarizeWithFallback({ ...params, maxChunkTokens });
   }
 
   const partialSummaries: string[] = [];
