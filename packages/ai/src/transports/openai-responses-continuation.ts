@@ -42,10 +42,22 @@ function requestWithoutInput(request: ResponsesContinuationRequest): ResponsesCo
   // request below), so excluding it here loses no freshness; comparing it
   // would just move the same false-positive rejection this module already
   // guards against in `input` into `request_changed` instead.
+  //
+  // `tools` gets the same exclusion for the same reason: the agent's
+  // available tool surface legitimately changes turn to turn (tool-search
+  // activation, session-scoped gating, MCP servers connecting/disconnecting)
+  // independent of whether the prior turn's stored server-side state is
+  // still a valid continuation baseline -- the Responses API's
+  // `previous_response_id` mechanism resolves history, not tool schemas.
+  // Comparing `tools` here turns an ordinary turn-to-turn tool-availability
+  // change into a permanent `request_changed` false positive that silently
+  // disables continuation for the rest of the connection's life, since every
+  // later turn keeps failing against the same stale cached tool list.
   const {
     input: _input,
     previous_response_id: _previousResponseId,
     instructions: _instructions,
+    tools: _tools,
     ...rest
   } = request;
   if (!isRecord(rest.metadata)) {
