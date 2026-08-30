@@ -52,7 +52,14 @@ const SESSIONS_SEARCH_INDEXING_WARNING =
   "Transcript indexing is in progress; results may be incomplete. Retry sessions_search shortly.";
 
 const SessionsSearchToolSchema = Type.Object({
-  query: Type.String({ maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS }),
+  query: Type.String({
+    // Reject empty and whitespace-only queries at the schema so the catalog
+    // returns a standard validation error before execute trims and throws —
+    // otherwise a whitespace-only query keeps the schema/runtime mismatch.
+    pattern: "\\S",
+    maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS,
+    description: "Required non-empty keywords to match in past user and assistant text.",
+  }),
   sessionKey: Type.Optional(Type.String()),
   limit: optionalPositiveIntegerSchema({ maximum: SESSIONS_SEARCH_MAX_LIMIT }),
 });
