@@ -175,9 +175,9 @@ export async function validateScriptFileForShellBleed(params: {
       throw error;
     }
 
-    // Common failure mode: shell env var syntax leaking into Python/JS.
-    // We deliberately match all-caps/underscore vars to avoid false positives with `$` as a JS identifier.
-    const envVarRegex = /\$[A-Z_][A-Z0-9_]{1,}/g;
+    // Python identifiers cannot contain `$`, so one-character shell-style tokens are unambiguous.
+    // Node identifiers can contain `$`, so require at least two identifier characters there.
+    const envVarRegex = target.kind === "python" ? /\$[A-Z_][A-Z0-9_]*/g : /\$[A-Z_][A-Z0-9_]+/g;
     const first = envVarRegex.exec(content);
     if (first) {
       const idx = first.index;
