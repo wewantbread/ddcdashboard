@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { RunEmbeddedAgentParams } from "./embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
+import type { ModelRef } from "./model-ref-shared.js";
 import type { SandboxContext } from "./sandbox/types.js";
 
 export type LocalTurnPlacementClaim = {
@@ -12,7 +13,10 @@ export type LocalTurnPlacementClaim = {
   runId: string;
 };
 
-export type SessionPlacementTurnParams = RunEmbeddedAgentParams & { sessionFile: string };
+export type SessionPlacementTurnParams = RunEmbeddedAgentParams & {
+  sessionFile: string;
+  expectedInitialModel?: Readonly<ModelRef>;
+};
 
 type SessionPlacementSandboxParams = {
   agentId: string;

@@ -177,6 +177,7 @@ async function expectAvailable(
     agentId: "main",
     snapshot: owner.modelCatalog,
     metadataSnapshot: owner.metadataSnapshot,
+    pluginRegistry: owner.pluginRegistry,
     preparedAuthStore: mocks.preparedAuthStore ?? { version: 1, profiles: {} },
     preparedRuntimeAuthModes: owner.authModes,
     preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(owner),
@@ -277,6 +278,7 @@ describe("gateway chat metadata lifecycle composition", () => {
           agentId: "main",
           snapshot: owner.modelCatalog,
           metadataSnapshot: owner.metadataSnapshot,
+          pluginRegistry: owner.pluginRegistry,
           preparedAuthStore: mocks.preparedAuthStore,
           preparedRuntimeAuthModes: owner.authModes,
         });
@@ -454,6 +456,7 @@ describe("gateway chat metadata lifecycle composition", () => {
                 agentId: "main",
                 snapshot: owner.modelCatalog,
                 metadataSnapshot: owner.metadataSnapshot,
+                pluginRegistry: owner.pluginRegistry,
                 preparedAuthStore: { version: 1, profiles: {} },
                 preparedRuntimeAuthModes: owner.authModes,
               }),

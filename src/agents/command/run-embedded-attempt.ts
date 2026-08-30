@@ -31,7 +31,7 @@ import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.j
 import { prepareInternalSessionEffectsSession } from "../internal-session-effects.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch.js";
 import { prepareModelRunCapabilities } from "../model-catalog-lookup.js";
-import { modelKey, resolveThinkingDefault } from "../model-selection.js";
+import { resolveThinkingDefault } from "../model-selection.js";
 import { resolveConfiguredThinkingDefault } from "../model-thinking-default.js";
 import { createModelVisibilityPolicy } from "../model-visibility-policy.js";
 import type { AgentRunSessionTarget } from "../run-session-target.js";
@@ -442,7 +442,7 @@ export async function runEmbeddedAgentAttempt(params: {
               catalog: candidateThinkingCatalog,
               agentRuntime: candidateRuntime,
             });
-          const candidateThinkLevel =
+          effectiveTurnThinkLevel =
             resolveCandidateThinkingLevel({
               cfg,
               provider: providerOverride,
@@ -454,9 +454,12 @@ export async function runEmbeddedAgentAttempt(params: {
               sessionEntry: attemptSessionEntry,
               agentRuntime: candidateRuntime,
             }) ?? candidateRequestedThinkLevel;
-          effectiveTurnThinkLevel = candidateThinkLevel;
           return attemptExecutionRuntime.runAgentAttempt({
             preparedRunAdmission: params.preparedRunAdmission,
+            expectedInitialModel:
+              runOptions.modelRoutingProvenance.stage === "initial"
+                ? params.prepared.commandRuntimeContext?.expectedInitialModel
+                : undefined,
             providerOverride,
             modelOverride,
             ...prepareModelRunCapabilities(
@@ -480,7 +483,7 @@ export async function runEmbeddedAgentAttempt(params: {
             transcriptBody,
             isFallbackRetry: runOptions.isFallbackRetry,
             modelRoutingProvenance: runOptions.modelRoutingProvenance,
-            resolvedThinkLevel: candidateThinkLevel,
+            resolvedThinkLevel: effectiveTurnThinkLevel,
             fastMode,
             fastModeStartedAtMs,
             fastModeAutoOnSeconds:
@@ -591,7 +594,7 @@ export async function runEmbeddedAgentAttempt(params: {
           err.model,
           modelManifestContext,
         );
-        if (!visibilityPolicy.allowsKey(modelKey(switchRef.provider, switchRef.model))) {
+        if (!visibilityPolicy.allows(switchRef)) {
           log.info(
             `Live session model switch in subagent run ${runId}: ` +
               `rejected ${sanitizeForLog(err.provider)}/${sanitizeForLog(err.model)} (not in allowlist)`,

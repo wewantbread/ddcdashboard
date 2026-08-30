@@ -22,6 +22,7 @@ export const runPluginEmbeddedAgent: PluginRuntime["agent"]["runEmbeddedAgent"] 
   if (
     "admittedRunContext" in params ||
     "preparedRunAdmission" in params ||
+    "expectedInitialModel" in params ||
     "onDeferredLifecycleOwner" in params ||
     "onDeferredLifecycleAbort" in params
   ) {

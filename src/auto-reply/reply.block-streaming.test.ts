@@ -5,6 +5,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { withFastReplyConfig } from "./reply/get-reply-fast-path.test-support.js";
 import { loadGetReplyModuleForTest } from "./reply/get-reply.test-loader.js";
+import { createFastTestModelSelectionState } from "./reply/model-selection.js";
 import { createMockTypingController } from "./reply/reply.test-helpers.js";
 import type { MsgContext } from "./templating.js";
 
@@ -166,6 +167,11 @@ function createContinueDirectivesResult() {
       provider: "anthropic",
       model: "claude-opus-4-6",
       modelState: {
+        ...createFastTestModelSelectionState({
+          agentCfg: undefined,
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+        }),
         resolveDefaultThinkingLevel: async () => undefined,
       },
       contextTokens: 0,

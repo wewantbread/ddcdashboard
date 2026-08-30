@@ -1,4 +1,7 @@
 import { vi } from "vitest";
+import type { PreparedPluginMetadata } from "../plugins/plugin-metadata-collection.types.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { createPreparedPluginMetadataFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { AuthStorageData } from "./sessions/auth-storage.js";
 
@@ -12,10 +15,26 @@ type StaticCatalogResolver = ReturnType<CreateStaticCatalogResolver>;
 
 const preparedModelRuntimeMocks = vi.hoisted(() => ({
   pluginMetadataSnapshot: {
+    policyHash: "test-policy",
+    discovery: { candidates: [], diagnostics: [] },
     plugins: [],
     pluginIds: [],
-    index: { plugins: [] },
+    index: {
+      version: 1,
+      hostContractVersion: "test",
+      compatRegistryVersion: "test",
+      migrationVersion: 1,
+      policyHash: "test-policy",
+      generatedAtMs: 0,
+      installRecords: {},
+      plugins: [],
+      diagnostics: [],
+    },
+    registryDiagnostics: [],
     manifestRegistry: { plugins: [], diagnostics: [] },
+    diagnostics: [],
+    byPluginId: new Map(),
+    normalizePluginId: (pluginId: string) => pluginId,
     owners: {
       channels: new Map(),
       channelConfigs: new Map(),
@@ -26,7 +45,15 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
       commandAliases: new Map(),
       contracts: new Map(),
     },
-  },
+    metrics: {
+      registrySnapshotMs: 0,
+      manifestRegistryMs: 0,
+      ownerMapsMs: 0,
+      totalMs: 0,
+      indexPluginCount: 0,
+      manifestPluginCount: 0,
+    },
+  } satisfies PluginMetadataSnapshot,
   preparedAuthStore: undefined as import("./auth-profiles/types.js").AuthProfileStore | undefined,
   preparedAuthMaterializations:
     [] as import("./auth-profiles/runtime-materializations.js").RuntimeAuthMaterialization[],
@@ -56,7 +83,8 @@ const preparedModelRuntimeMocks = vi.hoisted(() => ({
     agentDir: "/tmp/agent",
     wrote: false,
   })),
-  loadAgentRuntimePluginRegistryHandle: vi.fn(),
+  loadAgentRuntimePluginRegistryHandle:
+    vi.fn<typeof import("./runtime-plugins.js").loadAgentRuntimePluginRegistryHandle>(),
   loadStaticCatalog: vi.fn<LoadStaticCatalog>(async () => []),
   planOpenClawModelsJsonSource: vi.fn(async (...args: unknown[]) => ({
     agentDir: String(args[1]),
@@ -87,6 +115,28 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   isPluginMetadataSnapshotCompatible: () => true,
   loadPluginMetadataSnapshot: () => preparedModelRuntimeMocks.pluginMetadataSnapshot,
   resolvePluginMetadataSnapshot: () => preparedModelRuntimeMocks.pluginMetadataSnapshot,
+  projectPluginMetadataSnapshot: (
+    snapshot: import("../plugins/plugin-metadata-snapshot.types.js").PluginMetadataSnapshot,
+  ) => snapshot,
+}));
+
+vi.mock("../plugins/plugin-metadata-collection.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/plugin-metadata-collection.js")>()),
+  preparePluginMetadata: ({
+    workspaceDir,
+    env,
+  }: {
+    workspaceDir?: string;
+    env?: NodeJS.ProcessEnv;
+  }): PreparedPluginMetadata =>
+    createPreparedPluginMetadataFixture({
+      unionSnapshot: preparedModelRuntimeMocks.pluginMetadataSnapshot,
+      workspaces: new Map([[workspaceDir, preparedModelRuntimeMocks.pluginMetadataSnapshot]]),
+      agentWorkspaceDirs: new Map(
+        workspaceDir ? [["default", workspaceDir]] : preparedModelRuntimeMocks.configuredWorkspaces,
+      ),
+      env,
+    }),
 }));
 
 vi.mock("./prepared-model-catalog-worker.js", () => ({
@@ -316,8 +366,8 @@ vi.mock("./models-config.providers.implicit.js", () => ({
 }));
 
 vi.mock("./runtime-plugins.js", () => ({
-  loadAgentRuntimePluginRegistryHandle: (...args: unknown[]) =>
-    preparedModelRuntimeMocks.loadAgentRuntimePluginRegistryHandle(...args),
+  loadAgentRuntimePluginRegistryHandle:
+    preparedModelRuntimeMocks.loadAgentRuntimePluginRegistryHandle,
 }));
 
 vi.mock("./embedded-agent-runner/model.static-catalog.js", () => ({

@@ -53,30 +53,6 @@ export function isRuntimeSecretsPreparationCurrent(
   return getActiveSecretsRuntimeSnapshotRevisionState() === preparation.expectedRevision;
 }
 
-async function activateSecretsRuntimeSnapshotIfCurrent(
-  snapshot: PreparedSecretsRuntimeSnapshot,
-  expectedRevision: number,
-  options?: {
-    canActivate?: () => boolean;
-    onActivated?: () => void;
-    runtimeSourceConfig?: OpenClawConfig;
-  },
-): Promise<boolean> {
-  const runtime = await import("../secrets/runtime.js");
-  if (options?.canActivate && !options.canActivate()) {
-    return false;
-  }
-  if (
-    !runtime.activateSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision, {
-      runtimeSourceConfig: options?.runtimeSourceConfig,
-    })
-  ) {
-    return false;
-  }
-  options?.onActivated?.();
-  return true;
-}
-
 async function restoreSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
   expectedRevision: number,
@@ -182,7 +158,8 @@ export function createManagedReloadSecretHandlers(options: {
         }
         return {
           rollback: rollbackPublishedSource,
-          commit: () =>
+          commit: () => {
+            transactionOwnership.publishPluginMetadata?.(sourceOnlySnapshot.config);
             publishRuntimeSecretsStateTransition(
               params.activateRuntimeSecrets,
               sourceOnlySnapshot,
@@ -190,7 +167,8 @@ export function createManagedReloadSecretHandlers(options: {
                 sourceOnly: true,
                 expectedRevision: committedSecretsRevision,
               },
-            ),
+            );
+          },
         };
       }
       const preparation = await tryPrepareRuntimeSecrets(
@@ -229,26 +207,18 @@ export function createManagedReloadSecretHandlers(options: {
       if (!previousRuntimeSourceConfig || !previousSecretsSnapshot) {
         throw new GatewayConfigReloadSupersededError();
       }
-      const activateIfCurrent = params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent;
-      const activated = activateIfCurrent
-        ? await activateIfCurrent(
-            preparedSecrets,
-            previousSecretsRevision,
-            {
-              reason: "reload",
-              activate: true,
-              deferStatePublication: true,
-              runtimeSourceConfig: sourceConfig,
-            },
-            undefined,
-            transactionOwnership.isCurrent,
-          )
-        : (await activateSecretsRuntimeSnapshotIfCurrent(preparedSecrets, previousSecretsRevision, {
-              canActivate: transactionOwnership.isCurrent,
-              runtimeSourceConfig: sourceConfig,
-            }))
-          ? preparedSecrets
-          : null;
+      const activated = await params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent(
+        preparedSecrets,
+        previousSecretsRevision,
+        {
+          reason: "reload",
+          activate: true,
+          deferStatePublication: true,
+          runtimeSourceConfig: sourceConfig,
+        },
+        undefined,
+        transactionOwnership.isCurrent,
+      );
       if (!activated) {
         continue;
       }
@@ -271,8 +241,10 @@ export function createManagedReloadSecretHandlers(options: {
       }
       return {
         rollback: rollbackPublishedSource,
-        commit: () =>
-          publishRuntimeSecretsStateTransition(params.activateRuntimeSecrets, activated),
+        commit: () => {
+          transactionOwnership.publishPluginMetadata?.(activated.config);
+          publishRuntimeSecretsStateTransition(params.activateRuntimeSecrets, activated);
+        },
       };
     }
   };
@@ -364,6 +336,11 @@ export function createManagedReloadSecretHandlers(options: {
             ? { runtimeEnv: transactionOwnership.runtimeEnv.env }
             : {}),
           sourceConfig,
+          pluginMetadata: transactionOwnership.pluginMetadata,
+          onCommitted: () => {
+            runtimeCommitted = true;
+            transactionOwnership.markRuntimeCommitted(prepared.config, plan);
+          },
           prepareRestartRuntimeConfig: async () => {
             for (;;) {
               const restartPrepared = await tryPrepareRuntimeSecrets(
@@ -470,65 +447,36 @@ export function createManagedReloadSecretHandlers(options: {
                   }
                 }
                 throw err;
-              } finally {
-                if (isCommitted()) {
-                  runtimeCommitted = true;
-                  transactionOwnership.markRuntimeCommitted(prepared.config, plan);
-                }
               }
             };
-            const activateIfCurrent =
-              params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent;
-            if (activateIfCurrent) {
-              const activated = await activateIfCurrent(
-                prepared,
-                previousSnapshotRevision,
-                {
-                  reason: "reload",
-                  activate: true,
-                },
-                publishRuntime,
-                () =>
-                  transactionOwnership.isCurrent() &&
-                  isSharedGatewaySessionGenerationOwnershipCurrent(
-                    params.sharedGatewaySessionGenerationState,
-                    previousGenerationOwnership,
-                  ),
-              );
-              if (!activated) {
-                throw new GatewayHotReloadStaleSecretsError();
-              }
-            } else {
-              if (
-                !(await activateSecretsRuntimeSnapshotIfCurrent(
-                  prepared,
-                  previousSnapshotRevision,
-                  {
-                    canActivate: () =>
-                      transactionOwnership.isCurrent() &&
-                      isSharedGatewaySessionGenerationOwnershipCurrent(
-                        params.sharedGatewaySessionGenerationState,
-                        previousGenerationOwnership,
-                      ),
-                    onActivated: claimGenerationOwnership,
-                  },
-                ))
-              ) {
-                throw new GatewayHotReloadStaleSecretsError();
-              }
-              await publishRuntime();
+            const activated = await params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent(
+              prepared,
+              previousSnapshotRevision,
+              {
+                reason: "reload",
+                activate: true,
+              },
+              publishRuntime,
+              () =>
+                transactionOwnership.isCurrent() &&
+                isSharedGatewaySessionGenerationOwnershipCurrent(
+                  params.sharedGatewaySessionGenerationState,
+                  previousGenerationOwnership,
+                ),
+            );
+            if (!activated) {
+              throw new GatewayHotReloadStaleSecretsError();
             }
           },
         };
         if (isNoopGatewayReloadPlan(plan)) {
           // A source no-op still shares secret/auth publication ownership, but
           // must not churn services or prepared model owners without an effect.
-          let committed = false;
           await publication.publish(
             async () => {
-              committed = true;
+              publication.onCommitted?.();
             },
-            () => committed,
+            () => runtimeCommitted,
           );
           applicationStatus = "applied";
         } else {

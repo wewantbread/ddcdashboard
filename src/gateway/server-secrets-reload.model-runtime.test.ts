@@ -11,6 +11,8 @@ import { resetPreparedModelRuntimeSnapshotsForTest } from "../agents/prepared-mo
 import { writeConfigFile } from "../config/config.js";
 import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { preparePluginMetadata } from "../plugins/plugin-metadata-collection.js";
+import * as pluginMetadataSnapshots from "../plugins/plugin-metadata-snapshot.js";
 import {
   activateSecretsRuntimeSnapshot,
   clearSecretsRuntimeSnapshot,
@@ -89,8 +91,7 @@ afterEach(async () => {
   await state.cleanup();
 });
 
-async function coldRuntime(clients: SharedGatewayAuthClient[] = []) {
-  const config = sourceConfig();
+async function coldRuntime(clients: SharedGatewayAuthClient[] = [], config = sourceConfig()) {
   await state.writeConfig(config);
   const initial = await prepareSecretsRuntimeSnapshot({
     config,
@@ -106,9 +107,15 @@ async function coldRuntime(clients: SharedGatewayAuthClient[] = []) {
     ]),
   );
   activateSecretsRuntimeSnapshot(initial);
+  const pluginMetadata = preparePluginMetadata({
+    config: requireRuntimeConfig(),
+    workspaceDir: state.workspaceDir,
+    allowCurrent: false,
+  });
   await refreshPreparedModelRuntimeSnapshots(requireRuntimeConfig(), {
     catalogMode: "static",
     gatewayLifecycle: true,
+    pluginMetadata,
   });
   expect(
     getPublishedPreparedModelCatalogOwnerSnapshot({
@@ -123,9 +130,11 @@ async function coldRuntime(clients: SharedGatewayAuthClient[] = []) {
   const activator = createRuntimeSecretsActivator({
     logSecrets: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     emitStateEvent: vi.fn(),
+    manifestRegistry: pluginMetadata.manifestRegistry,
   });
   const reload = createGatewaySecretsReloader({
     activateRuntimeSecrets: activator,
+    getPluginMetadata: () => pluginMetadata,
     sharedGatewaySessionGenerationState: generationState,
     resolveSharedGatewaySessionGenerationForConfig: () => "reloaded",
     clients,
@@ -138,15 +147,42 @@ async function coldRuntime(clients: SharedGatewayAuthClient[] = []) {
     logChannels: { info: vi.fn() },
   });
   vi.stubEnv("TEST_RELOADED_MODEL_KEY", "recovered-fixture-key");
-  return { config, generationState, reload, activator };
+  return { config, generationState, reload, activator, pluginMetadata };
 }
 
 describe("secret reload model-runtime publication", () => {
   it("publishes recovered config refs to the model owner without an auth-profile mutation", async () => {
-    const { reload } = await coldRuntime();
+    const baseConfig = sourceConfig();
+    const alternateWorkspaceDir = state.path("alternate-workspace");
+    const config = {
+      ...baseConfig,
+      agents: {
+        ...baseConfig.agents,
+        entries: {
+          main: { workspace: state.workspaceDir },
+          alternate: { workspace: alternateWorkspaceDir },
+        },
+      },
+    };
+    const { reload, pluginMetadata } = await coldRuntime([], config);
     const authRevision = getRuntimeAuthProfileStoreCredentialsRevision();
+    const loadMetadata = vi.spyOn(pluginMetadataSnapshots, "loadPluginMetadataSnapshot");
 
     await reload();
+
+    for (const [agentId, workspaceDir] of [
+      ["main", state.workspaceDir],
+      ["alternate", alternateWorkspaceDir],
+    ] as const) {
+      const snapshot = await prepareModelRuntimeSnapshot({
+        config: requireRuntimeConfig(),
+        agentId,
+        agentDir: state.agentDir(agentId),
+        workspaceDir,
+      });
+      expect(snapshot.metadataSnapshot).toBe(pluginMetadata.workspaces.get(workspaceDir));
+    }
+    expect(loadMetadata).not.toHaveBeenCalled();
 
     expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(authRevision);
     expect(requireRuntimeConfig().models?.providers?.["recoverable-fixture"]?.apiKey).toBe(
@@ -184,7 +220,7 @@ describe("secret reload model-runtime publication", () => {
 
   it("observes model rejection when activation throws after starting publication", async () => {
     const { reload, activator } = await coldRuntime();
-    const activate = activator.activatePreparedSnapshotIfCurrent!;
+    const activate = activator.activatePreparedSnapshotIfCurrent;
     const buildStarted = createDeferred();
     activator.activatePreparedSnapshotIfCurrent = async (...args) => {
       await activate(...args);

@@ -162,7 +162,10 @@ export async function finalizeEmbeddedAgentCommand(params: {
       const { updateSessionStoreAfterAgentRun } = await loadSessionStoreRuntime();
       await updateSessionStoreAfterAgentRun({
         cfg,
+        agentId: sessionAgentId,
         agentDir,
+        workspaceDir,
+        pluginMetadataSnapshot: params.prepared.manifestMetadataSnapshot,
         sessionId: effectiveSessionId,
         sessionKey,
         storePath,

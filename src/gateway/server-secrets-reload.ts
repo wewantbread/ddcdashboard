@@ -2,6 +2,7 @@
 import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import type { PreparedPluginMetadata } from "../plugins/plugin-metadata-collection.js";
 import {
   isTrustedSecretSurfaceUnavailableError,
   listActiveCredentialDegradedOwners,
@@ -50,6 +51,7 @@ type SecretsReloadPublication = {
 
 export type GatewaySecretsReloaderParams = {
   activateRuntimeSecrets: ActivateRuntimeSecrets;
+  getPluginMetadata: () => PreparedPluginMetadata | undefined;
   buildReloadPlan?: (changedPaths: string[]) => GatewayReloadPlan;
   sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState;
   resolveSharedGatewaySessionGenerationForConfig: (config: OpenClawConfig) => string | undefined;
@@ -61,22 +63,6 @@ export type GatewaySecretsReloaderParams = {
   getChannelAutostartSuppression?: () => ChannelAutostartSuppression | null;
   logChannels: { info: (message: string) => void };
 };
-
-async function activateSnapshotIfCurrent(
-  snapshot: PreparedSecretsRuntimeSnapshot,
-  expectedRevision: number,
-  options: { canActivate: () => boolean; onActivated: () => void },
-): Promise<number | null> {
-  const runtime = await import("../secrets/runtime.js");
-  if (
-    !options.canActivate() ||
-    !runtime.activateSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision)
-  ) {
-    return null;
-  }
-  options.onActivated();
-  return runtime.getActiveSecretsRuntimeSnapshotRevision();
-}
 
 async function restoreSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
@@ -99,6 +85,7 @@ export function createGatewaySecretsReloader(params: GatewaySecretsReloaderParam
   ): SecretsReloadPublication => {
     const publishedSnapshotRevision = getActiveSecretsRuntimeSnapshotRevisionState();
     const runtimeConfig = getRuntimeConfigSnapshot();
+    const pluginMetadata = params.getPluginMetadata();
     if (!runtimeConfig) {
       throw new Error("Secrets runtime activation did not publish config.");
     }
@@ -114,7 +101,7 @@ export function createGatewaySecretsReloader(params: GatewaySecretsReloaderParam
     const modelPublication = refreshModelRuntimeAfterHotReload({
       config: runtimeConfig,
       agentIds: undefined,
-      pluginMetadataSnapshot: undefined,
+      pluginMetadata,
       isPublicationCurrent: isCurrent,
     });
     void modelPublication.catch(() => undefined);
@@ -222,30 +209,15 @@ export function createGatewaySecretsReloader(params: GatewaySecretsReloaderParam
               params.sharedGatewaySessionGenerationState,
               previousOwnership,
             );
-          const activateIfCurrent = params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent;
-          if (activateIfCurrent) {
-            const activated = await activateIfCurrent(
-              prepared,
-              previousRevision,
-              { reason: "reload", activate: true },
-              claimGeneration,
-              ownsPreviousGeneration,
-            );
-            if (!activated) {
-              continue;
-            }
-          } else {
-            const publishedSnapshotRevision = await activateSnapshotIfCurrent(
-              prepared,
-              previousRevision,
-              {
-                canActivate: ownsPreviousGeneration,
-                onActivated: claimGeneration,
-              },
-            );
-            if (publishedSnapshotRevision === null) {
-              continue;
-            }
+          const activated = await params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent(
+            prepared,
+            previousRevision,
+            { reason: "reload", activate: true },
+            claimGeneration,
+            ownsPreviousGeneration,
+          );
+          if (!activated) {
+            continue;
           }
           if (!transaction) {
             throw new Error("Secrets runtime activation did not publish ownership.");
