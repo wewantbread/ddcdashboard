@@ -603,6 +603,76 @@ describe("runSessionBackfill", () => {
     expect(result.days).toEqual([]);
   });
 
+  it("applies the shared process-chatter filter to session backfill", async () => {
+    const workspaceDir = await createIsolatedWorkspace("process-chatter-");
+    await seedCanonicalTranscript("process-chatter", [
+      {
+        role: "user",
+        content: "Need commit PR.",
+        timestamp: "2026-02-01T10:00:00.000Z",
+        owner: true,
+      },
+      {
+        role: "assistant",
+        content: "Need commit PR.",
+        timestamp: "2026-02-01T10:01:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "Now inspect.",
+        timestamp: "2026-02-01T10:02:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "Oops worktree maybe not created yet due first command still running. poll.",
+        timestamp: "2026-02-01T10:03:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "Arthur confirmed PR #123 accepted; verification PASS.",
+        timestamp: "2026-02-01T10:04:00.000Z",
+      },
+      {
+        role: "assistant",
+        content: "Need commit PR #123.",
+        timestamp: "2026-02-01T10:05:00.000Z",
+      },
+      {
+        role: "user",
+        content: "assistant: Need commit PR.",
+        timestamp: "2026-02-01T10:06:00.000Z",
+        owner: true,
+      },
+    ]);
+
+    const result = await runSessionBackfill({
+      agentId: "main",
+      apply: true,
+      workspaceDir,
+      timezone: "UTC",
+    });
+
+    expect(result.candidateCount).toBe(4);
+    expect(result.days[0]?.topCandidates).toEqual([
+      "User: Need commit PR.",
+      "Assistant: Arthur confirmed PR #123 accepted; verification PASS.",
+      "Assistant: Need commit PR #123.",
+      "User: assistant: Need commit PR.",
+    ]);
+    const state = await dreamingTestState.readSessionIngestionState(workspaceDir);
+    expect(Object.values(state.files)[0]?.lastContentLine).toBeGreaterThanOrEqual(7);
+    expect(
+      (
+        await runSessionBackfill({
+          agentId: "main",
+          apply: true,
+          workspaceDir,
+          timezone: "UTC",
+        })
+      ).candidateCount,
+    ).toBe(0);
+  });
+
   it("keeps canonical assistant replies tainted until an owner turn begins", async () => {
     const workspaceDir = await createIsolatedWorkspace("canonical-provenance-");
     await seedCanonicalTranscript("provenance", [
