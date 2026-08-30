@@ -52,7 +52,6 @@ import {
 } from "../../agents/auth-profiles/path-resolve.js";
 import { resolveAuthProfileDatabasePath } from "../../agents/auth-profiles/sqlite.js";
 import {
-  createAgentIdentityConfig,
   mergeIdentityMarkdownContent,
   normalizeIdentityForFile,
   sanitizeAgentIdentityLine,
@@ -817,6 +816,25 @@ async function writeWorkspaceFileOrRespond(params: {
   return true;
 }
 
+async function restoreWorkspaceFile(params: {
+  workspaceDir: string;
+  name: string;
+  previousContent: string | undefined;
+}): Promise<void> {
+  const workspaceRoot = await agentsHandlerDeps.root(params.workspaceDir);
+  if (params.previousContent === undefined) {
+    try {
+      await workspaceRoot.remove(params.name);
+    } catch (err) {
+      if (!isMissingPathError(err)) {
+        throw err;
+      }
+    }
+    return;
+  }
+  await workspaceRoot.write(params.name, params.previousContent, { encoding: "utf8" });
+}
+
 async function readWorkspaceFileContent(
   workspaceDir: string,
   name: string,
@@ -839,9 +857,10 @@ async function readWorkspaceFileContent(
 async function buildIdentityMarkdownForWrite(params: {
   workspaceDir: string;
   identity: IdentityConfig;
+  clearFields?: Array<"name" | "theme" | "emoji" | "avatar">;
   fallbackWorkspaceDir?: string;
   preferFallbackWorkspaceContent?: boolean;
-}): Promise<string> {
+}): Promise<{ content: string; hadSourceFile: boolean }> {
   let baseContent: string | undefined;
   if (params.preferFallbackWorkspaceContent && params.fallbackWorkspaceDir) {
     // Workspace moves may create a blank identity file; merge into the previous user-edited file.
@@ -862,16 +881,23 @@ async function buildIdentityMarkdownForWrite(params: {
     }
   }
 
-  return mergeIdentityMarkdownContent(baseContent, params.identity);
+  return {
+    content: mergeIdentityMarkdownContent(baseContent, params.identity, {
+      clearFields: params.clearFields,
+    }),
+    // Empty buffers still count as a present file; only not-found is undefined.
+    hadSourceFile: baseContent !== undefined,
+  };
 }
 
 async function buildIdentityMarkdownOrRespondUnsafe(params: {
   respond: RespondFn;
   workspaceDir: string;
   identity: IdentityConfig;
+  clearFields?: Array<"name" | "theme" | "emoji" | "avatar">;
   fallbackWorkspaceDir?: string;
   preferFallbackWorkspaceContent?: boolean;
-}): Promise<string | null> {
+}): Promise<{ content: string; hadSourceFile: boolean } | null> {
   try {
     return await buildIdentityMarkdownForWrite(params);
   } catch (err) {
@@ -967,22 +993,51 @@ export const agentsHandlers: GatewayRequestHandlers = {
         ? sanitizeAgentIdentityLine(params.name.trim())
         : undefined;
 
-    const identity = createAgentIdentityConfig({
-      name: safeName,
-      emoji: params.emoji,
-      avatar: params.avatar,
-    });
-    const hasIdentityFields = Boolean(identity);
+    // Identity fields are tri-state like model: omit preserves, null clears,
+    // non-empty sets. Literal empty / whitespace strings stay non-destructive so
+    // existing clients that send "" keep stored identity; Control UI already
+    // converts Remove-avatar drafts to an explicit null tombstone.
+    const identityPatch: {
+      name?: string;
+      emoji?: string | null;
+      avatar?: string | null;
+    } = {};
+    const clearedIdentityFields: Array<"emoji" | "avatar"> = [];
+    if (safeName) {
+      identityPatch.name = safeName;
+    }
+    if ("emoji" in params) {
+      if (params.emoji === null) {
+        identityPatch.emoji = null;
+        clearedIdentityFields.push("emoji");
+      } else if (typeof params.emoji === "string") {
+        const emoji = resolveOptionalStringParam(params.emoji);
+        if (emoji) {
+          identityPatch.emoji = sanitizeAgentIdentityLine(emoji);
+        }
+      }
+    }
+    if ("avatar" in params) {
+      if (params.avatar === null) {
+        identityPatch.avatar = null;
+        clearedIdentityFields.push("avatar");
+      } else if (typeof params.avatar === "string") {
+        const avatar = resolveOptionalStringParam(params.avatar);
+        if (avatar) {
+          identityPatch.avatar = sanitizeAgentIdentityLine(avatar);
+        }
+      }
+    }
+    const hasIdentityFields = Object.keys(identityPatch).length > 0;
 
     const agentConfigUpdate: Parameters<typeof updateAgentConfigEntry>[0] = {
       agentId,
       ...(safeName ? { name: safeName } : {}),
       ...(workspaceDir ? { workspace: workspaceDir } : {}),
       ...(model !== undefined ? { model } : {}),
-      ...(identity ? { identity } : {}),
+      ...(hasIdentityFields ? { identity: identityPatch } : {}),
     };
     const nextConfig = applyAgentConfig(cfg, agentConfigUpdate);
-
     let ensuredWorkspace: Awaited<ReturnType<typeof ensureAgentWorkspace>> | undefined;
     if (workspaceDir) {
       const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
@@ -993,39 +1048,85 @@ export const agentsHandlers: GatewayRequestHandlers = {
       });
     }
 
-    const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
-    if (persistedIdentity && (workspaceDir || hasIdentityFields)) {
-      const identityWorkspaceDir = resolveAgentWorkspaceDir(nextConfig, agentId);
-      const previousWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const fallbackWorkspaceDir =
-        workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
-          ? previousWorkspaceDir
-          : undefined;
-      const identityContent = await buildIdentityMarkdownOrRespondUnsafe({
-        respond,
-        workspaceDir: identityWorkspaceDir,
-        identity: persistedIdentity,
-        fallbackWorkspaceDir,
-        preferFallbackWorkspaceContent:
-          Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
-      });
-      if (identityContent === null) {
-        return;
-      }
-      if (
-        !(await writeWorkspaceFileOrRespond({
-          respond,
-          workspaceDir: identityWorkspaceDir,
-          name: DEFAULT_IDENTITY_FILENAME,
-          content: identityContent,
-        }))
-      ) {
-        return;
-      }
-    }
-
     try {
-      await updateAgentConfigEntry(agentConfigUpdate);
+      const mutationCompleted = await withConfigMutationExclusive(async (lockedConfig) => {
+        if (!isConfiguredAgent(lockedConfig, agentId)) {
+          throw new AgentConfigPreconditionError(`agent "${agentId}" not found`);
+        }
+        const lockedNextConfig = applyAgentConfig(lockedConfig, agentConfigUpdate);
+        const persistedIdentity = normalizeIdentityForFile(
+          resolveAgentIdentity(lockedNextConfig, agentId),
+        );
+        if (workspaceDir || hasIdentityFields) {
+          const identityWorkspaceDir = resolveAgentWorkspaceDir(lockedNextConfig, agentId);
+          const previousWorkspaceDir = resolveAgentWorkspaceDir(lockedConfig, agentId);
+          const fallbackWorkspaceDir =
+            workspaceDir && identityWorkspaceDir !== previousWorkspaceDir
+              ? previousWorkspaceDir
+              : undefined;
+          const builtIdentity = await buildIdentityMarkdownOrRespondUnsafe({
+            respond,
+            workspaceDir: identityWorkspaceDir,
+            identity: persistedIdentity ?? {},
+            clearFields: clearedIdentityFields,
+            fallbackWorkspaceDir,
+            preferFallbackWorkspaceContent:
+              Boolean(fallbackWorkspaceDir) && ensuredWorkspace?.identityPathCreated === true,
+          });
+          if (builtIdentity === null) {
+            return false;
+          }
+          // Optional IDENTITY.md is intentionally absent when neither a source file nor
+          // persisted identity values exist. Clearing empty/null emoji/avatar must not
+          // synthesize a header-only file in that case.
+          const shouldWriteIdentityFile = builtIdentity.hadSourceFile || Boolean(persistedIdentity);
+          if (shouldWriteIdentityFile) {
+            // Snapshot destination bytes before rewrite so a later config-commit
+            // failure can restore IDENTITY.md. File-first keeps unsafe writes from
+            // publishing config; without restore, config retains identity while the
+            // file is already cleared.
+            const previousIdentityContent = await readWorkspaceFileContent(
+              identityWorkspaceDir,
+              DEFAULT_IDENTITY_FILENAME,
+            );
+            if (
+              !(await writeWorkspaceFileOrRespond({
+                respond,
+                workspaceDir: identityWorkspaceDir,
+                name: DEFAULT_IDENTITY_FILENAME,
+                content: builtIdentity.content,
+              }))
+            ) {
+              return false;
+            }
+            try {
+              await updateAgentConfigEntry(agentConfigUpdate);
+            } catch (error) {
+              // Restore only when IDENTITY.md still contains this mutation's
+              // write. agents.files.set can edit the same file without the
+              // config lock; a stale snapshot restore would overwrite that edit.
+              const currentIdentityContent = await readWorkspaceFileContent(
+                identityWorkspaceDir,
+                DEFAULT_IDENTITY_FILENAME,
+              ).catch(() => undefined);
+              if (currentIdentityContent === builtIdentity.content) {
+                await restoreWorkspaceFile({
+                  workspaceDir: identityWorkspaceDir,
+                  name: DEFAULT_IDENTITY_FILENAME,
+                  previousContent: previousIdentityContent,
+                });
+              }
+              throw error;
+            }
+            return true;
+          }
+        }
+        await updateAgentConfigEntry(agentConfigUpdate);
+        return true;
+      });
+      if (!mutationCompleted) {
+        return;
+      }
     } catch (error) {
       if (error instanceof AgentConfigPreconditionError) {
         respondAgentNotFound(respond, agentId);
