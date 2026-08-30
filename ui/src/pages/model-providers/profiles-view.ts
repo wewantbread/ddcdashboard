@@ -2,6 +2,7 @@ import { html, nothing, svg } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { strokeIcon } from "../../components/icons-tools.ts";
 import { icons } from "../../components/icons.ts";
+import { renderProviderUsageDetails } from "../../components/provider-usage.ts";
 import { renderSettingsStatus } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
 import { moveArrayEntry, type ArrayDropPosition } from "../../lib/array-order.ts";
@@ -28,7 +29,7 @@ const logoutIcon = strokeIcon(svg` <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-
   <line x1="21" x2="9" y1="12" y2="12" />`);
 
 function profileIdentity(profile: ProviderProfile): string {
-  return profile.email || profile.displayName || profile.profileId;
+  return profile.email || profile.usage?.accountEmail || profile.displayName || profile.profileId;
 }
 
 function profileMeta(profile: ProviderProfile): string {
@@ -45,7 +46,34 @@ function profileMeta(profile: ProviderProfile): string {
       }),
     );
   }
+  if (profile.usage?.plan) {
+    parts.push(profile.usage.plan);
+  }
   return parts.join(" · ");
+}
+
+function renderProfileUsage(profile: ProviderProfile) {
+  const usage = profile.usage;
+  if (
+    usage &&
+    (usage.plan ||
+      usage.windows.length > 0 ||
+      usage.billing?.length ||
+      usage.costHistory ||
+      usage.summary ||
+      usage.error)
+  ) {
+    return html`${renderProviderUsageDetails(usage, {
+      compactWindowLabels: true,
+    })}${profile.usageRefreshPending
+      ? html`<span class="model-providers__profile-usage-refreshing"
+          >${t("common.refreshing")}</span
+        >`
+      : nothing}`;
+  }
+  return html`<span class="model-providers__profile-usage-empty"
+    >${t(!usage && profile.usageRefreshPending ? "common.loading" : "modelProviders.noStats")}</span
+  >`;
 }
 
 function profileInitials(profile: ProviderProfile): string {
@@ -186,8 +214,8 @@ function startPointerDrag(params: {
       candidate.dataset.profileId === params.sourceId
     ) {
       target = null;
-      for (const row of rowsIn(section, `.${DROP_BEFORE_CLASS}, .${DROP_AFTER_CLASS}`)) {
-        row.classList.remove(DROP_BEFORE_CLASS, DROP_AFTER_CLASS);
+      for (const markedRow of rowsIn(section, `.${DROP_BEFORE_CLASS}, .${DROP_AFTER_CLASS}`)) {
+        markedRow.classList.remove(DROP_BEFORE_CLASS, DROP_AFTER_CLASS);
       }
       return;
     }
@@ -344,6 +372,11 @@ export function renderProviderProfiles(card: ModelProviderCard, props: ProviderP
                   <strong title=${identity}>${identity}</strong>
                   <span>${profileMeta(profile)}</span>
                 </span>
+                <span
+                  class="model-providers__profile-usage"
+                  aria-busy=${profile.usageRefreshPending ? "true" : nothing}
+                  >${renderProfileUsage(profile)}</span
+                >
                 <span class="model-providers__profile-status">${profileStatus(profile)}</span>
                 <button
                   type="button"

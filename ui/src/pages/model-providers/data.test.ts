@@ -43,6 +43,32 @@ const EMPTY_INPUT = {
 const redactedConfigValue = "[redacted]";
 
 describe("buildModelProviderCards", () => {
+  it("keeps exact-profile usage pending state and provider error details", () => {
+    const status = authStatus([
+      {
+        provider: "openai",
+        displayName: "OpenAI",
+        status: "ok",
+        profiles: [
+          {
+            profileId: "p1",
+            type: "oauth",
+            status: "ok",
+            usageRefreshPending: true,
+          },
+        ],
+        usage: {
+          providerId: "openai",
+          windows: [],
+          error: "usage failed",
+        },
+      },
+    ]);
+    const result = firstCard(buildModelProviderCards({ ...EMPTY_INPUT, authStatus: status }));
+    expect(result.profiles[0]?.usageRefreshPending).toBe(true);
+    expect(result.usage?.error).toBe("usage failed");
+  });
+
   it("keeps catalog providers, including ones whose models are all unavailable", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,
@@ -294,6 +320,40 @@ describe("buildModelProviderCards", () => {
     expect(cards).toHaveLength(1);
     expect(firstCard(cards).usage?.windows).toEqual([{ label: "5h", usedPercent: 55 }]);
     expect(firstCard(cards).usage?.costHistory?.periodDays).toBe(30);
+    expect(firstCard(cards).usageScope).toBe("provider");
+  });
+
+  it("preserves provider-scoped auth usage beside account usage", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      authStatus: authStatus([
+        {
+          provider: "openai",
+          displayName: "OpenAI",
+          status: "ok",
+          profiles: [
+            {
+              profileId: "openai:account",
+              type: "oauth",
+              status: "ok",
+              usage: {
+                providerId: "openai",
+                windows: [{ label: "Account week", usedPercent: 10 }],
+              },
+            },
+          ],
+          usage: {
+            providerId: "openai",
+            windows: [{ label: "Organization month", usedPercent: 25 }],
+          },
+          usageScope: "provider",
+        },
+      ]),
+    });
+
+    expect(firstCard(cards).profiles[0]?.usage?.windows[0]?.label).toBe("Account week");
+    expect(firstCard(cards).usage?.windows[0]?.label).toBe("Organization month");
+    expect(firstCard(cards).usageScope).toBe("provider");
   });
 
   it("attaches local session spend via alias ids and includes cost-only providers", () => {
