@@ -93,6 +93,9 @@ type ProvisionInspectContext = Omit<LeaseCommandContext, "id"> & {
   profile: CrabboxProfile;
   runCommand: CrabboxCommandRunner;
 };
+type CrabboxProvisionOptions = NonNullable<Parameters<WorkerProvider["provision"]>[2]> & {
+  assertAuthorized?: () => void;
+};
 
 type InspectCommandResult = { status: "found"; inspect: ParsedInspect } | { status: "unknown" };
 
@@ -466,7 +469,7 @@ export function createCrabboxWorkerProvider(
     sharedHost: false,
   });
 
-  return {
+  const provider = {
     id: CRABBOX_WORKER_PROVIDER_ID,
     dispose: () => heartbeats.dispose(),
     listMachineOptions,
@@ -480,7 +483,7 @@ export function createCrabboxWorkerProvider(
     async provision(
       profile: WorkerProfile,
       operationId: string,
-      options: Parameters<WorkerProvider["provision"]>[2],
+      options?: CrabboxProvisionOptions,
     ): Promise<WorkerLease> {
       const executionMode: unknown = options?.executionMode;
       if (
@@ -506,7 +509,7 @@ export function createCrabboxWorkerProvider(
       const binary = resolveBinary(parsed.binary);
       const context = { binary, provider: parsed.provider };
       const leaseId = allocation.leaseId;
-      const slug = operationSlug(operationId);
+      const leaseContext = { ...context, id: leaseId, runCommand };
       if (parsed.desktop && parsed.provider === "hetzner") {
         await assertHetznerDesktopHasManagedCoordinator({
           binary,
@@ -533,14 +536,24 @@ export function createCrabboxWorkerProvider(
         }
       }
 
-      await warmImages.allocate({
-        ...context,
-        ...(options?.assertAuthorized ? { assertAuthorized: options.assertAuthorized } : {}),
-        id: leaseId,
-        profile: parsed,
-        slug,
-        timeoutMs: () => remainingProvisionTimeout(deadline, warmupTimeoutMs),
-      });
+      options?.assertAuthorized?.();
+      try {
+        await warmImages.allocate({
+          ...context,
+          ...(options?.assertAuthorized ? { assertAuthorized: options.assertAuthorized } : {}),
+          id: leaseId,
+          profile: parsed,
+          slug: operationSlug(operationId),
+          timeoutMs: () => remainingProvisionTimeout(deadline, warmupTimeoutMs),
+        });
+      } catch (error) {
+        try {
+          options?.assertAuthorized?.();
+        } catch (authorityError) {
+          return await failProvisionAfterCleanup(leaseContext, authorityError);
+        }
+        throw error;
+      }
       let inspected: InspectCommandResult;
       try {
         inspected = await inspectWithContext({
@@ -559,14 +572,11 @@ export function createCrabboxWorkerProvider(
         try {
           options?.assertAuthorized?.();
         } catch (authorityError) {
-          return await failProvisionAfterCleanup(
-            { ...context, id: leaseId, runCommand },
-            authorityError,
-          );
+          return await failProvisionAfterCleanup(leaseContext, authorityError);
         }
         // Transport failure after warmup is indeterminate; preserve the lease for durable replay.
         if (error instanceof WorkerProviderError) {
-          return await failProvisionAfterCleanup({ ...context, id: leaseId, runCommand }, error);
+          return await failProvisionAfterCleanup(leaseContext, error);
         }
         throw error;
       }
@@ -649,18 +659,18 @@ export function createCrabboxWorkerProvider(
           }
           throw error;
         }
-        const leaseContext = { ...inspectedParams, id: leaseId };
+        const enrollmentLeaseContext = { ...inspectedParams, id: leaseId };
         // Read node evidence before cleanup destroys its only copy on the leased machine.
         const evidence = await collectCrabboxNodeEnrollmentEvidence({
-          ...leaseContext,
-          args: leaseRunArgs(leaseContext),
+          ...enrollmentLeaseContext,
+          args: leaseRunArgs(enrollmentLeaseContext),
           ...(options?.assertAuthorized ? { assertAuthorized: options.assertAuthorized } : {}),
           ...(enrollment.signal ? { signal: enrollment.signal } : {}),
         });
         enrollment.signal?.throwIfAborted();
         const message = error instanceof Error ? error.message : "Worker node enrollment failed";
         return await failProvisionAfterCleanup(
-          leaseContext,
+          enrollmentLeaseContext,
           new Error(`${message}; ${evidence}`, { cause: error }),
         );
       }
@@ -722,5 +732,11 @@ export function createCrabboxWorkerProvider(
         warmLeases?.delete(context.id);
       }
     },
+  } satisfies WorkerProvider & { dispose: () => void };
+  return {
+    ...provider,
+    provision: (profile, operationId, options) => provider.provision(profile, operationId, options),
+    provisionDelegated: (profile, operationId, options) =>
+      provider.provision(profile, operationId, options),
   };
 }

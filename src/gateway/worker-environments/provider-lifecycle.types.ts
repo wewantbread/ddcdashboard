@@ -31,6 +31,7 @@ export type WorkerProviderLifecycleInputOptions = {
     installation: WorkerInstallationArtifact;
     resolveIdentity: (keyRef: SecretRef) => Promise<WorkerSshIdentity>;
     signal: AbortSignal;
+    authorize?: () => void;
   }) => Promise<WorkerAdmissionHandshake>;
   resolveSshIdentity?: (params: {
     provider: WorkerProvider;

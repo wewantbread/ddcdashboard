@@ -66,6 +66,7 @@ export type GatewayWorkerEnvironmentRuntime = {
   bindDeviceNodeControl?: (transport: NodeWorkerSupervisorTransport) => void;
   bindWorkerNodeDesktopControl?: (transport: NodeWorkerSupervisorTransport) => void;
   bindNodeWorkspaceBindingResolver?: (resolver: NodeWorkerWorkspaceBindingResolver) => void;
+  interruptedDelegatedChildSessionKeys?: ReadonlySet<string>;
   handleNodeWorkerBundleTransferRequest?: NodeWorkerBundleTransferHttpCallback;
   handleWorkerBootstrapArtifactTransferRequest?: WorkerBootstrapArtifactTransferHttpCallback;
   handleNodeWorkspaceTransferRequest?: NodeWorkspaceTransferHttpCallback;
@@ -167,7 +168,8 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
   // The Gateway state-directory lock proves that executors from the previous
   // process are gone. Resolve their ambiguous effects before placement
   // reconciliation attempts to release the owning worker claims.
-  params.startup.placementStore.recoverWorkerSessionToolOperationsAfterRestart();
+  const { interruptedChildSessionKeys } =
+    params.startup.placementStore.recoverWorkerSessionToolOperationsAfterRestart();
   // A crashed gateway can leak local turn claims; drop them before workers re-admit turns.
   params.startup.placementStore.clearLocalTurnClaimsAfterRestart();
   const placementGate = createWorkerSessionPlacementGate(params.startup.placementStore, {
@@ -433,6 +435,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
       installation,
       resolveIdentity,
       signal,
+      authorize,
     }) => {
       const workerRuntime = await loadWorkerEnvironmentRuntimeModule();
       return await workerRuntime.bootstrapWorker(
@@ -442,7 +445,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
           artifact: installation,
           pinnedHostKey: sshEndpoint.hostKey,
         },
-        { signal, resolveIdentity },
+        { signal, resolveIdentity, assertCurrent: authorize },
       );
     },
     logger: workerEnvironmentLog,
@@ -504,6 +507,7 @@ export async function createGatewayWorkerEnvironmentRuntime(params: {
     workerLiveEvents,
     workerTunnelManager,
     nodeWorkerGatewayNamespace,
+    interruptedDelegatedChildSessionKeys: new Set(interruptedChildSessionKeys),
     bindWorkerSessionDispatch: (dispatch) => {
       dispatchChild = dispatch;
     },

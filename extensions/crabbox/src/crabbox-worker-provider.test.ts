@@ -137,9 +137,23 @@ function providerWithRawRunner(
     provision: (profile, operationId, options) =>
       provider.provision(profile, operationId, {
         ...options,
-        assertAuthorized: options?.assertAuthorized ?? allowProvision,
         beginNodeEnrollment:
           options?.beginNodeEnrollment ??
+          (async () => ({
+            mode: "connect" as const,
+            setupCode: "secret-setup-value",
+            setupId: "setup-id",
+            openclawVersion: "2026.8.1",
+            nodeBootstrap: createNodeBootstrapFixture(),
+            displayName: "Cloud worker test",
+            waitForDeviceId: async () => "device-1",
+          })),
+      }),
+    provisionDelegated: (profile, operationId, options) =>
+      provider.provisionDelegated!(profile, operationId, {
+        ...options,
+        beginNodeEnrollment:
+          options.beginNodeEnrollment ??
           (async () => ({
             mode: "connect" as const,
             setupCode: "secret-setup-value",
@@ -172,7 +186,7 @@ function providerWithRunner(
 
 function failedNodeEnrollment(
   error: Error,
-): NonNullable<Parameters<WorkerProvider["provision"]>[2]> {
+): Parameters<NonNullable<WorkerProvider["provisionDelegated"]>>[2] {
   return {
     assertAuthorized: allowProvision,
     beginNodeEnrollment: async () => ({
@@ -859,7 +873,7 @@ describe("Crabbox worker provider", () => {
         throw new Error("worker turn authority changed");
       }
     });
-    const provision = provider.provision(PROFILE, OPERATION_ID, {
+    const provision = provider.provisionDelegated!(PROFILE, OPERATION_ID, {
       assertAuthorized,
       beginNodeEnrollment: async () => {
         if (revoke) {
@@ -872,7 +886,7 @@ describe("Crabbox worker provider", () => {
           setupCode: "secret-setup-value",
           setupId: "setup-id",
           openclawVersion: "2026.8.1",
-          packageSpecs: ["openclaw@2026.8.1"],
+          nodeBootstrap: createNodeBootstrapFixture(),
           displayName: "Cloud worker test",
           waitForDeviceId: async () => "device-1",
         };
@@ -901,7 +915,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(PROFILE, OPERATION_ID, {
+      provider.provisionDelegated!(PROFILE, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -912,7 +926,7 @@ describe("Crabbox worker provider", () => {
           setupCode: "secret-setup-value",
           setupId: "setup-id",
           openclawVersion: "2026.8.1",
-          packageSpecs: ["openclaw@2026.8.1"],
+          nodeBootstrap: createNodeBootstrapFixture(),
           displayName: "Cloud worker test",
           waitForDeviceId: async () => {
             authorized = false;
@@ -937,7 +951,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(PROFILE, OPERATION_ID, {
+      provider.provisionDelegated!(PROFILE, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -946,6 +960,30 @@ describe("Crabbox worker provider", () => {
       }),
     ).rejects.toThrow("worker turn authority changed");
     expect(calls.map((argv) => argv[1])).toEqual(["config"]);
+  });
+
+  it("cleans up when authority closes after warm allocation", async () => {
+    const calls: string[][] = [];
+    let authorized = true;
+    const provider = providerWithRunner(async (argv) => {
+      calls.push(argv);
+      if (argv[1] === "warmup") {
+        authorized = false;
+      }
+      return commandResult();
+    });
+
+    const error = await provider.provisionDelegated!(PROFILE, OPERATION_ID, {
+      assertAuthorized: () => {
+        if (!authorized) {
+          throw new Error("worker turn authority changed");
+        }
+      },
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({ message: "worker turn authority changed" });
+    expect(WorkerProviderError.isCleanupComplete(error)).toBe(true);
+    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "stop"]);
   });
 
   it("stops readiness polling and cleans the lease when authority closes after inspect", async () => {
@@ -961,7 +999,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(PROFILE, OPERATION_ID, {
+      provider.provisionDelegated!(PROFILE, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -985,7 +1023,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(PROFILE, OPERATION_ID, {
+      provider.provisionDelegated!(PROFILE, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -996,7 +1034,7 @@ describe("Crabbox worker provider", () => {
           setupCode: "secret-setup-value",
           setupId: "setup-id",
           openclawVersion: "2026.8.1",
-          packageSpecs: ["openclaw@2026.8.1"],
+          nodeBootstrap: createNodeBootstrapFixture(),
           displayName: "Cloud worker test",
           waitForDeviceId: async () => {
             authorized = false;
@@ -1025,7 +1063,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(profile, OPERATION_ID, {
+      provider.provisionDelegated!(profile, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -2519,7 +2557,7 @@ describe("Crabbox worker provider", () => {
     });
 
     await expect(
-      provider.provision(PROFILE, OPERATION_ID, {
+      provider.provisionDelegated!(PROFILE, OPERATION_ID, {
         assertAuthorized: () => {
           if (!authorized) {
             throw new Error("worker turn authority changed");
@@ -2529,7 +2567,7 @@ describe("Crabbox worker provider", () => {
           mode: "resume" as const,
           deviceId: "device-bound",
           openclawVersion: "2026.8.1",
-          packageSpecs: ["openclaw@2026.8.1"],
+          nodeBootstrap: createNodeBootstrapFixture(),
           displayName: "Bound worker",
           signal: controller.signal,
           waitForDeviceId: async () => {

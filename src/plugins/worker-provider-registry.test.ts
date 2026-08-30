@@ -133,12 +133,33 @@ describe("worker provider registry", () => {
     const provider = {
       ...createWorkerProvider("static-ssh"),
       supportedExecutionModes: ["worker-turn", "remote-exec"],
+      provisionDelegated: async () => {
+        throw new Error("not called");
+      },
     } satisfies WorkerProvider;
 
     pluginRegistry.registerWorkerProvider(createOwner("owner", ["static-ssh"]), provider);
 
     expect(pluginRegistry.registry.workerProviders.get("static-ssh")?.provider).toBe(provider);
     expect(pluginRegistry.registry.diagnostics).toEqual([]);
+  });
+
+  it("rejects placement support without delegated provisioning authority", () => {
+    const pluginRegistry = createTestRegistry();
+    const provider = {
+      ...createWorkerProvider("static-ssh"),
+      supportedExecutionModes: ["remote-exec"],
+    } satisfies WorkerProvider;
+
+    pluginRegistry.registerWorkerProvider(createOwner("owner", ["static-ssh"]), provider);
+
+    expect(pluginRegistry.registry.workerProviders.size).toBe(0);
+    expect(pluginRegistry.registry.diagnostics).toContainEqual(
+      expect.objectContaining({
+        message:
+          "worker provider registration provisionDelegated must be a function when supportedExecutionModes is declared",
+      }),
+    );
   });
 
   it.each([

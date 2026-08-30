@@ -138,24 +138,32 @@ export function createDeviceWorkerRuntime(options: DeviceWorkerRuntimeOptions) {
       ...(unavailableReason ? { unavailableReason } : {}),
     };
   };
+  const resolveAllocation: WorkerProvider["resolveAllocation"] = async (profile, operationId) => ({
+    leaseId: deviceLeaseId(requireDeviceId(profile), operationId),
+    sharedHost: true,
+  });
+  const provision: WorkerProvider["provision"] = async (profile, operationId) => {
+    const deviceId = requireDeviceId(profile);
+    const availability = await resolveAvailability(deviceId);
+    if (!availability.available) {
+      throw new WorkerProviderError(deviceUnavailableText(deviceId, availability));
+    }
+    return {
+      ...(await resolveAllocation(profile, operationId)),
+      node: { deviceId },
+    };
+  };
   const provider: WorkerProvider = {
     id: DEVICE_WORKER_PROVIDER_ID,
     supportedExecutionModes: ["worker-turn", "remote-exec"],
     provisionBeforeInstallation: true,
-    resolveAllocation: async (profile, operationId) => ({
-      leaseId: deviceLeaseId(requireDeviceId(profile), operationId),
-      sharedHost: true,
-    }),
-    provision: async (profile, operationId) => {
-      const deviceId = requireDeviceId(profile);
-      const availability = await resolveAvailability(deviceId);
-      if (!availability.available) {
-        throw new WorkerProviderError(deviceUnavailableText(deviceId, availability));
-      }
-      return {
-        ...(await provider.resolveAllocation(profile, operationId)),
-        node: { deviceId },
-      };
+    resolveAllocation,
+    provision,
+    provisionDelegated: async (profile, operationId, provisionOptions) => {
+      provisionOptions.assertAuthorized();
+      const lease = await provision(profile, operationId, provisionOptions);
+      provisionOptions.assertAuthorized();
+      return lease;
     },
     inspect: async ({ profile }) => {
       const deviceId = requireDeviceId(profile);

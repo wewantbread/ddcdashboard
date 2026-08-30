@@ -144,7 +144,7 @@ export async function provisionWarmProfile(
   machineClass?: string,
   assertAuthorized: () => void = () => {},
 ) {
-  return provider.provision(profile, operationId, {
+  return provider.provisionDelegated!(profile, operationId, {
     ...(machineClass ? { machineClass } : {}),
     assertAuthorized,
     beginNodeEnrollment: async () => ({

@@ -74,15 +74,20 @@ export function createStaticSshWorkerProvider(): WorkerProvider {
     }
     return { leaseId: `${STATIC_SSH_LEASE_PREFIX}${opId}`, sharedHost: true };
   };
+  const provision: WorkerProvider["provision"] = async (profile, opId) => ({
+    ...(await resolveAllocation(profile, opId)),
+    ssh: parseStaticSshWorkerSettings(profile),
+  });
   return {
     id: STATIC_SSH_WORKER_PROVIDER_ID,
     supportedExecutionModes: ["remote-exec"],
     resolveAllocation,
-    async provision(profile, opId) {
-      return {
-        ...(await resolveAllocation(profile, opId)),
-        ssh: parseStaticSshWorkerSettings(profile),
-      };
+    provision,
+    async provisionDelegated(profile, opId, options) {
+      options.assertAuthorized();
+      const lease = await provision(profile, opId, options);
+      options.assertAuthorized();
+      return lease;
     },
     async inspect({ leaseId }) {
       const active =

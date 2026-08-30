@@ -1,6 +1,6 @@
 // QA Lab tests cover deterministic static-SSH worker provider behavior.
 import type { WorkerProfile } from "openclaw/plugin-sdk/plugin-entry";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createStaticSshWorkerProvider } from "./static-ssh-worker-provider.js";
 
 const KEY_REF = {
@@ -57,6 +57,17 @@ describe("QA Lab static-SSH worker provider", () => {
     await expect(
       provider.provision({ ...PROFILE, port: 2222 }, "operation-456"),
     ).resolves.toMatchObject({ ssh: { port: 2222 } });
+  });
+
+  it("rechecks delegated authority before returning a logical lease", async () => {
+    const provider = createStaticSshWorkerProvider();
+    const assertAuthorized = vi.fn();
+
+    await expect(
+      provider.provisionDelegated!(PROFILE, "operation-authorized", { assertAuthorized }),
+    ).resolves.toMatchObject({ leaseId: "static-ssh:operation-authorized" });
+
+    expect(assertAuthorized).toHaveBeenCalledTimes(2);
   });
 
   it.each<{ label: string; profile: WorkerProfile }>([

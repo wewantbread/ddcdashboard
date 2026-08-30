@@ -7,6 +7,7 @@ import type { AgentTurnContext } from "./types.js";
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn(),
   persistSessionTranscriptTurn: vi.fn(),
+  stageSessionPendingInput: vi.fn(),
   persistedMessages: [] as unknown[],
   beforeTranscriptCommit: undefined as (() => void) | undefined,
 }));
@@ -20,7 +21,11 @@ vi.mock("../../config/sessions/session-accessor.js", async () => {
   const actual = await vi.importActual<typeof import("../../config/sessions/session-accessor.js")>(
     "../../config/sessions/session-accessor.js",
   );
-  return { ...actual, persistSessionTranscriptTurn: mocks.persistSessionTranscriptTurn };
+  return {
+    ...actual,
+    persistSessionTranscriptTurn: mocks.persistSessionTranscriptTurn,
+    stageSessionPendingInput: mocks.stageSessionPendingInput,
+  };
 });
 
 describe("prepareAgentRunUserTurn", () => {
@@ -28,9 +33,24 @@ describe("prepareAgentRunUserTurn", () => {
     mocks.loadSessionEntry.mockReset();
     mocks.persistedMessages.length = 0;
     mocks.beforeTranscriptCommit = undefined;
+    mocks.stageSessionPendingInput.mockReset().mockImplementation(async (_scope, options) => {
+      mocks.beforeTranscriptCommit?.();
+      const message = options.prepareMessageAfterIdempotencyCheck
+        ? options.prepareMessageAfterIdempotencyCheck(options.message)
+        : options.message;
+      if (!message) {
+        return undefined;
+      }
+      mocks.persistedMessages.push(message);
+      return {
+        inputId: "pending-user-turn",
+        message,
+        run: <T>(operation: () => T) => operation(),
+        finish: vi.fn(),
+      };
+    });
     mocks.persistSessionTranscriptTurn.mockReset().mockImplementation(async (scope, options) => {
       const pending = options.messages[0];
-      mocks.beforeTranscriptCommit?.();
       const message = pending?.prepareMessageAfterIdempotencyCheck
         ? pending.prepareMessageAfterIdempotencyCheck(pending.message)
         : pending?.message;
@@ -141,6 +161,7 @@ describe("prepareAgentRunUserTurn", () => {
         runId: "closed-run",
         client: null,
         context: { logGateway: { warn: vi.fn() } } as unknown as AgentTurnContext,
+        assertCurrent: () => {},
         assertRuntimeAuthorityCurrent: () => {
           if (!authorityActive) {
             throw new TypeError("agent runtime authority is no longer active");

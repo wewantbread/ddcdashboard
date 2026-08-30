@@ -212,6 +212,17 @@ export class WorkerProviderError extends Error {
   }
 }
 
+export type WorkerProvisionOptions = {
+  executionMode?: WorkerExecutionMode;
+  machineClass?: string;
+  beginNodeEnrollment?: () => Promise<WorkerNodeEnrollment>;
+};
+
+export type WorkerDelegatedProvisionOptions = WorkerProvisionOptions & {
+  /** Revalidate the exact initiating turn immediately before every provider-owned effect. */
+  assertAuthorized: () => void;
+};
+
 /** Cloud-worker lifecycle capability shared by plugin and internal providers. */
 export type WorkerProvider = {
   id: string;
@@ -244,13 +255,13 @@ export type WorkerProvider = {
   provision: (
     profile: WorkerProfile,
     operationId: string,
-    options?: {
-      executionMode?: WorkerExecutionMode;
-      machineClass?: string;
-      /** Revalidate the initiating turn immediately before every provider-owned effect. */
-      assertAuthorized?: () => void;
-      beginNodeEnrollment?: () => Promise<WorkerNodeEnrollment>;
-    },
+    options?: WorkerProvisionOptions,
+  ) => Promise<WorkerLease>;
+  /** Required for advertised placement modes; never delegate through `provision`. */
+  provisionDelegated?: (
+    profile: WorkerProfile,
+    operationId: string,
+    options: WorkerDelegatedProvisionOptions,
   ) => Promise<WorkerLease>;
   /** Maximum core wait for one provision attempt, including provider-owned setup and cleanup. */
   resolveProvisionTimeoutMs?: (profile: WorkerProfile) => number;

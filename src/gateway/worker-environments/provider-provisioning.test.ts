@@ -115,6 +115,58 @@ describe("worker environment service", () => {
     });
   });
 
+  it("refuses delegated provisioning through a provider without authority support", async () => {
+    const provision = vi.fn(support.createProvider().provision);
+    const workerService = support.createService(
+      support.createProvider({ provision, provisionDelegated: undefined }),
+    );
+
+    await expect(
+      workerService.create(
+        "development",
+        "request-provider-without-authority-support",
+        undefined,
+        "remote-exec",
+        () => {},
+      ),
+    ).rejects.toMatchObject({ code: "invalid_profile" });
+
+    expect(provision).not.toHaveBeenCalled();
+  });
+
+  it("routes delegated provisioning only through the authority-bound provider capability", async () => {
+    const authorize = vi.fn();
+    const provision = vi.fn(support.createProvider().provision);
+    const provisionDelegated = vi.fn(async (_profile, _operationId, options) => {
+      options.assertAuthorized();
+      return { leaseId: "lease-delegated", ssh: support.SSH_ENDPOINT } as const;
+    });
+    const workerService = support.createService(
+      support.createProvider({ provision, provisionDelegated }),
+    );
+
+    await expect(
+      workerService.create(
+        "development",
+        "request-authority-bound-provider",
+        undefined,
+        "remote-exec",
+        authorize,
+      ),
+    ).resolves.toMatchObject({ state: "ready", leaseId: "lease-delegated" });
+
+    expect(provision).not.toHaveBeenCalled();
+    expect(provisionDelegated).toHaveBeenCalledWith(
+      { region: "test" },
+      expect.stringMatching(/^provision:v2:[a-f0-9]{64}$/u),
+      expect.objectContaining({
+        executionMode: "remote-exec",
+        assertAuthorized: expect.any(Function),
+      }),
+    );
+    expect(provisionDelegated.mock.calls[0]?.[2].assertAuthorized).toBe(authorize);
+  });
+
   it("requires explicit placement modes before provider allocation", async () => {
     const provision = vi.fn(support.createProvider().provision);
     const provider = support.createProvider({ supportedExecutionModes: undefined, provision });

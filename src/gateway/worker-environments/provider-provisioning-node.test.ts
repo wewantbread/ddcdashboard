@@ -23,11 +23,11 @@ describe("node worker provider provisioning", () => {
       supportedExecutionModes: ["worker-turn"],
       provisionBeforeInstallation: true,
       requiresNodeEnrollment: true,
-      provision: async (_profile, _operationId, options) => {
+      provisionDelegated: async (_profile, _operationId, options) => {
         enrollmentRequested.resolve();
         await continueEnrollment.promise;
-        options?.assertAuthorized?.();
-        await options?.beginNodeEnrollment?.();
+        options.assertAuthorized();
+        await options.beginNodeEnrollment?.();
         return {
           leaseId: "cloud-lease-revoked-enrollment",
           node: { deviceId: "cloud-device-revoked-enrollment" },
@@ -116,10 +116,11 @@ describe("node worker provider provisioning", () => {
     const closeNodeEnrollment = vi.fn();
     const retireNodeEnrollment = vi.fn(async () => {});
     let begin: (() => Promise<WorkerNodeEnrollment>) | undefined;
-    const provision = vi.fn<WorkerProvider["provision"]>(
+    const provisionDelegated = vi.fn<NonNullable<WorkerProvider["provisionDelegated"]>>(
       async (_profile, _operationId, options) => {
-        begin = options?.beginNodeEnrollment;
-        await expect(options?.beginNodeEnrollment?.()).resolves.toMatchObject({
+        expect(options.assertAuthorized).toEqual(expect.any(Function));
+        begin = options.beginNodeEnrollment;
+        await expect(options.beginNodeEnrollment?.()).resolves.toMatchObject({
           mode: "connect",
           setupId: expect.any(String),
         });
@@ -135,7 +136,7 @@ describe("node worker provider provisioning", () => {
         supportedExecutionModes: ["worker-turn"],
         provisionBeforeInstallation: true,
         requiresNodeEnrollment: true,
-        provision,
+        provisionDelegated,
       }),
       {
         prepareNodeEnrollment,
@@ -145,7 +146,13 @@ describe("node worker provider provisioning", () => {
       },
     );
 
-    const environment = await workerService.create("development", "request-cloud-node");
+    const environment = await workerService.create(
+      "development",
+      "request-cloud-node",
+      undefined,
+      "worker-turn",
+      () => {},
+    );
     expect(environment).toMatchObject({
       state: "ready",
       nodeSetupId: expect.any(String),
@@ -153,7 +160,7 @@ describe("node worker provider provisioning", () => {
       sharedHost: false,
     });
     expect(prepareNodeEnrollment).toHaveBeenCalledOnce();
-    expect(provision).toHaveBeenCalledOnce();
+    expect(provisionDelegated).toHaveBeenCalledOnce();
     expect(closeNodeEnrollment).toHaveBeenCalledExactlyOnceWith(
       await prepareNodeEnrollment.mock.results[0]!.value,
     );
