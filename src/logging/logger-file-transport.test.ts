@@ -1,5 +1,6 @@
-// Logger file transport tests cover async ordering, overflow, and exit durability.
 import fs from "node:fs";
+// Logger file transport tests cover async ordering, overflow, and exit durability.
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { appendRegularFile } from "../infra/regular-file.js";
 import { createSuiteLogPathTracker } from "./log-test-helpers.js";
@@ -109,26 +110,118 @@ describe("async logger file transport", () => {
     ]);
   });
 
-  it("continues with later records after one append fails", async () => {
-    const logPath = logPathTracker.nextPath();
-    let appendAttempts = 0;
+  it("tracks append failure streaks independently per file", async () => {
+    const firstPath = logPathTracker.nextPath();
+    const secondPath = logPathTracker.nextPath();
+    const attempts = new Map<string, number>();
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true as unknown as ReturnType<typeof process.stderr.write>);
     testApi.setFileLogAppenderForTests(async (options) => {
-      appendAttempts += 1;
-      if (appendAttempts === 1) {
+      const attempt = (attempts.get(options.filePath) ?? 0) + 1;
+      attempts.set(options.filePath, attempt);
+      const succeeds =
+        (options.filePath === firstPath && attempt === 3) ||
+        (options.filePath === secondPath && attempt === 2);
+      if (!succeeds) {
         throw new Error("injected append failure");
       }
       await appendRegularFile(options);
     });
-    setLoggerOverride({ level: "info", file: logPath });
-
-    getLogger().info("dropped-on-write-failure");
-    getLogger().info("written-after-failure");
+    setLoggerOverride({ level: "info", file: firstPath });
+    getLogger().info("first-file-failure");
+    setLoggerOverride({ level: "info", file: secondPath });
+    getLogger().info("second-file-failure");
+    getLogger().info("second-file-recovery");
+    setLoggerOverride({ level: "info", file: firstPath });
+    getLogger().info("first-file-repeated-failure");
+    getLogger().info("first-file-recovery");
+    getLogger().info("first-file-new-failure-streak");
     await testApi.flushFileLogQueueForTests();
 
-    const content = fs.readFileSync(logPath, "utf8");
-    expect(appendAttempts).toBe(2);
-    expect(content).not.toContain("dropped-on-write-failure");
-    expect(content).toContain("written-after-failure");
+    expect(attempts).toEqual(
+      new Map([
+        [firstPath, 4],
+        [secondPath, 2],
+      ]),
+    );
+    const warnings = stderrSpy.mock.calls.map(([line]) => String(line));
+    expect(warnings.filter((line) => line.includes(`file=${firstPath}`))).toHaveLength(2);
+    expect(warnings.filter((line) => line.includes(`file=${secondPath}`))).toHaveLength(1);
+    expect(fs.readFileSync(firstPath, "utf8")).toContain("first-file-recovery");
+    expect(fs.readFileSync(secondPath, "utf8")).toContain("second-file-recovery");
+  });
+
+  it("keeps synchronous append failure streaks isolated by file", () => {
+    const firstPath = logPathTracker.nextPath();
+    const secondPath = logPathTracker.nextPath();
+    fs.mkdirSync(firstPath);
+    fs.mkdirSync(secondPath);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true as unknown as ReturnType<typeof process.stderr.write>);
+    setLoggerOverride({ level: "info", file: firstPath });
+    getLogger().info("first-file-failure");
+    setLoggerOverride({ level: "info", file: secondPath });
+    getLogger().info("second-file-failure");
+    testApi.drainFileLogQueueSyncForTests();
+
+    fs.rmdirSync(secondPath);
+    getLogger().info("second-file-recovery");
+    setLoggerOverride({ level: "info", file: firstPath });
+    getLogger().info("first-file-repeated-failure");
+    testApi.drainFileLogQueueSyncForTests();
+
+    fs.rmdirSync(firstPath);
+    getLogger().info("first-file-recovery");
+    testApi.drainFileLogQueueSyncForTests();
+    fs.rmSync(firstPath);
+    fs.mkdirSync(firstPath);
+    getLogger().info("first-file-new-failure-streak");
+    testApi.drainFileLogQueueSyncForTests();
+
+    const warnings = stderrSpy.mock.calls.map(([line]) => String(line));
+    expect(warnings.filter((line) => line.includes(`file=${firstPath}`))).toHaveLength(2);
+    expect(warnings.filter((line) => line.includes(`file=${secondPath}`))).toHaveLength(1);
+    expect(fs.readFileSync(secondPath, "utf8")).toContain("second-file-recovery");
+  });
+
+  it("bounds append failure diagnostics across changing file targets", async () => {
+    const paths = Array.from({ length: 65 }, () => logPathTracker.nextPath());
+    const firstPath = expectDefined(paths[0], "first append failure path");
+    const lastPath = expectDefined(paths.at(-1), "last append failure path");
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true as unknown as ReturnType<typeof process.stderr.write>);
+    testApi.setFileLogAppenderForTests(async () => {
+      throw new Error("injected append failure");
+    });
+
+    for (const [index, file] of paths.entries()) {
+      setLoggerOverride({ level: "info", file });
+      getLogger().info(`failure-${index}`);
+    }
+    await testApi.flushFileLogQueueForTests();
+
+    const warnings = stderrSpy.mock.calls.map(([line]) => String(line));
+    expect(warnings.filter((line) => line.includes("diagnostics saturated"))).toHaveLength(1);
+    expect(warnings.some((line) => line.includes(`file=${lastPath}`))).toBe(false);
+
+    testApi.setFileLogAppenderForTests(async (options) => {
+      if (options.filePath !== firstPath) {
+        throw new Error("injected append failure");
+      }
+      await appendRegularFile(options);
+    });
+    setLoggerOverride({ level: "info", file: firstPath });
+    getLogger().info("tracked-file-recovery");
+    setLoggerOverride({ level: "info", file: lastPath });
+    getLogger().info("newly-tracked-failure");
+    await testApi.flushFileLogQueueForTests();
+
+    expect(stderrSpy.mock.calls.some(([line]) => String(line).includes(`file=${lastPath}`))).toBe(
+      true,
+    );
   });
 
   it("synchronously drains a crash-adjacent fatal record through the exit-hook seam", () => {
