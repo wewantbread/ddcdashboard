@@ -447,6 +447,9 @@ suite.define(() => {
       const gateway = await installMockGateway(page, {
         assistantAgentId: "main",
         defaultAgentId: "main",
+        // Agent switching retires the prior session row; current history still identifies
+        // which provider owns the quota while the new session metrics are absent.
+        historyMessages: [{ role: "assistant", content: "Ready.", provider: "openai" }],
         deferredMethods: ["models.authStatus", "models.authStatus", "agent.identity.get"],
         methodResponses: {
           "agent.identity.get": {
