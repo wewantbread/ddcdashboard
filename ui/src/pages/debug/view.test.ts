@@ -385,7 +385,19 @@ describe("DebugOverlay", () => {
           : {};
       }
       if (method === "sessions.list") {
-        return { sessions: [] };
+        return {
+          sessions: [
+            {
+              sessionId: "session-diagnostics",
+              hasActiveRun: true,
+              activeRunIds: ["run-primary", "run-observer"],
+            },
+            {
+              sessionId: "session-runtime-owner",
+              hasActiveRun: true,
+            },
+          ],
+        };
       }
       return diagnosticResponse(method);
     });
@@ -411,6 +423,14 @@ describe("DebugOverlay", () => {
       expect(normalizedText(overlay.querySelector(".debug-overlay__vital--cpu"))).toContain(
         "loop 42%",
       );
+      const activeRuns = [...overlay.querySelectorAll(".debug-overlay__section")].find(
+        (section) => section.querySelector("h3")?.textContent.trim() === "Active runs",
+      );
+      expect(normalizedText(activeRuns)).toContain("3 active");
+      expect(normalizedText(activeRuns)).toContain("session-diagnostics");
+      expect(normalizedText(activeRuns)).toContain("run-primary");
+      expect(normalizedText(activeRuns)).toContain("run-observer");
+      expect(normalizedText(activeRuns)).toContain("session-runtime-owner");
       expect(overlay.querySelector(".debug-vital__chart")).toBeNull();
 
       await vi.advanceTimersByTimeAsync(2_000);
