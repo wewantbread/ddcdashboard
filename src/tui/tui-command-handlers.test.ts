@@ -126,7 +126,7 @@ function createHarness(params?: {
   consumeCompletedRunForPendingSend?: ConsumeCompletedRunMock;
   isRunObserved?: (runId: string) => boolean;
   hasPendingLocalBtwRuns?: () => boolean;
-  retirePendingLocalBtwResults?: ReturnType<typeof vi.fn>;
+  retirePendingLocalBtwResults?: () => void;
   flushPendingHistoryRefreshIfIdle?: FlushPendingHistoryRefreshMock;
   refreshAgents?: RefreshAgentsMock;
   agentDefaultId?: string;
@@ -169,7 +169,7 @@ function createHarness(params?: {
   });
   const dismissPendingSystem = vi.fn((runId: string) => pendingSystemNotices.delete(runId));
   const clearAll = vi.fn();
-  const retirePendingLocalBtwResults = params?.retirePendingLocalBtwResults ?? vi.fn();
+  const retirePendingLocalBtwResults = vi.fn(params?.retirePendingLocalBtwResults ?? (() => {}));
   const clearTools = vi.fn();
   const reserveAssistantSlot = vi.fn();
   const requestRender = vi.fn();
@@ -326,6 +326,20 @@ function createHarness(params?: {
 }
 
 describe("tui command handlers", () => {
+  const clearViewBusyStates: Array<{
+    activeChatRunId?: string | null;
+    pendingSubmit?: TuiPendingSubmit | null;
+    activityStatus?: string;
+    label: string;
+  }> = [
+    { activeChatRunId: "run-active", label: "an active run" },
+    {
+      pendingSubmit: { phase: "sending", runId: "run-pending", draftText: "pending" },
+      label: "a pending send",
+    },
+    { activityStatus: "finishing context", label: "a finishing run" },
+  ];
+
   it("clears only the visible chat log for /clear-view while idle", async () => {
     const {
       handleCommand,
@@ -345,28 +359,21 @@ describe("tui command handlers", () => {
     expect(resetSession).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { activeChatRunId: "run-active", label: "an active run" },
-    {
-      pendingSubmit: { state: "admitting", draft: { runId: "run-pending", text: "pending" } },
-      label: "a pending send",
+  it.each(clearViewBusyStates)(
+    "preserves the visible chat log for /clear-view during $label",
+    async (runState) => {
+      const { label: _label, ...params } = runState;
+      const { handleCommand, clearAll, addSystem, sendChat } = createHarness(params);
+
+      await handleCommand("/clear-view");
+
+      expect(clearAll).not.toHaveBeenCalled();
+      expect(addSystem).toHaveBeenCalledWith(
+        "abort or wait for the current run before /clear-view",
+      );
+      expect(sendChat).not.toHaveBeenCalled();
     },
-    { activityStatus: "finishing context", label: "a finishing run" },
-  ] satisfies Array<{
-    activeChatRunId?: string | null;
-    pendingSubmit?: TuiPendingSubmit | null;
-    activityStatus?: string;
-    label: string;
-  }>)("preserves the visible chat log for /clear-view during $label", async (runState) => {
-    const { label: _label, ...params } = runState;
-    const { handleCommand, clearAll, addSystem, sendChat } = createHarness(params);
-
-    await handleCommand("/clear-view");
-
-    expect(clearAll).not.toHaveBeenCalled();
-    expect(addSystem).toHaveBeenCalledWith("abort or wait for the current run before /clear-view");
-    expect(sendChat).not.toHaveBeenCalled();
-  });
+  );
 
   it("preserves the visible chat log while a side question is in flight", async () => {
     const { handleCommand, clearAll, addSystem, retirePendingLocalBtwResults } = createHarness({
