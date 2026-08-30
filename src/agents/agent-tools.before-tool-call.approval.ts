@@ -39,6 +39,21 @@ import { callGatewayTool } from "./tools/gateway.js";
 type PluginApprovalRequest = NonNullable<PluginHookBeforeToolCallResult["requireApproval"]>;
 const log = createSubsystemLogger("agents/tools");
 
+/**
+ * Terminal denial feedback for plugin approvals. Mirrors the exec-approval
+ * denied follow-up semantics (bash-tools.exec-approval-followup.ts) so the
+ * agent treats a user denial as final: the tool call did not run, the approval
+ * request is closed and cannot be re-approved (the agent must not mention
+ * approval commands), and the call must not be retried. If the user still
+ * wants the action, a new tool call triggers a fresh approval request.
+ */
+const PLUGIN_APPROVAL_DENIED_REASON = [
+  "Denied by user. The tool call did not run.",
+  "This denial is final: the approval request is closed. Do not mention /approve or any other approval command to the user.",
+  "Do not run the tool call again or ask the user to approve it again.",
+  "If the user still wants the action, explain that a new tool call will trigger a fresh approval request.",
+].join("\n");
+
 function resolvePluginToolApprovalTimeoutMs(approval: PluginApprovalRequest): number {
   if (
     typeof approval.timeoutMs !== "number" ||
@@ -236,7 +251,7 @@ async function requestPluginToolApproval(params: {
           kind: "failure",
           disposition: "blocked",
           deniedReason: "plugin-approval",
-          reason: "Denied by user",
+          reason: PLUGIN_APPROVAL_DENIED_REASON,
           params: params.baseParams,
         };
       }
@@ -399,7 +414,7 @@ async function requestPluginToolApproval(params: {
         kind: "failure",
         disposition: "blocked",
         deniedReason: "plugin-approval",
-        reason: "Denied by user",
+        reason: PLUGIN_APPROVAL_DENIED_REASON,
         params: params.baseParams,
       };
     }
