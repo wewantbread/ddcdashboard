@@ -201,7 +201,9 @@ function containsRealConversation(messages: AgentMessage[]): boolean {
  * Summarize via the built-in LLM pipeline (summarizeInStages).
  * Only called when no compaction provider is available or the provider failed.
  */
-async function summarizeViaLLM(params: Parameters<typeof summarizeInStages>[0]): Promise<string> {
+async function summarizeViaLLM(
+  params: Parameters<typeof summarizeInStages>[0] & { maxChunkTokensSource: "adaptive" },
+): Promise<string> {
   // Summarization failure throws CompactionError (b942db4d569b) — there is no
   // degraded-fallback return shape to preserve a previous summary against.
   return await compactionSafeguardDeps.summarizeInStages({
@@ -1214,6 +1216,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   ...llmSummaryParams,
                   messages: pruned.droppedMessagesList,
                   maxChunkTokens: droppedMaxChunkTokens,
+                  maxChunkTokensSource: "adaptive",
                   customInstructions: structuredInstructions,
                   previousSummary,
                 });
@@ -1291,6 +1294,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   ...llmSummaryParams,
                   messages: messagesToSummarize,
                   maxChunkTokens,
+                  maxChunkTokensSource: "adaptive",
                   customInstructions: [structuredInstructions, correctiveInstructions]
                     .filter(Boolean)
                     .join("\n\n"),
@@ -1308,6 +1312,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               ...llmSummaryParams,
               messages: turnPrefixMessages,
               maxChunkTokens,
+              maxChunkTokensSource: "adaptive",
               customInstructions: [
                 TURN_PREFIX_SUMMARIZATION_PROMPT,
                 splitTurnFocus,
