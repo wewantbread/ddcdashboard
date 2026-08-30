@@ -9,7 +9,7 @@ import {
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE } from "../../infra/node-runner-inventory.js";
-import { WorkerProviderError } from "../../plugins/types.js";
+import { WorkerProviderError, type WorkerProvider } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -30,27 +30,37 @@ type WorkerEnvironmentServiceError = support.WorkerEnvironmentServiceError;
 describe("worker environment service provision replay", () => {
   support.setupWorkerEnvironmentServiceSuite();
 
-  it("adopts one committed provision across a service and store restart", async () => {
+  it("adopts one delegated provision through ordinary lifecycle replay after restart", async () => {
     const physicalLeases = new Set<string>();
     const operationIds: string[] = [];
     const machineClasses: Array<string | undefined> = [];
+    const entrypoints: string[] = [];
     const destroyed: string[] = [];
     let creates = 0;
     let loseFirstReply = true;
+    const runProvision: WorkerProvider["provision"] = async (_profile, operationId, options) => {
+      operationIds.push(operationId);
+      machineClasses.push(options?.machineClass);
+      if (!physicalLeases.has("lease-restarted")) {
+        creates += 1;
+        physicalLeases.add("lease-restarted");
+      }
+      if (loseFirstReply) {
+        loseFirstReply = false;
+        throw new Error("provider response was lost after commit");
+      }
+      return { leaseId: "lease-restarted", ssh: support.SSH_ENDPOINT };
+    };
     const provider = () =>
       support.createProvider({
-        provision: async (_profile, operationId, options) => {
-          operationIds.push(operationId);
-          machineClasses.push(options?.machineClass);
-          if (!physicalLeases.has("lease-restarted")) {
-            creates += 1;
-            physicalLeases.add("lease-restarted");
-          }
-          if (loseFirstReply) {
-            loseFirstReply = false;
-            throw new Error("provider response was lost after commit");
-          }
-          return { leaseId: "lease-restarted", ssh: support.SSH_ENDPOINT };
+        provision: async (...args) => {
+          entrypoints.push("provision");
+          return await runProvision(...args);
+        },
+        provisionDelegated: async (...args) => {
+          args[2].assertAuthorized();
+          entrypoints.push("provisionDelegated");
+          return await runProvision(...args);
         },
         destroy: async ({ leaseId }) => {
           destroyed.push(leaseId);
@@ -60,7 +70,7 @@ describe("worker environment service provision replay", () => {
     const first = support.createService(provider());
 
     await expect(
-      first.create("development", "request-restart-replay", "large"),
+      first.create("development", "request-restart-replay", "large", "remote-exec", () => {}),
     ).rejects.toMatchObject({
       code: "provider_failure",
     } satisfies Partial<WorkerEnvironmentServiceError>);
@@ -101,6 +111,7 @@ describe("worker environment service provision replay", () => {
     await restarted.destroy(environmentId);
 
     expect(creates).toBe(1);
+    expect(entrypoints).toEqual(["provisionDelegated", "provision"]);
     expect(operationIds).toEqual([operationId, operationId]);
     expect(machineClasses).toEqual(["large", "large"]);
     expect(destroyed).toEqual(["lease-restarted"]);
@@ -473,7 +484,7 @@ describe("worker environment service provision replay", () => {
     } satisfies Partial<WorkerEnvironmentServiceError>);
     expect(provision).not.toHaveBeenCalled();
     expect(support.testState.store.list()[0]).toMatchObject({
-      state: "provisioning",
+      state: "requested",
       leaseId: null,
     });
   });

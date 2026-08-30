@@ -53,6 +53,13 @@ export function validateWorkerProviderContract(
         "worker provider registration supportedExecutionModes must contain one current mode or both current modes in canonical order",
     };
   }
+  if (executionModes !== undefined && typeof provider.provisionDelegated !== "function") {
+    return {
+      ok: false,
+      message:
+        "worker provider registration provisionDelegated must be a function when supportedExecutionModes is declared",
+    };
+  }
   if (
     provider.resolveSshIdentity !== undefined &&
     typeof provider.resolveSshIdentity !== "function"

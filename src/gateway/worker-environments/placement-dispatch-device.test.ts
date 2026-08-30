@@ -363,7 +363,7 @@ describe("device worker placement dispatch", () => {
     await expect(
       harness.service.dispatch(request, undefined, () => {
         authorizationChecks += 1;
-        if (authorizationChecks === 2) {
+        if (authorizationChecks === 4) {
           vi.mocked(harness.environments.get).mockReturnValue({
             ...harness.attached,
             providerId: "generic-cloud-node",
@@ -413,30 +413,25 @@ describe("device worker placement dispatch", () => {
   it("fences a cloud node re-paired inside the synchronous activation callback", async () => {
     let currentNode = deviceProof(0);
     const harness = createHarness(placementStore, {
-      isCurrentNodePlacement: (node) =>
-        node.nodeId === currentNode.nodeId &&
-        node.connId === currentNode.connId &&
-        node.pairingGeneration === currentNode.pairingGeneration,
+      isCurrentNodePlacement: (node) => {
+        currentNode = {
+          ...currentNode,
+          connId: "replacement-connection",
+          pairingGeneration: "replacement-generation",
+        };
+        return (
+          node.nodeId === currentNode.nodeId &&
+          node.connId === currentNode.connId &&
+          node.pairingGeneration === currentNode.pairingGeneration
+        );
+      },
     });
     bindDeviceWorkerAvailability(harness.environments, async () => ({
       available: true,
       node: currentNode,
     }));
     const request = prepareCloudNodeDispatch(harness);
-    let authorizationChecks = 0;
-
-    await expect(
-      harness.service.dispatch(request, undefined, () => {
-        authorizationChecks += 1;
-        if (authorizationChecks === 2) {
-          currentNode = {
-            ...currentNode,
-            connId: "replacement-connection",
-            pairingGeneration: "replacement-generation",
-          };
-        }
-      }),
-    ).rejects.toThrow("pairing generation");
+    await expect(harness.service.dispatch(request)).rejects.toThrow("pairing generation");
 
     expect(harness.environments.startTunnel).toHaveBeenCalledOnce();
     expect(harness.placements.current()).toMatchObject({ state: "failed" });
@@ -469,7 +464,7 @@ describe("device worker placement dispatch", () => {
     await expect(
       harness.service.dispatch(request, undefined, () => {
         authorizationChecks += 1;
-        if (authorizationChecks === 2) {
+        if (authorizationChecks === 4) {
           if (scenario.revocation === "command") {
             currentNode = {
               ...currentNode,

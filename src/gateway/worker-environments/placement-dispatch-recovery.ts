@@ -106,6 +106,14 @@ export function createPlacementRecoveryActions(deps: PlacementRecoveryDeps) {
       await failure.failActive(placement, error, { forceClaimFence: true });
       return;
     }
+    if (deps.isInterruptedDelegatedChild?.(placement.sessionKey)) {
+      await failure.failActive(
+        placement,
+        new Error("Delegated child placement lost its initiating worker turn during restart"),
+        { forceClaimFence: true },
+      );
+      return;
+    }
     const environment = placement.environmentId
       ? environments.get(placement.environmentId)
       : undefined;

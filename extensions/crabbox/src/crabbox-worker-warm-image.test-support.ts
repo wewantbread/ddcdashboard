@@ -142,9 +142,11 @@ export async function provisionWarmProfile(
   profile: WorkerProfile = PROFILE,
   operationId = OPERATION_ID,
   machineClass?: string,
+  assertAuthorized: () => void = () => {},
 ) {
-  return provider.provision(profile, operationId, {
+  return provider.provisionDelegated!(profile, operationId, {
     ...(machineClass ? { machineClass } : {}),
+    assertAuthorized,
     beginNodeEnrollment: async () => ({
       mode: "connect",
       setupCode: "setup-code",

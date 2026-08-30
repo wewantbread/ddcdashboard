@@ -43,7 +43,7 @@ const workerTurnClaimClosedHandlers = resolveGlobalMap<
 export type WorkerTurnExecutionIdentity = Readonly<{
   agentId: string;
   delegatedAuthority: AgentRunDelegatedAuthority;
-  executionIdentityToken: ExecutionIdentityAdmissionToken;
+  executionIdentityToken?: ExecutionIdentityAdmissionToken;
   operationalRunInstance: OperationalRunInstanceRef;
   receiptAuthority: () => void;
   sessionKey: string;
@@ -95,11 +95,11 @@ function claimKey(claim: WorkerSessionTurnClaim): string {
   ]);
 }
 
-/** Bind diagnostic provenance to the exact live run and worker owners. */
+/** Bind operational authority, plus optional audit provenance, to the exact live owners. */
 export function bindWorkerTurnExecutionIdentity(
   store: WorkerTurnExecutionIdentityStore,
   claim: WorkerSessionTurnClaim,
-  token: ExecutionIdentityAdmissionToken,
+  token: ExecutionIdentityAdmissionToken | undefined,
   operationalRunInstance: OperationalRunInstanceRef,
   source: { agentId: string; sessionKey: string },
 ): void {
@@ -119,7 +119,7 @@ export function bindWorkerTurnExecutionIdentity(
   const identity = Object.freeze({
     agentId: source.agentId,
     delegatedAuthority,
-    executionIdentityToken: token,
+    ...(token ? { executionIdentityToken: token } : {}),
     operationalRunInstance,
     receiptAuthority: assertActive,
     sessionKey: source.sessionKey,

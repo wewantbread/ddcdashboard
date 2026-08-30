@@ -118,17 +118,14 @@ export async function prepareWorkerAgentRuntimeIdentity(
   }
   assertActive();
   const runtimeIdentity = buildWorkerAgentRuntimeIdentity({ ...params, admittedRunContext });
-  // Worker session RPC carries no raw identity token. Bind provenance to the exact
-  // host claim before launch so child lineage cannot become bearer authority.
-  if (runtimeIdentity.executionIdentityToken) {
-    bindWorkerTurnExecutionIdentity(
-      params.placements,
-      params.turnClaim,
-      runtimeIdentity.executionIdentityToken,
-      admittedRunContext.operationalRunInstance,
-      { agentId: params.agentId, sessionKey: params.sessionKey },
-    );
-  }
+  // Operational authority exists even when optional execution-audit collection is off.
+  bindWorkerTurnExecutionIdentity(
+    params.placements,
+    params.turnClaim,
+    runtimeIdentity.executionIdentityToken,
+    admittedRunContext.operationalRunInstance,
+    { agentId: params.agentId, sessionKey: params.sessionKey },
+  );
   bindWorkerTurnAdmissionContinuation(
     params.placements,
     params.turnClaim,

@@ -74,6 +74,99 @@ describe("worker environment service", () => {
     });
   });
 
+  it("rechecks placement authority after installation preparation before provider allocation", async () => {
+    let releasePreparation!: () => void;
+    const preparationPaused = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    support.testState.prepareInstallation = vi.fn(async () => {
+      await preparationPaused;
+      return support.BUNDLE_ARTIFACT;
+    });
+    const provision = vi.fn(support.createProvider().provision);
+    const workerService = support.createService(support.createProvider({ provision }));
+    let authorized = true;
+
+    const creation = workerService.create(
+      "development",
+      "request-revoked-during-installation-preparation",
+      undefined,
+      undefined,
+      () => {
+        if (!authorized) {
+          throw new Error("session dispatch authority closed");
+        }
+      },
+    );
+    await vi.waitFor(() => expect(support.testState.prepareInstallation).toHaveBeenCalledOnce());
+    authorized = false;
+    releasePreparation();
+
+    await expect(creation).rejects.toThrow("session dispatch authority closed");
+    expect(provision).not.toHaveBeenCalled();
+    const [intent] = support.testState.store.list();
+    expect(intent).toMatchObject({ state: "requested", leaseId: null });
+
+    await workerService.destroy(intent!.environmentId);
+    expect(provision).not.toHaveBeenCalled();
+    expect(support.testState.store.get(intent!.environmentId)).toMatchObject({
+      state: "failed",
+      leaseId: null,
+    });
+  });
+
+  it("refuses delegated provisioning through a provider without authority support", async () => {
+    const provision = vi.fn(support.createProvider().provision);
+    const workerService = support.createService(
+      support.createProvider({ provision, provisionDelegated: undefined }),
+    );
+
+    await expect(
+      workerService.create(
+        "development",
+        "request-provider-without-authority-support",
+        undefined,
+        "remote-exec",
+        () => {},
+      ),
+    ).rejects.toMatchObject({ code: "invalid_profile" });
+
+    expect(provision).not.toHaveBeenCalled();
+  });
+
+  it("routes delegated provisioning only through the authority-bound provider capability", async () => {
+    const authorize = vi.fn();
+    const provision = vi.fn(support.createProvider().provision);
+    const provisionDelegated = vi.fn(async (_profile, _operationId, options) => {
+      options.assertAuthorized();
+      return { leaseId: "lease-delegated", ssh: support.SSH_ENDPOINT } as const;
+    });
+    const workerService = support.createService(
+      support.createProvider({ provision, provisionDelegated }),
+    );
+
+    await expect(
+      workerService.create(
+        "development",
+        "request-authority-bound-provider",
+        undefined,
+        "remote-exec",
+        authorize,
+      ),
+    ).resolves.toMatchObject({ state: "ready", leaseId: "lease-delegated" });
+
+    expect(provision).not.toHaveBeenCalled();
+    expect(provisionDelegated).toHaveBeenCalledWith(
+      { region: "test" },
+      expect.stringMatching(/^provision:v2:[a-f0-9]{64}$/u),
+      expect.objectContaining({
+        executionMode: "remote-exec",
+        assertAuthorized: expect.any(Function),
+      }),
+    );
+    expect(provisionDelegated.mock.calls[0]?.[2].assertAuthorized).toBe(authorize);
+  });
+
   it("requires explicit placement modes before provider allocation", async () => {
     const provision = vi.fn(support.createProvider().provision);
     const provider = support.createProvider({ supportedExecutionModes: undefined, provision });
@@ -516,6 +609,26 @@ describe("worker environment service", () => {
       state: "failed",
     });
     expect(provisionCalls).toBe(1);
+  });
+
+  it("does not replay provisioning after the provider proves cleanup", async () => {
+    const provision = vi.fn(async () => {
+      throw WorkerProviderError.cleanupComplete(new Error("worker turn authority changed"));
+    });
+    const workerService = support.createService(support.createProvider({ provision }));
+
+    await expect(workerService.create("development", "request-cleaned-up")).rejects.toMatchObject({
+      code: "provider_failure",
+      message: expect.stringContaining("worker turn authority changed"),
+    } satisfies Partial<WorkerEnvironmentServiceError>);
+    const record = expectDefined(support.testState.store.list()[0], "cleaned-up provision record");
+
+    await expect(workerService.destroy(record.environmentId)).resolves.toMatchObject({
+      state: "failed",
+      leaseId: null,
+    });
+    await workerService.reconcileOnce();
+    expect(provision).toHaveBeenCalledOnce();
   });
 
   it("rejects non-canonical profile ids before persistence", async () => {

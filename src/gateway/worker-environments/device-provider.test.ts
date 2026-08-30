@@ -131,6 +131,27 @@ describe("device worker provider", () => {
     );
   });
 
+  it("rechecks delegated authority after resolving device availability", async () => {
+    let authorized = true;
+    const provider = deviceRuntime({
+      getPairedDevice: async () => pairedDevice(),
+      listCurrentNodes: async () => {
+        authorized = false;
+        return [connectedNode()];
+      },
+    }).provider;
+
+    await expect(
+      provider.provisionDelegated!({ device: DEVICE_ID }, "operation-revoked", {
+        assertAuthorized: () => {
+          if (!authorized) {
+            throw new Error("worker turn authority changed");
+          }
+        },
+      }),
+    ).rejects.toThrow("worker turn authority changed");
+  });
+
   it.each([
     {
       name: "missing pairing",

@@ -546,6 +546,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       idempotencyKey: string,
       machineClass?: string,
       executionMode?: WorkerExecutionMode,
+      authorize?: () => void,
     ) => {
       if (executionMode) {
         requireProviderExecutionMode(configuredProfileProviderId(profileId), executionMode);
@@ -554,6 +555,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
         await providerLifecycle.createWithProfile(profileId, idempotencyKey, {
           machineClass,
           executionMode,
+          authorize,
         }),
       );
     },
@@ -562,6 +564,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
       idempotencyKey: string,
       machineClass?: string,
       executionMode?: WorkerExecutionMode,
+      authorize?: () => void,
     ) => {
       requireProviderExecutionMode(profile.providerId, executionMode);
       return environmentAccess.project(
@@ -572,6 +575,7 @@ export function createWorkerEnvironmentService(options: WorkerEnvironmentService
           },
           machineClass,
           executionMode,
+          authorize,
         }),
       );
     },

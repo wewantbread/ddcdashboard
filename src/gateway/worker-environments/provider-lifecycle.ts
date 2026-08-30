@@ -1,7 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { WorkerAdmissionHandshake } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { SecretRef } from "../../config/types.secrets.js";
-import { validateCloudWorkerProfileSettings } from "../../config/zod-schema.cloud-workers.js";
 import { normalizeCapabilityProviderId } from "../../plugins/provider-registry-shared.js";
 import {
   WorkerProviderError,
@@ -19,14 +17,17 @@ import {
   requestStaleWorkerDestroy,
   retireMismatchedWorkerLease,
 } from "./provider-persisted-lease.js";
+import { createWorkerSshProvisioning } from "./provider-ssh-provisioning.js";
 import { deriveEnvironmentIntent } from "./service-contract.js";
 import {
   normalizeWorkerMachineOptions,
   requireInheritedWorkerProfileAuthorization,
   requireProviderProvisionTimeoutMs,
   requireWorkerAllocation,
+  requireWorkerInstall,
   requireWorkerLease,
   requireWorkerLeaseStatus,
+  requireWorkerProfile,
   resolveWorkerLeaseTransportError,
 } from "./service-validation.js";
 import type {
@@ -44,17 +45,11 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
 
   const { requireCurrentOwner, stopOwner } = createWorkerProviderOwnerLifecycle(options);
 
-  function requireWorkerProfile(value: unknown): WorkerProfile {
-    const error = validateCloudWorkerProfileSettings(value);
-    if (error) {
-      throw serviceError("invalid_profile", error);
-    }
-    return value as WorkerProfile;
-  }
+  const checkedProfile = (value: unknown) => requireWorkerProfile(value, serviceError);
 
   const lifecycleLease = (record: WorkerEnvironmentRecord, leaseId: string) => ({
     leaseId,
-    profile: requireWorkerProfile(record.profileSnapshot.settings),
+    profile: checkedProfile(record.profileSnapshot.settings),
   });
 
   const identityResolverFor = (
@@ -62,7 +57,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     provider: WorkerProvider,
     leaseId: string,
   ) => {
-    const profile = requireWorkerProfile(record.profileSnapshot.settings);
+    const profile = checkedProfile(record.profileSnapshot.settings);
     const resolveSshIdentity = options.resolveSshIdentity;
     return async (keyRef: SecretRef) => {
       if (!resolveSshIdentity) {
@@ -89,20 +84,12 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     }
     const provider = options.resolveProvider(profile.provider);
     return normalizeWorkerMachineOptions(
-      await provider?.listMachineOptions?.(requireWorkerProfile(profile.settings ?? {})),
+      await provider?.listMachineOptions?.(checkedProfile(profile.settings ?? {})),
     );
   };
 
-  const installFor = (record: WorkerEnvironmentRecord): WorkerInstallationArtifact["install"] => {
-    const install = record.profileSnapshot.install;
-    if (install === undefined || install === "bundle") {
-      return "bundle";
-    }
-    if (install === "npm") {
-      return "npm";
-    }
-    throw serviceError("invalid_profile", "Worker profile has an invalid install method");
-  };
+  const installFor = (record: WorkerEnvironmentRecord): WorkerInstallationArtifact["install"] =>
+    requireWorkerInstall(record.profileSnapshot.install, serviceError);
 
   const finishProvenDestroy = async (record: WorkerEnvironmentRecord) => {
     const destroying = beginDestroy(requireCurrentOwner(record));
@@ -190,46 +177,26 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       await failBootstrap(record, leaseId, provider, error, "bootstrap_failure", patch),
   });
 
-  const finishBootstrap = async (
-    record: WorkerEnvironmentRecord,
-    provider: WorkerProvider,
-    installation: WorkerInstallationArtifact,
-  ) => {
-    if (record.state !== "bootstrapping" || !record.leaseId || !record.sshEndpoint) {
-      throw serviceError("invalid_state", "Worker bootstrap requires a provisioned SSH lease");
-    }
-    const leaseId = record.leaseId;
-    const sshEndpoint = record.sshEndpoint;
-    let receipt: WorkerAdmissionHandshake;
-    try {
-      receipt = await callBootstrap(installation, (signal) =>
-        options.bootstrapWorker({
-          operationId: record.provisionOperationId,
-          sshEndpoint,
-          installation,
-          resolveIdentity: identityResolverFor(record, provider, leaseId),
-          signal,
-        }),
-      );
-      if (!verifyWorkerAdmissionHandshake(receipt, installation)) {
-        throw new Error("Worker bootstrap receipt does not match the expected build identity");
-      }
-    } catch (error) {
-      return await failBootstrap(record, leaseId, provider, error);
-    }
-    return commitReady(record, { ...receipt, installKind: "bundle" });
-  };
+  const finishBootstrap = createWorkerSshProvisioning({
+    bootstrapWorker: options.bootstrapWorker,
+    callBootstrap,
+    commitReady,
+    failBootstrap,
+    serviceError,
+  });
 
   const finishProvision = async (
     record: WorkerEnvironmentRecord,
     provider: WorkerProvider,
     preparedInstallation?: WorkerInstallationArtifact,
+    authorize?: () => void,
   ) => {
     let lease: WorkerLease;
     let executionMode: WorkerExecutionMode | undefined;
     let enrollmentOperation: ReturnType<typeof nodeProvisioning.createEnrollmentOperation>;
+    let provisioning = record;
     try {
-      const profile = requireWorkerProfile(record.profileSnapshot.settings);
+      const profile = checkedProfile(record.profileSnapshot.settings);
       const requestedExecutionMode = record.profileSnapshot.executionMode;
       if (
         requestedExecutionMode !== undefined &&
@@ -253,7 +220,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         typeof record.profileSnapshot.machineClass === "string"
           ? record.profileSnapshot.machineClass
           : undefined;
-      enrollmentOperation = nodeProvisioning.createEnrollmentOperation(record, provider);
+      enrollmentOperation = nodeProvisioning.createEnrollmentOperation(record, provider, authorize);
       const provisionOptions =
         machineClass || executionMode || enrollmentOperation
           ? {
@@ -262,26 +229,47 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
               ...(enrollmentOperation ? { beginNodeEnrollment: enrollmentOperation.begin } : {}),
             }
           : undefined;
+      if (authorize && !provider.provisionDelegated) {
+        throw serviceError(
+          "invalid_profile",
+          `Worker provider ${provider.id} does not support delegated provisioning`,
+        );
+      }
       lease = requireWorkerLease(
         await callProvider(
           record.environmentId,
-          () => provider.provision(profile, record.provisionOperationId, provisionOptions),
+          () => {
+            authorize?.();
+            if (provisioning.state === "requested") {
+              provisioning = move(provisioning, "provisioning");
+            }
+            return authorize
+              ? provider.provisionDelegated!(profile, provisioning.provisionOperationId, {
+                  ...provisionOptions,
+                  assertAuthorized: authorize,
+                })
+              : provider.provision(profile, provisioning.provisionOperationId, provisionOptions);
+          },
           providerTimeoutMs,
         ),
       );
     } catch (error) {
       if (WorkerProviderError.isCleanupIndeterminate(error)) {
-        return preserveIndeterminateProvisionCleanup(record, error);
+        return preserveIndeterminateProvisionCleanup(provisioning, error);
       }
       const detail = boundedError(error);
       if (
         error instanceof WorkerProviderError ||
         options.isServiceError(error, "invalid_profile")
       ) {
-        move(record, "failed", { lastError: detail });
+        move(provisioning, "failed", { lastError: detail });
         throw serviceError("invalid_profile", `Worker provider rejected profile: ${detail}`);
       }
-      saveError(record, error);
+      if (WorkerProviderError.isCleanupComplete(error)) {
+        move(provisioning, "failed", { lastError: detail });
+      } else {
+        saveError(provisioning, error);
+      }
       throw serviceError("provider_failure", `Worker provider operation failed: ${detail}`);
     } finally {
       enrollmentOperation?.close();
@@ -302,7 +290,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
     );
     if (leaseModeError) {
       return await failBootstrap(
-        record,
+        provisioning,
         lease.leaseId,
         provider,
         leaseModeError,
@@ -311,9 +299,9 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       );
     }
     if (lease.node) {
-      return await nodeProvisioning.finish(record, lease, provider, patch);
+      return await nodeProvisioning.finish(provisioning, lease, provider, patch, authorize);
     }
-    const bootstrapping = move(record, "bootstrapping", patch);
+    const bootstrapping = move(provisioning, "bootstrapping", patch);
     let installation = preparedInstallation;
     if (!installation) {
       try {
@@ -324,15 +312,22 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         return await failBootstrap(bootstrapping, lease.leaseId, provider, error);
       }
     }
-    return finishBootstrap(bootstrapping, provider, installation);
+    return finishBootstrap(
+      bootstrapping,
+      provider,
+      installation,
+      identityResolverFor(bootstrapping, provider, lease.leaseId),
+      authorize,
+    );
   };
 
   const resumeProvision = async (
     record: WorkerEnvironmentRecord,
     provider = providerFor(record.providerId),
+    authorize?: () => void,
   ) => {
     let installation: WorkerInstallationArtifact | undefined;
-    await nodeProvisioning.prepare(record, provider);
+    await nodeProvisioning.prepare(record, provider, authorize);
     if (
       record.state === "requested" &&
       record.destroyRequestedAtMs === null &&
@@ -351,8 +346,9 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         );
       }
     }
-    const provisioning = record.state === "requested" ? move(record, "provisioning") : record;
-    return finishProvision(provisioning, provider, installation);
+    // Fresh requests stay cancelable through preparation and provider-queue admission;
+    // finishProvision transitions them only inside the authorized provider callback.
+    return finishProvision(record, provider, installation, authorize);
   };
 
   const cancelRequested = (record: WorkerEnvironmentRecord) =>
@@ -397,7 +393,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           await callProvider(r.environmentId, () => {
             requireCurrentOwner(r);
             return owningProvider.resolveAllocation(
-              requireWorkerProfile(r.profileSnapshot.settings),
+              checkedProfile(r.profileSnapshot.settings),
               r.provisionOperationId,
             );
           }),
@@ -595,7 +591,12 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       record = await stopOwner(record);
       const bootstrapping =
         record.state === "bootstrapping" ? record : move(record, "bootstrapping");
-      await finishBootstrap(bootstrapping, provider, installation).catch(() => undefined);
+      await finishBootstrap(
+        bootstrapping,
+        provider,
+        installation,
+        identityResolverFor(bootstrapping, provider, leaseId),
+      ).catch(() => undefined);
       return;
     }
     if (inState(record, "draining", "destroying")) {
@@ -613,9 +614,10 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
       };
       machineClass?: string;
       executionMode?: WorkerExecutionMode;
+      authorize?: () => void;
     } = {},
   ) => {
-    const { inherited, machineClass, executionMode } = createOptions;
+    const { inherited, machineClass, executionMode, authorize } = createOptions;
     const provisionSnapshot = {
       ...(machineClass === undefined ? {} : { machineClass }),
       ...(executionMode === undefined ? {} : { executionMode }),
@@ -652,7 +654,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
           return existing;
         }
         if (!existing.leaseId && inState(existing, "requested", "provisioning")) {
-          return resumeProvision(existing);
+          return resumeProvision(existing, undefined, authorize);
         }
         return existing;
       }
@@ -681,7 +683,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         if (resolvedProviderId !== providerId) {
           throw serviceError("invalid_profile", "Inherited worker provider identity changed");
         }
-        profileSnapshot = requireWorkerProfile({
+        profileSnapshot = checkedProfile({
           ...inherited.profileSnapshot,
           ...provisionSnapshot,
         });
@@ -691,8 +693,8 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         }
         provider = providerFor(configuredProfile.provider);
         providerId = normalizeCapabilityProviderId(provider.id) ?? provider.id;
-        const settings = requireWorkerProfile(configuredProfile.settings ?? {});
-        profileSnapshot = requireWorkerProfile({
+        const settings = checkedProfile(configuredProfile.settings ?? {});
+        profileSnapshot = checkedProfile({
           install: configuredProfile.install ?? "bundle",
           settings,
           ...provisionSnapshot,
@@ -705,7 +707,7 @@ export function createWorkerProviderLifecycle(options: WorkerProviderLifecycleOp
         profileSnapshot,
         provisionOperationId,
       });
-      return resumeProvision(intent, provider);
+      return resumeProvision(intent, provider, authorize);
     });
   };
 
