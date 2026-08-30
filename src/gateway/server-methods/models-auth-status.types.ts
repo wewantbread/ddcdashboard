@@ -5,6 +5,7 @@ import type {
 import type { AuthCredentialReasonCode } from "../../agents/auth-profiles/credential-state.js";
 import type {
   ProviderUsageBilling,
+  ProviderUsageCostHistory,
   UsageProviderId,
   UsageWindow,
 } from "../../infra/provider-usage.types.js";
@@ -14,6 +15,17 @@ export type ModelAuthExpiry = {
   at: number;
   remainingMs: number;
   label: string;
+};
+
+export type ModelAuthUsage = {
+  providerId: UsageProviderId;
+  windows: UsageWindow[];
+  summary?: string;
+  plan?: string;
+  billing?: ProviderUsageBilling[];
+  costHistory?: ProviderUsageCostHistory;
+  accountEmail?: string;
+  error?: string;
 };
 
 export type ModelAuthStatusProfile = {
@@ -29,6 +41,10 @@ export type ModelAuthStatusProfile = {
   displayName?: string;
   email?: string;
   lastUsedAt?: number;
+  /** Account-scoped provider quota and billing facts for this exact credential. */
+  usage?: ModelAuthUsage;
+  /** This account's usage cache is refreshing in the background. */
+  usageRefreshPending?: true;
 };
 
 export type ModelAuthStatusProvider = {
@@ -47,15 +63,9 @@ export type ModelAuthStatusProvider = {
     source: "config" | "env";
     envVar?: string;
   };
-  usage?: {
-    /** Normalized provider id the usage payload was fetched under. */
-    providerId: UsageProviderId;
-    windows: UsageWindow[];
-    summary?: string;
-    plan?: string;
-    billing?: ProviderUsageBilling[];
-    accountEmail?: string;
-  };
+  usage?: ModelAuthUsage;
+  /** Whether provider usage is organization-wide or mirrors one saved account. */
+  usageScope?: "provider" | "account";
 };
 
 export type ModelProviderCapability = {
@@ -70,6 +80,8 @@ export type ModelAuthStatusResult = {
   providers: ModelAuthStatusProvider[];
   /** Process-stable provider setup capabilities from the active plugin generation. */
   providerCapabilities?: ModelProviderCapability[];
+  /** Account usage is still filling its credential-bound cache. */
+  usageRefreshPending?: boolean;
 };
 
 export type ModelAuthLogoutResult = {
