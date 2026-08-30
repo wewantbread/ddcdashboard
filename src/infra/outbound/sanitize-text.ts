@@ -37,8 +37,8 @@ function convertHtmlOutsideCode(text: string, options: { style?: "markdown" }): 
     .replace(CONVERTIBLE_HTML_OPEN_TAG_RE, "<$1>")
     // Line breaks
     .replace(/<br\s*\/?>/gi, "\n")
-    // Block elements → newlines
-    .replace(/<\/?(p|div)>/gi, "\n")
+    // Block elements → newlines (attributed openers included)
+    .replace(/<\/?(?:p|div)(?=\s|>)(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi, "\n")
     // Bold → selected lightweight markup
     .replace(/<(b|strong)>(.*?)<\/\1>/gi, `${boldMarker}$2${boldMarker}`)
     // Italic → WhatsApp/Signal italic
