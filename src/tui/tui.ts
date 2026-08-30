@@ -818,6 +818,33 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   let remediationShown = false;
   const localRunIds = createTuiRunIdTracker();
   const localBtwRunIds = createTuiRunIdTracker();
+  const clearViewBlockingLocalBtwRunIds = createTuiRunIdTracker();
+  const pendingLocalBtwResultRunIds = createTuiRunIdTracker();
+  const retiredLocalBtwResultRunIds = createTuiRunIdTracker();
+  const noteLocalBtwRunId = (runId: string) => {
+    localBtwRunIds.note(runId);
+    clearViewBlockingLocalBtwRunIds.note(runId);
+    pendingLocalBtwResultRunIds.note(runId);
+    retiredLocalBtwResultRunIds.forget(runId);
+  };
+  const forgetLocalBtwRunId = (runId: string) => {
+    localBtwRunIds.forget(runId);
+    clearViewBlockingLocalBtwRunIds.forget(runId);
+    pendingLocalBtwResultRunIds.forget(runId);
+    retiredLocalBtwResultRunIds.forget(runId);
+  };
+  const clearLocalBtwRunIds = () => {
+    localBtwRunIds.clear();
+    clearViewBlockingLocalBtwRunIds.clear();
+    pendingLocalBtwResultRunIds.clear();
+    retiredLocalBtwResultRunIds.clear();
+  };
+  const retirePendingLocalBtwResults = () => {
+    for (const runId of pendingLocalBtwResultRunIds.values()) {
+      retiredLocalBtwResultRunIds.note(runId);
+    }
+    pendingLocalBtwResultRunIds.clear();
+  };
 
   const deliverDefault = opts.deliver ?? false;
   const autoMessage = opts.message?.trim();
@@ -1456,8 +1483,15 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     requestRender: () => tui.requestRender(),
   });
   const btw = {
-    showResult: (params: { question: string; text: string; isError?: boolean }) => {
+    showResult: (params: { question: string; text: string; isError?: boolean; runId?: string }) => {
+      if (params.runId && retiredLocalBtwResultRunIds.has(params.runId)) {
+        return;
+      }
       chatLog.showBtw(params);
+      if (params.runId) {
+        clearViewBlockingLocalBtwRunIds.forget(params.runId);
+        pendingLocalBtwResultRunIds.forget(params.runId);
+      }
     },
     clear: () => {
       chatLog.dismissBtw();
@@ -1554,8 +1588,8 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     forgetLocalRunId: localRunIds.forget,
     clearLocalRunIds: localRunIds.clear,
     isLocalBtwRunId: localBtwRunIds.has,
-    forgetLocalBtwRunId: localBtwRunIds.forget,
-    clearLocalBtwRunIds: localBtwRunIds.clear,
+    forgetLocalBtwRunId,
+    clearLocalBtwRunIds,
   });
   reconcileReconnectRun = reconnectStreamingWatchdog;
   const localShell = createLocalShellRunner({
@@ -1651,9 +1685,11 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     setActivityStatus,
     formatSessionKey,
     noteLocalRunId: localRunIds.note,
-    noteLocalBtwRunId: localBtwRunIds.note,
+    noteLocalBtwRunId,
     forgetLocalRunId: localRunIds.forget,
-    forgetLocalBtwRunId: localBtwRunIds.forget,
+    forgetLocalBtwRunId,
+    hasPendingLocalBtwRuns: clearViewBlockingLocalBtwRunIds.hasAny,
+    retirePendingLocalBtwResults,
     consumeCompletedRunForPendingSend,
     isRunObserved,
     flushPendingHistoryRefreshIfIdle,
@@ -1960,6 +1996,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     }
     setConnectionStatus(`event gap: expected ${info.expected}, got ${info.received}`, 5000);
     addConnectionNotice(`gateway event gap: expected ${info.expected}, got ${info.received}`);
+    // A gap may hide the side run's terminal event, so it cannot block clearing
+    // forever. Its result remains displayable unless the operator actually clears.
+    clearViewBlockingLocalBtwRunIds.clear();
     reconcileHistoryAfterGap();
     void (async () => {
       try {
