@@ -218,6 +218,66 @@ describe("cron service timer regressions", () => {
     expect(overloadedResult.runIsolatedAgentJob).toHaveBeenCalledTimes(2);
   });
 
+  it("#131491: retains a deleteAfterRun one-shot whose stale guard suppressed its delivery", async () => {
+    const store = timerRegressionFixtures.makeStorePath();
+    // The run fires long after its scheduled slot, executes fully, and the
+    // stale-delivery guard discards its only deliverable. The dispatch-level
+    // transcript retention is covered by the double-announce dispatch tests;
+    // this regression pins the service-side retention policy.
+    const scheduledAt = Date.parse("2026-02-06T10:00:00.000Z");
+    const firedAt = scheduledAt + 18 * 60 * 60_000;
+
+    const cronJob = createIsolatedRegressionJob({
+      id: "oneshot-stale-delivery",
+      name: "late report",
+      scheduledAt,
+      schedule: { kind: "at", at: new Date(scheduledAt).toISOString() },
+      payload: { kind: "agentTurn", message: "summarize and report" },
+      state: { nextRunAtMs: scheduledAt },
+    });
+    cronJob.deleteAfterRun = true;
+    await saveCronStore(store.storePath, { version: 1, jobs: [cronJob] });
+
+    // Faithful replay of what the isolated runner returns after the stale
+    // guard records its delivery outcome: execution ok, delivery failed.
+    const runIsolatedAgentJob = vi.fn().mockResolvedValue({
+      status: "ok",
+      summary: "report finished",
+      outputText: "report finished",
+      delivered: false,
+      deliveryAttempted: true,
+      deliveryState: {
+        delivered: false,
+        status: "not-delivered",
+        error: "skipping stale delivery scheduled at 2026-02-06T10:00:00.000Z, started 1080m late",
+        failureNotification: { status: "not-requested" },
+      },
+    });
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: store.storePath,
+      log: noopLogger,
+      nowMs: () => firedAt,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob,
+    });
+
+    await onTimer(state);
+
+    // The completed one-shot stays inspectable instead of being deleted as a success.
+    const job = state.store?.jobs.find((entry) => entry.id === "oneshot-stale-delivery");
+    expect(job).toBeDefined();
+    expect(job?.enabled).toBe(false);
+    expect(job?.state.nextRunAtMs).toBeUndefined();
+    expect(job?.state.lastStatus).toBe("ok");
+    expect(job?.state.lastDelivered).toBe(false);
+    expect(job?.state.lastDeliveryStatus).toBe("not-delivered");
+    expect(job?.state.lastDeliveryError).toContain("skipping stale delivery");
+    // The turn already ran to completion; the failed completion must not replay it.
+    expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
+  });
+
   it("#24355: one-shot job disabled after max transient retries", async () => {
     const store = timerRegressionFixtures.makeStorePath();
     const scheduledAt = Date.parse("2026-02-06T10:00:00.000Z");
