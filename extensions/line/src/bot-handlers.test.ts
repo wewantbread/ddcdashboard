@@ -179,7 +179,7 @@ vi.mock("./send.js", () => ({
 }));
 
 const { buildLineMessageContextMock, buildLinePostbackContextMock } = vi.hoisted(() => ({
-  buildLineMessageContextMock: vi.fn(async () => ({
+  buildLineMessageContextMock: vi.fn(async (_params: { allMedia?: unknown[] }) => ({
     ctxPayload: { From: "line:group:group-1" },
     replyToken: "reply-token",
     route: { agentId: "default" },
@@ -261,6 +261,7 @@ function createLineWebhookTestContext(params: {
   requireMention?: boolean;
   groupHistories?: Map<string, HistoryEntry[]>;
   accessGroups?: Record<string, { type: "message.senders"; members: Record<string, string[]> }>;
+  turnAdoptionLifecycle?: LineWebhookContext["turnAdoptionLifecycle"];
 }): Parameters<typeof handleLineWebhookEvents>[1] {
   const allowFrom = params.allowFrom ?? (params.dmPolicy === "open" ? ["*"] : undefined);
   const lineConfig = {
@@ -291,6 +292,20 @@ function createLineWebhookTestContext(params: {
     mediaMaxBytes: 1,
     processMessage: params.processMessage,
     ...(params.groupHistories ? { groupHistories: params.groupHistories } : {}),
+    ...(params.turnAdoptionLifecycle
+      ? { turnAdoptionLifecycle: params.turnAdoptionLifecycle }
+      : {}),
+  };
+}
+
+/** Records how an image-set part's ingress claim was finally settled. */
+function createTurnAdoptionLifecycleSpy() {
+  return {
+    admission: "exclusive" as const,
+    onAdopted: vi.fn(async () => {}),
+    onDeferred: vi.fn(() => {}),
+    onAbandoned: vi.fn(async () => {}),
+    abortSignal: new AbortController().signal,
   };
 }
 
@@ -1583,6 +1598,60 @@ describe("handleLineWebhookEvents", () => {
 
     // Should be skipped because there is a non-bot mention and the bot was not mentioned.
     expect(processMessage).not.toHaveBeenCalled();
+  });
+
+  // The spool hands the whole set to the handler at once; the handler's job is to
+  // make it one turn carrying every image rather than one turn per part.
+  it("answers a multi-image send as one turn instead of one turn per image", async () => {
+    downloadLineMediaMock.mockImplementation(async (messageId: string) => ({
+      path: `/media/${messageId}.png`,
+      contentType: "image/png",
+      size: 10,
+    }));
+    const processMessage = vi.fn();
+    const context = createLineWebhookTestContext({
+      processMessage,
+      dmPolicy: "open",
+      turnAdoptionLifecycle: createTurnAdoptionLifecycleSpy(),
+    });
+    const imagePart = (messageId: string, index: number) =>
+      createTestMessageEvent({
+        message: {
+          id: messageId,
+          type: "image",
+          contentProvider: { type: "line" },
+          imageSet: { id: "image-set-1", index, total: 3 },
+        } as MessageEvent["message"],
+        source: { type: "user", userId: "U1" },
+        webhookEventId: `evt-${index}`,
+      });
+
+    // LINE does not deliver the parts in order; the spool preserves what it got.
+    await handleLineWebhookEvents(
+      [imagePart("m2", 2), imagePart("m1", 1), imagePart("m3", 3)],
+      context,
+    );
+
+    expect(downloadLineMediaMock).toHaveBeenCalledTimes(3);
+    expect(buildLineMessageContextMock).toHaveBeenCalledTimes(1);
+    expect(processMessage).toHaveBeenCalledTimes(1);
+    // Every part's media reaches the one turn that speaks for the set.
+    expect(buildLineMessageContextMock.mock.calls[0]?.[0]?.allMedia).toHaveLength(3);
+  });
+
+  it("keeps events that are not part of a set on their own turns", async () => {
+    const processMessage = vi.fn();
+    const context = createLineWebhookTestContext({ processMessage, dmPolicy: "open" });
+    const text = (id: string) =>
+      createTestMessageEvent({
+        message: { id, type: "text", text: id } as MessageEvent["message"],
+        source: { type: "user", userId: "U1" },
+        webhookEventId: `evt-${id}`,
+      });
+
+    await handleLineWebhookEvents([text("t1"), text("t2")], context);
+
+    expect(processMessage).toHaveBeenCalledTimes(2);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

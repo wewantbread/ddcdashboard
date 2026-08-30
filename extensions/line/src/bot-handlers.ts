@@ -382,7 +382,11 @@ function resolveEventRawText(event: MessageEvent | PostbackEvent): string {
   return "";
 }
 
-async function handleMessageEvent(event: MessageEvent, context: LineHandlerContext): Promise<void> {
+async function handleMessageEvent(
+  event: MessageEvent,
+  context: LineHandlerContext,
+  setParts: readonly MessageEvent[],
+): Promise<void> {
   const { cfg, account, runtime, mediaMaxBytes, processMessage } = context;
   const message = event.message;
 
@@ -435,18 +439,20 @@ async function handleMessageEvent(event: MessageEvent, context: LineHandlerConte
   try {
     const allMedia: MediaRef[] = [];
     let mediaUnavailable = false;
-
-    if (isDownloadableLineMessageType(message.type)) {
-      const abortSignal = context.turnAdoptionLifecycle?.abortSignal;
+    const abortSignal = context.turnAdoptionLifecycle?.abortSignal;
+    // LINE splits one multi-image send into several webhook events. The spool
+    // hands the whole set here, so every part's media joins one turn.
+    for (const part of [message, ...setParts.map((partEvent) => partEvent.message)]) {
+      if (!isDownloadableLineMessageType(part.type)) {
+        continue;
+      }
       try {
         const originalFilename =
-          message.type === "file" ? normalizeOptionalString(message.fileName) : undefined;
-        const media = await downloadLineMedia(
-          message.id,
-          account.channelAccessToken,
-          mediaMaxBytes,
-          { originalFilename, ...(abortSignal ? { signal: abortSignal } : {}) },
-        );
+          part.type === "file" ? normalizeOptionalString(part.fileName) : undefined;
+        const media = await downloadLineMedia(part.id, account.channelAccessToken, mediaMaxBytes, {
+          originalFilename,
+          ...(abortSignal ? { signal: abortSignal } : {}),
+        });
         abortSignal?.throwIfAborted();
         allMedia.push({
           path: media.path,
@@ -469,37 +475,53 @@ async function handleMessageEvent(event: MessageEvent, context: LineHandlerConte
         mediaUnavailable = true;
         const errMsg = String(err);
         if (errMsg.includes("exceeds") && errMsg.includes("limit")) {
-          logVerbose(`line: media exceeds size limit for message ${message.id}`);
+          logVerbose(`line: media exceeds size limit for message ${part.id}`);
         } else {
           runtime.error?.(danger(`line: failed to download media: ${errMsg}`));
         }
       }
     }
 
-    const messageContext = await buildLineMessageContext({
-      event,
-      allMedia,
-      mediaUnavailable,
-      cfg,
-      account,
-      commandAuthorized: decision.access.commandAccess.authorized,
-      resolveChannelIngress: decision.resolveBoundAccess,
-      inboundHistory: historyReservation.inboundHistory,
-      buildContext: context.buildContext,
-    });
+    const dispatchTurn = async (params: {
+      media: readonly MediaRef[];
+      mediaUnavailable: boolean;
+      /** The lifecycle this turn adopts; an image set hands over a composite one. */
+      lifecycle?: LineWebhookTurnAdoptionLifecycle;
+    }): Promise<boolean> => {
+      const messageContext = await buildLineMessageContext({
+        event,
+        allMedia: [...params.media],
+        mediaUnavailable: params.mediaUnavailable,
+        cfg,
+        account,
+        commandAuthorized: decision.access.commandAccess.authorized,
+        resolveChannelIngress: decision.resolveBoundAccess,
+        inboundHistory: historyReservation.inboundHistory,
+        buildContext: context.buildContext,
+      });
 
-    if (!messageContext) {
-      logVerbose("line: skipping empty message");
-      return;
+      if (!messageContext) {
+        logVerbose("line: skipping empty message");
+        return false;
+      }
+
+      await processMessage(messageContext, {
+        // The config this event resolved to, not the one the monitor booted on.
+        cfg: context.cfg,
+        ...(params.lifecycle ? { turnAdoptionLifecycle: params.lifecycle } : {}),
+      });
+      return true;
+    };
+
+    if (
+      await dispatchTurn({
+        media: allMedia,
+        mediaUnavailable,
+        ...(context.turnAdoptionLifecycle ? { lifecycle: context.turnAdoptionLifecycle } : {}),
+      })
+    ) {
+      historyReservation.commit();
     }
-
-    await processMessage(messageContext, {
-      cfg,
-      ...(context.turnAdoptionLifecycle
-        ? { turnAdoptionLifecycle: context.turnAdoptionLifecycle }
-        : {}),
-    });
-    historyReservation.commit();
   } finally {
     historyReservation.release();
   }
@@ -597,14 +619,44 @@ async function handlePostbackEvent(
   });
 }
 
+/**
+ * Splits one delivery into its turns. A LINE callback can carry several events,
+ * and the durable spool hands the parts of one multi-image send over together;
+ * those parts share a turn while everything else keeps its own.
+ */
+function groupLineDeliveryTurns(events: readonly WebhookEvent[]): WebhookEvent[][] {
+  const turns: WebhookEvent[][] = [];
+  const bySetId = new Map<string, WebhookEvent[]>();
+  for (const event of events) {
+    const setId =
+      event.type === "message" && event.message.type === "image"
+        ? event.message.imageSet?.id
+        : undefined;
+    const joined = setId === undefined ? undefined : bySetId.get(setId);
+    if (joined) {
+      joined.push(event);
+      continue;
+    }
+    const started = [event];
+    turns.push(started);
+    if (setId !== undefined) {
+      bySetId.set(setId, started);
+    }
+  }
+  return turns;
+}
+
 export async function handleLineWebhookEvents(
   events: WebhookEvent[],
   context: LineHandlerContext,
 ): Promise<void> {
   let firstError: unknown;
-  for (const event of events) {
+  for (const [event, ...setParts] of groupLineDeliveryTurns(events)) {
+    if (!event) {
+      continue;
+    }
     try {
-      await handleLineWebhookEvent(event, context);
+      await handleLineWebhookEvent(event, context, setParts);
     } catch (err) {
       context.runtime.error?.(danger(`line: event handler failed: ${String(err)}`));
       firstError ??= err;
@@ -618,10 +670,16 @@ export async function handleLineWebhookEvents(
 async function handleLineWebhookEvent(
   event: WebhookEvent,
   context: LineHandlerContext,
+  /** The remaining parts of the image set this event opens, if any. */
+  setParts: readonly WebhookEvent[] = [],
 ): Promise<void> {
   switch (event.type) {
     case "message":
-      await handleMessageEvent(event, context);
+      await handleMessageEvent(
+        event,
+        context,
+        setParts.filter((part): part is MessageEvent => part.type === "message"),
+      );
       break;
     case "follow":
       await handleFollowEvent(event, context);
