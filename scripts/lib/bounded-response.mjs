@@ -182,12 +182,18 @@ export function toLintErrorObject(value, fallbackMessage) {
     // Inlined twin of toErrorObject (packages/normalization-core) because this
     // helper is standalone: skipping __proto__ blocks the prototype-setter
     // hijack while [[Set]] keeps the Object.assign write semantics.
+    // Object.assign reads each source value before its target write, so the
+    // skipped key still observes its descriptor trap and a throwing getter.
     for (const key of Reflect.ownKeys(value)) {
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-      if (key === "__proto__" || descriptor === undefined || !descriptor.enumerable) {
+      if (descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
-      if (!Reflect.set(error, key, Reflect.get(value, key))) {
+      const fieldValue = Reflect.get(value, key);
+      if (key === "__proto__") {
+        continue;
+      }
+      if (!Reflect.set(error, key, fieldValue)) {
         throw new TypeError(`Cannot assign property ${String(key)} to error target`);
       }
     }

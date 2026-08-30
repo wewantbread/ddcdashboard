@@ -171,6 +171,22 @@ describe("toRetryError", () => {
     expect(Object.getPrototypeOf(toRetryError(protoPayload()))).toBe(Error.prototype);
   });
 
+  it("propagates a throwing enumerable __proto__ getter like Object.assign", () => {
+    // Object.assign reads each source value before its target write, so the
+    // skipped __proto__ key's own accessor must still run (and may throw);
+    // only the target assignment is discarded.
+    const hostile: Record<string, unknown> = { code: "EIO" };
+    Object.defineProperty(hostile, "__proto__", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("getter trap");
+      },
+    });
+
+    expect(() => toRetryError(hostile)).toThrow("getter trap");
+  });
+
   it("still copies the ordinary diagnostic fields", () => {
     const e = toRetryError(protoPayload()) as Error & { code?: string; status?: number };
     expect([e.code, e.status]).toEqual(["E_UPSTREAM", 503]);

@@ -151,14 +151,18 @@ export function toErrorObject(value: unknown, fallbackMessage: string): Error {
   if ((typeof value === "object" && value !== null) || typeof value === "function") {
     // Object.assign minus __proto__: a parsed own enumerable __proto__ would
     // replace this Error's prototype, so it is skipped to block prototype hijack.
-    // Object.assign reads every source descriptor before its target write, so the
-    // skipped key still observes (and propagates) a throwing descriptor trap.
+    // Object.assign reads each source value before its target write, so the
+    // skipped key still observes its descriptor trap and a throwing getter.
     for (const key of Reflect.ownKeys(value)) {
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-      if (key === "__proto__" || descriptor === undefined || !descriptor.enumerable) {
+      if (descriptor === undefined || !descriptor.enumerable) {
         continue;
       }
-      if (!Reflect.set(error, key, Reflect.get(value, key))) {
+      const fieldValue = Reflect.get(value, key);
+      if (key === "__proto__") {
+        continue;
+      }
+      if (!Reflect.set(error, key, fieldValue)) {
         throw new TypeError(`Cannot assign property ${String(key)} to error target`);
       }
     }

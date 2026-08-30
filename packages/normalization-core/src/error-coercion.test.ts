@@ -139,6 +139,22 @@ describe("toErrorObject", () => {
     expect(() => toErrorObject(hostile, "request failed")).toThrow("descriptor trap");
   });
 
+  it("propagates a throwing enumerable __proto__ getter like Object.assign", () => {
+    // Object.assign reads each source value before its target write, so the
+    // skipped __proto__ key's own accessor must still run (and may throw);
+    // only the target assignment is discarded.
+    const hostile: Record<string, unknown> = { code: "EIO" };
+    Object.defineProperty(hostile, "__proto__", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("getter trap");
+      },
+    });
+
+    expect(() => toErrorObject(hostile, "request failed")).toThrow("getter trap");
+  });
+
   it("preserves harmless constructor/prototype diagnostic fields", () => {
     // defineProperty copies constructor/prototype as own data fields that shadow
     // but never replace [[Prototype]]; only __proto__ is the prototype-setter key,
