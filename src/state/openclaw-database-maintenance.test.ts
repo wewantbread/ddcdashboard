@@ -222,6 +222,7 @@ describe("OpenClaw database maintenance schema validation", () => {
       "session_groups.worktree INTEGER",
       "secret_store_entries.allowed_hosts TEXT",
       "skill_workshop_proposals.claim_released_time INTEGER",
+      "workspace_setup_state.profile_preseeded INTEGER",
     ]);
 
     const database = createGlobalDatabase();

@@ -1476,6 +1476,7 @@ export interface WorkspaceSetupState {
   attestation_updated_at_ms: number | null;
   attested_at_ms: number | null;
   bootstrap_seeded_at: string | null;
+  profile_preseeded: number | null;
   setup_completed_at: string | null;
   updated_at: number | null;
   version: number | null;
