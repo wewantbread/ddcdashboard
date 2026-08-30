@@ -26,7 +26,10 @@ import {
 } from "./manager.background-task.js";
 import { applyManagerRuntimeControls } from "./manager.runtime-controls.js";
 import type { ManagerRuntimeHandleCache } from "./manager.runtime-handle-cache.js";
-import { prepareFreshManagerRuntimeHandleRetry } from "./manager.runtime-resume-state.js";
+import {
+  discardPersistedManagerRuntimeState,
+  prepareFreshManagerRuntimeHandleRetry,
+} from "./manager.runtime-resume-state.js";
 import { consumeAcpTurnStream } from "./manager.turn-stream.js";
 import {
   awaitTurnWithTimeout,
@@ -465,17 +468,36 @@ export async function runManagerTurn(params: {
             meta &&
             meta.mode === "oneshot"
           ) {
+            let oneshotCloseSucceeded = false;
             try {
               await runtime.close({
                 handle,
                 reason: "oneshot-complete",
               });
+              oneshotCloseSucceeded = true;
             } catch (error) {
               logVerbose(
                 `acp-manager: ACP oneshot close failed for ${sessionKey}: ${String(error)}`,
               );
             } finally {
               params.runtimeHandles.clear(sessionKey);
+            }
+            // Only clear the persisted resume identity once close is confirmed to have
+            // succeeded. If close failed, the backend session may still be live, so retain
+            // the identity so a later cache-miss ensure can reconnect to it instead of
+            // orphaning it and opening a second backend session (#124852 follow-up).
+            if (oneshotCloseSucceeded) {
+              try {
+                await discardPersistedManagerRuntimeState({
+                  cfg: input.cfg,
+                  sessionKey,
+                  writeSessionMeta: params.writeSessionMeta,
+                });
+              } catch (error) {
+                logVerbose(
+                  `acp-manager: failed to clear persisted ACP identity after oneshot close for ${sessionKey}: ${String(error)}`,
+                );
+              }
             }
           }
         }
