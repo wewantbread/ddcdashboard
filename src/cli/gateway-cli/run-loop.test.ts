@@ -434,8 +434,8 @@ async function waitForStart(started: Promise<void>) {
   });
 }
 
-async function waitForLoopCondition(predicate: () => boolean, message: string) {
-  const deadline = Date.now() + 1_000;
+async function waitForLoopCondition(predicate: () => boolean, message: string, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) {
       return;
@@ -485,6 +485,10 @@ let supervisorEnvSnapshot: ReturnType<typeof captureEnv> | undefined;
 
 beforeEach(async () => {
   vi.useRealTimers();
+  acquireGatewayLock.mockReset();
+  acquireGatewayLock.mockImplementation(async () => ({
+    release: vi.fn(async () => {}),
+  }));
   supervisorEnvSnapshot = captureEnv([...SUPERVISOR_HINT_ENV_VARS]);
   for (const key of SUPERVISOR_HINT_ENV_VARS) {
     deleteTestEnvValue(key);
@@ -534,6 +538,41 @@ afterEach(() => {
 });
 
 describe("runGatewayLoop", () => {
+  it("releases an acquired lock when startup aborts before the run loop takes ownership", async () => {
+    await withIsolatedSignals(async () => {
+      const controller = new AbortController();
+      const abortReason = new Error("Gateway startup interrupted by SIGTERM");
+      const lockRelease = vi.fn(async () => {});
+      let resolveAcquire: ((lock: { release: typeof lockRelease }) => void) | undefined;
+      acquireGatewayLock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveAcquire = resolve;
+          }),
+      );
+      const { runtime } = createRuntimeWithExitSignal();
+      const { runGatewayLoop } = await import("./run-loop.js");
+      const loop = runGatewayLoop({
+        start: vi.fn(async () => {
+          throw new Error("gateway must not start after an aborted acquisition");
+        }) as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
+        runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
+        startupSignal: controller.signal,
+      });
+
+      await waitForLoopCondition(
+        () => acquireGatewayLock.mock.calls.length === 1,
+        "gateway lock acquisition did not start",
+        10_000,
+      );
+      resolveAcquire?.({ release: lockRelease });
+      controller.abort(abortReason);
+
+      await expect(loop).rejects.toBe(abortReason);
+      expect(lockRelease).toHaveBeenCalledOnce();
+    });
+  });
+
   it("routes deferred startup failure through first-boot failure handling", async () => {
     await withIsolatedSignals(async () => {
       const startupError = new Error("deferred startup failed");
