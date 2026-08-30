@@ -289,13 +289,13 @@ describe("modelsAuthListCommand", () => {
     });
     expect(byId["openai:profile-wide"]).not.toHaveProperty("blockedModel");
     for (const id of ["openai:expired", "openai:invalid"]) {
-      const profile = byId[id];
-      expect(profile).toBeDefined();
-      expect(profile).not.toHaveProperty("blockedUntil");
-      expect(profile).not.toHaveProperty("blockedReason");
-      expect(profile).not.toHaveProperty("blockedSource");
-      expect(profile).not.toHaveProperty("blockedScope");
-      expect(profile).not.toHaveProperty("blockedModel");
+      const profileEntry = byId[id];
+      expect(profileEntry).toBeDefined();
+      expect(profileEntry).not.toHaveProperty("blockedUntil");
+      expect(profileEntry).not.toHaveProperty("blockedReason");
+      expect(profileEntry).not.toHaveProperty("blockedSource");
+      expect(profileEntry).not.toHaveProperty("blockedScope");
+      expect(profileEntry).not.toHaveProperty("blockedModel");
     }
     expect(JSON.stringify(jsonRuntime.jsonPayloads[0])).not.toMatch(
       /secret|legacy-model-must-not-leak/u,
