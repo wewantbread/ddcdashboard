@@ -1,11 +1,13 @@
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import {
+  cliSessionClearAuthFromRun,
   getCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "../../agents/cli-session.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import { withLocalSessionPlacementTurnAdmission } from "../../agents/session-placement-admission.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
+import type { CliSessionAuthIdentitySnapshot } from "../../config/sessions/types.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
@@ -127,6 +129,10 @@ export async function runCliFallbackCandidate(
     (turn.blockStreamingEnabled || turn.opts?.commentaryPayloadsEnabled === true);
   const toolAuthorityRoute = { provider: params.provider, model: params.model };
   turn.replyOperation?.bindToolAuthorityRoute(toolAuthorityRoute);
+  // Both clear paths below run without a result to read the identity off, so the
+  // run reports it here instead. Undefined means the run never got far enough to
+  // resolve one, and the clear falls back to erasing only what it can attribute.
+  let runCliSessionAuthIdentity: CliSessionAuthIdentitySnapshot | undefined;
   const result = await params.timing.measure("cli_run", () =>
     withLocalSessionPlacementTurnAdmission(
       {
@@ -173,6 +179,7 @@ export async function runCliFallbackCandidate(
                     sessionStore: turn.activeSessionStore,
                     storePath: turn.storePath,
                     activeSessionEntry: turn.getActiveSessionEntry(),
+                    clearAuthProvenance: cliSessionClearAuthFromRun(runCliSessionAuthIdentity),
                   });
                 }
               : undefined,
@@ -298,6 +305,9 @@ export async function runCliFallbackCandidate(
                   })
               : undefined,
           runParams: {
+            onCliSessionAuthIdentity: (identity) => {
+              runCliSessionAuthIdentity = identity;
+            },
             preparedRunAdmission: params.preparedRunAdmission,
             sessionId: turn.followupRun.run.sessionId,
             sessionKey: turn.sessionKey,
@@ -417,6 +427,9 @@ export async function runCliFallbackCandidate(
             sessionStore: turn.activeSessionStore,
             storePath: turn.storePath,
             activeSessionEntry: turn.getActiveSessionEntry(),
+            clearAuthProvenance: cliSessionClearAuthFromRun(
+              candidateResult.meta?.agentMeta?.cliSessionAuthIdentity ?? runCliSessionAuthIdentity,
+            ),
           });
         }
         return candidateResult;
