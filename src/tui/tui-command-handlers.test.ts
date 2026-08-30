@@ -126,6 +126,7 @@ function createHarness(params?: {
   consumeCompletedRunForPendingSend?: ConsumeCompletedRunMock;
   isRunObserved?: (runId: string) => boolean;
   hasPendingLocalBtwRuns?: () => boolean;
+  retirePendingLocalBtwResults?: ReturnType<typeof vi.fn>;
   flushPendingHistoryRefreshIfIdle?: FlushPendingHistoryRefreshMock;
   refreshAgents?: RefreshAgentsMock;
   agentDefaultId?: string;
@@ -168,6 +169,7 @@ function createHarness(params?: {
   });
   const dismissPendingSystem = vi.fn((runId: string) => pendingSystemNotices.delete(runId));
   const clearAll = vi.fn();
+  const retirePendingLocalBtwResults = params?.retirePendingLocalBtwResults ?? vi.fn();
   const clearTools = vi.fn();
   const reserveAssistantSlot = vi.fn();
   const requestRender = vi.fn();
@@ -265,6 +267,7 @@ function createHarness(params?: {
     forgetLocalRunId,
     forgetLocalBtwRunId,
     hasPendingLocalBtwRuns: params?.hasPendingLocalBtwRuns,
+    retirePendingLocalBtwResults,
     consumeCompletedRunForPendingSend: params?.consumeCompletedRunForPendingSend,
     isRunObserved: params?.isRunObserved,
     flushPendingHistoryRefreshIfIdle: params?.flushPendingHistoryRefreshIfIdle,
@@ -301,6 +304,7 @@ function createHarness(params?: {
     dismissPendingSystem,
     pendingSystemNotices,
     clearAll,
+    retirePendingLocalBtwResults,
     clearTools,
     reserveAssistantSlot,
     requestRender,
@@ -323,11 +327,19 @@ function createHarness(params?: {
 
 describe("tui command handlers", () => {
   it("clears only the visible chat log for /clear-view while idle", async () => {
-    const { handleCommand, clearAll, addSystem, sendChat, resetSession } = createHarness();
+    const {
+      handleCommand,
+      clearAll,
+      addSystem,
+      sendChat,
+      resetSession,
+      retirePendingLocalBtwResults,
+    } = createHarness();
 
     await handleCommand("/clear-view");
 
     expect(clearAll).toHaveBeenCalledTimes(1);
+    expect(retirePendingLocalBtwResults).toHaveBeenCalledTimes(1);
     expect(addSystem).toHaveBeenCalledWith("view cleared; session history is unchanged");
     expect(sendChat).not.toHaveBeenCalled();
     expect(resetSession).not.toHaveBeenCalled();
@@ -340,7 +352,12 @@ describe("tui command handlers", () => {
       label: "a pending send",
     },
     { activityStatus: "finishing context", label: "a finishing run" },
-  ])("preserves the visible chat log for /clear-view during $label", async (runState) => {
+  ] satisfies Array<{
+    activeChatRunId?: string | null;
+    pendingSubmit?: TuiPendingSubmit | null;
+    activityStatus?: string;
+    label: string;
+  }>)("preserves the visible chat log for /clear-view during $label", async (runState) => {
     const { label: _label, ...params } = runState;
     const { handleCommand, clearAll, addSystem, sendChat } = createHarness(params);
 
@@ -352,13 +369,14 @@ describe("tui command handlers", () => {
   });
 
   it("preserves the visible chat log while a side question is in flight", async () => {
-    const { handleCommand, clearAll, addSystem } = createHarness({
+    const { handleCommand, clearAll, addSystem, retirePendingLocalBtwResults } = createHarness({
       hasPendingLocalBtwRuns: () => true,
     });
 
     await handleCommand("/clear-view");
 
     expect(clearAll).not.toHaveBeenCalled();
+    expect(retirePendingLocalBtwResults).not.toHaveBeenCalled();
     expect(addSystem).toHaveBeenCalledWith("abort or wait for the current run before /clear-view");
   });
 

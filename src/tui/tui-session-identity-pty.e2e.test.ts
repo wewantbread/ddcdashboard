@@ -165,6 +165,29 @@ it("keeps the active stream when the current session is selected again", async (
   }
 }, 65_000);
 
+it("shows a delayed side result after an event gap when the view is not cleared", async () => {
+  const fixture = await startTuiFixture({
+    env: {
+      OPENCLAW_TUI_PTY_BTW_DELAY_MS: "2500",
+      OPENCLAW_TUI_PTY_BTW_GAP_DELAY_MS: "500",
+    },
+  });
+  try {
+    await fixture.run.waitForOutput("local ready", STARTUP_TIMEOUT_MS);
+    await fixture.run.write("/btw picker focus proof\r", { delay: false });
+    await fixture.waitForLogEntry((entry) => entry.method === "pickerSideGap", 10_000);
+    await fixture.waitForLogEntry((entry) => entry.method === "pickerSideFinal", 10_000);
+
+    await waitForSynchronizedFrameRows(
+      fixture.run,
+      (frame) => frame.some((row) => row.includes("PTY_SIDE_OK")),
+      10_000,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+}, 65_000);
+
 it("clears only the visible conversation and restores it from session history", async () => {
   const fixture = await startTuiFixture({
     env: {

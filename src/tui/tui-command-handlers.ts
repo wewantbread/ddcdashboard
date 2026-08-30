@@ -91,6 +91,7 @@ type CommandHandlerContext = {
   forgetLocalRunId?: (runId: string) => void;
   forgetLocalBtwRunId?: (runId: string) => void;
   hasPendingLocalBtwRuns?: () => boolean;
+  retirePendingLocalBtwResults?: () => void;
   consumeCompletedRunForPendingSend?: (runId: string) => boolean;
   isRunObserved?: (runId: string) => boolean;
   flushPendingHistoryRefreshIfIdle?: () => void;
@@ -136,6 +137,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     forgetLocalRunId,
     forgetLocalBtwRunId,
     hasPendingLocalBtwRuns,
+    retirePendingLocalBtwResults,
     consumeCompletedRunForPendingSend,
     isRunObserved,
     flushPendingHistoryRefreshIfIdle,
@@ -850,6 +852,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         chatLog.addSystem("abort or wait for the current run before /clear-view");
         return;
       }
+      retirePendingLocalBtwResults?.();
       chatLog.clearAll();
       chatLog.addSystem("view cleared; session history is unchanged");
     },

@@ -816,20 +816,24 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
   let remediationShown = false;
   const localRunIds = createTuiRunIdTracker();
   const localBtwRunIds = createTuiRunIdTracker();
+  const clearViewBlockingLocalBtwRunIds = createTuiRunIdTracker();
   const pendingLocalBtwResultRunIds = createTuiRunIdTracker();
   const retiredLocalBtwResultRunIds = createTuiRunIdTracker();
   const noteLocalBtwRunId = (runId: string) => {
     localBtwRunIds.note(runId);
+    clearViewBlockingLocalBtwRunIds.note(runId);
     pendingLocalBtwResultRunIds.note(runId);
     retiredLocalBtwResultRunIds.forget(runId);
   };
   const forgetLocalBtwRunId = (runId: string) => {
     localBtwRunIds.forget(runId);
+    clearViewBlockingLocalBtwRunIds.forget(runId);
     pendingLocalBtwResultRunIds.forget(runId);
     retiredLocalBtwResultRunIds.forget(runId);
   };
   const clearLocalBtwRunIds = () => {
     localBtwRunIds.clear();
+    clearViewBlockingLocalBtwRunIds.clear();
     pendingLocalBtwResultRunIds.clear();
     retiredLocalBtwResultRunIds.clear();
   };
@@ -1477,6 +1481,7 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
       }
       chatLog.showBtw(params);
       if (params.runId) {
+        clearViewBlockingLocalBtwRunIds.forget(params.runId);
         pendingLocalBtwResultRunIds.forget(params.runId);
       }
     },
@@ -1675,7 +1680,8 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     noteLocalBtwRunId,
     forgetLocalRunId: localRunIds.forget,
     forgetLocalBtwRunId,
-    hasPendingLocalBtwRuns: pendingLocalBtwResultRunIds.hasAny,
+    hasPendingLocalBtwRuns: clearViewBlockingLocalBtwRunIds.hasAny,
+    retirePendingLocalBtwResults,
     consumeCompletedRunForPendingSend,
     isRunObserved,
     flushPendingHistoryRefreshIfIdle,
@@ -1982,7 +1988,9 @@ async function runTuiUnlocked(opts: RunTuiOptions): Promise<TuiResult> {
     }
     setConnectionStatus(`event gap: expected ${info.expected}, got ${info.received}`, 5000);
     addConnectionNotice(`gateway event gap: expected ${info.expected}, got ${info.received}`);
-    retirePendingLocalBtwResults();
+    // A gap may hide the side run's terminal event, so it cannot block clearing
+    // forever. Its result remains displayable unless the operator actually clears.
+    clearViewBlockingLocalBtwRunIds.clear();
     reconcileHistoryAfterGap();
     void (async () => {
       try {
