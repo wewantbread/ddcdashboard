@@ -69,6 +69,7 @@ async function prestageMediaPathOffloads(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId: string;
+  abortSignal?: AbortSignal;
 }): Promise<{ paths: string[]; types: string[]; workspaceDir?: string }> {
   const mediaPathRefs = params.offloadedRefs.filter(
     (ref) => params.includeImageRefs || !ref.mimeType.startsWith("image/"),
@@ -126,8 +127,10 @@ async function prestageMediaPathOffloads(params: {
         cfg: params.cfg,
         sessionKey: params.sessionKey,
         workspaceDir,
+        abortSignal: params.abortSignal,
       });
     } catch (stageErr) {
+      params.abortSignal?.throwIfAborted();
       // Only managed inbound PDFs have a host-readable fallback. Other files
       // must fail before ACK or the agent silently loses the attachment.
       if (refsToStage.some((ref) => !isManagedInboundPdfOffloadRef(ref))) {
@@ -254,6 +257,7 @@ export async function prepareChatSendAttachments(params: {
             cfg,
             sessionKey,
             agentId,
+            abortSignal: activeRunAbort.controller.signal,
           }));
         },
         {

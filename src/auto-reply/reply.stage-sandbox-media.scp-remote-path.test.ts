@@ -236,4 +236,29 @@ describe("stageSandboxMedia scp remote paths", () => {
       });
     });
   });
+
+  it("preserves cancellation instead of treating it as a skipped attachment", async () => {
+    await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
+      const { cfg, workspaceDir, sessionKey } = createRemoteStageParams(home);
+      const remotePath = "/Users/demo/Library/Messages/Attachments/ab/cd/photo.jpg";
+      const { ctx, sessionCtx } = createRemoteContexts(remotePath);
+      const controller = new AbortController();
+      const abortReason = new Error("agent run cancelled");
+      processExecMocks.runCommandWithTimeout.mockImplementation(async () => {
+        controller.abort(abortReason);
+        return { code: null, stdout: "", stderr: "", termination: "signal" };
+      });
+
+      await expect(
+        stageSandboxMedia({
+          ctx,
+          sessionCtx,
+          cfg,
+          sessionKey,
+          workspaceDir,
+          abortSignal: controller.signal,
+        }),
+      ).rejects.toBe(abortReason);
+    });
+  });
 });
