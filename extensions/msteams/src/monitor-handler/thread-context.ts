@@ -81,6 +81,7 @@ export function prepareMSTeamsThreadRouting(params: {
   return {
     route,
     deadline,
+    conversationMessageId: params.conversationMessageId,
     resolveTeamAadGroupId,
     getTeamAadGroupId: () => teamAadGroupId,
   };
@@ -102,7 +103,7 @@ export async function resolveMSTeamsThreadContext(params: {
 }) {
   const core = getMSTeamsRuntime();
   const activity = params.context.activity;
-  const { route, deadline } = params.routing;
+  const { route, deadline, conversationMessageId } = params.routing;
   const teamAadGroupId = await params.routing.resolveTeamAadGroupId();
   let quoteBodyFull: string | undefined;
   let quoteSenderId: string | undefined;
@@ -129,7 +130,17 @@ export async function resolveMSTeamsThreadContext(params: {
   }
 
   let threadContext: string | undefined;
-  const threadParentId = activity.replyToId;
+  // Channel activities frequently arrive without `replyToId`, so fall back to the thread
+  // root carried in the conversation id; without it, parent and sibling-reply context
+  // never loads for those turns.
+  //
+  // The conversation root takes precedence, matching `resolveMSTeamsRouteSessionKey` and
+  // `attachments/graph.ts`, which both read `conversationMessageId` ahead of `replyToId`.
+  // Preferring `replyToId` here would make a deep reply fetch context beneath the nested
+  // reply while the session routes to the root, splitting the two. `replyToId` stays as
+  // the fallback for activities whose conversation id carries no thread suffix.
+  const threadRootId = conversationMessageId ?? activity.replyToId;
+  const threadParentId = threadRootId && threadRootId !== activity.id ? threadRootId : undefined;
   if (threadParentId && params.isChannel && teamAadGroupId) {
     try {
       const graphToken = await withMSTeamsRequestDeadline({
