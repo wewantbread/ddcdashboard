@@ -15,6 +15,19 @@ import {
 import { withMcpOAuthBearer } from "./mcp-oauth-fetch.js";
 import { operatorMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 
+/** Mirrors internal default budget (must stay aligned with mcp-http-fetch.ts). */
+const MCP_HTTP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const MCP_HTTP_RESPONSE_TOO_LARGE_CODE = "MCP_HTTP_RESPONSE_TOO_LARGE";
+
+function isMcpHttpResponseTooLargeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === MCP_HTTP_RESPONSE_TOO_LARGE_CODE
+  );
+}
+
 const testGlobal = globalThis as Record<string, unknown>;
 const TEST_UNDICI_RUNTIME_DEPS_KEY = "__OPENCLAW_TEST_UNDICI_RUNTIME_DEPS__";
 const { lookupMock, oauthResolveMock } = vi.hoisted(() => ({
@@ -209,6 +222,132 @@ describe("MCP HTTP fetch helpers", () => {
 
     expect(response.status).toBe(status);
     expect(response.body).toBeNull();
+  });
+
+  it("does not apply the catalog budget to long-lived SSE streams", async () => {
+    const overBudget = MCP_HTTP_MAX_RESPONSE_BYTES + 1024;
+    const payload = "event: message\ndata: " + "x".repeat(overBudget) + "\n\n";
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(payload, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "content-length": String(payload.length),
+          },
+        }),
+    };
+
+    const fetch = buildMcpHttpFetch({ resourceUrl: "https://mcp.example.com/mcp" });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.text()).resolves.toBe(payload);
+  });
+
+  it("rejects Content-Length above the MCP response budget before reading the body", async () => {
+    const text = vi.fn(async () => "should-not-read");
+    const cancel = vi.fn(async () => undefined);
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        ({
+          status: 200,
+          statusText: "OK",
+          headers: new Headers({
+            "content-type": "application/json",
+            "content-length": String(MCP_HTTP_MAX_RESPONSE_BYTES + 1),
+          }),
+          body: {
+            cancel,
+            getReader() {
+              throw new Error("body should not be read when Content-Length is over budget");
+            },
+          },
+          ok: true,
+          text,
+        }) as unknown as Response,
+    };
+
+    const fetch = buildMcpHttpFetch({ resourceUrl: "https://mcp.example.com/mcp" });
+    await expect(fetch("https://mcp.example.com/mcp")).rejects.toSatisfy((error: unknown) => {
+      expect(isMcpHttpResponseTooLargeError(error)).toBe(true);
+      expect(String(error)).toContain(String(MCP_HTTP_MAX_RESPONSE_BYTES));
+      return true;
+    });
+    expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it("aborts streaming MCP bodies that cross the response budget mid-read", async () => {
+    const maxBytes = 64;
+    const encoder = new TextEncoder();
+    const first = encoder.encode("a".repeat(40));
+    const second = encoder.encode("b".repeat(40));
+    let pullCount = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) {
+          controller.enqueue(first);
+          return;
+        }
+        if (pullCount === 2) {
+          controller.enqueue(second);
+          return;
+        }
+        controller.close();
+      },
+    });
+    const cleanup = vi.fn(async () => undefined);
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(source, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    };
+
+    // Spy release path by using real buildMcpHttpFetch; body cleanup is internal.
+    const fetch = buildMcpHttpFetch({
+      resourceUrl: "https://mcp.example.com/mcp",
+      maxResponseBytes: maxBytes,
+    });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.text()).rejects.toSatisfy((error: unknown) => {
+      expect(isMcpHttpResponseTooLargeError(error)).toBe(true);
+      expect(String(error)).toContain(String(maxBytes));
+      return true;
+    });
+    void cleanup;
+  });
+
+  it("allows MCP bodies within the response budget", async () => {
+    testGlobal[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: TestAgent,
+      EnvHttpProxyAgent: TestEnvHttpProxyAgent,
+      ProxyAgent: TestProxyAgent,
+      fetch: async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "content-length": "11",
+          },
+        }),
+    };
+    const fetch = buildMcpHttpFetch({
+      resourceUrl: "https://mcp.example.com/mcp",
+      maxResponseBytes: 1024,
+    });
+    const response = await fetch("https://mcp.example.com/mcp");
+    await expect(response.json()).resolves.toEqual({ ok: true });
   });
 
   it("keeps same-origin TLS overrides ahead of configured env proxy", async () => {

@@ -122,4 +122,30 @@ describe("wrapGuardedBodyStream", () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(source.locked).toBe(false);
   });
+
+  it("errors and cleans up when maxBytes is exceeded without enqueueing the overflowing chunk", async () => {
+    const cleanup = vi.fn();
+    const encoder = new TextEncoder();
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("12345"));
+        controller.enqueue(encoder.encode("67890"));
+        controller.close();
+      },
+    });
+    const limitError = new Error("too big");
+    const wrapped = wrapGuardedBodyStream({
+      body: source,
+      cleanup,
+      maxBytes: 8,
+      limitError: () => limitError,
+    });
+    const reader = wrapped.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("12345");
+    await expect(reader.read()).rejects.toBe(limitError);
+    reader.releaseLock();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(source.locked).toBe(false);
+  });
 });
