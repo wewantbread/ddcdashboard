@@ -1049,17 +1049,21 @@ describe("handleTelegramAction", () => {
       reply: { replyToId: "456", source: "implicit", mode: "first" },
       payloads: [{ text: "Hello, Telegram!" }],
     });
-    expect(result.content).toStrictEqual([
-      {
-        type: "text",
-        text: '{\n  "ok": true,\n  "messageId": "789",\n  "chatId": "123"\n}',
-      },
-    ]);
-    expect(result.details).toStrictEqual({
+    const details = resultDetails(result);
+    // Source-reply reconciliation reads `receipt` off this result (#133051); dropping it
+    // makes a successfully delivered Telegram reply look unconfirmed and fail closed.
+    expect(details).toMatchObject({
       ok: true,
       messageId: "789",
       chatId: "123",
+      receipt: {
+        primaryPlatformMessageId: "789",
+        platformMessageIds: ["789"],
+      },
     });
+    expect(result.content).toStrictEqual([
+      { type: "text", text: JSON.stringify(details, null, 2) },
+    ]);
   });
 
   it("persists sendMessage action deliveries before Telegram platform send", async () => {
