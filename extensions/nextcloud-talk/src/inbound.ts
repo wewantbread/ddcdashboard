@@ -8,6 +8,7 @@ import {
 import {
   bindIngressLifecycleToReplyOptions,
   resolveChannelStreamingBlockEnabled,
+  type ChannelIngressMonitorDeliveryResult,
 } from "openclaw/plugin-sdk/channel-outbound";
 import {
   normalizeOptionalString,
@@ -35,7 +36,7 @@ import {
   resolveNextcloudTalkAllowlistMatch,
   resolveNextcloudTalkRoomMatch,
 } from "./policy.js";
-import { resolveNextcloudTalkRoomKind } from "./room-info.js";
+import { resolveNextcloudTalkRoomKindResult } from "./room-info.js";
 import { getNextcloudTalkRuntime } from "./runtime.js";
 import { sendMessageNextcloudTalk } from "./send.js";
 import type { CoreConfig, NextcloudTalkInboundMessage, NextcloudTalkRoomConfig } from "./types.js";
@@ -126,7 +127,7 @@ export async function handleNextcloudTalkInbound(params: {
   runtime: RuntimeEnv;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
   turnAdoptionLifecycle?: Parameters<typeof bindIngressLifecycleToReplyOptions>[0];
-}): Promise<void> {
+}): Promise<ChannelIngressMonitorDeliveryResult | void> {
   const { message, account, config, runtime, statusSink } = params;
   const core = getNextcloudTalkRuntime();
   const pairing = createChannelPairingController({
@@ -146,11 +147,21 @@ export async function handleNextcloudTalkInbound(params: {
     return;
   }
 
-  const roomKind = await resolveNextcloudTalkRoomKind({
+  const roomKindResult = await resolveNextcloudTalkRoomKindResult({
     account,
     roomToken: message.roomToken,
     runtime,
   });
+  if (roomKindResult.source === "failed") {
+    runtime.log?.(`nextcloud-talk: retry room ${message.roomToken} after room lookup failure`);
+    return {
+      kind: "failed-retryable",
+      error: new Error(
+        `Nextcloud Talk room lookup failed for ${message.roomToken}; retry webhook delivery`,
+      ),
+    };
+  }
+  const roomKind = roomKindResult.kind;
   const isGroup = roomKind === "direct" ? false : roomKind === "group" ? true : message.isGroupChat;
   const senderId = message.senderId;
   const senderName = message.senderName;
