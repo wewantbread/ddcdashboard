@@ -301,6 +301,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let lastSnapshotTextLength = 0;
   // Partial previews are replaceable; only committed final text may precede an error notice.
   let hasStreamingFinalText = false;
+  // A later assistant message is a new final, not a cumulative snapshot of the current card.
+  let carryStreamTextToNextFinal = false;
   const deliveredFinalTexts = new Set<string>();
   type ClosedStreamingSettlement = {
     result: FeishuReplyDeliveryResult;
@@ -505,6 +507,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     snapshotBaseText = "";
     lastSnapshotTextLength = 0;
     hasStreamingFinalText = false;
+    carryStreamTextToNextFinal = false;
   };
 
   const rememberClosedStreamingSettlement = (
@@ -1424,7 +1427,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             if (info?.kind === "final") {
               // Final payloads can be cumulative snapshots or independent
               // notices. Preserve both when the latter arrives after an answer.
-              streamText = text;
+              streamText = mergeStreamingFinalText(streamText, text, carryStreamTextToNextFinal);
+              carryStreamTextToNextFinal = false;
               hasStreamingFinalText = true;
               snapshotBaseText = "";
               lastSnapshotTextLength = text.length;
@@ -1593,7 +1597,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
         : undefined,
       onAssistantMessageStart: previewStreamingEnabled
-        ? () => updateStreamingStatusLine("", { startIfNeeded: false })
+        ? () => {
+            carryStreamTextToNextFinal = Boolean(streamText);
+            return updateStreamingStatusLine("", { startIfNeeded: false });
+          }
         : undefined,
       onCompactionStart: previewStreamingEnabled
         ? () => updateStreamingStatusLine("📦 **Compacting context...**")
