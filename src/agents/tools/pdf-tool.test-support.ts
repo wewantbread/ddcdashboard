@@ -82,6 +82,7 @@ export function createPdfToolInfraStub(completeMock: Mock) {
       provider?: string;
       input?: string[];
       api?: string;
+      baseUrl?: string;
       modelFound?: boolean;
     },
   ) {
@@ -109,6 +110,7 @@ export function createPdfToolInfraStub(completeMock: Mock) {
                     : "anthropic-messages"),
               maxTokens: 8192,
               input: params?.input ?? ["text", "document"],
+              ...(params?.baseUrl ? { baseUrl: params.baseUrl } : {}),
             }) as never;
     const modelRegistry = createPdfModelRegistry(find);
     const release = vi.fn();
