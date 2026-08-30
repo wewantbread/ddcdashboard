@@ -47,11 +47,17 @@ async function runPostCompactionSessionMemorySync(params: {
     if (!resolvedMemory.sync.sessions.postCompactionForce) {
       return;
     }
-    const { manager } = await getActiveMemorySearchManagerCore({
+    const { manager, error } = await getActiveMemorySearchManagerCore({
       cfg: params.config,
       agentId,
     });
     if (!manager?.sync) {
+      // Sibling surfaces (gateway memory-search, doctor) report this acquisition
+      // failure; record it here too so a skipped sync is never indistinguishable
+      // from a completed one.
+      if (error) {
+        log.warn(`memory sync skipped (post-compaction): ${error}`);
+      }
       return;
     }
     const sessionId = params.sessionId?.trim();
