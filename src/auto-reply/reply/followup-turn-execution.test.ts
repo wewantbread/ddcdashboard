@@ -907,4 +907,124 @@ describe("executeFollowupTurn", () => {
     await expect(drain).rejects.toBe(failure);
     expect(order).toEqual(["slow-finished"]);
   });
+
+  it("stops waiting for hung pending tool tasks after the idle timeout", async () => {
+    state.execute.mockImplementation(async (params: AgentTurnParams) => {
+      params.pendingToolTasks.add(new Promise<void>(() => {}));
+      return { runId: "run-1", outcome: { kind: "rejected", payload: { text: "done" } } };
+    });
+    const result = await executeFollowupTurn({
+      turn: createTurn(),
+      defaults: { typing: createTypingController(), typingMode: "never", defaultModel: "claude" },
+      onToolResult: vi.fn(async () => {}),
+      onCompactionNoticePayload: vi.fn(async () => {}),
+      drainIdleTimeoutMs: 20,
+    });
+
+    await expect(
+      Promise.race([
+        result.progress.drain().then(() => "drained" as const),
+        new Promise<"hung">((resolve) => {
+          setTimeout(() => resolve("hung"), 200);
+        }),
+      ]),
+    ).resolves.toBe("drained");
+  });
+
+  it("still waits for a tool task added after drain starts", async () => {
+    let releaseProgress!: () => void;
+    const progressBarrier = new Promise<void>((resolve) => {
+      releaseProgress = resolve;
+    });
+    const order: string[] = [];
+    let pendingToolTasks!: Set<Promise<void>>;
+    state.execute.mockImplementation(async (params: AgentTurnParams) => {
+      pendingToolTasks = params.pendingToolTasks;
+      void params.opts?.onItemEvent?.({ progressText: "working" });
+      return { runId: "run-1", outcome: { kind: "rejected", payload: { text: "done" } } };
+    });
+    const result = await executeFollowupTurn({
+      turn: createTurn(),
+      defaults: {
+        typing: createTypingController(),
+        typingMode: "never",
+        defaultModel: "claude",
+        opts: {
+          onItemEvent: async () => {
+            await progressBarrier;
+            order.push("progress");
+          },
+        },
+      },
+      onToolResult: vi.fn(async () => {}),
+      onCompactionNoticePayload: vi.fn(async () => {}),
+      drainIdleTimeoutMs: 200,
+    });
+
+    const drain = result.progress.drain().then(() => {
+      order.push("drained");
+    });
+    let releaseTool!: () => void;
+    const toolBarrier = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const lateTool = toolBarrier.then(() => {
+      order.push("late-tool");
+    });
+    pendingToolTasks.add(lateTool);
+    await Promise.resolve();
+    releaseProgress();
+    await Promise.resolve();
+    expect(order).toEqual(["progress"]);
+    releaseTool();
+    await drain;
+    expect(order).toEqual(["progress", "late-tool", "drained"]);
+  });
+
+  it("returns after the shared deadline while another set keeps settling", async () => {
+    let emitProgress: ((item: { progressText: string }) => Promise<boolean | void>) | undefined;
+    state.execute.mockImplementation(async (params: AgentTurnParams) => {
+      emitProgress = params.opts?.onItemEvent as
+        | ((item: { progressText: string }) => Promise<boolean | void>)
+        | undefined;
+      params.pendingToolTasks.add(new Promise<void>(() => {}));
+      void emitProgress?.({ progressText: "start" });
+      return { runId: "run-1", outcome: { kind: "rejected", payload: { text: "done" } } };
+    });
+    const result = await executeFollowupTurn({
+      turn: createTurn(),
+      defaults: {
+        typing: createTypingController(),
+        typingMode: "never",
+        defaultModel: "claude",
+        opts: {
+          onItemEvent: async () => {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 8);
+            });
+          },
+        },
+      },
+      onToolResult: vi.fn(async () => {}),
+      onCompactionNoticePayload: vi.fn(async () => {}),
+      drainIdleTimeoutMs: 40,
+    });
+
+    const drain = result.progress.drain().then(() => "drained" as const);
+    const keepSettling = setInterval(() => {
+      void emitProgress?.({ progressText: "still-working" });
+    }, 5);
+    try {
+      await expect(
+        Promise.race([
+          drain,
+          new Promise<"hung">((resolve) => {
+            setTimeout(() => resolve("hung"), 250);
+          }),
+        ]),
+      ).resolves.toBe("drained");
+    } finally {
+      clearInterval(keepSettling);
+    }
+  });
 });
