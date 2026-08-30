@@ -1096,6 +1096,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       },
     },
     security: {
+      ...msteamsSetupPlugin.security,
       collectWarnings: ({ cfg }) => collectMSTeamsSecurityFindings({ cfg }),
     },
     pairing: {
