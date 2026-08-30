@@ -331,7 +331,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: strict session-agent resolution aliases preserve shipped Plugin SDK behavior.
       // +1: manifest-owned plugin capability secret availability guard.
       // +1: canonical diagnostic flag checker through its focused subpath.
-      4355,
+      // +1: agent-scoped outbound media resolver on the media-local-roots subpath.
+      4356,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -410,7 +411,6 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: session-catalog family and node-host binding composers.
       // +2: bounded provider stream and read-only SecretRef resolver.
       // -1: remove the obsolete transcript tool-call predicate.
-      // -1: remove the obsolete transcript tool-call predicate.
       // +2: lightweight agent config resolution and nonthrowing default-agent lookup.
       // +1: focused media-store URL/path ingestion (saveMediaSource) off the deprecated barrel.
       // +2: structural Gateway transport and request-error guards for plugin CLI routing.
@@ -439,7 +439,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: strict session-agent resolution aliases preserve shipped Plugin SDK behavior.
       // +1: manifest-owned plugin capability secret availability guard.
       // +1: canonical diagnostic flag checker through its focused subpath.
-      2592,
+      // +1: agent-scoped outbound media resolver on the media-local-roots subpath.
+      2593,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
