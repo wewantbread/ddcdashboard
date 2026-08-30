@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { resolveGatewayPublicOrigin } from "../../config/gateway-public-origin.js";
 import { ensureDevicePairSetupBootstrapToken } from "../../infra/device-bootstrap.js";
 import { removePairedDeviceRole } from "../../infra/device-pairing.js";
@@ -25,7 +26,7 @@ type WorkerNodeEnrollmentManagerOptions = {
 };
 
 function enrollmentDisplayName(record: WorkerEnvironmentRecord): string {
-  return `Cloud worker ${record.profileId}`.slice(0, 64);
+  return truncateUtf16Safe(`Cloud worker ${record.profileId}`, 64);
 }
 
 function resolveEnrollmentPackageSpecs(): string[] {
