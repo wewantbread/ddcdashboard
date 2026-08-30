@@ -355,6 +355,7 @@ async function deliverSlackThreadAnnouncement(params: {
   queueEmbeddedAgentMessageWithOutcome?: QueueEmbeddedAgentMessageWithOutcome;
   sendMessage?: typeof runtimeSendMessage;
   internalEvents?: AgentInternalEvent[];
+  sourceSessionKey?: string;
   sourceTool?: string;
   requesterAbandoned?: boolean;
   isSourceSessionEffectsAllowed?: () => boolean;
@@ -416,6 +417,7 @@ async function deliverSlackThreadAnnouncement(params: {
     directIdempotencyKey: params.directIdempotencyKey,
     internalEvents: params.internalEvents,
     sourceRunId: "run-generated-media",
+    sourceSessionKey: params.sourceSessionKey,
     sourceTool: params.sourceTool,
     isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
     isCompletionOwnedByRequesterYield: params.isCompletionOwnedByRequesterYield,
@@ -2706,6 +2708,208 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       error: "UNAVAILABLE: gateway lost final output",
     });
     expect(callGateway).toHaveBeenCalledTimes(4);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends a generic direct notice when requester synthesis repeats a child failure", async () => {
+    const childSessionKey = "agent:worker:subagent:failed-child";
+    const providerFailure = "provider rejected private-model-alias with status 400";
+    const childResult = "private child output must not reach the requester";
+    const callGateway = vi.fn(async () => {
+      throw new Error(providerFailure);
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        childSessionId: "failed-child-session-id",
+        status: "error",
+        statusLabel: `failed: ${providerFailure}`,
+        result: childResult,
+      }),
+    });
+
+    expectRecordFields(result, { delivered: true, path: "direct" });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "discord",
+        accountId: "acct-1",
+        to: "dm:U123",
+        content: "A delegated task failed before it could report a result. Please retry the task.",
+        idempotencyKey: "announce-dm-fallback-empty:text-direct",
+      }),
+    );
+    const outboundContent = expectRecordFields(mockCallArg(sendMessage), {}).content;
+    expect(outboundContent).not.toContain(providerFailure);
+    expect(outboundContent).not.toContain(childResult);
+  });
+
+  it("does not send a failure notice after requester synthesis is cancelled", async () => {
+    const childSessionKey = "agent:worker:subagent:cancelled-failed-child";
+    const controller = new AbortController();
+    const callGateway = vi.fn(async () => {
+      controller.abort();
+      throw new Error("provider request cancelled during requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      signal: controller.signal,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before cancellation",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "none" });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("stops a failure notice when cancellation wins at platform dispatch", async () => {
+    const childSessionKey = "agent:worker:subagent:cancelled-during-fallback";
+    const controller = new AbortController();
+    const platformSend = vi.fn();
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = vi.fn(async (params: Parameters<typeof runtimeSendMessage>[0]) => {
+      expect(params.skipQueue).toBe(true);
+      expect(params.abortSignal).toBe(controller.signal);
+      controller.abort();
+      await params.onPlatformSendDispatch?.();
+      platformSend();
+      return {
+        channel: "discord",
+        to: "dm:U123",
+        via: "direct" as const,
+        mediaUrl: null,
+        result: { messageId: "msg-after-cancel" },
+      };
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      signal: controller.signal,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before fallback cancellation",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "none" });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(platformSend).not.toHaveBeenCalled();
+  });
+
+  it("stops a failure notice when source ownership changes at platform dispatch", async () => {
+    const childSessionKey = "agent:worker:subagent:owner-changed-during-fallback";
+    const platformSend = vi.fn();
+    let sourceEffectsAllowed = true;
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = vi.fn(async (params: Parameters<typeof runtimeSendMessage>[0]) => {
+      sourceEffectsAllowed = false;
+      await params.onPlatformSendDispatch?.();
+      platformSend();
+      return {
+        channel: "discord",
+        to: "dm:U123",
+        via: "direct" as const,
+        mediaUrl: null,
+        result: { messageId: "msg-after-owner-change" },
+      };
+    }) as unknown as typeof runtimeSendMessage;
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      sourceSessionKey: childSessionKey,
+      sourceTool: "subagent_announce",
+      isSourceSessionEffectsAllowed: () => sourceEffectsAllowed,
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed before source owner changed",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, {
+      delivered: false,
+      path: "none",
+      reason: "source_owner_changed",
+      terminal: true,
+    });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(platformSend).not.toHaveBeenCalled();
+  });
+
+  it("does not send a failure notice from an untrusted child event", async () => {
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+
+    const result = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      sourceSessionKey: "agent:worker:subagent:expected-child",
+      sourceTool: "subagent_announce",
+      internalEvents: taskCompletionEvents({
+        childSessionKey: "agent:worker:subagent:other-child",
+        status: "error",
+        statusLabel: "failed: provider rejected child run",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "direct" });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass requester synthesis for a failed child in a channel thread", async () => {
+    const childSessionKey = "agent:worker:subagent:failed-thread-child";
+    const callGateway = vi.fn(async () => {
+      throw new Error("provider rejected requester synthesis");
+    }) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+
+    const result = await deliverSlackThreadAnnouncement({
+      callGateway,
+      sendMessage,
+      directIdempotencyKey: "announce-failed-thread-child",
+      sourceSessionKey: childSessionKey,
+      internalEvents: taskCompletionEvents({
+        childSessionKey,
+        status: "error",
+        statusLabel: "failed: provider rejected child run",
+        result: "private child output",
+      }),
+    });
+
+    expectRecordFields(result, { delivered: false, path: "direct" });
+    expect(callGateway).toHaveBeenCalledOnce();
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
