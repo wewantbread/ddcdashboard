@@ -104,6 +104,23 @@ describe("minimax music generation provider", () => {
     expectExplicitMusicGenerationCapabilities(buildMinimaxMusicGenerationProvider());
   });
 
+  it("advertises the current MiniMax music catalog", () => {
+    for (const provider of [
+      buildMinimaxMusicGenerationProvider(),
+      buildMinimaxPortalMusicGenerationProvider(),
+    ]) {
+      expect(provider.defaultModel).toBe("music-3.0");
+      expect(provider.models).toEqual([
+        "music-3.0",
+        "music-2.6",
+        "music-3.0-free",
+        "music-2.6-free",
+        "music-cover",
+        "music-cover-free",
+      ]);
+    }
+  });
+
   it("streams generated music chunks from MiniMax", async () => {
     const chunkA = Buffer.from("ID3\x04\x00mp3-a");
     const chunkB = Buffer.from("mp3-b");
@@ -135,7 +152,7 @@ describe("minimax music generation provider", () => {
     const request = mockCallArg(postJsonRequestMock);
     expect(request.url).toBe("https://api.minimax.io/v1/music_generation");
     const body = request.body as Record<string, unknown>;
-    expect(body.model).toBe("music-2.6");
+    expect(body.model).toBe("music-3.0");
     expect(body.prompt).toBe("upbeat dance-pop with female vocals");
     expect(body.prompt).not.toContain("Target duration");
     expect(body).not.toHaveProperty("duration");
@@ -150,6 +167,7 @@ describe("minimax music generation provider", () => {
     expect(request.timeoutMs).toBe(300000);
     expect(request?.headers).toBeInstanceOf(Headers);
     const headers = request?.headers as Headers | undefined;
+    expect(headers?.get("authorization")).toBe("Bearer provider-key");
     expect(headers?.get("content-type")).toBe("application/json");
     expect(result.tracks).toHaveLength(1);
     expect(result.tracks[0]?.buffer).toEqual(Buffer.concat([chunkA, chunkB]));

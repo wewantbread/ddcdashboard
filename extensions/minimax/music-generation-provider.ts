@@ -31,7 +31,7 @@ import {
   type MinimaxRequestPolicy,
 } from "./media-provider-runtime.js";
 
-const DEFAULT_MINIMAX_MUSIC_MODEL = "music-2.6";
+const DEFAULT_MINIMAX_MUSIC_MODEL = "music-3.0";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 const STREAM_ENVELOPE_MAX_BYTES_MULTIPLIER = 5;
@@ -242,7 +242,14 @@ function buildMinimaxMusicProvider(providerId: string): MusicGenerationProvider 
     id: providerId,
     label: "MiniMax",
     defaultModel: DEFAULT_MINIMAX_MUSIC_MODEL,
-    models: [DEFAULT_MINIMAX_MUSIC_MODEL, "music-2.6-free", "music-cover", "music-cover-free"],
+    models: [
+      DEFAULT_MINIMAX_MUSIC_MODEL,
+      "music-2.6",
+      "music-3.0-free",
+      "music-2.6-free",
+      "music-cover",
+      "music-cover-free",
+    ],
     isConfigured: (ctx) => isProviderApiKeyConfigured({ provider: providerId, ...ctx }),
     capabilities: {
       generate: {
