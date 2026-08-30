@@ -1487,6 +1487,8 @@ export const en: TranslationMap = {
   debug: {
     snapshotsTitle: "Snapshots",
     snapshotsSubtitle: "Status, health, and heartbeat data.",
+    refreshingSnapshots: "Refreshing Gateway diagnostics.",
+    offlineSnapshots: "Connect to the Gateway to refresh diagnostics.",
     status: "Status",
     health: "Health",
     lastHeartbeat: "Last heartbeat",
