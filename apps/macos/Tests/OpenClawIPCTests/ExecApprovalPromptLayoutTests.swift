@@ -209,4 +209,23 @@ struct ExecApprovalPromptLayoutTests {
                 "safe\\u{202E}txt\\u{A}next")
         #expect(ExecApprovalsPromptPresenter.sanitizedContextValue(" \n\t ") == nil)
     }
+
+    @Test func `accessory view shows trimmed session context`() {
+        let accessory = ExecApprovalsPromptPresenter.buildAccessoryView(
+            ExecApprovalPromptRequest(
+                command: "/bin/sh -lc pwd",
+                sessionKey: "  agent:main:telegram:dm:12345  "))
+
+        let textValues = self.textValues(in: accessory)
+        #expect(textValues.contains("Session:"))
+        #expect(textValues.contains("agent:main:telegram:dm:12345"))
+    }
+
+    private func textValues(in view: NSView) -> [String] {
+        var values = (view as? NSTextField).map { [$0.stringValue] } ?? []
+        for subview in view.subviews {
+            values.append(contentsOf: self.textValues(in: subview))
+        }
+        return values
+    }
 }
