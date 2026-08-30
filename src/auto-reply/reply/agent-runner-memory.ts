@@ -805,6 +805,7 @@ export async function runSessionCompactionIfNeeded(params: {
       config: params.cfg,
     }),
     modelId: params.followupRun.run.model ?? params.defaultModel,
+    agentId: compactionAgentId,
   });
   const memoryFlushPlan = resolveMemoryFlushPlan({ cfg: params.cfg, contextWindowTokens });
   const reserveTokensFloor =
@@ -821,6 +822,7 @@ export async function runSessionCompactionIfNeeded(params: {
     cfg: params.cfg,
     provider: params.followupRun.run.provider,
     modelId: params.followupRun.run.model ?? params.defaultModel,
+    agentId: compactionAgentId,
   });
   const threshold = resolveCompactionThreshold({
     contextWindowTokens,
@@ -1196,6 +1198,7 @@ export async function runMemoryFlushIfNeeded(params: {
       runtimePolicySessionKey: params.runtimePolicySessionKey,
     }),
     modelId: params.followupRun.run.model ?? params.defaultModel,
+    agentId: params.followupRun.run.agentId,
   });
   let memoryFlushPlan: MemoryFlushPlan | null;
   try {

@@ -1,6 +1,8 @@
 // Cron turns must hydrate runtime-only model thinking through the provider-scoped helper,
 // never through a full live catalog build.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import type { ResolvedPublishedModelCatalogOwner } from "./run-model-selection.runtime.js";
 
 const scopedThinkingCatalogMock = vi.fn(
   async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => [],
@@ -19,8 +21,11 @@ const owner = {
   agentDir: "/tmp/cron-agent",
   workspaceDir: "/tmp/cron-workspace",
   config: {},
+  authModes: {},
+  authStore: { version: 1, profiles: {} },
+  metadataSnapshot: createPluginMetadataSnapshotFixture(),
   modelCatalog: { entries: [], routeVariants: [] },
-} as never;
+} satisfies ResolvedPublishedModelCatalogOwner;
 
 describe("resolveCronThinkingSelection scoped hydration", () => {
   beforeEach(() => {
