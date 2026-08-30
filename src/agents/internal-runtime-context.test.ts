@@ -16,6 +16,7 @@ import {
   OPENCLAW_RUNTIME_CONTEXT_NOTICE,
   OPENCLAW_RUNTIME_EVENT_HEADER,
   relocateCurrentRuntimeContextCarrierToTail,
+  shouldRelocateRuntimeContextCarrierToTail,
   stripInternalRuntimeContext,
 } from "./internal-runtime-context.js";
 
@@ -226,5 +227,101 @@ describe("relocateCurrentRuntimeContextCarrierToTail", () => {
   it("leaves a carrier in place when there is no active user turn to anchor after", () => {
     const messages = [carrier("meta"), assistant("reply")];
     expect(relocateCurrentRuntimeContextCarrierToTail(messages)).toBe(messages);
+  });
+});
+
+describe("shouldRelocateRuntimeContextCarrierToTail", () => {
+  it("returns false for local/self-hosted provider strings", () => {
+    expect(shouldRelocateRuntimeContextCarrierToTail("ollama")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("Ollama")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("vllm")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("lmstudio")).toBe(false);
+    expect(shouldRelocateRuntimeContextCarrierToTail("local")).toBe(false);
+  });
+
+  it("returns false for custom providers with api: ollama", () => {
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama-fast",
+        model: { api: "ollama", provider: "ollama-fast", baseUrl: "http://example.com" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama-large",
+        model: { api: "ollama", provider: "ollama-large" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for custom providers with local base URLs", () => {
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "custom-local",
+        model: { baseUrl: "http://127.0.0.1:11434" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "my-vllm",
+        model: { baseUrl: "http://localhost:8000/v1" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "lan-model",
+        model: { baseUrl: "http://192.168.1.105:8000/v1" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "bonjour-host",
+        model: { baseUrl: "http://mac-studio.local:11434" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true for Ollama cloud models (*:cloud) even with api: ollama or local baseUrl", () => {
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama",
+        model: { id: "kimi-k2.5:cloud", api: "ollama", baseUrl: "http://127.0.0.1:11434" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama",
+        model: {
+          id: "ollama/gpt-oss:120b-cloud",
+          api: "ollama",
+          baseUrl: "http://localhost:11434",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "ollama-proxy",
+        model: { id: "minimax-m3:cloud", baseUrl: "http://192.168.1.100:11434" },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true for cloud providers or unspecified provider", () => {
+    expect(shouldRelocateRuntimeContextCarrierToTail("anthropic")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail("openai")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail("openrouter")).toBe(true);
+    expect(shouldRelocateRuntimeContextCarrierToTail(undefined)).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "anthropic",
+        model: { baseUrl: "https://api.anthropic.com" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldRelocateRuntimeContextCarrierToTail({
+        provider: "openai",
+        model: { baseUrl: "https://api.openai.com/v1" },
+      }),
+    ).toBe(true);
   });
 });

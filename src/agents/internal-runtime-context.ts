@@ -3,7 +3,9 @@
  * Protects runtime-generated prompt blocks from user text and removes old
  * context formats before replaying or comparing messages.
  */
+import { isCloudModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { escapeRegExp } from "../shared/regexp.js";
+import { isLocalProviderBaseUrl } from "./model-provider-local.js";
 
 /** Opening delimiter for protected OpenClaw runtime context blocks. */
 export const INTERNAL_RUNTIME_CONTEXT_BEGIN = "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>";
@@ -388,4 +390,58 @@ export function relocateCurrentRuntimeContextCarrierToTail<T>(messages: T[]): T[
   }
   const carriers = messages.filter(isOpenClawRuntimeContextCustomMessage);
   return [...rest, ...carriers];
+}
+
+export type RuntimeContextCarrierPlacementParams = {
+  provider?: string;
+  model?: {
+    id?: string;
+    api?: string;
+    baseUrl?: string;
+    provider?: string;
+  };
+};
+
+/**
+ * Resolves whether the current-turn runtime context carrier should be relocated to the tail.
+ * Local and self-hosted model backends (e.g. Ollama, vLLM, LM Studio, loopback/private endpoints)
+ * parse messages chronologically and do not use Anthropic-style prompt cache billing;
+ * relocating carriers to the tail causes models to treat internal metadata as the active user turn.
+ */
+export function shouldRelocateRuntimeContextCarrierToTail(
+  params?: RuntimeContextCarrierPlacementParams | string,
+): boolean {
+  if (!params) {
+    return true;
+  }
+  const input: RuntimeContextCarrierPlacementParams =
+    typeof params === "string" ? { provider: params } : params;
+
+  if (isCloudModelRef(input.model?.id)) {
+    return true;
+  }
+
+  const modelApi = input.model?.api?.trim().toLowerCase();
+  if (modelApi === "ollama") {
+    return false;
+  }
+
+  if (input.model?.baseUrl && isLocalProviderBaseUrl(input.model.baseUrl)) {
+    return false;
+  }
+
+  const rawProvider = input.model?.provider ?? input.provider;
+  if (rawProvider) {
+    const normalized = rawProvider.trim().toLowerCase();
+    if (
+      normalized === "ollama" ||
+      normalized === "vllm" ||
+      normalized === "lmstudio" ||
+      normalized === "local"
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
