@@ -7,7 +7,7 @@
  * slot outside the existing cron budget. A group whose budget equals that cap
  * is what makes the separate lane safe.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   enqueueCommandInLane,
   getCommandLaneSnapshot,
@@ -16,6 +16,7 @@ import {
   resetCommandLane,
   setCommandLaneConcurrency,
 } from "./command-queue.js";
+import { STARVATION_PROMOTION_MS } from "./lanes.js";
 
 const CRON = "cron-nested";
 const HOOK = "hook-dispatch";
@@ -63,6 +64,43 @@ afterEach(() => {
 });
 
 describe("command lane capacity groups", () => {
+  test("aged background cron starts before fresh normal hook in the same group", async () => {
+    vi.useFakeTimers();
+    try {
+      setCommandLaneGroup(GROUP, {
+        budget: 1,
+        members: [CRON, HOOK],
+      });
+      setCommandLaneConcurrency(CRON, 1);
+      setCommandLaneConcurrency(HOOK, 1);
+
+      const blocker = gate();
+      const order: string[] = [];
+      const running = enqueueCommandInLane(CRON, async () => await blocker.promise, {
+        priority: "foreground",
+      });
+      const aged = enqueueCommandInLane(
+        CRON,
+        async () => {
+          order.push("aged-bg");
+        },
+        { priority: "background" },
+      );
+
+      vi.advanceTimersByTime(STARVATION_PROMOTION_MS + 1);
+
+      const fresh = enqueueCommandInLane(HOOK, async () => {
+        order.push("fresh-normal");
+      });
+
+      blocker.release();
+      await Promise.all([running, aged, fresh]);
+      expect(order).toEqual(["aged-bg", "fresh-normal"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("a reserved lane starts under sibling saturation", async () => {
     setCommandLaneGroup(GROUP, {
       budget: 8,
