@@ -3,6 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatewayRequestError } from "../../api/gateway.ts";
+import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { i18n } from "../../i18n/index.ts";
@@ -24,6 +25,7 @@ import {
   createPluginsRouteLocation,
   createResult,
   createRuntimeConfigHarness,
+  createSearchResult,
   deferred,
   mountPage,
   resetPluginsPageTestState,
@@ -38,6 +40,22 @@ function clickHubTab(page: HTMLElement, tab: "installed" | "discover" | "skills"
     .querySelector(`#plugins-tab-${tab}`)
     ?.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true }));
 }
+
+async function mountClawHubSearchPage(client: GatewayBrowserClient): Promise<HTMLElement> {
+  const harness = createGateway(client);
+  const { page } = await mountPage(
+    createContext(harness.gateway),
+    createPluginsRouteData(
+      harness.gateway,
+      createResult(),
+      createPluginsRouteLocation("/settings/plugins/discover"),
+    ),
+  );
+  return page;
+}
+
+const clawHubCompletionStatus = (page: HTMLElement): string | undefined =>
+  page.querySelector('[role="status"][aria-live="polite"]')?.textContent ?? undefined;
 
 describe("PluginsPage", () => {
   beforeEach(async () => {
@@ -349,8 +367,7 @@ describe("PluginsPage", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(request).toHaveBeenCalledTimes(2);
 
-    const latest: PluginSearchResult = {
-      score: 1,
+    const latest = createSearchResult({
       package: {
         name: "latest-plugin",
         displayName: "Latest Plugin",
@@ -358,14 +375,41 @@ describe("PluginsPage", () => {
         channel: "community",
         isOfficial: false,
       },
-    };
+    });
     second.resolve({ results: [latest] });
     await vi.waitFor(() => expect(page.searchResults).toEqual([latest]));
     first.resolve({ results: [] });
     await Promise.resolve();
 
     expect(page.searchResults).toEqual([latest]);
+    // The live completion announcement must reflect the latest query, not the stale first.
+    expect(clawHubCompletionStatus(page)).toContain("1 results");
   });
+
+  it.each([
+    { resultCount: 0, expectedText: "ClawHub has no results" },
+    { resultCount: 1, expectedText: "1 results" },
+    { resultCount: 3, expectedText: "3 results" },
+  ])(
+    "announces ClawHub search completion with a live region for $resultCount result(s)",
+    async ({ resultCount, expectedText }) => {
+      const results = Array.from({ length: resultCount }, (_, index) =>
+        createSearchResult({}, index),
+      );
+      const { client } = createClient(async (method) => {
+        if (method === "plugins.search") {
+          return { results };
+        }
+        throw new Error(`Unexpected method ${method}`);
+      });
+      const page = await mountClawHubSearchPage(client);
+      const search = page.querySelector<HTMLInputElement>("#plugins-global-search")!;
+      search.value = resultCount === 0 ? "zzz-no-match" : "workboard";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+
+      await vi.waitFor(() => expect(clawHubCompletionStatus(page)).toContain(expectedText));
+    },
+  );
 
   it("refreshes plugins and runtime config without discarding a pending config draft", async () => {
     const enabledPlugin = createPlugin({ enabled: true, state: "enabled" });
