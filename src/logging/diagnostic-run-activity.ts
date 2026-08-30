@@ -21,6 +21,7 @@ import {
   recordDiagnosticActivityProgress,
 } from "./diagnostic-argument-churn-activity.js";
 import { createDiagnosticEmbeddedRunIndex } from "./diagnostic-embedded-run-index.js";
+import * as backgroundWork from "./diagnostic-outstanding-background-work.js";
 import {
   clearRepeatedRequestActivity,
   type DiagnosticRepeatedRequestActivity,
@@ -67,6 +68,7 @@ type SessionActivity = DiagnosticArgumentChurnActivity &
       CoreModelRequestOwnerGeneration,
       Map<string, DiagnosticRecoveryModelCall>
     >;
+    outstandingBackgroundWork: Map<unknown, { runId: string; count: number }>;
     recoveredOwnerStartEventCutoffs: Map<string, number>;
     lastProgressAt: number;
     lastProgressReason?: string;
@@ -156,6 +158,7 @@ function mergeSessionActivity(target: SessionActivity, source: SessionActivity):
   for (const [generation, modelCalls] of source.activeCoreModelCalls) {
     target.activeCoreModelCalls.set(generation, modelCalls);
   }
+  backgroundWork.mergeOutstandingBackgroundWork(target, source);
   for (const [generation, registration] of activeDiagnosticOwners) {
     if (registration.activity === source) {
       activeDiagnosticOwners.set(generation, { ...registration, activity: target });
@@ -224,6 +227,7 @@ function resolveSessionActivity(params: {
     activeTools: new Map(),
     activeModelCalls: new Map(),
     activeCoreModelCalls: new Map(),
+    outstandingBackgroundWork: new Map(),
     recoveredOwnerStartEventCutoffs: new Map(),
     lastProgressAt: Date.now(),
   };
@@ -407,6 +411,10 @@ export function markDiagnosticArgumentChurnObservation(
 
 export const markDiagnosticRunProgress: (params: RunProgressEvent) => void = applyRunProgress;
 
+// CLI host background-work facts (#118386) resolve through this registry so
+// they merge and clear with the session activity that recovery consults.
+backgroundWork.bindDiagnosticOutstandingBackgroundWorkResolver(resolveSessionActivity);
+
 function applyRunProgress(params: RunProgressEvent, semantic = false): void {
   const runId = params.runId?.trim() || undefined;
   const activity = resolveSessionActivity({ ...params, runId, create: true });
@@ -430,6 +438,7 @@ function recordRunCompleted(
   }
   activity.activeTools.clear();
   activity.activeModelCalls.clear();
+  backgroundWork.clearOutstandingBackgroundWorkForRun(activity, event.runId);
   const hasCoreOwner = [...activeDiagnosticOwners.values()].some(
     ({ activity: ownerActivity, owner }) =>
       ownerActivity === activity && owner.runId === event.runId,
@@ -518,6 +527,7 @@ export function closeDiagnosticEmbeddedRunOwner(owner: DiagnosticEmbeddedRunOwne
     embeddedRunIndex.remove(activity, owner.workKey);
   }
   activity.activeCoreModelCalls.delete(owner.generation);
+  backgroundWork.deleteOutstandingBackgroundWork(activity, owner.generation);
   for (const [key, tool] of activity.activeTools) {
     if (
       markerBelongsToRecoveredOwner(tool, ownerRefs) &&
@@ -552,6 +562,7 @@ export function markDiagnosticEmbeddedRunEnded(params: {
     activity.activeTools.clear();
     activity.activeModelCalls.clear();
     activity.activeCoreModelCalls.clear();
+    backgroundWork.clearOutstandingBackgroundWork(activity);
   }
   if (activity.activeEmbeddedRuns.size === 0) {
     clearArgumentChurnActivity(activity);
@@ -639,6 +650,8 @@ export function clearDiagnosticEmbeddedRunActivityForSession(params: {
         (key) => embeddedRunIndex.remove(activity, key),
       );
       touchSessionActivity(activity, "embedded_run:recovery_skipped_active_owner");
+      // A newer owner holds the lane: keep its outstanding background-work
+      // fact so the replacement run retains its recovery grace (#118386).
       return { cleared: false, blockedByActiveEmbeddedRun: true };
     }
     embeddedRunIndex.clear(activity);
@@ -646,6 +659,7 @@ export function clearDiagnosticEmbeddedRunActivityForSession(params: {
   activity.activeTools.clear();
   activity.activeModelCalls.clear();
   activity.activeCoreModelCalls.clear();
+  backgroundWork.clearOutstandingBackgroundWork(activity);
   clearArgumentChurnActivity(activity, { runId: params.activeSessionId });
   clearArgumentChurnPolicyWaits(activity, { runId: params.activeSessionId });
   clearRepeatedRequestActivity(activity);
@@ -669,27 +683,18 @@ export function getDiagnosticEmbeddedRunActivitySequence(): number {
   return embeddedRunSequence;
 }
 
-function markDiagnosticRunProgressForTest(params: RunProgressEvent): void {
-  applyRunProgress(params, params.progressKind === "semantic");
-}
-
-function markDiagnosticModelStartedForTest(params: ModelStartedActivityEvent): void {
-  recordModelStarted(params, undefined, true);
-}
-
 export function resetDiagnosticRunActivityForTest(): void {
   stopDiagnosticRunActivityTracking();
+  // Fresh module instances rebind on load; a reset restores this instance so
+  // background-work facts always land on the registry tests observe.
+  backgroundWork.bindDiagnosticOutstandingBackgroundWorkResolver(resolveSessionActivity);
   installDiagnosticRunActivityTestApi();
 }
 
 function installDiagnosticRunActivityTestApi(): void {
   (globalThis as Record<PropertyKey, unknown>)[
     Symbol.for("openclaw.diagnosticRunActivityTestApi")
-  ] = {
-    markDiagnosticModelStartedForTest,
-    markDiagnosticRunProgressForTest,
-    markDiagnosticToolStartedForTest: recordToolStarted,
-  };
+  ] = { applyRunProgress, recordModelStarted, recordToolStarted };
 }
 
 let unregisterDiagnosticRunActivityListener: (() => void) | undefined;

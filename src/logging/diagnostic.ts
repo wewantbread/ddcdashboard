@@ -526,6 +526,11 @@ function isStalledModelCallRecoveryEligible(params: {
   const effectiveAbortMs = Math.max(
     params.stuckSessionAbortMs,
     params.activity?.activeModelCallRequestTimeoutMs ?? 0,
+    // The CLI host certifies outstanding background work for this run; the run
+    // stays alive while the parent stream is quiet (e.g. a delegated subagent
+    // is still generating), so grant the same quiet-work floor as blocked tool
+    // calls instead of aborting at the bare threshold (#118386).
+    params.activity?.hasOutstandingBackgroundWork === true ? BLOCKED_TOOL_CALL_ABORT_FLOOR_MS : 0,
   );
   // Local providers are not blanket-exempt from recovery. Streaming model
   // chunks refresh run activity while emitted progress events are throttled, so

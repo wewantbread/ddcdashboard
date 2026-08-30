@@ -16,10 +16,13 @@ import {
 import { emitCoreModelRequestStartedDiagnosticEvent } from "../infra/diagnostic-model-request.js";
 import { DEFAULT_UNDICI_STREAM_TIMEOUT_MS } from "../infra/net/undici-global-dispatcher.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { markDiagnosticOutstandingBackgroundWork } from "./diagnostic-outstanding-background-work.js";
 import { withDiagnosticPhase } from "./diagnostic-phase.js";
 import {
+  BLOCKED_TOOL_CALL_ABORT_FLOOR_MS,
   getDiagnosticSessionActivitySnapshot,
   createDiagnosticEmbeddedRunOwner,
+  closeDiagnosticEmbeddedRunOwner,
   markDiagnosticEmbeddedRunEnded,
   markDiagnosticEmbeddedRunStarted,
   resetDiagnosticRunActivityForTest,
@@ -1060,6 +1063,175 @@ describe("stuck session diagnostics threshold", () => {
         lastProgressReason: "model_call:started",
       },
     );
+    expectRecoveryCall(
+      recoverStuckSession,
+      { sessionId: "s1", sessionKey: "main", queueDepth: 0, allowActiveAbort: true },
+      ["ageMs", "stateGeneration"],
+    );
+  });
+
+  it("defers stalled model-call recovery while CLI background work is outstanding", async () => {
+    const recoverStuckSession = vi.fn();
+    const stuckSessionAbortMs = 60_000;
+    startEnabledDiagnosticHeartbeat({
+      recoverStuckSession,
+      testTimings: { stuckSessionWarnMs: 30_000, stuckSessionAbortMs },
+    });
+    logSessionStateChange({ sessionId: "s1", sessionKey: "main", state: "processing" });
+    markDiagnosticEmbeddedRunStarted({ sessionId: "s1", sessionKey: "main" });
+    markDiagnosticModelStartedForTest({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "run-1",
+      provider: "openai",
+      model: "gpt-5",
+    });
+    markDiagnosticOutstandingBackgroundWork({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "run-1",
+      count: 1,
+    });
+
+    // Past the bare model-call threshold, the outstanding CLI background-work
+    // fact must keep the healthy run out of recovery.
+    vi.advanceTimersByTime(stuckSessionAbortMs * 2);
+    expect(recoverStuckSession).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(BLOCKED_TOOL_CALL_ABORT_FLOOR_MS - stuckSessionAbortMs * 2 - 30_000);
+    expect(recoverStuckSession).not.toHaveBeenCalled();
+
+    // The quiet-work floor still bounds the deferral: once crossed, recovery proceeds.
+    vi.advanceTimersByTime(60_000);
+
+    expectRecoveryCall(
+      recoverStuckSession,
+      { sessionId: "s1", sessionKey: "main", queueDepth: 0, allowActiveAbort: true },
+      ["ageMs", "stateGeneration"],
+    );
+  });
+
+  it("never grants model-call recovery grace from a departed run's leftover fact", () => {
+    markDiagnosticEmbeddedRunStarted({ sessionId: "s1", sessionKey: "main", runId: "old-run" });
+    markDiagnosticOutstandingBackgroundWork({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "old-run",
+      count: 1,
+    });
+    // The old run departs before its terminal clear; its fact lingers.
+    markDiagnosticEmbeddedRunEnded({
+      sessionId: "s1",
+      sessionKey: "main",
+      clearRunActivity: false,
+    });
+    expect(
+      getDiagnosticSessionActivitySnapshot({ sessionId: "s1", sessionKey: "main" })
+        .hasOutstandingBackgroundWork,
+    ).toBeUndefined();
+
+    // A successor's quiet model call must not inherit the departed run's grace.
+    markDiagnosticModelStartedForTest({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "successor-run",
+      provider: "claude-cli",
+      model: "claude-opus-5",
+    });
+    expect(
+      getDiagnosticSessionActivitySnapshot({ sessionId: "s1", sessionKey: "main" })
+        .hasOutstandingBackgroundWork,
+    ).toBeUndefined();
+
+    // The successor's own background work does certify it.
+    markDiagnosticOutstandingBackgroundWork({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "successor-run",
+      count: 1,
+    });
+    expect(
+      getDiagnosticSessionActivitySnapshot({ sessionId: "s1", sessionKey: "main" })
+        .hasOutstandingBackgroundWork,
+    ).toBe(true);
+  });
+
+  it("binds outstanding CLI background work to the exact owner lifetime", () => {
+    const ref = { sessionId: "s1", sessionKey: "main" };
+    const ownerA = createDiagnosticEmbeddedRunOwner({ ...ref, runId: "shared-run" });
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "shared-run", owner: ownerA });
+    const lifetimeA = markDiagnosticOutstandingBackgroundWork({
+      ...ref,
+      runId: "shared-run",
+      count: 1,
+    });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
+
+    // A same-ID replacement closes the former owner; its fact dies with it.
+    closeDiagnosticEmbeddedRunOwner(ownerA);
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+
+    const ownerB = createDiagnosticEmbeddedRunOwner({ ...ref, runId: "shared-run" });
+    markDiagnosticEmbeddedRunStarted({ ...ref, runId: "shared-run", owner: ownerB });
+    const lifetimeB = markDiagnosticOutstandingBackgroundWork({
+      ...ref,
+      runId: "shared-run",
+      count: 1,
+    });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
+
+    // The departed iterator's delayed clear must not erase the successor's fact.
+    markDiagnosticOutstandingBackgroundWork({
+      ...ref,
+      runId: "shared-run",
+      count: 0,
+      lifetime: lifetimeA,
+    });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBe(true);
+
+    markDiagnosticOutstandingBackgroundWork({
+      ...ref,
+      runId: "shared-run",
+      count: 0,
+      lifetime: lifetimeB,
+    });
+    expect(getDiagnosticSessionActivitySnapshot(ref).hasOutstandingBackgroundWork).toBeUndefined();
+  });
+
+  it("resumes stalled model-call recovery once outstanding CLI background work clears", async () => {
+    const recoverStuckSession = vi.fn();
+    const stuckSessionAbortMs = 60_000;
+    startEnabledDiagnosticHeartbeat({
+      recoverStuckSession,
+      testTimings: { stuckSessionWarnMs: 30_000, stuckSessionAbortMs },
+    });
+    logSessionStateChange({ sessionId: "s1", sessionKey: "main", state: "processing" });
+    markDiagnosticEmbeddedRunStarted({ sessionId: "s1", sessionKey: "main" });
+    markDiagnosticModelStartedForTest({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "run-1",
+      provider: "openai",
+      model: "gpt-5",
+    });
+    markDiagnosticOutstandingBackgroundWork({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "run-1",
+      count: 1,
+    });
+
+    vi.advanceTimersByTime(stuckSessionAbortMs * 2);
+    expect(recoverStuckSession).not.toHaveBeenCalled();
+
+    markDiagnosticOutstandingBackgroundWork({
+      sessionId: "s1",
+      sessionKey: "main",
+      runId: "run-1",
+      count: 0,
+    });
+    vi.advanceTimersByTime(30_000);
+
     expectRecoveryCall(
       recoverStuckSession,
       { sessionId: "s1", sessionKey: "main", queueDepth: 0, allowActiveAbort: true },

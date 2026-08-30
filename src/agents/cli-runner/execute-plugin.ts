@@ -3,6 +3,7 @@ import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { toErrorObject } from "../../infra/errors.js";
 import { resolveExecutablePath } from "../../infra/executable-path.js";
+import { markDiagnosticOutstandingBackgroundWork } from "../../logging/diagnostic-outstanding-background-work.js";
 import { BLOCKED_TOOL_CALL_ABORT_FLOOR_MS } from "../../logging/diagnostic-run-activity.js";
 import type {
   CliBackendExecute,
@@ -428,6 +429,7 @@ export async function executePluginOwnedProcess(params: {
   const outstanding = {
     approvals: 0,
     background: 0,
+    backgroundFact: undefined as unknown,
     lastOutputAt: startedAt,
     observed: false,
     replayUnsafe: false,
@@ -582,6 +584,17 @@ export async function executePluginOwnedProcess(params: {
         Array.isArray(next.value.tasks)
       ) {
         outstanding.background = next.value.tasks.filter(isRecord).length;
+        // The diagnostic watchdog cannot see this host's background-task list;
+        // report the authoritative liveness fact so recovery can grant the
+        // quiet-work floor instead of aborting a healthy run (#118386). The
+        // returned lifetime token keeps clears bound to this exact owner.
+        outstanding.backgroundFact = markDiagnosticOutstandingBackgroundWork({
+          runId: run.runId,
+          sessionId: run.sessionId,
+          sessionKey: run.sessionKey,
+          count: outstanding.background,
+          lifetime: outstanding.backgroundFact,
+        });
       }
       params.consumeStdout(`${JSON.stringify(next.value)}\n`);
       outstanding.observed = true;
@@ -614,6 +627,15 @@ export async function executePluginOwnedProcess(params: {
   } finally {
     clearTimeout(overallTimer);
     clearTimeout(noOutputTimer);
+    // Terminal path: the process-bound background work can no longer keep the
+    // run alive, so drop the liveness fact regardless of how the turn ended.
+    markDiagnosticOutstandingBackgroundWork({
+      runId: run.runId,
+      sessionId: run.sessionId,
+      sessionKey: run.sessionKey,
+      count: 0,
+      lifetime: outstanding.backgroundFact,
+    });
     // Permission callbacks can be retained by the plugin or its subprocess.
     // Closing the turn fences those capabilities before any outer cleanup runs.
     if (!controller.signal.aborted) {

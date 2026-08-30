@@ -2,6 +2,11 @@ import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "@openclaw/ai/internal/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  getDiagnosticSessionActivitySnapshot,
+  resetDiagnosticRunActivityForTest,
+} from "../../logging/diagnostic-run-activity.js";
+import { markDiagnosticModelStartedForTest } from "../../logging/diagnostic-run-activity.test-support.js";
 import type {
   CliBackendExecute,
   CliBackendExecuteContext,
@@ -186,6 +191,7 @@ afterEach(() => {
   }
   mockCallGatewayTool.mockReset();
   vi.restoreAllMocks();
+  resetDiagnosticRunActivityForTest();
   vi.useRealTimers();
 });
 
@@ -883,6 +889,54 @@ describe("plugin-owned CLI execution host boundary", () => {
     backgroundFinished.resolve();
     await expect(run).resolves.toMatchObject({ reason: "exit", timedOut: false });
     expect(received.map((event) => JSON.parse(event))).toHaveLength(3);
+  });
+
+  it("reports outstanding CLI background work to the diagnostic activity snapshot", async () => {
+    vi.useFakeTimers();
+    const { context } = await createExecution();
+    // The turn's model call is the run's active marker; the host's background
+    // fact must certify the same run.
+    markDiagnosticModelStartedForTest({
+      sessionId: "sdk-session",
+      sessionKey: "agent:main:main",
+      runId: context.params.runId,
+      provider: "claude-cli",
+      model: "claude-sonnet-4-6",
+    });
+    const backgroundFinished = createDeferred();
+    const received: string[] = [];
+    const run = runPlugin(
+      context,
+      async function* () {
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "background-agent", task_type: "local_agent" }],
+        };
+        await backgroundFinished.promise;
+        yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+        yield SUCCESS_RESULT;
+      },
+      { noOutputTimeoutMs: 100, consumeStdout: received.push.bind(received) },
+    );
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+
+    expect(
+      getDiagnosticSessionActivitySnapshot({
+        sessionId: "sdk-session",
+        sessionKey: "agent:main:main",
+      }).hasOutstandingBackgroundWork,
+    ).toBe(true);
+
+    backgroundFinished.resolve();
+    await expect(run).resolves.toMatchObject({ reason: "exit", timedOut: false });
+
+    expect(
+      getDiagnosticSessionActivitySnapshot({
+        sessionId: "sdk-session",
+        sessionKey: "agent:main:main",
+      }).hasOutstandingBackgroundWork,
+    ).toBeUndefined();
   });
 
   it("keeps the overall deadline authoritative while background work remains active", async () => {
