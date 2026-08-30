@@ -14,7 +14,7 @@ import { spawnCommand } from "../../../process/exec.js";
 import type { AgentTool } from "../../runtime/index.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
-import { appendBoundedTextTail, normalizePositiveLimit } from "./limits.js";
+import { appendBoundedTextTail, formatRetainedStderr, normalizePositiveLimit } from "./limits.js";
 import { resolveToCwd } from "./path-utils.js";
 import {
   appendSessionToolTruncationWarning,
@@ -277,6 +277,7 @@ export function createGrepToolDefinition(
             child = spawnedChild;
             rl = createInterface({ input: spawnedChild.stdout });
             let stderr = "";
+            let stderrDroppedBytes = 0;
             let matchCount = 0;
             let matchLimitReached = false;
             let linesTruncated = false;
@@ -286,7 +287,9 @@ export function createGrepToolDefinition(
             // cannot split multibyte characters into U+FFFD replacement noise.
             spawnedChild.stderr?.setEncoding("utf8");
             spawnedChild.stderr?.on("data", (chunk: string) => {
-              stderr = appendBoundedTextTail(stderr, chunk).tail;
+              const appended = appendBoundedTextTail(stderr, chunk);
+              stderr = appended.tail;
+              stderrDroppedBytes += appended.droppedBytes;
             });
             const onStreamError = (stream: "stdout" | "stderr", error: Error) => {
               if (settled) {
@@ -377,7 +380,9 @@ export function createGrepToolDefinition(
                   return;
                 }
                 if (!killedDueToLimit && code !== 0 && code !== 1) {
-                  const errorMsg = stderr.trim() || `ripgrep exited with code ${code}`;
+                  const errorMsg =
+                    formatRetainedStderr(stderr, stderrDroppedBytes) ||
+                    `ripgrep exited with code ${code}`;
                   settle(() => reject(new Error(errorMsg)));
                   return;
                 }

@@ -8,6 +8,7 @@ import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.
 import { spawnCommand } from "../../../process/exec.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import { createFindToolDefinition } from "./find.js";
+import { SESSION_TOOL_STDERR_TAIL_BYTES } from "./limits.js";
 
 vi.mock("../../../process/exec.js", () => ({
   spawnCommand: vi.fn(),
@@ -81,6 +82,35 @@ it("keeps multibyte stderr intact when pipe chunks split a character", async () 
   child.emit("close", 2, null);
 
   await expect(result).rejects.toThrow("fd 失败：权限被拒绝");
+});
+
+it("reports discarded stderr bytes before the retained fd tail", async () => {
+  const child = createChild();
+  vi.mocked(spawnCommand).mockReturnValue(child as never);
+  vi.mocked(ensureTool).mockResolvedValue("fd");
+
+  const tool = createFindToolDefinition("/workspace");
+  const result = tool.execute("call-1", { pattern: "*.ts" }, undefined, undefined, {} as never);
+  await vi.waitFor(() => expect(spawnCommand).toHaveBeenCalledOnce());
+  const suffix = "fd tail failure\n";
+  const retainedTail = `${"x".repeat(SESSION_TOOL_STDERR_TAIL_BYTES - Buffer.byteLength(suffix))}${suffix}`;
+  child.stdout.end();
+  child.stderr.write("丢失");
+  child.stderr.end(retainedTail);
+  child.emit("close", 2, null);
+
+  let message = "";
+  try {
+    await result;
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  expect(
+    message.startsWith(
+      `[6 UTF-8 bytes of earlier stderr discarded at the ${SESSION_TOOL_STDERR_TAIL_BYTES}-byte retention cap]\n`,
+    ),
+  ).toBe(true);
+  expect(message.endsWith("fd tail failure")).toBe(true);
 });
 
 it.each(["stdout", "stderr"] as const)(

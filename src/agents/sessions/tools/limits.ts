@@ -16,6 +16,14 @@ export function normalizePositiveLimit(value: number | undefined, fallback: numb
 /** Default stderr tail retained for long-running session tools. */
 export const SESSION_TOOL_STDERR_TAIL_BYTES = 64 * 1024;
 
+/** Prefixes a retained stderr tail with its exact UTF-8 loss accounting. */
+export function formatRetainedStderr(tail: string, droppedBytes: number): string {
+  const trimmed = tail.trim();
+  return droppedBytes > 0
+    ? `[${droppedBytes} UTF-8 bytes of earlier stderr discarded at the ${SESSION_TOOL_STDERR_TAIL_BYTES}-byte retention cap]\n${trimmed}`
+    : trimmed;
+}
+
 /** Retains a UTF-8-safe tail and counts bytes discarded by this append. */
 export function appendBoundedTextTail(
   current: string,
