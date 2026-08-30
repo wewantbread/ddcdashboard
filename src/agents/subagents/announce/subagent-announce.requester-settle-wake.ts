@@ -318,6 +318,32 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
 
   const batchRunIds = settledBatch.map((entry) => entry.runId).toSorted();
   const selectedState = readSharedBatchState(settledBatch);
+  const settledBatchEndedAt = Math.max(
+    ...settledBatch.map((entry) => entry.execution.endedAt ?? entry.createdAt),
+  );
+  const requesterHasSuccessorSettleWake = () => {
+    const latestRuns = listSubagentRunsForRequester(requesterSessionKey, {
+      requesterAgentId,
+    });
+    if (!Array.isArray(latestRuns)) {
+      return false;
+    }
+    return latestRuns.some((entry) => {
+      const successorState = entry.requesterSettleWake;
+      const successorBatchRunIds = successorState?.batchRunIds;
+      return (
+        // A continuation can only be created after this batch drained. Its
+        // persisted batch must also be distinct, so unrelated or overlapping
+        // yielded wakes cannot retire this obligation.
+        entry.createdAt > settledBatchEndedAt &&
+        !batchRunIds.includes(entry.runId) &&
+        successorState?.requesterYieldBatch === true &&
+        successorBatchRunIds !== undefined &&
+        successorBatchRunIds.length > 0 &&
+        successorBatchRunIds.every((runId) => !batchRunIds.includes(runId))
+      );
+    });
+  };
   if (hasUnsettledDescendants) {
     if (frozenBatchRunIds && frozenBatchRunIds.length > 0) {
       deferRequesterSettleWakeBatch({
@@ -521,6 +547,22 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
         state,
         completeBatch,
         delivery,
+      });
+      return true;
+    }
+    // A missing visible reply can mean the requester continued the workflow
+    // and yielded again. A successor may settle before this wake returns, so
+    // its own persisted settle wake is durable proof of that continuation.
+    // Retrying here would send a duplicate finalize instruction.
+    if (
+      delivery.reason === "visible_reply_missing" &&
+      (requesterHasUnsettledDescendants() || requesterHasSuccessorSettleWake())
+    ) {
+      completeRequesterSettleWakeBatch({
+        runIds: batchRunIds,
+        state,
+        completeBatch,
+        delivery: { delivered: true, path: delivery.path },
       });
       return true;
     }
