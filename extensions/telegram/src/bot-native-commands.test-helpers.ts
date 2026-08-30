@@ -116,6 +116,8 @@ vi.mock("./bot-native-commands.runtime.js", () => ({
   resolveChunkMode: replyPipelineMocks.resolveChunkMode,
   ensureConfiguredBindingRouteReady: replyPipelineMocks.ensureConfiguredBindingRouteReady,
   getAgentScopedMediaLocalRoots: replyPipelineMocks.getAgentScopedMediaLocalRoots,
+  resolveAgentScopedOutboundMediaAccess: vi.fn(() => ({ localRoots: [] })),
+  resolveNativeCommandOutboundMediaRoots: vi.fn(() => []),
   resolveThreadSessionKeys: replyPipelineMocks.resolveThreadSessionKeys,
 }));
 vi.mock("./bot-native-commands.delivery.runtime.js", () => ({
