@@ -107,7 +107,7 @@ export async function persistInternalSourceReply(params: {
       ...(params.payload.text ? [{ type: "text", text: params.payload.text }] : []),
       ...mediaBlocks,
     ];
-    const writerFence = getOwnedSessionTranscriptWriterFence();
+    const writerFence = getOwnedSessionTranscriptWriterFence({ sessionKey: params.sessionKey });
     const appended = await appendAssistantMessageToSessionTranscript({
       agentId: params.agentId,
       sessionKey: params.sessionKey,
