@@ -10,6 +10,7 @@ import {
   applyJsonSchemaDefaults,
   findJsonSchemaShapeError,
 } from "../shared/json-schema-defaults.js";
+import { findUnsafePatternProperty } from "../shared/json-schema-unsafe-patterns.js";
 import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import { PluginLruCache } from "./plugin-cache-primitives.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
@@ -104,6 +105,14 @@ function applyValidatedSourceDefaults(
 }
 
 function compileSchema(schema: JsonSchemaValue): TypeBoxValidator {
+  const unsafePattern = findUnsafePatternProperty(schema);
+  if (unsafePattern) {
+    throw new Error(
+      sanitizeTerminalText(
+        `unsafe patternProperties pattern rejected before validation at ${unsafePattern}`,
+      ),
+    );
+  }
   return Compile(normalizeJsonSchemaForTypeBox(schema) as never);
 }
 
@@ -398,6 +407,23 @@ export function validateJsonSchemaValue(params: {
   const schemaError = findJsonSchemaShapeError(params.schema);
   if (schemaError) {
     throw new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`));
+  }
+
+  const unsafePattern = findUnsafePatternProperty(params.schema);
+  if (unsafePattern) {
+    const message = sanitizeTerminalText(
+      `unsafe patternProperties pattern rejected before validation at ${unsafePattern}`,
+    );
+    return {
+      ok: false,
+      errors: [
+        {
+          path: "<root>",
+          message,
+          text: message,
+        },
+      ],
+    };
   }
 
   const cacheKey = params.applyDefaults ? `${params.cacheKey}::defaults` : params.cacheKey;
