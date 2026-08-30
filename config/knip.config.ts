@@ -104,6 +104,8 @@ const repositoryScriptEntries = [
   // Changed-file checks invoke this targeted UI Stylelint entrypoint by path.
   "scripts/run-stylelint.mts!",
   "scripts/secrets/openclaw-bws-resolver.mjs!",
+  // package.json and the experiment docs expose this benchmark by path.
+  "scripts/session-retention-analysis/benchmark.ts!",
   "scripts/sync-labels.ts!",
   "scripts/test-built-bundled-channel-entry-smoke.mts!",
   // Native shell UI tests connect to this manually launched loopback Gateway fixture.
