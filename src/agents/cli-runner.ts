@@ -184,6 +184,8 @@ async function runCliAgentInternal(
             ...buildAgentHookContextIdentityFields({
               trigger: params.trigger,
               senderId: params.senderId,
+              messageId: params.currentMessageId,
+              senderIsOwner: params.senderIsOwner,
               chatId: params.chatId,
               channelContext: params.channelContext,
             }),
@@ -313,6 +315,8 @@ export async function runPreparedCliAgent(
     ...buildAgentHookContextIdentityFields({
       trigger: params.trigger,
       senderId: params.senderId,
+      messageId: params.currentMessageId,
+      senderIsOwner: params.senderIsOwner,
       chatId: params.chatId,
       channelContext: params.channelContext,
     }),
