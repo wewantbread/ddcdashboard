@@ -174,6 +174,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+// Broadcast by the gateway after every persisted config write. It is not part of the
+// generated GatewayEvent catalog, so the raw wire name is matched directly.
+internal const val CONFIG_CHANGED_EVENT = "config.changed"
+
 private const val MAX_PENDING_NOTIFICATION_EVENTS = 128
 private const val NODE_APPROVAL_COMMAND_FRESH_MS = 30_000L
 private const val CRON_RUN_TRACKING_POLL_MS = 2_000L
@@ -5189,6 +5193,12 @@ class NodeRuntime private constructor(
     }
     if (event == GatewayEvent.VoicewakeChanged.rawValue) {
       applyVoiceWakeWords(payloadJson)
+    }
+    if (event == CONFIG_CHANGED_EVENT) {
+      // Hash-only notice broadcast after every persisted config write; the protocol
+      // directs clients to re-read through config.get, which the branding refresh does.
+      // Not in the generated GatewayEvent catalog, so match the raw wire name.
+      scope.launch { refreshBrandingFromGateway() }
     }
     if (event == GatewayEvent.UsersPrefsChanged.rawValue) {
       // The gateway targets this event at connections bound to the caller's own
