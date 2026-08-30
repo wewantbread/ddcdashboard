@@ -736,14 +736,14 @@ describe("subagent registry persistence", () => {
 
     announceSpy.mockResolvedValueOnce("delivered");
     restartRegistry();
+    // Delivered delete cleanup keeps the finished row under its archive deadline.
     await waitForRegistryWork(async () => {
-      const afterSecond = readPersistedRegistry();
-      return announceSpy.mock.calls.length === 2 && afterSecond.runs?.["run-4"] === undefined;
+      const row = await readPersistedRun<{ cleanupCompletedAt?: number }>(registryPath, "run-4");
+      return announceSpy.mock.calls.length === 2 && typeof row?.cleanupCompletedAt === "number";
     });
 
     expect(announceSpy).toHaveBeenCalledTimes(2);
-    const afterSecond = readPersistedRegistry();
-    expect(afterSecond.runs?.["run-4"]).toBeUndefined();
+    expect(await readPersistedRun<Record<string, unknown>>(registryPath, "run-4")).toBeDefined();
   });
 
   it("reconciles orphaned restored runs by pruning them from registry", async () => {
