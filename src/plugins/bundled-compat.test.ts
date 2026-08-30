@@ -75,4 +75,59 @@ describe("withBundledPluginEnablementCompat", () => {
       })?.plugins?.allow,
     ).toEqual(["openai", "deepseek"]);
   });
+
+  it("preserves explicit alias disables for canonical bundled plugin ids", () => {
+    const config = {
+      plugins: {
+        entries: {
+          "GOOGLE-GEMINI-CLI": {
+            enabled: false,
+            config: { projectId: "example" },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    expect(
+      withBundledPluginEnablementCompat({
+        config,
+        pluginIds: ["google"],
+      }),
+    ).toEqual({
+      plugins: {
+        entries: {
+          google: {
+            enabled: false,
+            config: { projectId: "example" },
+          },
+        },
+      },
+    });
+  });
+
+  it("canonicalizes compat aliases before extending the allowlist", () => {
+    readBundledDiscoveryMode.mockReturnValue("compat");
+    const config = {
+      plugins: {
+        allow: ["MINIMAX-PORTAL"],
+        entries: {
+          "MiNiMaX-PoRtAl-AuTh": { enabled: false },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    expect(
+      withBundledPluginEnablementCompat({
+        config,
+        pluginIds: [" MINIMAX-PORTAL-AUTH "],
+      }),
+    ).toEqual({
+      plugins: {
+        allow: ["minimax"],
+        entries: {
+          minimax: { enabled: false },
+        },
+      },
+    });
+  });
 });
