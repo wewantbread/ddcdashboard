@@ -123,6 +123,7 @@ type PluginBindingResolveResult =
 // Chat approvals get the exec-style 30-minute decision window, with abandoned payloads capped.
 const PENDING_PLUGIN_BINDING_REQUEST_TTL_MS = 30 * 60_000;
 const MAX_PENDING_PLUGIN_BINDING_REQUESTS = 512;
+const MAX_FALLBACK_NOTICE_BINDING_IDS = 4_096;
 const pendingRequests = resolveGlobalMap<string, PendingPluginBindingRequestEntry>(
   Symbol.for("openclaw.pluginBindingPendingRequests"),
   (requests) => {
@@ -724,7 +725,13 @@ export function hasShownPluginBindingFallbackNotice(bindingId: string): boolean 
   if (!normalized) {
     return false;
   }
-  return getPluginBindingGlobalState().fallbackNoticeBindingIds.has(normalized);
+  const bindingIds = getPluginBindingGlobalState().fallbackNoticeBindingIds;
+  if (!bindingIds.has(normalized)) {
+    return false;
+  }
+  bindingIds.delete(normalized);
+  bindingIds.add(normalized);
+  return true;
 }
 
 export function markPluginBindingFallbackNoticeShown(bindingId: string): void {
@@ -732,7 +739,17 @@ export function markPluginBindingFallbackNoticeShown(bindingId: string): void {
   if (!normalized) {
     return;
   }
-  getPluginBindingGlobalState().fallbackNoticeBindingIds.add(normalized);
+  const bindingIds = getPluginBindingGlobalState().fallbackNoticeBindingIds;
+  bindingIds.delete(normalized);
+  bindingIds.add(normalized);
+  // Keep recent outage suppression while allowing historical binding churn to retire.
+  while (bindingIds.size > MAX_FALLBACK_NOTICE_BINDING_IDS) {
+    const oldestBindingId = bindingIds.keys().next().value;
+    if (oldestBindingId === undefined) {
+      break;
+    }
+    bindingIds.delete(oldestBindingId);
+  }
 }
 
 function buildPendingReply(request: PendingPluginBindingRequest): ReplyPayload {

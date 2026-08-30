@@ -120,6 +120,8 @@ let buildPluginBindingApprovalCustomId: typeof import("./conversation-binding.js
 let bindPluginSessionConversation: typeof import("./session-conversation-binding.js").bindPluginSessionConversation;
 let detachPluginConversationBinding: typeof import("./conversation-binding.js").detachPluginConversationBinding;
 let getCurrentPluginConversationBinding: typeof import("./conversation-binding.js").getCurrentPluginConversationBinding;
+let hasShownPluginBindingFallbackNotice: typeof import("./conversation-binding.js").hasShownPluginBindingFallbackNotice;
+let markPluginBindingFallbackNoticeShown: typeof import("./conversation-binding.js").markPluginBindingFallbackNoticeShown;
 let parsePluginBindingApprovalCustomId: typeof import("./conversation-binding.js").parsePluginBindingApprovalCustomId;
 let requestPluginConversationBinding: typeof import("./conversation-binding.js").requestPluginConversationBinding;
 let resolvePluginConversationBindingApproval: typeof import("./conversation-binding.js").resolvePluginConversationBindingApproval;
@@ -176,6 +178,8 @@ beforeAll(async () => {
     buildPluginBindingApprovalCustomId,
     detachPluginConversationBinding,
     getCurrentPluginConversationBinding,
+    hasShownPluginBindingFallbackNotice,
+    markPluginBindingFallbackNoticeShown,
     parsePluginBindingApprovalCustomId,
     requestPluginConversationBinding,
     resolvePluginConversationBindingApproval,
@@ -469,6 +473,18 @@ describe("plugin conversation binding approvals", () => {
     registerSessionBindingAdapter(createAdapter("discord", "isolated"));
     registerSessionBindingAdapter(createAdapter("telegram", "default"));
     registerSessionBindingAdapter(createAdapter("webchat", "default"));
+  });
+
+  it("bounds fallback notice suppression to recent binding IDs", () => {
+    for (let index = 0; index < 4_096; index += 1) {
+      markPluginBindingFallbackNoticeShown(`binding-${index}`);
+    }
+    expect(hasShownPluginBindingFallbackNotice("binding-0")).toBe(true);
+    markPluginBindingFallbackNoticeShown("binding-4096");
+
+    expect(hasShownPluginBindingFallbackNotice("binding-1")).toBe(false);
+    expect(hasShownPluginBindingFallbackNotice("binding-0")).toBe(true);
+    expect(hasShownPluginBindingFallbackNotice("binding-4096")).toBe(true);
   });
 
   it("restores the prior Control UI binding when provider publication fails", async () => {
