@@ -301,11 +301,18 @@ export async function acquireAgentRunPreparedModelRuntime(
     abortSignal?: AbortSignal;
   } = {},
 ): Promise<PreparedModelRuntimeLease> {
+  // The static default must apply even when callers pass a partial options object
+  // (e.g., { retainIdleRunOwner: true }); an undefined mode would otherwise fall
+  // back to live discovery in publishModelRuntimeSnapshot.
+  const normalizedOptions = {
+    ...options,
+    catalogMode: options.catalogMode ?? "static",
+  };
   return await acquirePreparedModelRuntimeLeaseFromOwners(
     rawInput,
     "run",
     preparedModelRuntimeLeaseContext,
-    options,
+    normalizedOptions,
   );
 }
 

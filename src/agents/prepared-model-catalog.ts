@@ -276,7 +276,9 @@ async function resolvePreparedModelCatalogOwnerSnapshotWithPolicy(
   }
   // Gateway pre-run selection can name a spawned workspace before embedded-run admission.
   // Lease a complete exact generation so provider catalog hooks remain visible for this read.
-  const lease = await acquireAgentRunPreparedModelRuntime(activationFull);
+  const lease = await acquireAgentRunPreparedModelRuntime(activationFull, {
+    catalogMode: "live",
+  });
   try {
     if (!acceptsPreparedSnapshotConfig(lease.snapshot, activationFull, configPolicy)) {
       throw new PreparedModelRuntimeOwnerNotPublishedError(
