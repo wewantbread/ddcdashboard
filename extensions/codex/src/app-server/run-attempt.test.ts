@@ -108,6 +108,7 @@ import {
   releaseCodexSandboxExecServerEnvironment,
 } from "./sandbox-exec-server.js";
 import { createSandboxContext } from "./sandbox-exec-server.test-helpers.js";
+import { CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY } from "./session-binding.js";
 import {
   createCodexTestBindingStore,
   resetCodexTestBindingStore,
@@ -434,7 +435,12 @@ async function buildCodexTurnContextForTest(
     memoryToolNames,
     ringZeroActive: false,
   });
-  const threadDeveloperInstructions = testing.buildDeveloperInstructions(params, { dynamicTools });
+  const threadDeveloperInstructions = [
+    testing.buildDeveloperInstructions(params, { dynamicTools }),
+    workspaceBootstrapContext.threadDeveloperInstructions,
+  ]
+    .filter((section) => section?.trim())
+    .join("\n\n");
   const openClawPromptContext = buildCodexOpenClawPromptContext({
     params,
     workspacePromptContext: workspaceBootstrapContext.promptContext,
@@ -3949,7 +3955,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(secondInputText).toContain("continue from there");
   });
 
-  it("routes AGENTS.md natively and MEMORY.md through tools", async () => {
+  it("references native AGENTS.md once and routes MEMORY.md through tools", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const agentsGuidance = "Follow AGENTS guidance.";
     const soulGuidance = "Soul voice goes here.";
@@ -3982,7 +3988,8 @@ describe("runCodexAppServerAttempt", () => {
     expect(threadDeveloperInstructions).not.toContain(identityGuidance);
     expect(threadDeveloperInstructions).not.toContain(userProfile);
     expect(threadDeveloperInstructions).not.toContain(memorySummary);
-    expect(threadDeveloperInstructions).not.toContain("Codex loads AGENTS.md natively");
+    expect(threadDeveloperInstructions).not.toContain("native project-doc discovery");
+    expect(threadDeveloperInstructions).not.toContain("OpenClaw Agent Workspace Instructions");
     expect(threadDeveloperInstructions).not.toContain(agentsGuidance);
     expect(collaborationInstructions).toContain("# Collaboration Mode: Default");
     expect(collaborationInstructions).toContain("request_user_input availability");
@@ -4049,7 +4056,6 @@ describe("runCodexAppServerAttempt", () => {
     });
     expect(fileStats.get("AGENTS.md")).toMatchObject({
       rawChars: agentsGuidance.length,
-      injectionStatus: "native_unverified",
       injectedChars: null,
       truncated: null,
     });
@@ -4119,7 +4125,14 @@ describe("runCodexAppServerAttempt", () => {
     await fs.writeFile(path.join(workspaceDir, "SOUL.md"), soulGuidance);
     await fs.writeFile(path.join(workspaceDir, "IDENTITY.md"), identityGuidance);
     await fs.writeFile(path.join(workspaceDir, "USER.md"), userProfile);
-    const harness = createStartedThreadHarness();
+    const harness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-1", {
+            cwd: workspaceDir,
+            instructionSources: [path.join(workspaceDir, "AGENTS.md")],
+          })
+        : undefined,
+    );
     const params = createParams(sessionFile, workspaceDir);
     setAgentWorkspaceForTest(params, workspaceDir);
     const run = runCodexAppServerAttempt(params);
@@ -4135,6 +4148,10 @@ describe("runCodexAppServerAttempt", () => {
       developerInstructions?: string;
     };
     expect(threadStartParams.config?.instructions).toBeUndefined();
+    expect(threadStartParams.developerInstructions).not.toContain(
+      "OpenClaw Agent Workspace Instructions",
+    );
+    expect(threadStartParams.developerInstructions).not.toContain("native project-doc discovery");
     expect(threadStartParams.developerInstructions).not.toContain(agentsGuidance);
     expect(threadStartParams.developerInstructions).not.toContain(soulGuidance);
     expect(threadStartParams.developerInstructions).not.toContain(identityGuidance);
@@ -4163,6 +4180,90 @@ describe("runCodexAppServerAttempt", () => {
       [threadStartParams.developerInstructions ?? "", collaborationInstructions].join("\n\n")
         .length,
     );
+  });
+
+  it("carries each agent's instructions through a sequential shared read-only sandbox", async () => {
+    const sharedSandboxDir = path.join(tempDir, "shared-read-only-sandbox");
+    const firstWorkspaceDir = path.join(tempDir, "shared-sandbox-agent-first");
+    const secondWorkspaceDir = path.join(tempDir, "shared-sandbox-agent-second");
+    const firstGuidance = "Only the first agent follows this configured guidance.";
+    const secondGuidance = "Only the second agent follows this configured guidance.";
+    await Promise.all([
+      fs.mkdir(sharedSandboxDir, { recursive: true }),
+      fs.mkdir(firstWorkspaceDir, { recursive: true }),
+      fs.mkdir(secondWorkspaceDir, { recursive: true }),
+    ]);
+    await Promise.all([
+      fs.writeFile(path.join(firstWorkspaceDir, "AGENTS.md"), firstGuidance),
+      fs.writeFile(path.join(secondWorkspaceDir, "AGENTS.md"), secondGuidance),
+      // Shared non-rw seeding preserves an existing file, so agent two sees this stale native file.
+      fs.writeFile(path.join(sharedSandboxDir, "AGENTS.md"), firstGuidance),
+    ]);
+
+    const runAgent = async (params: {
+      agentId: string;
+      guidance: string;
+      sessionId: string;
+      workspaceDir: string;
+    }) => {
+      const threadId = `thread-${params.agentId}`;
+      const harness = createStartedThreadHarness(async (method) =>
+        method === "thread/start" ? threadStartResult(threadId) : undefined,
+      );
+      const attempt = createParams(
+        path.join(tempDir, `${params.agentId}-shared-sandbox-session.jsonl`),
+        params.workspaceDir,
+        {
+          sessionId: params.sessionId,
+          sessionKey: `agent:${params.agentId}:${params.sessionId}`,
+          runId: `run-${params.agentId}`,
+        },
+      );
+      attempt.agentId = params.agentId;
+      attempt.sandbox = {
+        ...createSandboxContext({}),
+        sessionKey: "shared",
+        workspaceDir: sharedSandboxDir,
+        agentWorkspaceDir: params.workspaceDir,
+        workspaceAccess: "ro",
+        runtimeId: "shared-read-only-runtime",
+        runtimeLabel: "Shared read-only runtime",
+        containerName: "shared-read-only-runtime",
+      } as never;
+      setAgentWorkspaceForTest(attempt, params.workspaceDir);
+
+      const run = runCodexAppServerAttempt(attempt);
+      await harness.waitForMethod("turn/start");
+      await harness.completeTurn({ threadId, turnId: "turn-1" });
+      await run;
+      const threadStart = harness.requests.find((request) => request.method === "thread/start");
+      if (!threadStart) {
+        throw new Error("expected thread/start request");
+      }
+      const startParams = threadStart.params as {
+        cwd?: string;
+        developerInstructions?: string;
+      };
+      expect(startParams.cwd).toBe(sharedSandboxDir);
+      expect(startParams.developerInstructions).toContain(params.guidance);
+      return startParams.developerInstructions ?? "";
+    };
+
+    const firstInstructions = await runAgent({
+      agentId: "first",
+      guidance: firstGuidance,
+      sessionId: "shared-sandbox-first",
+      workspaceDir: firstWorkspaceDir,
+    });
+    const secondInstructions = await runAgent({
+      agentId: "second",
+      guidance: secondGuidance,
+      sessionId: "shared-sandbox-second",
+      workspaceDir: secondWorkspaceDir,
+    });
+
+    expect(firstInstructions).not.toContain(secondGuidance);
+    expect(secondInstructions).not.toContain(firstGuidance);
   });
 
   it("inherits external-cwd agent instructions through Codex thread creation", async () => {
@@ -4233,10 +4334,560 @@ describe("runCodexAppServerAttempt", () => {
     if (!threadResume) {
       throw new Error("expected thread/resume request");
     }
-    const resumedInstructions =
-      (threadResume.params as { developerInstructions?: string }).developerInstructions ?? "";
+    const resumeRequest = threadResume.params as {
+      config?: { project_doc_max_bytes?: number };
+      developerInstructions?: string;
+    };
+    const resumedInstructions = resumeRequest.developerInstructions ?? "";
+    expect(resumeRequest.config?.project_doc_max_bytes).toBe(131_072);
     expect(resumedInstructions).toContain(agentsGuidance);
     expect(resumedInstructions).not.toContain(updatedGuidance);
+  });
+
+  it.each([
+    { resumeWorkspace: "same-workspace", crossWorkspace: false },
+    { resumeWorkspace: "cross-workspace", crossWorkspace: true },
+  ])(
+    "replays the frozen root on a $resumeWorkspace resume after source deletion",
+    async ({ crossWorkspace }) => {
+      const { sessionFile, workspaceDir: agentWorkspaceDir } = createRunPaths();
+      const executionDir = path.join(tempDir, "transition-execution-workspace");
+      const agentsPath = path.join(agentWorkspaceDir, "AGENTS.md");
+      const capturedGuidance = "Keep this root guidance across an execution-workspace transition.";
+      await fs.mkdir(agentWorkspaceDir, { recursive: true });
+      await fs.mkdir(executionDir, { recursive: true });
+      await fs.writeFile(agentsPath, capturedGuidance);
+
+      const firstParams = createParams(sessionFile, agentWorkspaceDir);
+      setAgentWorkspaceForTest(firstParams, agentWorkspaceDir);
+      const firstHarness = createStartedThreadHarness(async (method) =>
+        method === "thread/start"
+          ? threadStartResult("thread-1", {
+              cwd: agentWorkspaceDir,
+              instructionSources: [agentsPath],
+            })
+          : undefined,
+      );
+      const firstRun = runCodexAppServerAttempt(firstParams);
+      await firstHarness.waitForMethod("turn/start");
+      await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+      await firstRun;
+
+      const threadStart = firstHarness.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      const startDeveloperInstructions = (
+        threadStart?.params as { developerInstructions?: string } | undefined
+      )?.developerInstructions;
+      expect(startDeveloperInstructions).not.toContain("native project-doc discovery");
+      expect(startDeveloperInstructions).not.toContain(capturedGuidance);
+      expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+        threadId: "thread-1",
+        agentWorkspaceDeveloperInstructions: expect.stringContaining(capturedGuidance),
+      });
+
+      await fs.rm(agentsPath);
+      const resumeParams = createParams(
+        sessionFile,
+        crossWorkspace ? executionDir : agentWorkspaceDir,
+      );
+      resumeParams.bootstrapWorkspaceDir = agentWorkspaceDir;
+      setAgentWorkspaceForTest(resumeParams, agentWorkspaceDir);
+      const resumeHarness = createResumeHarness();
+      const resumedRun = runCodexAppServerAttempt(resumeParams);
+      await resumeHarness.waitForMethod("turn/start");
+      await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+      await resumedRun;
+
+      const threadResume = resumeHarness.requests.find(
+        (request) => request.method === "thread/resume",
+      );
+      expect(
+        (threadResume?.params as { developerInstructions?: string } | undefined)
+          ?.developerInstructions,
+      ).toContain(capturedGuidance);
+    },
+  );
+
+  it("keeps an empty agent instruction snapshot empty after AGENTS.md is created", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const firstHarness = createStartedThreadHarness();
+    const firstRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await firstHarness.waitForMethod("turn/start");
+    await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await firstRun;
+    const threadStart = firstHarness.requests.find((request) => request.method === "thread/start");
+    expect(
+      (threadStart?.params as { config?: { project_doc_max_bytes?: number } } | undefined)?.config
+        ?.project_doc_max_bytes,
+    ).toBe(131_072);
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      agentWorkspaceDeveloperInstructions: CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY,
+    });
+
+    const lateGuidance = "This guidance belongs only to a new session.";
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), lateGuidance);
+    const resumeHarness = createResumeHarness();
+    const resumedRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+    await resumedRun;
+
+    const threadResume = resumeHarness.requests.find(
+      (request) => request.method === "thread/resume",
+    );
+    const resumeRequest = threadResume?.params as
+      | { config?: { project_doc_max_bytes?: number }; developerInstructions?: string }
+      | undefined;
+    expect(resumeRequest?.config?.project_doc_max_bytes).toBe(0);
+    expect(resumeRequest?.developerInstructions).toContain("Frozen Codex Project Instructions");
+    expect(resumeRequest?.developerInstructions).not.toContain(lateGuidance);
+  });
+
+  it("rejects a cold host resume when project instructions belong to a sandbox environment", async () => {
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
+      createRuntimeDynamicTool("exec"),
+      createRuntimeDynamicTool("process"),
+      createRuntimeDynamicTool("message"),
+    ]);
+    const { sessionFile, workspaceDir } = createRunPaths();
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const sandbox = {
+      ...createSandboxContext({}),
+      sessionKey: "agent:main:sandbox-authority",
+      workspaceDir,
+      agentWorkspaceDir: workspaceDir,
+      runtimeId: `sandbox-authority-${path.basename(tempDir)}`,
+      runtimeLabel: "Sandbox instruction authority",
+      containerName: "sandbox-instruction-authority",
+    };
+    const pluginConfig = {
+      appServer: {
+        mode: "yolo" as const,
+        experimental: { sandboxExecServer: true },
+      },
+    };
+    const sandboxParams = createParams(sessionFile, workspaceDir);
+    sandboxParams.disableTools = false;
+    sandboxParams.runtimePlan = createCodexRuntimePlanFixture();
+    sandboxParams.sandbox = sandbox as never;
+    setCodexTestModelSupportsTools(sandboxParams, true);
+    setAgentWorkspaceForTest(sandboxParams, workspaceDir);
+    const sandboxHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-sandbox", {
+            cwd: "/workspace",
+            instructionSources: ["/workspace/AGENTS.md"],
+          })
+        : undefined,
+    );
+
+    const sandboxRun = runCodexAppServerAttempt(sandboxParams, { pluginConfig });
+    await sandboxHarness.waitForMethod("turn/start");
+    await sandboxHarness.completeTurn({ threadId: "thread-sandbox", turnId: "turn-1" });
+    await sandboxRun;
+    const initialTurnStartIndex = sandboxHarness.requests.findIndex(
+      (request) => request.method === "turn/start",
+    );
+    expect(initialTurnStartIndex).toBeGreaterThanOrEqual(0);
+    sandboxHarness.requests.splice(initialTurnStartIndex, 1);
+    const warmSandboxParams = createParams(sessionFile, workspaceDir);
+    warmSandboxParams.disableTools = false;
+    warmSandboxParams.runtimePlan = createCodexRuntimePlanFixture();
+    warmSandboxParams.sandbox = sandbox as never;
+    setCodexTestModelSupportsTools(warmSandboxParams, true);
+    setAgentWorkspaceForTest(warmSandboxParams, workspaceDir);
+    const warmSandboxRun = runCodexAppServerAttempt(warmSandboxParams, { pluginConfig });
+    await sandboxHarness.waitForMethod("turn/start");
+    await sandboxHarness.completeTurn({ threadId: "thread-sandbox", turnId: "turn-1" });
+    const warmSandboxResult = await warmSandboxRun;
+    expect(readAttemptTerminal(warmSandboxResult)).toMatchObject({
+      aborted: false,
+      timedOut: false,
+    });
+    expect(
+      sandboxHarness.requests.filter((request) => request.method === "thread/start"),
+    ).toHaveLength(1);
+    expect(sandboxHarness.requests.map((request) => request.method)).not.toContain("thread/resume");
+    sandboxHarness.close(new Error("sandbox app-server process exited"));
+
+    const hostHarness = createStartedThreadHarness(async (method) => {
+      if (method === "thread/resume") {
+        throw new Error("unsafe thread/resume reached");
+      }
+      return undefined;
+    });
+    const hostParams = createParams(sessionFile, workspaceDir);
+    setAgentWorkspaceForTest(hostParams, workspaceDir);
+
+    await expect(runCodexAppServerAttempt(hostParams, { pluginConfig })).rejects.toThrow(
+      "original project instructions belong to an unavailable environment",
+    );
+    expect(hostHarness.requests.map((request) => request.method)).not.toContain("thread/resume");
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      threadId: "thread-sandbox",
+      projectInstructionsUnavailableToGateway: true,
+    });
+  });
+
+  it("keeps an empty sandbox instruction selection resumable on the host", async () => {
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
+      createRuntimeDynamicTool("exec"),
+      createRuntimeDynamicTool("process"),
+      createRuntimeDynamicTool("message"),
+    ]);
+    const { sessionFile, workspaceDir } = createRunPaths();
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const sandbox = {
+      ...createSandboxContext({}),
+      sessionKey: "agent:main:sandbox-empty-authority",
+      workspaceDir,
+      agentWorkspaceDir: workspaceDir,
+      runtimeId: `sandbox-empty-authority-${path.basename(tempDir)}`,
+      runtimeLabel: "Sandbox empty instruction authority",
+      containerName: "sandbox-empty-instruction-authority",
+    };
+    const pluginConfig = {
+      codexDynamicToolsExclude: ["exec", "process"],
+      appServer: {
+        mode: "yolo" as const,
+        experimental: { sandboxExecServer: true },
+      },
+    };
+    const sandboxParams = createParams(sessionFile, workspaceDir);
+    sandboxParams.disableTools = false;
+    sandboxParams.runtimePlan = createCodexRuntimePlanFixture();
+    sandboxParams.sandbox = sandbox as never;
+    setCodexTestModelSupportsTools(sandboxParams, true);
+    setAgentWorkspaceForTest(sandboxParams, workspaceDir);
+    const sandboxHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-sandbox-empty", {
+            cwd: "/workspace",
+            instructionSources: [],
+          })
+        : undefined,
+    );
+
+    const sandboxRun = runCodexAppServerAttempt(sandboxParams, { pluginConfig });
+    await sandboxHarness.waitForMethod("turn/start");
+    await sandboxHarness.completeTurn({ threadId: "thread-sandbox-empty", turnId: "turn-1" });
+    await sandboxRun;
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      threadId: "thread-sandbox-empty",
+      agentWorkspaceDeveloperInstructions: CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY,
+    });
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.not.toHaveProperty(
+      "projectInstructionsUnavailableToGateway",
+    );
+    sandboxHarness.close(new Error("sandbox app-server process exited"));
+
+    const hostHarness = createResumeHarness({ instructionSources: [] });
+    const hostParams = createParams(sessionFile, workspaceDir);
+    hostParams.runtimePlan = createCodexRuntimePlanFixture();
+    setCodexTestModelSupportsTools(hostParams, true);
+    setAgentWorkspaceForTest(hostParams, workspaceDir);
+    const hostRun = runCodexAppServerAttempt(hostParams, { pluginConfig });
+    await hostHarness.waitForMethod("turn/start");
+    await hostHarness.completeTurn({ threadId: "thread-sandbox-empty", turnId: "turn-2" });
+    await hostRun;
+
+    expect(hostHarness.requests.map((request) => request.method)).toContain("thread/resume");
+    const threadResume = hostHarness.requests.find((request) => request.method === "thread/resume");
+    const resumeRequest = threadResume?.params as
+      | { config?: { project_doc_max_bytes?: number }; developerInstructions?: string }
+      | undefined;
+    expect(resumeRequest?.config?.project_doc_max_bytes).toBe(0);
+    expect(resumeRequest?.developerInstructions).toContain("Frozen Codex Project Instructions");
+  });
+
+  it("keeps a nonempty same-workspace snapshot frozen after AGENTS.md changes", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const agentsPath = path.join(workspaceDir, "AGENTS.md");
+    const capturedGuidance = "Keep this original guidance for the existing thread.";
+    const replacementGuidance = "This replacement belongs only to a new thread.";
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(agentsPath, capturedGuidance);
+
+    const firstHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-1", {
+            cwd: workspaceDir,
+            instructionSources: [agentsPath],
+          })
+        : undefined,
+    );
+    const firstRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await firstHarness.waitForMethod("turn/start");
+    await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await firstRun;
+    const threadStart = firstHarness.requests.find((request) => request.method === "thread/start");
+    expect(
+      (threadStart?.params as { config?: { project_doc_max_bytes?: number } } | undefined)?.config
+        ?.project_doc_max_bytes,
+    ).toBe(131_072);
+
+    await fs.writeFile(agentsPath, replacementGuidance);
+    const resumeHarness = createResumeHarness();
+    const resumedRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+    await resumedRun;
+
+    const threadResume = resumeHarness.requests.find(
+      (request) => request.method === "thread/resume",
+    );
+    const resumeRequest = threadResume?.params as
+      | { config?: { project_doc_max_bytes?: number }; developerInstructions?: string }
+      | undefined;
+    expect(resumeRequest?.config?.project_doc_max_bytes).toBe(0);
+    expect(resumeRequest?.developerInstructions).toContain(capturedGuidance);
+    expect(resumeRequest?.developerInstructions).not.toContain(replacementGuidance);
+  });
+
+  it("keeps the established nested AGENTS.md hierarchy after root drift on cold resume", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const nestedDir = path.join(workspaceDir, "packages", "worker");
+    const rootAgentsPath = path.join(workspaceDir, "AGENTS.md");
+    const capturedRootGuidance = "Keep the original root policy for this thread.";
+    const capturedNestedGuidance = "Keep the original nested policy for this thread.";
+    const replacementRootGuidance = "This replacement root belongs only to a new thread.";
+    await fs.mkdir(path.join(workspaceDir, ".git"), { recursive: true });
+    await fs.mkdir(nestedDir, { recursive: true });
+    await fs.writeFile(rootAgentsPath, capturedRootGuidance);
+    await fs.writeFile(path.join(nestedDir, "AGENTS.md"), capturedNestedGuidance);
+    const createNestedParams = () => {
+      const params = createParams(sessionFile, workspaceDir);
+      params.cwd = nestedDir;
+      setAgentWorkspaceForTest(params, workspaceDir);
+      return params;
+    };
+
+    const firstHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-1", {
+            cwd: nestedDir,
+            instructionSources: [rootAgentsPath, path.join(nestedDir, "AGENTS.md")],
+          })
+        : undefined,
+    );
+    const firstRun = runCodexAppServerAttempt(createNestedParams());
+    await firstHarness.waitForMethod("turn/start");
+    await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await firstRun;
+    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+      threadId: "thread-1",
+      agentWorkspaceDeveloperInstructions: expect.stringContaining(capturedNestedGuidance),
+    });
+
+    await fs.writeFile(rootAgentsPath, replacementRootGuidance);
+    const resumeHarness = createResumeHarness();
+    const resumedRun = runCodexAppServerAttempt(createNestedParams());
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+    await resumedRun;
+
+    const threadResume = resumeHarness.requests.find(
+      (request) => request.method === "thread/resume",
+    );
+    const resumeRequest = threadResume?.params as
+      | { config?: { project_doc_max_bytes?: number }; developerInstructions?: string }
+      | undefined;
+    expect(resumeRequest?.config?.project_doc_max_bytes).toBe(0);
+    expect(resumeRequest?.developerInstructions).toContain(capturedRootGuidance);
+    expect(resumeRequest?.developerInstructions).toContain(capturedNestedGuidance);
+    expect(resumeRequest?.developerInstructions).not.toContain(replacementRootGuidance);
+  });
+
+  it("keeps cross-workspace native project docs enabled when an empty agent root later appears", async () => {
+    const { sessionFile, workspaceDir: executionDir } = createRunPaths();
+    const agentWorkspaceDir = path.join(tempDir, "late-cross-workspace-agent-root");
+    const lateGuidance = "This late agent-root guidance must not enter the existing thread.";
+    await fs.mkdir(executionDir, { recursive: true });
+    await fs.mkdir(agentWorkspaceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(executionDir, "AGENTS.md"),
+      "Keep native execution-workspace discovery active.",
+    );
+    const createCrossWorkspaceParams = () => {
+      const params = createParams(sessionFile, executionDir);
+      params.bootstrapWorkspaceDir = agentWorkspaceDir;
+      setAgentWorkspaceForTest(params, agentWorkspaceDir);
+      return params;
+    };
+
+    const firstHarness = createStartedThreadHarness();
+    const firstRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+    await firstHarness.waitForMethod("turn/start");
+    await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await firstRun;
+
+    await fs.writeFile(path.join(agentWorkspaceDir, "AGENTS.md"), lateGuidance);
+    const resumeHarness = createResumeHarness();
+    const resumedRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+    await resumedRun;
+
+    const threadResume = resumeHarness.requests.find(
+      (request) => request.method === "thread/resume",
+    );
+    const resumeRequest = threadResume?.params as
+      | { config?: { project_doc_max_bytes?: number }; developerInstructions?: string }
+      | undefined;
+    expect(resumeRequest?.config?.project_doc_max_bytes).toBe(131_072);
+    expect(resumeRequest?.developerInstructions).not.toContain(lateGuidance);
+  });
+
+  it.each(["removed", "blanked"] as const)(
+    "keeps a nonempty agent instruction snapshot after AGENTS.md is %s",
+    async (change) => {
+      const { sessionFile, workspaceDir: executionDir } = createRunPaths();
+      const agentWorkspaceDir = path.join(tempDir, `frozen-agent-workspace-${change}`);
+      const agentsPath = path.join(agentWorkspaceDir, "AGENTS.md");
+      const capturedGuidance = "This guidance stays frozen for the existing session.";
+      await fs.mkdir(executionDir, { recursive: true });
+      await fs.mkdir(agentWorkspaceDir, { recursive: true });
+      await fs.writeFile(agentsPath, capturedGuidance);
+      const createCrossWorkspaceParams = () => {
+        const params = createParams(sessionFile, executionDir);
+        params.bootstrapWorkspaceDir = agentWorkspaceDir;
+        setAgentWorkspaceForTest(params, agentWorkspaceDir);
+        return params;
+      };
+
+      const firstHarness = createStartedThreadHarness();
+      const firstRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+      await firstHarness.waitForMethod("turn/start");
+      await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+      await firstRun;
+
+      if (change === "removed") {
+        await fs.rm(agentsPath);
+      } else {
+        await fs.writeFile(agentsPath, "\n");
+      }
+
+      const resumeHarness = createResumeHarness();
+      const resumedRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+      await resumeHarness.waitForMethod("turn/start");
+      await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+      await resumedRun;
+
+      const threadResume = resumeHarness.requests.find(
+        (request) => request.method === "thread/resume",
+      );
+      expect(
+        (threadResume?.params as { developerInstructions?: string } | undefined)
+          ?.developerInstructions,
+      ).toContain(capturedGuidance);
+    },
+  );
+
+  it("lets an ordinary tools-unsupported turn capture after a tool-disabled first run", async () => {
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const capturedGuidance = "Capture these instructions on the first eligible ordinary turn.";
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), capturedGuidance);
+
+    const isolatedHarness = createStartedThreadHarness();
+    const isolatedParams = createParams(sessionFile, workspaceDir);
+    isolatedParams.disableTools = true;
+    const isolatedRun = runCodexAppServerAttempt(isolatedParams);
+    await isolatedHarness.waitForMethod("turn/start");
+    await isolatedHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await isolatedRun;
+
+    const isolatedStart = isolatedHarness.requests.find(
+      (request) => request.method === "thread/start",
+    );
+    expect(
+      (isolatedStart?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain(capturedGuidance);
+    const isolatedBinding = await readCodexAppServerBinding(sessionFile);
+    expect(isolatedBinding).toMatchObject({ threadId: "thread-1" });
+    expect(isolatedBinding).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+
+    const ordinaryHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start"
+        ? threadStartResult("thread-2", {
+            cwd: workspaceDir,
+            instructionSources: [path.join(workspaceDir, "AGENTS.md")],
+          })
+        : undefined,
+    );
+    const ordinaryRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await ordinaryHarness.waitForMethod("turn/start");
+    await ordinaryHarness.completeTurn({ threadId: "thread-2", turnId: "turn-2" });
+    await ordinaryRun;
+
+    expect(ordinaryHarness.requests.map((request) => request.method)).toContain("thread/start");
+    const ordinaryStart = ordinaryHarness.requests.find(
+      (request) => request.method === "thread/start",
+    );
+    expect(
+      (ordinaryStart?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain("native project-doc discovery");
+    expect(
+      (ordinaryStart?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain(capturedGuidance);
+  });
+
+  it("keeps a captured snapshot out of a tool-disabled transient thread", async () => {
+    const { sessionFile, workspaceDir: executionDir } = createRunPaths();
+    const agentWorkspaceDir = path.join(tempDir, "isolated-agent-workspace");
+    const capturedGuidance = "Ordinary session instructions must not cross isolation.";
+    await fs.mkdir(executionDir, { recursive: true });
+    await fs.mkdir(agentWorkspaceDir, { recursive: true });
+    await fs.writeFile(path.join(agentWorkspaceDir, "AGENTS.md"), capturedGuidance);
+    const createCrossWorkspaceParams = () => {
+      const params = createParams(sessionFile, executionDir);
+      params.bootstrapWorkspaceDir = agentWorkspaceDir;
+      setAgentWorkspaceForTest(params, agentWorkspaceDir);
+      return params;
+    };
+
+    const ordinaryHarness = createStartedThreadHarness();
+    const ordinaryRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+    await ordinaryHarness.waitForMethod("turn/start");
+    await ordinaryHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await ordinaryRun;
+
+    const isolatedHarness = createStartedThreadHarness(async (method) =>
+      method === "thread/start" ? threadStartResult("thread-isolated") : undefined,
+    );
+    const isolatedParams = createCrossWorkspaceParams();
+    isolatedParams.disableTools = true;
+    const isolatedRun = runCodexAppServerAttempt(isolatedParams);
+    await isolatedHarness.waitForMethod("turn/start");
+    await isolatedHarness.completeTurn({ threadId: "thread-isolated", turnId: "turn-2" });
+    await isolatedRun;
+
+    const isolatedStart = isolatedHarness.requests.find(
+      (request) => request.method === "thread/start",
+    );
+    expect(
+      (isolatedStart?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain(capturedGuidance);
+    expect(await readCodexAppServerBinding(sessionFile)).toMatchObject({
+      threadId: "thread-1",
+      agentWorkspaceDeveloperInstructions: expect.stringContaining(capturedGuidance),
+    });
+
+    const resumeHarness = createResumeHarness();
+    const resumedRun = runCodexAppServerAttempt(createCrossWorkspaceParams());
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-3" });
+    await resumedRun;
+    const resume = resumeHarness.requests.find((request) => request.method === "thread/resume");
+    expect(
+      (resume?.params as { developerInstructions?: string } | undefined)?.developerInstructions,
+    ).toContain(capturedGuidance);
   });
 
   it("injects bounded MEMORY.md when memory tools are unavailable", async () => {
@@ -4521,7 +5172,9 @@ describe("runCodexAppServerAttempt", () => {
   ])("keeps $name out of Codex heartbeat context", async ({ contents }) => {
     const { sessionFile, workspaceDir } = createRunPaths();
     const heartbeatPath = path.join(workspaceDir, "HEARTBEAT.md");
+    const agentGuidance = "Follow lightweight heartbeat AGENTS guidance.";
     await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), agentGuidance);
     await fs.writeFile(heartbeatPath, contents);
     const harness = createStartedThreadHarness();
     const params = createParams(sessionFile, workspaceDir);
@@ -4548,6 +5201,7 @@ describe("runCodexAppServerAttempt", () => {
     };
     const collaborationInstructions =
       turnStartParams.collaborationMode?.settings?.developer_instructions ?? "";
+    expect(threadStartParams.developerInstructions ?? "").not.toContain(agentGuidance);
     expect(collaborationInstructions).not.toContain("This is an OpenClaw heartbeat turn");
     expect(collaborationInstructions).not.toContain("HEARTBEAT.md exists");
     expect(collaborationInstructions).not.toContain(heartbeatPath);
@@ -4557,6 +5211,9 @@ describe("runCodexAppServerAttempt", () => {
       expect(turnStartParams.input?.[0]?.text ?? "").not.toContain(legacyContent);
       expect(collaborationInstructions).not.toContain(legacyContent);
     }
+    const binding = await readCodexAppServerBinding(sessionFile);
+    expect(binding).toMatchObject({ threadId: "thread-1" });
+    expect(binding).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
   });
   it("keeps lightweight cron Codex turns out of OpenClaw bootstrap context", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
@@ -4598,6 +5255,24 @@ describe("runCodexAppServerAttempt", () => {
     expect(turnStartParams.input?.[0]?.text).toBe(exactCommand);
     expect(result.systemPromptReport?.skills).toMatchObject({ promptChars: 0, entries: [] });
     expect(result.systemPromptReport?.skills.hash).toMatch(/^[a-f0-9]{64}$/u);
+    const resumeHarness = createResumeHarness({
+      instructionSources: [path.join(workspaceDir, "AGENTS.md")],
+    });
+    const resumedRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
+    await resumeHarness.waitForMethod("turn/start");
+    await resumeHarness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+    await resumedRun;
+    const threadResume = resumeHarness.requests.find(
+      (request) => request.method === "thread/resume",
+    );
+    expect(
+      (threadResume?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain("native project-doc discovery");
+    expect(
+      (threadResume?.params as { developerInstructions?: string } | undefined)
+        ?.developerInstructions,
+    ).not.toContain("Follow AGENTS guidance.");
   });
 
   it("keeps lightweight cron delivery hints byte-for-byte without OpenClaw prompt context", async () => {

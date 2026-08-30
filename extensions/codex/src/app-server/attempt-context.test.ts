@@ -22,6 +22,9 @@ import {
 } from "./attempt-context.js";
 import type { CodexDynamicToolSpec } from "./protocol.js";
 import type { CodexAppServerContextEngineBinding } from "./session-binding.js";
+import { useAutoCleanupTempDirTracker } from "./test-support.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -94,6 +97,9 @@ describe("Codex app-server attempt context", () => {
         bootstrapFiles: [],
         contextFiles: [],
         inheritsAgentWorkspace: false,
+        agentWorkspaceDeveloperInstructionsAllowed: true,
+        nativeProjectDocNeedsOpenClawCarrier: false,
+        nativeProjectInstructionSnapshotAllowed: true,
         promptContextFiles: [],
       },
       skillsPrompt: "",
@@ -118,11 +124,13 @@ describe("Codex app-server attempt context", () => {
     expect(report.tools.schemaChars).toBe(message?.schemaChars);
   });
 
-  it("keeps MEMORY.md injected when sandbox effective workspace differs", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-memory-workspace-"));
-    const sandboxWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-memory-sandbox-"));
+  it("carries configured AGENTS.md when a sandbox changes the execution root", async () => {
+    const workspaceDir = tempDirs.make("codex-memory-workspace-");
+    const sandboxWorkspaceDir = tempDirs.make("codex-memory-sandbox-");
     const memorySummary = "Sandboxed turns need bounded memory fallback.";
+    const agentsGuidance = "Sandboxed turns still follow the agent operating framework.";
     await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), memorySummary);
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), agentsGuidance);
 
     const context = await buildCodexWorkspaceBootstrapContext({
       params: {
@@ -137,6 +145,7 @@ describe("Codex app-server attempt context", () => {
         },
       } as EmbeddedRunAttemptParams,
       resolvedWorkspace: workspaceDir,
+      executionWorkspace: sandboxWorkspaceDir,
       effectiveWorkspace: sandboxWorkspaceDir,
       sessionKey: "agent:main:session-1",
       sessionAgentId: "main",
@@ -144,9 +153,16 @@ describe("Codex app-server attempt context", () => {
       ringZeroActive: false,
     });
 
-    expect(context.memoryReferenceFiles).toEqual([]);
-    expect(context.promptContext).toContain(memorySummary);
-    expect(context.memoryToolRouted).toBe(false);
+    expect(context.memoryReferenceFiles).toEqual([
+      { path: path.join(workspaceDir, "MEMORY.md"), content: memorySummary },
+    ]);
+    expect(context.promptContext).toBeUndefined();
+    expect(context.threadDeveloperInstructions).toContain("OpenClaw Agent Workspace Instructions");
+    expect(context.threadDeveloperInstructions).toContain(agentsGuidance);
+    expect(context.threadDeveloperInstructions).not.toContain("native project-doc discovery");
+    expect(context.agentWorkspaceDeveloperInstructions).toContain(agentsGuidance);
+    expect(context.threadDeveloperInstructionFiles).toHaveLength(1);
+    expect(context.memoryToolRouted).toBe(true);
   });
 
   it("passes agent context to Codex memory collaboration guidance", async () => {
@@ -200,6 +216,67 @@ describe("Codex app-server attempt context", () => {
     }
   });
 
+  it("defers same-workspace AGENTS.md authority to native Codex discovery", async () => {
+    const workspaceDir = tempDirs.make("codex-agent-instructions-");
+    const agentsGuidance = "Canonical agent operating instructions";
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), agentsGuidance);
+
+    try {
+      const context = await buildCodexWorkspaceBootstrapContext({
+        params: {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          config: { agents: { defaults: { workspace: workspaceDir } } },
+        } as EmbeddedRunAttemptParams,
+        resolvedWorkspace: workspaceDir,
+        executionWorkspace: workspaceDir,
+        effectiveWorkspace: workspaceDir,
+        sessionKey: "agent:main:session-1",
+        sessionAgentId: "main",
+        memoryToolNames: [],
+        ringZeroActive: false,
+      });
+
+      expect(context.inheritsAgentWorkspace).toBe(false);
+      expect(context.threadDeveloperInstructions).toBeUndefined();
+      expect(context.agentWorkspaceDeveloperInstructions).toBeUndefined();
+      expect(context.threadDeveloperInstructionFiles).toEqual([]);
+      expect(context.promptContext).toBeUndefined();
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not duplicate the native root-to-cwd AGENTS.md hierarchy", async () => {
+    const workspaceDir = tempDirs.make("codex-agent-hierarchy-");
+    const nestedDir = path.join(workspaceDir, "packages", "worker");
+    const rootGuidance = "Keep the established root policy.";
+    const nestedGuidance = "Keep the established nested policy.";
+    await fs.mkdir(path.join(workspaceDir, ".git"), { recursive: true });
+    await fs.mkdir(nestedDir, { recursive: true });
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), rootGuidance);
+    await fs.writeFile(path.join(nestedDir, "AGENTS.md"), nestedGuidance);
+
+    const context = await buildCodexWorkspaceBootstrapContext({
+      params: {
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        config: { agents: { defaults: { workspace: workspaceDir } } },
+      } as EmbeddedRunAttemptParams,
+      resolvedWorkspace: workspaceDir,
+      executionWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      effectiveCwd: nestedDir,
+      sessionKey: "agent:main:session-1",
+      sessionAgentId: "main",
+      memoryToolNames: [],
+      ringZeroActive: false,
+    });
+
+    expect(context.threadDeveloperInstructions).toBeUndefined();
+    expect(context.agentWorkspaceDeveloperInstructions).toBeUndefined();
+  });
+
   it("inherits agent workspace instructions when Codex executes in another folder", async () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-agent-workspace-"));
     const executionDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-execution-workspace-"));
@@ -242,6 +319,73 @@ describe("Codex app-server attempt context", () => {
       await fs.rm(workspaceDir, { recursive: true, force: true });
       await fs.rm(executionDir, { recursive: true, force: true });
     }
+  });
+
+  it("leaves same-workspace sandbox project documents owned by the selected environment", async () => {
+    const workspaceDir = tempDirs.make("codex-selected-environment-workspace-");
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "Selected-environment policy");
+
+    const context = await buildCodexWorkspaceBootstrapContext({
+      params: {
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        config: { agents: { defaults: { workspace: workspaceDir } } },
+      } as EmbeddedRunAttemptParams,
+      resolvedWorkspace: workspaceDir,
+      executionWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      effectiveCwd: workspaceDir,
+      sessionKey: "agent:main:session-1",
+      sessionAgentId: "main",
+      memoryToolNames: [],
+      ringZeroActive: false,
+      sandboxed: true,
+    });
+
+    expect(context.nativeProjectInstructionSnapshotAllowed).toBe(false);
+    expect(context.nativeProjectDocNeedsOpenClawCarrier).toBe(false);
+    expect(context.threadDeveloperInstructions).toBeUndefined();
+    expect(context.agentWorkspaceDeveloperInstructions).toBeUndefined();
+  });
+
+  it.each([
+    {
+      name: "message-only",
+      overrides: {
+        toolsAllow: ["message"],
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    },
+    { name: "tool-disabled", overrides: { disableTools: true } },
+    {
+      name: "lightweight heartbeat",
+      overrides: { bootstrapContextMode: "lightweight", bootstrapContextRunKind: "heartbeat" },
+    },
+  ])("keeps $name cross-workspace turns free of agent instructions", async ({ overrides }) => {
+    const workspaceDir = tempDirs.make("codex-isolated-agent-workspace-");
+    const executionDir = tempDirs.make("codex-isolated-execution-workspace-");
+    await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "Ambient agent instructions");
+
+    const context = await buildCodexWorkspaceBootstrapContext({
+      params: {
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        config: { agents: { defaults: { workspace: workspaceDir } } },
+        ...overrides,
+      } as EmbeddedRunAttemptParams,
+      resolvedWorkspace: workspaceDir,
+      executionWorkspace: executionDir,
+      effectiveWorkspace: executionDir,
+      sessionKey: "agent:main:session-1",
+      sessionAgentId: "main",
+      memoryToolNames: [],
+      ringZeroActive: false,
+    });
+
+    expect(context.inheritsAgentWorkspace).toBe(true);
+    expect(context.agentWorkspaceDeveloperInstructionsAllowed).toBe(false);
+    expect(context.threadDeveloperInstructions).toBeUndefined();
+    expect(context.threadDeveloperInstructionFiles).toEqual([]);
   });
 
   it("keeps ambient workspace instructions out of overlapping ring-zero restrictions", async () => {

@@ -1,4 +1,8 @@
 import { formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  assertCodexBindingMayBeReplaced,
+  type CodexAppServerThreadBinding,
+} from "./session-binding.js";
 
 export class CodexThreadStartRequestError extends Error {
   constructor(cause: unknown) {
@@ -25,5 +29,49 @@ export class CodexAdoptedThreadActiveError extends Error {
   constructor() {
     super("Codex session became active in another runner; wait for it to finish before continuing");
     this.name = "CodexAdoptedThreadActiveError";
+  }
+}
+
+class CodexProjectInstructionsUnavailableError extends Error {
+  constructor(threadId: string, operation: string) {
+    super(
+      `Cannot ${operation} Codex thread ${threadId}: its original project instructions belong to an unavailable environment. ` +
+        "Continue it in the original execution environment or start a new session.",
+    );
+    this.name = "CodexProjectInstructionsUnavailableError";
+  }
+}
+
+export function assertCodexProjectInstructionEnvironmentAvailable(
+  binding: CodexAppServerThreadBinding,
+  environmentSelectionFingerprint: string | undefined,
+  operation: string,
+): void {
+  if (
+    binding.projectInstructionsUnavailableToGateway === true &&
+    binding.environmentSelectionFingerprint !== environmentSelectionFingerprint
+  ) {
+    throw new CodexProjectInstructionsUnavailableError(binding.threadId, operation);
+  }
+}
+
+export function assertCodexBindingMayBeReplacedInEnvironment(
+  binding: CodexAppServerThreadBinding,
+  environmentSelectionFingerprint: string | undefined,
+  operation: string,
+): void {
+  assertCodexProjectInstructionEnvironmentAvailable(
+    binding,
+    environmentSelectionFingerprint,
+    operation,
+  );
+  assertCodexBindingMayBeReplaced(binding, operation);
+}
+
+export function assertCodexProjectInstructionColdResumeAllowed(
+  binding: CodexAppServerThreadBinding,
+): void {
+  if (binding.projectInstructionsUnavailableToGateway === true) {
+    throw new CodexProjectInstructionsUnavailableError(binding.threadId, "cold-resume");
   }
 }

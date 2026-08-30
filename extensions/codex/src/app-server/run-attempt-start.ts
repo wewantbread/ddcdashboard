@@ -55,6 +55,10 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
     turnState.promptBuild.developerInstructions,
     attemptTools.scheduledConfiguredMcp?.diagnosticNotice,
   );
+  const coldDeveloperInstructions = joinPresentSections(
+    developerInstructions,
+    context.frozenNativeProjectInstructions,
+  );
   const {
     params,
     attemptClientFactory,
@@ -119,7 +123,13 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
       persistentWebSearchAllowed: toolState.persistentWebSearchAllowed,
       webSearchAllowed: toolState.webSearchAllowed,
       developerInstructions,
+      coldDeveloperInstructions,
       agentWorkspaceDeveloperInstructions: context.agentWorkspaceDeveloperInstructions,
+      agentWorkspaceDeveloperInstructionsAllowed:
+        context.workspaceBootstrapContext.agentWorkspaceDeveloperInstructionsAllowed,
+      captureNativeProjectInstructions: context.captureNativeProjectInstructions,
+      projectInstructionsUnavailableToGateway: context.projectInstructionsUnavailableToGateway,
+      nativeProjectDocsDisabledOnResume: context.nativeProjectDocsDisabledOnResume,
       buildFinalConfigPatch: buildNativeHookRelayFinalConfigPatch,
       nativeHookRelayRequired:
         (params.operation !== "settled-tool-finalization" &&
@@ -241,6 +251,7 @@ export async function startCodexAttemptRuntime(resources: CodexAttemptResources)
       developerInstructions: joinPresentSections(
         buildRenderedCodexDeveloperInstructions(),
         attemptTools.scheduledConfiguredMcp?.diagnosticNotice,
+        state.thread.liveThreadOwnership ? undefined : context.frozenNativeProjectInstructions,
       ),
       prompt: turnState.codexTurnPromptText,
       tools: toolBridge.availableSpecs,

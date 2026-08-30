@@ -29,6 +29,18 @@ const PUBLIC_OPENAI_MODEL_PROVIDER = "openai";
 const BINDING_LEASE_RETRY_INTERVAL_MS = 1_000;
 const BOUNDED_BINDING_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/i;
 
+export const CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY = [
+  "## Frozen Codex Project Instructions",
+  "",
+  "The original root-to-working-directory Codex project-document hierarchy was empty when this thread started. Project-instruction files created later do not apply to this existing thread.",
+].join("\n");
+
+export const CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY = [
+  "## Unavailable Codex Project Instructions",
+  "",
+  "The original project-document hierarchy belongs to the selected execution environment and is unavailable to this Gateway. This thread must not continue outside that live environment.",
+].join("\n");
+
 export {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
@@ -212,9 +224,14 @@ const threadBindingSchema = z
     connectionScope: z.literal("supervision").optional(),
     supervisionSourceThreadId: z.string().trim().min(1).optional(),
     authProfileId: optionalStringSchema,
-    // Freeze OpenClaw-carried AGENTS.md at thread creation; bootstrap refreshes
-    // must not mutate the inherited policy of a resumed native session.
+    // Freeze the established project-doc hierarchy at thread creation (or the
+    // configured root carrier when native discovery is unavailable). The explicit
+    // empty snapshot is a nonblank no-op authority string so prior readers retain
+    // rollback readability; undefined identifies a legacy binding.
     agentWorkspaceDeveloperInstructions: optionalNonBlankStringSchema,
+    // Codex loaded the hierarchy inside a selected execution environment, so
+    // the Gateway cannot authoritatively replay it on a physical cold resume.
+    projectInstructionsUnavailableToGateway: z.literal(true).optional().catch(undefined),
     model: optionalStringSchema,
     // Codex App Server owns selection for supervised and adopted threads. Keep
     // this marker across resumes so OpenClaw never substitutes a default or fallback.
@@ -286,6 +303,29 @@ const threadBindingSchema = z
       .catch(undefined),
   })
   .superRefine((binding, context) => {
+    if (binding.projectInstructionsUnavailableToGateway === true) {
+      if (
+        binding.agentWorkspaceDeveloperInstructions !== CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "unavailable project instructions require the rollback-safe authority marker",
+        });
+      }
+      if (!binding.environmentSelectionFingerprint) {
+        context.addIssue({
+          code: "custom",
+          message: "unavailable project instructions require their selected environment identity",
+        });
+      }
+    } else if (
+      binding.agentWorkspaceDeveloperInstructions === CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "the unavailable project-instruction marker requires its durable authority fact",
+      });
+    }
     if (binding.connectionScope === "supervision") {
       if (!binding.supervisionSourceThreadId) {
         context.addIssue({

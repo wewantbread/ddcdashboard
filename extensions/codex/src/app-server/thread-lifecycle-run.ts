@@ -11,7 +11,6 @@ import {
   type CodexPluginThreadConfig,
 } from "./plugin-thread-config.js";
 import {
-  assertCodexBindingMayBeReplaced,
   createCodexSessionGenerationSupersededError,
   normalizeCodexAppServerBindingModelProvider,
   reclaimCurrentCodexSessionGeneration,
@@ -39,9 +38,10 @@ import {
   resumePendingCodexThread,
   withCodexThreadLifecycleBinding,
 } from "./thread-lifecycle-adoption.js";
-import { CodexThreadBindingConflictError } from "./thread-lifecycle-errors.js";
+import * as lifecycleErrors from "./thread-lifecycle-errors.js";
 import { resumeExistingCodexThread, startFreshCodexThread } from "./thread-lifecycle-io.js";
 import { prepareCodexThreadLifecyclePreflight } from "./thread-lifecycle-preflight.js";
+import { captureAgentInstructions } from "./thread-lifecycle-result.js";
 import type {
   CodexAppServerThreadLifecycleBinding,
   CodexStartOrResumeThreadParams,
@@ -179,6 +179,7 @@ export async function startOrResumeThread(
             userMcpServersConfigPatch,
             pluginThreadConfig?.configPatch,
             finalConfigPatch.configPatch,
+            params.nativeProjectDocsDisabledOnResume ? { project_doc_max_bytes: 0 } : undefined,
           ),
           nativeSkillIsolation,
         ),
@@ -194,7 +195,7 @@ export async function startOrResumeThread(
         cwd: params.cwd,
         dynamicTools: params.dynamicTools,
         appServer: params.appServer,
-        developerInstructions: params.developerInstructions,
+        developerInstructions: params.coldDeveloperInstructions ?? params.developerInstructions,
         config,
         nativeCodeModeEnabled: params.nativeCodeModeEnabled,
         nativeProviderWebSearchSupport: params.nativeProviderWebSearchSupport,
@@ -217,7 +218,7 @@ export async function startOrResumeThread(
           // Supervised threads stay on the native user-home connection. Never
           // persist an outer OpenClaw auth profile onto that private ownership.
           authProfileId: undefined,
-          agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
+          ...captureAgentInstructions(params, pendingBinding.agentWorkspaceDeveloperInstructions),
           preserveNativeModel: true,
           dynamicToolsFingerprint,
           dynamicToolsContainDeferred,
@@ -245,18 +246,27 @@ export async function startOrResumeThread(
         },
       });
     }
+    const assertCurrentBindingMayBeReplaced = (
+      current: CodexAppServerThreadBinding,
+      operation: string,
+    ) =>
+      lifecycleErrors.assertCodexBindingMayBeReplacedInEnvironment(
+        current,
+        environmentSelectionFingerprint,
+        operation,
+      );
     const clearCurrentBinding = async (operation: string) => {
       const current = binding;
       if (!current?.threadId) {
         return;
       }
-      assertCodexBindingMayBeReplaced(current, operation);
+      assertCurrentBindingMayBeReplaced(current, operation);
       const cleared = await params.bindingStore.mutate(bindingIdentity, {
         kind: "clear",
         threadId: current.threadId,
       });
       if (!cleared) {
-        throw new CodexThreadBindingConflictError(current.threadId, operation);
+        throw new lifecycleErrors.CodexThreadBindingConflictError(current.threadId, operation);
       }
       binding = undefined;
     };
@@ -400,7 +410,7 @@ export async function startOrResumeThread(
       // Scheduled configured MCP moved from Codex-native config to OpenClaw dynamic tools.
       // A persistent main/named session has one binding: rotate its exact predecessor instead
       // of retaining native and scheduled variants that could diverge or widen authority.
-      assertCodexBindingMayBeReplaced(predecessorBinding, "changing configured MCP ownership");
+      assertCurrentBindingMayBeReplaced(predecessorBinding, "changing configured MCP ownership");
       embeddedAgentLog.debug(
         "codex app-server configured MCP ownership changed; starting a new thread",
         { threadId: predecessorBinding.threadId },
@@ -414,7 +424,7 @@ export async function startOrResumeThread(
       params.mcpServersFingerprintEvaluated === true &&
       binding.mcpServersFingerprint !== params.mcpServersFingerprint
     ) {
-      assertCodexBindingMayBeReplaced(binding, "changing MCP configuration");
+      assertCurrentBindingMayBeReplaced(binding, "changing MCP configuration");
       if (
         !ringZeroActive &&
         (transientNativeToolRestriction ||
@@ -448,7 +458,7 @@ export async function startOrResumeThread(
       webSearchBindingChanged &&
       !deferLegacyWebSearchRotationToTransientNativeSurface
     ) {
-      assertCodexBindingMayBeReplaced(binding, "changing web-search configuration");
+      assertCurrentBindingMayBeReplaced(binding, "changing web-search configuration");
       if (!ringZeroActive && transientWebSearchRestriction) {
         embeddedAgentLog.debug(
           "codex app-server tool surface restricted for turn; starting transient thread",
@@ -471,7 +481,7 @@ export async function startOrResumeThread(
       binding = undefined;
     }
     if (binding?.threadId && transientNativeToolRestriction && !ringZeroActive) {
-      assertCodexBindingMayBeReplaced(binding, "starting a native-tool-restricted turn");
+      assertCurrentBindingMayBeReplaced(binding, "starting a native-tool-restricted turn");
       embeddedAgentLog.debug(
         "codex app-server native tool surface disabled for turn; starting transient thread",
         {
@@ -482,7 +492,7 @@ export async function startOrResumeThread(
       binding = undefined;
     }
     if (binding?.threadId && transientDelegationRestriction) {
-      assertCodexBindingMayBeReplaced(binding, "starting a delegation-restricted turn");
+      assertCurrentBindingMayBeReplaced(binding, "starting a delegation-restricted turn");
       // Loaded Codex threads ignore resume config overrides. Keep the normal
       // binding intact and start a transient thread with collaboration disabled.
       embeddedAgentLog.debug(
@@ -615,7 +625,7 @@ export async function startOrResumeThread(
           legacyDynamicToolsFingerprint,
         )
       ) {
-        assertCodexBindingMayBeReplaced(binding, "changing the dynamic tool catalog");
+        assertCurrentBindingMayBeReplaced(binding, "changing the dynamic tool catalog");
         preserveExistingBinding = shouldStartTransientNoToolThread({
           previous: binding.dynamicToolsFingerprint,
           nextHasDynamicTools: params.dynamicTools.length > 0,

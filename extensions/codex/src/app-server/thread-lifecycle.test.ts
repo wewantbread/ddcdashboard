@@ -36,7 +36,7 @@ import {
   resetCodexTestBindingStore,
   testCodexAppServerBindingStore,
 } from "./session-binding.test-helpers.js";
-import { createCodexTestModel } from "./test-support.js";
+import { createCodexTestModel, useAutoCleanupTempDirTracker } from "./test-support.js";
 import {
   buildDeveloperInstructions,
   buildTurnCollaborationMode,
@@ -58,6 +58,7 @@ type CodexThreadLifecycleTimingLogger = NonNullable<
 
 const PROGRESS_CARD_SYSTEM_PROMPT =
   "During multi-step work, keep your progress card current with the progress_card tool; the user follows it instead of reading the transcript.";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("Codex incognito thread persistence", () => {
   it("marks only incognito-shaped harness sessions ephemeral", () => {
@@ -971,7 +972,7 @@ async function seedPendingSupervisionBinding(params: {
   return identity;
 }
 
-function threadStartResult(threadId = "thread-1") {
+function threadStartResult(threadId = "thread-1", instructionSources: string[] = []) {
   return {
     thread: {
       id: threadId,
@@ -998,7 +999,7 @@ function threadStartResult(threadId = "thread-1") {
     modelProvider: "openai",
     serviceTier: null,
     cwd: tempDir,
-    instructionSources: [],
+    instructionSources,
     approvalPolicy: "never",
     approvalsReviewer: "user",
     sandbox: { type: "dangerFullAccess" },
@@ -3549,6 +3550,418 @@ describe("Codex app-server adopted thread lifecycle", () => {
   );
 });
 
+describe("Codex agent workspace instruction binding", () => {
+  beforeEach(async () => {
+    tempDir = tempDirs.make("openclaw-codex-agent-instructions-");
+    resetCodexTestBindingStore();
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("captures exact Codex-selected sources and freezes them across cold resume", async () => {
+    const threadId = "thread-native-project-snapshot";
+    const workspaceDir = path.join(tempDir, "workspace-native-project-snapshot");
+    const cwd = path.join(workspaceDir, "packages", "worker");
+    const globalInstructions = path.join(tempDir, "codex-home", "AGENTS.md");
+    const rootInstructions = path.join(workspaceDir, "PROJECT.md");
+    const nestedInstructions = path.join(cwd, "WORKSPACE.md");
+    await fs.mkdir(path.dirname(globalInstructions), { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
+    await fs.writeFile(globalInstructions, "global authority");
+    await fs.writeFile(rootInstructions, "root custom authority");
+    await fs.writeFile(nestedInstructions, "nested custom authority");
+    const instructionSources = [globalInstructions, rootInstructions, nestedInstructions];
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const request = vi.fn(async (method: string, _requestParams?: unknown) => {
+      if (method === "thread/start" || method === "thread/resume") {
+        return threadStartResult(threadId, instructionSources);
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const common = {
+      client: { request } as never,
+      params,
+      cwd,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+      agentWorkspaceDeveloperInstructionsAllowed: true,
+    };
+
+    const started = await startOrResumeThread({
+      ...common,
+      captureNativeProjectInstructions: true,
+    });
+    const frozenInstructions = started.agentWorkspaceDeveloperInstructions;
+    expect(frozenInstructions).toContain(rootInstructions);
+    expect(frozenInstructions).toContain("root custom authority");
+    expect(frozenInstructions).toContain(nestedInstructions);
+    expect(frozenInstructions).toContain("nested custom authority");
+    expect(frozenInstructions).not.toContain(globalInstructions);
+    expect(frozenInstructions).not.toContain("global authority");
+
+    await fs.writeFile(rootInstructions, "changed authority");
+    request.mockClear();
+    const resumed = await startOrResumeThread({
+      ...common,
+      developerInstructions: frozenInstructions ?? undefined,
+      agentWorkspaceDeveloperInstructions: frozenInstructions ?? undefined,
+      nativeProjectDocsDisabledOnResume: true,
+    });
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+    expect(request.mock.calls[0]?.[1]).toMatchObject({
+      developerInstructions: frozenInstructions,
+      config: { project_doc_max_bytes: 0 },
+    });
+    expect(resumed.agentWorkspaceDeveloperInstructions).toBe(frozenInstructions);
+    expect(resumed.agentWorkspaceDeveloperInstructions).not.toContain("changed authority");
+  });
+
+  it("deletes an unbound thread when a selected source disappears before capture", async () => {
+    const threadId = "thread-missing-project-source";
+    const workspaceDir = path.join(tempDir, "workspace-missing-project-source");
+    const missingInstructions = path.join(workspaceDir, "AGENTS.md");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start") {
+        return threadStartResult(threadId, [missingInstructions]);
+      }
+      if (method === "thread/delete") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        agentWorkspaceDeveloperInstructionsAllowed: true,
+        captureNativeProjectInstructions: true,
+      }),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/delete"]);
+    await expect(
+      testCodexAppServerBindingStore.read(
+        sessionBindingIdentity({
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          config: params.config,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("deletes an unbound thread when a selected source changes during native startup", async () => {
+    const threadId = "thread-changing-project-source";
+    const workspaceDir = path.join(tempDir, "workspace-changing-project-source");
+    const instructions = path.join(workspaceDir, "AGENTS.md");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(instructions, "original authority");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start") {
+        await fs.writeFile(instructions, "changed authority");
+        const changedAt = new Date(Date.now() + 60_000);
+        await fs.utimes(instructions, changedAt, changedAt);
+        return threadStartResult(threadId, [instructions]);
+      }
+      if (method === "thread/delete") {
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+
+    await expect(
+      startOrResumeThread({
+        client: { request } as never,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer: createThreadLifecycleAppServerOptions(),
+        agentWorkspaceDeveloperInstructionsAllowed: true,
+        captureNativeProjectInstructions: true,
+      }),
+    ).rejects.toThrow("changed during native startup");
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/start", "thread/delete"]);
+  });
+
+  it("does not snapshot cached source paths while resuming a legacy binding", async () => {
+    const threadId = "thread-legacy-native-sources";
+    const workspaceDir = path.join(tempDir, "workspace-legacy-native-sources");
+    const instructions = path.join(workspaceDir, "AGENTS.md");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.writeFile(instructions, "authority loaded by the original thread");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    const request = vi.fn(async (method: string, _requestParams?: unknown) => {
+      if (method === "thread/start") {
+        return threadStartResult(threadId);
+      }
+      if (method === "thread/resume") {
+        return threadStartResult(threadId, [instructions]);
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const common = {
+      client: { request } as never,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer: createThreadLifecycleAppServerOptions(),
+    };
+
+    await startOrResumeThread({
+      ...common,
+      agentWorkspaceDeveloperInstructionsAllowed: false,
+    });
+    await fs.writeFile(instructions, "newer disk authority not loaded by the original thread");
+    request.mockClear();
+    const resumed = await startOrResumeThread({
+      ...common,
+      agentWorkspaceDeveloperInstructionsAllowed: true,
+      captureNativeProjectInstructions: true,
+    });
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+    expect(request.mock.calls[0]?.[1]).toMatchObject({
+      config: { project_doc_max_bytes: 131_072 },
+    });
+    expect(resumed).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+    await expect(
+      testCodexAppServerBindingStore.read(
+        sessionBindingIdentity({
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          config: params.config,
+        }),
+      ),
+    ).resolves.not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+  });
+
+  it.each([
+    { kind: "ordinary", supervised: false, expectedMethods: ["thread/resume"] },
+    {
+      kind: "supervised",
+      supervised: true,
+      expectedMethods: ["thread/read", "thread/resume"],
+    },
+  ])(
+    "upgrades a legacy $kind binding with agent workspace instructions on resume",
+    async ({ supervised, expectedMethods }) => {
+      const threadId = supervised ? "thread-supervised" : "thread-ordinary";
+      const sourceThreadId = "thread-source";
+      const workspaceDir = path.join(tempDir, "workspace");
+      const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+      const appServer = createThreadLifecycleAppServerOptions();
+      const request = vi.fn(async (method: string, _requestParams?: unknown) => {
+        if (method === "thread/start") {
+          return threadStartResult(threadId);
+        }
+        if (method === "thread/read") {
+          return { thread: sourceThread({ threadId }) };
+        }
+        if (method === "thread/resume") {
+          return supervised
+            ? nativeThreadResult(threadId, "native-effective", "native-provider")
+            : threadStartResult(threadId);
+        }
+        throw new Error(`unexpected method: ${method}`);
+      });
+      const common = {
+        client: { request } as never,
+        params,
+        cwd: workspaceDir,
+        dynamicTools: [],
+        appServer,
+        appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(appServer),
+      };
+
+      await startOrResumeThread(common);
+      const identity = sessionBindingIdentity({
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        agentId: params.agentId,
+        config: params.config,
+      });
+      await expect(
+        testCodexAppServerBindingStore.mutate(identity, {
+          kind: "patch",
+          threadId,
+          patch: {
+            agentWorkspaceDeveloperInstructions: undefined,
+            ...(supervised
+              ? {
+                  connectionScope: "supervision",
+                  supervisionSourceThreadId: sourceThreadId,
+                  preserveNativeModel: true,
+                  model: "native-effective",
+                  modelProvider: "native-provider",
+                  conversationSourceTransferComplete: true,
+                }
+              : {}),
+          },
+        }),
+      ).resolves.toBe(true);
+      request.mockClear();
+      const agentWorkspaceDeveloperInstructions = "Follow the agent workspace AGENTS guidance.";
+
+      const resumed = await startOrResumeThread({
+        ...common,
+        developerInstructions: agentWorkspaceDeveloperInstructions,
+        agentWorkspaceDeveloperInstructions,
+      });
+
+      expect(request.mock.calls.map(([method]) => method)).toEqual(expectedMethods);
+      expect(request.mock.calls.find(([method]) => method === "thread/resume")?.[1]).toMatchObject({
+        developerInstructions: agentWorkspaceDeveloperInstructions,
+      });
+      const supervisionBinding = supervised
+        ? {
+            connectionScope: "supervision",
+            supervisionSourceThreadId: sourceThreadId,
+            preserveNativeModel: true,
+          }
+        : {};
+      expect(resumed).toMatchObject({
+        threadId,
+        ...supervisionBinding,
+        agentWorkspaceDeveloperInstructions,
+        lifecycle: { action: "resumed" },
+      });
+      await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
+        threadId,
+        ...supervisionBinding,
+        agentWorkspaceDeveloperInstructions,
+      });
+    },
+  );
+
+  it("leaves a tool-disabled first start uncaptured so an ordinary resume can freeze instructions", async () => {
+    const threadId = "thread-tool-disabled-first";
+    const workspaceDir = path.join(tempDir, "workspace-tool-disabled-first");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    params.config = { tools: { web: { search: { enabled: false } } } };
+    const appServer = createThreadLifecycleAppServerOptions();
+    const request = vi.fn(async (method: string, _requestParams?: unknown) => {
+      if (method === "thread/start" || method === "thread/resume") {
+        return threadStartResult(threadId);
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const common = {
+      client: { request } as never,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer,
+      appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(appServer),
+    };
+
+    const isolated = await startOrResumeThread({
+      ...common,
+      agentWorkspaceDeveloperInstructionsAllowed: false,
+    });
+    const identity = sessionBindingIdentity({
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      config: params.config,
+    });
+    expect(isolated).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+    const isolatedBinding = await testCodexAppServerBindingStore.read(identity);
+    expect(isolatedBinding).toMatchObject({ threadId });
+    expect(isolatedBinding).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+
+    params.disableTools = false;
+    request.mockClear();
+    const instructions = "Follow the workspace instructions captured by the ordinary turn.";
+    const resumed = await startOrResumeThread({
+      ...common,
+      developerInstructions: instructions,
+      agentWorkspaceDeveloperInstructions: instructions,
+      agentWorkspaceDeveloperInstructionsAllowed: true,
+    });
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ developerInstructions: instructions });
+    expect(resumed).toMatchObject({
+      threadId,
+      agentWorkspaceDeveloperInstructions: instructions,
+      lifecycle: { action: "resumed" },
+    });
+    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
+      threadId,
+      agentWorkspaceDeveloperInstructions: instructions,
+    });
+  });
+
+  it("leaves lightweight cron uncaptured so a later ordinary resume can freeze instructions", async () => {
+    const threadId = "thread-lightweight-cron";
+    const workspaceDir = path.join(tempDir, "workspace-lightweight-cron");
+    const params = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    params.bootstrapContextMode = "lightweight";
+    params.bootstrapContextRunKind = "cron";
+    const appServer = createThreadLifecycleAppServerOptions();
+    const request = vi.fn(async (method: string, _requestParams?: unknown) => {
+      if (method === "thread/start" || method === "thread/resume") {
+        return threadStartResult(threadId);
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const common = {
+      client: { request } as never,
+      params,
+      cwd: workspaceDir,
+      dynamicTools: [],
+      appServer,
+      appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(appServer),
+    };
+
+    const lightweight = await startOrResumeThread(common);
+    const identity = sessionBindingIdentity({
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      config: params.config,
+    });
+    expect(lightweight).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+    const lightweightBinding = await testCodexAppServerBindingStore.read(identity);
+    expect(lightweightBinding).toMatchObject({ threadId });
+    expect(lightweightBinding).not.toHaveProperty("agentWorkspaceDeveloperInstructions");
+
+    delete params.bootstrapContextMode;
+    delete params.bootstrapContextRunKind;
+    request.mockClear();
+    const instructions = "Follow the workspace instructions captured by the ordinary turn.";
+    const resumed = await startOrResumeThread({
+      ...common,
+      developerInstructions: instructions,
+      agentWorkspaceDeveloperInstructions: instructions,
+    });
+
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
+    expect(request.mock.calls[0]?.[1]).toMatchObject({ developerInstructions: instructions });
+    expect(resumed).toMatchObject({
+      threadId,
+      agentWorkspaceDeveloperInstructions: instructions,
+      lifecycle: { action: "resumed" },
+    });
+    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
+      threadId,
+      agentWorkspaceDeveloperInstructions: instructions,
+    });
+  });
+});
+
 describe("Codex app-server supervised branch lifecycle", () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-supervision-"));
@@ -3558,200 +3971,6 @@ describe("Codex app-server supervised branch lifecycle", () => {
   afterEach(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
     vi.restoreAllMocks();
-  });
-
-  it("materializes a model-locked canonical branch with frozen agent instructions", async () => {
-    const sourceThreadId = "thread-source";
-    const probeThreadId = "thread-probe";
-    const finalThreadId = "thread-final";
-    const lastTurnId = "turn-terminal";
-    const agentWorkspaceDeveloperInstructions = "Follow the frozen supervised AGENTS guidance.";
-    const workspaceDir = path.join(tempDir, "workspace");
-    const attempt = createThreadLifecycleParams(path.join(tempDir, "session.jsonl"), workspaceDir);
-    attempt.modelId = "outer-global-default";
-    const identity = await seedPendingSupervisionBinding({
-      attempt,
-      cwd: workspaceDir,
-      pending: { sourceThreadId, lastTurnId },
-    });
-    const terminalSource = sourceThread({
-      threadId: sourceThreadId,
-      turns: [
-        {
-          id: lastTurnId,
-          status: "completed",
-          items: [
-            {
-              id: "user-1",
-              type: "userMessage",
-              content: [{ type: "text", text: "Visible question" }],
-            },
-            { id: "reasoning-1", type: "reasoning", text: "Private reasoning" },
-            {
-              id: "assistant-1",
-              type: "agentMessage",
-              text: "Visible answer",
-              phase: "final_answer",
-            },
-            { id: "tool-1", type: "commandExecution", command: "secret-tool" },
-          ],
-        },
-      ],
-    });
-    const request = vi.fn(async (method: string, requestParams: unknown) => {
-      if (method === "thread/read") {
-        const threadId = (requestParams as { threadId?: string }).threadId;
-        return {
-          thread:
-            threadId === sourceThreadId
-              ? terminalSource
-              : sourceThread({ threadId: finalThreadId }),
-        };
-      }
-      if (method === "thread/fork") {
-        return nativeThreadResult(probeThreadId, "native-effective", "native-provider");
-      }
-      if (method === "thread/start" || method === "thread/resume") {
-        return nativeThreadResult(finalThreadId, "native-effective", "native-provider");
-      }
-      if (method === "thread/inject_items" || method === "thread/archive") {
-        return {};
-      }
-      throw new Error(`unexpected method: ${method}`);
-    });
-    const dynamicTools = [
-      {
-        type: "function" as const,
-        name: "message",
-        description: "Send a message",
-        inputSchema: { type: "object", properties: {} },
-      },
-    ];
-    const commonParams = {
-      client: { request } as never,
-      params: attempt,
-      cwd: workspaceDir,
-      dynamicTools,
-      developerInstructions: agentWorkspaceDeveloperInstructions,
-      agentWorkspaceDeveloperInstructions,
-      environmentSelection: [{ environmentId: "local", cwd: workspaceDir }],
-      shellEnvironment: { GH_TOKEN: "", GITHUB_TOKEN: "" },
-      disableLoginShell: true,
-      appServer: createThreadLifecycleAppServerOptions(),
-      appServerRuntimeFingerprint: "codex-runtime-v1",
-    };
-
-    const materialized = await startOrResumeThread(commonParams);
-
-    expect(request.mock.calls.map(([method]) => method)).toEqual([
-      "thread/read",
-      "thread/fork",
-      "thread/start",
-      "thread/inject_items",
-      "thread/archive",
-    ]);
-    expect(request.mock.calls[0]?.[1]).toEqual({
-      threadId: sourceThreadId,
-      includeTurns: true,
-    });
-    const forkParams = request.mock.calls[1]?.[1] as Record<string, unknown>;
-    expect(forkParams).toMatchObject({
-      threadId: sourceThreadId,
-      lastTurnId,
-      excludeTurns: true,
-      developerInstructions: agentWorkspaceDeveloperInstructions,
-      config: {
-        project_doc_max_bytes: 131_072,
-        allow_login_shell: false,
-        shell_environment_policy: {
-          experimental_use_profile: false,
-          set: { GH_TOKEN: "", GITHUB_TOKEN: "" },
-        },
-      },
-    });
-    expect(forkParams).not.toHaveProperty("model");
-    expect(forkParams).not.toHaveProperty("modelProvider");
-    expect(forkParams).not.toHaveProperty("dynamicTools");
-    expect(forkParams).not.toHaveProperty("environments");
-    const startParams = request.mock.calls[2]?.[1] as Record<string, unknown>;
-    expect(startParams).toMatchObject({
-      model: "native-effective",
-      modelProvider: "native-provider",
-      developerInstructions: agentWorkspaceDeveloperInstructions,
-      dynamicTools,
-      environments: [{ environmentId: "local", cwd: workspaceDir }],
-      config: {
-        project_doc_max_bytes: 131_072,
-        allow_login_shell: false,
-        shell_environment_policy: {
-          experimental_use_profile: false,
-          set: { GH_TOKEN: "", GITHUB_TOKEN: "" },
-        },
-      },
-    });
-    expect(startParams.model).not.toBe(attempt.modelId);
-    expect(request.mock.calls[3]?.[1]).toEqual({
-      threadId: finalThreadId,
-      items: [
-        {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "Visible question" }],
-        },
-        {
-          type: "message",
-          role: "assistant",
-          content: [{ type: "output_text", text: "Visible answer" }],
-          phase: "final_answer",
-        },
-      ],
-    });
-    expect(JSON.stringify(request.mock.calls[3]?.[1])).not.toContain("Private reasoning");
-    expect(JSON.stringify(request.mock.calls[3]?.[1])).not.toContain("secret-tool");
-    expect(request.mock.calls[4]?.[1]).toEqual({ threadId: probeThreadId });
-    expect(materialized).toMatchObject({
-      threadId: finalThreadId,
-      model: "native-effective",
-      modelProvider: "native-provider",
-      preserveNativeModel: true,
-      agentWorkspaceDeveloperInstructions,
-      conversationSourceTransferComplete: true,
-      lifecycle: { action: "forked" },
-    });
-    expect(materialized.pendingSupervisionBranch).toBeUndefined();
-    expect(materialized.historyCoveredThrough).not.toBe(new Date(0).toISOString());
-    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
-      threadId: finalThreadId,
-      model: "native-effective",
-      modelProvider: "native-provider",
-      preserveNativeModel: true,
-      agentWorkspaceDeveloperInstructions,
-      conversationSourceTransferComplete: true,
-      appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(commonParams.appServer),
-    });
-
-    request.mockClear();
-    const resumed = await startOrResumeThread({
-      ...commonParams,
-      appServerRuntimeFingerprint: "codex-runtime-v2",
-    });
-
-    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/read", "thread/resume"]);
-    expect(request.mock.calls[0]?.[1]).toEqual({ threadId: finalThreadId, includeTurns: false });
-    expect(request.mock.calls[1]?.[1]).not.toHaveProperty("model");
-    expect(request.mock.calls[1]?.[1]).not.toHaveProperty("modelProvider");
-    expect(request.mock.calls[1]?.[1]).toMatchObject({
-      developerInstructions: agentWorkspaceDeveloperInstructions,
-    });
-    expect(resumed).toMatchObject({
-      threadId: finalThreadId,
-      preserveNativeModel: true,
-      conversationSourceTransferComplete: true,
-      lifecycle: { action: "resumed" },
-    });
-    await expect(testCodexAppServerBindingStore.read(identity)).resolves.toMatchObject({
-      appServerRuntimeFingerprint: buildCodexAppServerConnectionFingerprint(commonParams.appServer),
-    });
   });
 
   it("isolates both supervised threads and restores native MCP config on the next unrestricted turn", async () => {

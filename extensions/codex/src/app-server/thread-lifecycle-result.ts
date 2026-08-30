@@ -1,6 +1,11 @@
+import path from "node:path";
 import type { CodexPluginThreadConfig } from "./plugin-thread-config.js";
-import type { CodexThreadStartParams, CodexThreadStartResponse } from "./protocol.js";
-import type { CodexAppServerContextEngineBinding } from "./session-binding.js";
+import type { CodexThread, CodexThreadStartParams, CodexThreadStartResponse } from "./protocol.js";
+import {
+  CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY,
+  CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY,
+  type CodexAppServerContextEngineBinding,
+} from "./session-binding.js";
 import { fingerprintCodexThreadConfig } from "./thread-fingerprints.js";
 import type {
   CodexAppServerThreadLifecycleBinding,
@@ -21,6 +26,56 @@ type StartedThreadContext = {
   userMcpServersFingerprint?: string;
 };
 
+export function resolveCodexThreadRolloutPath(thread: CodexThread): string | undefined {
+  const rolloutPath = thread.path?.trim();
+  if (
+    !rolloutPath ||
+    !path.isAbsolute(rolloutPath) ||
+    path.extname(rolloutPath) !== ".jsonl" ||
+    !path.basename(rolloutPath).includes(thread.id)
+  ) {
+    return undefined;
+  }
+  return rolloutPath;
+}
+
+/** Persists one snapshot for eligible turns while leaving isolated runs eligible to upgrade. */
+export function captureAgentInstructions(
+  params: Pick<
+    CodexStartOrResumeThreadParams,
+    | "params"
+    | "agentWorkspaceDeveloperInstructions"
+    | "agentWorkspaceDeveloperInstructionsAllowed"
+    | "projectInstructionsUnavailableToGateway"
+  >,
+  fallbackInstructions?: string | null,
+  nativeProjectInstructionSources?: readonly string[],
+) {
+  if (
+    params.agentWorkspaceDeveloperInstructionsAllowed === false ||
+    params.params.bootstrapContextMode === "lightweight"
+  ) {
+    return {};
+  }
+  if (
+    fallbackInstructions === CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY ||
+    (params.projectInstructionsUnavailableToGateway === true &&
+      nativeProjectInstructionSources !== undefined &&
+      nativeProjectInstructionSources.length > 0)
+  ) {
+    return {
+      agentWorkspaceDeveloperInstructions: CODEX_UNAVAILABLE_PROJECT_DOCS_AUTHORITY,
+      projectInstructionsUnavailableToGateway: true as const,
+    };
+  }
+  return {
+    agentWorkspaceDeveloperInstructions:
+      params.agentWorkspaceDeveloperInstructions !== undefined
+        ? params.agentWorkspaceDeveloperInstructions
+        : (fallbackInstructions ?? CODEX_FROZEN_EMPTY_PROJECT_DOCS_AUTHORITY),
+  };
+}
+
 /** Materializes the public lifecycle result after a fresh thread is durably committed. */
 export function buildStartedCodexThreadBinding(input: {
   bindingModelProvider?: string;
@@ -35,6 +90,7 @@ export function buildStartedCodexThreadBinding(input: {
   startModelProvider?: string;
   startParams: CodexThreadStartParams;
   modelProvider?: string;
+  capturedAgentWorkspaceDeveloperInstructions?: string | null;
 }): CodexAppServerThreadLifecycleBinding {
   const { context, params, response, startParams } = input;
   return {
@@ -43,7 +99,11 @@ export function buildStartedCodexThreadBinding(input: {
     cwd: params.cwd,
     ...(input.rolloutPath ? { rolloutPath: input.rolloutPath } : {}),
     authProfileId: params.params.authProfileId,
-    agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
+    ...captureAgentInstructions(
+      params,
+      input.capturedAgentWorkspaceDeveloperInstructions,
+      response.instructionSources,
+    ),
     model: response.model ?? startParams.model ?? params.params.modelId,
     modelProvider: response.modelProvider ?? input.startModelProvider ?? input.modelProvider,
     dynamicToolsFingerprint: context.dynamicToolsFingerprint,

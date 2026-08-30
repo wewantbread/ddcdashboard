@@ -146,6 +146,8 @@ function startFixtureAttempt(fixture: Awaited<ReturnType<typeof createStartupFai
     dynamicTools: [],
     webSearchAllowed: false,
     developerInstructions: undefined,
+    coldDeveloperInstructions: undefined,
+    agentWorkspaceDeveloperInstructionsAllowed: false,
     finalConfigPatch: undefined,
     bundleMcpThreadConfig,
     nativeToolSurfaceEnabled: true,
