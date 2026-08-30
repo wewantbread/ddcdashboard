@@ -14,12 +14,17 @@ import type {
   RealtimeVoiceCloseDisposition,
   RealtimeVoiceProviderCapabilities,
 } from "openclaw/plugin-sdk/realtime-voice";
-import {
-  readRequestBodyWithLimit,
-  resolveAcceptedBrowserOrigin,
-} from "openclaw/plugin-sdk/webhook-request-guards";
+import { readRequestBodyWithLimit } from "openclaw/plugin-sdk/webhook-request-guards";
 import WebSocket, { type RawData } from "ws";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
+import {
+  applyRealtimeOfferCorsHeaders,
+  createResponseDeliveryWaiter,
+  readOfferBearerToken,
+  rejectOversizedOffer,
+  respondRealtimeOffer,
+  type ResponseDeliveryWaiter,
+} from "./realtime-quicksilver-offer-http.js";
 import {
   releaseOpenAIQuicksilverSession,
   reserveOpenAIQuicksilverSession,
@@ -96,68 +101,6 @@ type OpenAIRealtimeOfferMetrics = {
   sidebandReadyMs: number;
   totalOfferMs: number;
 };
-
-type ResponseDeliveryWaiter = {
-  result: Promise<boolean>;
-  cancel: () => void;
-};
-
-function createResponseDeliveryWaiter(
-  res: ServerResponse,
-  onDelivered: () => void,
-): ResponseDeliveryWaiter {
-  let settle!: (delivered: boolean) => void;
-  const result = new Promise<boolean>((resolve) => {
-    settle = (delivered) => {
-      res.removeListener("finish", onFinish);
-      res.removeListener("close", onClose);
-      resolve(delivered);
-    };
-  });
-  const onFinish = () => {
-    onDelivered();
-    settle(true);
-  };
-  const onClose = () => settle(false);
-  res.once("finish", onFinish);
-  res.once("close", onClose);
-  return { result, cancel: () => settle(false) };
-}
-
-function respondRealtimeOffer(
-  res: ServerResponse,
-  statusCode: number,
-  body: string,
-  contentType = "text/plain; charset=utf-8",
-): void {
-  res.statusCode = statusCode;
-  res.setHeader("cache-control", "no-store");
-  res.setHeader("content-type", contentType);
-  res.setHeader("x-content-type-options", "nosniff");
-  res.end(body);
-}
-
-function applyRealtimeOfferCorsHeaders(
-  req: IncomingMessage,
-  res: ServerResponse,
-  cfg: OpenClawConfig | undefined,
-): boolean {
-  if (!req.headers.origin) {
-    return true;
-  }
-  const origin = resolveAcceptedBrowserOrigin({ req, cfg });
-  if (!origin) {
-    return false;
-  }
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Vary", "Origin");
-  return true;
-}
-
-function readBearerToken(req: IncomingMessage): string | undefined {
-  const authorization = req.headers.authorization?.trim();
-  return authorization?.match(/^Bearer\s+([^\s]+)$/i)?.[1];
-}
 
 export async function resolveOpenAIChatGptSubscriptionAuth(params: {
   cfg?: OpenClawConfig;
@@ -393,6 +336,10 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       return true;
     }
     if (req.method === "OPTIONS") {
+      if (!corsAllowed) {
+        respondRealtimeOffer(res, 403, "Origin not allowed");
+        return true;
+      }
       res.statusCode = 204;
       res.setHeader("cache-control", "no-store");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -408,6 +355,10 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       res.end();
       return true;
     }
+    if (!corsAllowed) {
+      respondRealtimeOffer(res, 403, "Origin not allowed");
+      return true;
+    }
     if (req.method !== "POST") {
       respondRealtimeOffer(res, 405, "Method not allowed");
       return true;
@@ -418,7 +369,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       return true;
     }
     prunePendingOffers();
-    const token = readBearerToken(req);
+    const token = readOfferBearerToken(req);
     const offer = token ? pendingOffers.get(token) : undefined;
     if (!token || !offer || offer.expiresAt <= Date.now()) {
       respondRealtimeOffer(res, 401, "Invalid or expired realtime session token");
@@ -455,6 +406,8 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       const sdp = await readRequestBodyWithLimit(req, {
         maxBytes: OPENAI_QUICKSILVER_MAX_SDP_BYTES,
         timeoutMs: 15_000,
+        // Defer destruction so the rejection below reaches the browser before the close.
+        destroyOnLimit: false,
       });
       if (!sdp.trim()) {
         respondRealtimeOffer(res, 400, "SDP offer is required");
@@ -671,6 +624,9 @@ export function createOpenAIQuicksilverBrowserSessionBroker(params: {
       }
       offer.request.gatewayControl?.onClose?.("error");
       if (browserDisconnected) {
+        return true;
+      }
+      if (await rejectOversizedOffer(req, res, error)) {
         return true;
       }
       respondRealtimeOffer(res, 502, sessionError.message);
