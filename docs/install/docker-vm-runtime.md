@@ -166,6 +166,36 @@ truth. Long-lived state must survive restarts, rebuilds, and reboots.
 | Node and OS packages | Container filesystem                | Docker image                | Rebuilt with the image; do not install at runtime                                          |
 | Docker container     | Ephemeral                           | Restartable                 | Safe to replace after mounted state is verified                                            |
 
+## Common pitfall: never file-bind `openclaw.json`
+
+Mount the gateway state **as a directory**, never as a single file. The repo
+`docker-compose.yml` already does this:
+
+```yaml
+# Supported: whole state directory.
+- "${OPENCLAW_CONFIG_DIR:-${HOME:-/tmp}/.openclaw}:/home/node/.openclaw"
+```
+
+```yaml
+# Unsupported: single-file bind. Do not use this.
+# - "./openclaw.json:/home/node/.openclaw/openclaw.json"
+```
+
+A Docker file bind attaches the mount-time inode, not the path name. OpenClaw
+writes `openclaw.json` with `@openclaw/fs-safe` `replaceFileAtomic`: a sibling
+temp file plus rename. The config writer also sets
+`copyFallbackOnPermissionError: true`, which falls back to copy-replace only
+on `EPERM`/`EEXIST`. Either path publishes a new inode. The file-bound
+container can keep reading the old inode while the host path points at the
+new one, so config edits look like a no-op.
+
+Do not treat a specific Docker errno or `openclaw doctor` as the signal. A
+failed rename can still save via that copy fallback. Doctor "config drift"
+is for supervisor/service files, not a bind-mounted `openclaw.json`.
+
+Fix: keep the directory mount from Compose. Edit `openclaw.json` on the host
+inside that directory.
+
 ## Update OpenClaw
 
 For a source-built image:
