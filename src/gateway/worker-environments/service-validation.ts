@@ -25,6 +25,7 @@ export function requireWorkerProfile(
   if (error) {
     throw serviceError("invalid_profile", error);
   }
+  // SAFETY: validation accepts only finite JSON objects, exactly WorkerProfile's value contract.
   return value as WorkerProfile;
 }
 
