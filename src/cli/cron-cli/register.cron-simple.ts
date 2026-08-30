@@ -6,7 +6,14 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import type { Command } from "commander";
 import { resolveCronCompletionStatus } from "../../cron/completion-status.js";
+import {
+  formatCronRunCostRollup,
+  mergeCronRunCostRollups,
+  rollupCronRunCost,
+  type CronRunCostRollup,
+} from "../../cron/run-cost-rollup.js";
 import type { CronRunLogEntry } from "../../cron/run-log-types.js";
+import type { CronJob } from "../../cron/types.js";
 import { defaultRuntime } from "../../runtime.js";
 import { sleep } from "../../utils/sleep.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
@@ -24,6 +31,10 @@ import {
   warnIfCronSchedulerDisabled,
 } from "./shared.js";
 
+const CRON_SHOW_PAGE_SIZE = 200;
+const CRON_SHOW_LOOKUP_MAX_PAGES = 50;
+/** Fleet-wide cron stats without --id: hard cap on jobs polled (avoids 10k sequential RPCs). */
+const CRON_STATS_MAX_JOBS = 25;
 const CRON_RUN_WAIT_TIMEOUT_DEFAULT = "10m";
 const CRON_RUN_WAIT_POLL_INTERVAL_DEFAULT = "2s";
 
@@ -38,6 +49,13 @@ type CronRunLogEntryResult = Pick<
   CronRunLogEntry,
   "status" | "completionStatus" | "delivered" | "deliveryStatus"
 >;
+
+// SAFETY: Gateway CLI returns untyped JSON; call sites request the display shape.
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters
+function readGatewayShape<T>(value: unknown): T {
+  // SAFETY: untyped Gateway RPC envelope narrowed only for CLI display fields.
+  return value as T;
+}
 
 function parseCronRunWaitDuration(raw: unknown, label: string): number {
   const input =
@@ -82,11 +100,13 @@ async function waitForCronRunCompletion(params: {
     // History reads share the wait deadline, but enqueue keeps its own RPC
     // timeout and a zero-duration wait still gets one immediate ledger poll.
     const pollOpts = { ...params.opts, timeout: String(pollTimeoutMs) };
-    const page = (await callGatewayFromCli("cron.runs", pollOpts, {
-      id: params.jobId,
-      runId: params.runId,
-      limit: 1,
-    })) as { entries?: CronRunLogEntryResult[] };
+    const page = readGatewayShape<{ entries?: CronRunLogEntryResult[] }>(
+      await callGatewayFromCli("cron.runs", pollOpts, {
+        id: params.jobId,
+        runId: params.runId,
+        limit: 1,
+      }),
+    );
     const entry = page.entries?.[0];
     if (entry?.status === "ok" || entry?.status === "error" || entry?.status === "skipped") {
       return entry;
@@ -225,6 +245,91 @@ export function registerCronSimpleCommands(cron: Command) {
   );
 
   addGatewayClientOptions(
+    cron
+      .command("stats")
+      .description("Roll up cron run history into cost/efficiency stats (skipped vs ran vs tokens)")
+      .option("--id <id>", "Limit stats to a single job id")
+      .option("--limit <n>", "Max run-history entries per job (default 200)", "200")
+      .option("--json", "Output JSON", false)
+      .action(async (opts) => {
+        try {
+          const limit = parseStrictPositiveInteger(opts.limit ?? "200");
+          if (limit === undefined) {
+            throw new Error("Invalid --limit (must be a positive integer).");
+          }
+          const jobIds: string[] = [];
+          if (typeof opts.id === "string" && opts.id.trim()) {
+            jobIds.push(opts.id.trim());
+          } else {
+            let offset = 0;
+            for (let page = 0; page < CRON_SHOW_LOOKUP_MAX_PAGES; page += 1) {
+              if (jobIds.length >= CRON_STATS_MAX_JOBS) {
+                break;
+              }
+              const res = await callGatewayFromCli("cron.list", opts, {
+                includeDisabled: true,
+                limit: CRON_SHOW_PAGE_SIZE,
+                offset,
+              });
+              const listed = readGatewayShape<{
+                jobs?: CronJob[];
+                hasMore?: boolean;
+                nextOffset?: number | null;
+              }>(res);
+              for (const job of listed.jobs ?? []) {
+                jobIds.push(job.id);
+                if (jobIds.length >= CRON_STATS_MAX_JOBS) {
+                  break;
+                }
+              }
+              if (jobIds.length >= CRON_STATS_MAX_JOBS) {
+                break;
+              }
+              if (!listed.hasMore || typeof listed.nextOffset !== "number") {
+                break;
+              }
+              if (listed.nextOffset <= offset) {
+                break;
+              }
+              offset = listed.nextOffset;
+            }
+          }
+
+          const perJob: Array<{ jobId: string; rollup: CronRunCostRollup }> = [];
+          for (const jobId of jobIds) {
+            const page = readGatewayShape<{ entries?: CronRunLogEntry[] }>(
+              await callGatewayFromCli("cron.runs", opts, {
+                id: jobId,
+                limit,
+              }),
+            );
+            const rollup = rollupCronRunCost(page.entries ?? []);
+            if (rollup.totalRuns > 0) {
+              perJob.push({ jobId, rollup });
+            }
+          }
+
+          const fleet = mergeCronRunCostRollups(perJob.map((p) => p.rollup));
+          if (opts.json) {
+            printCronJson({ fleet, jobs: perJob });
+            return;
+          }
+          defaultRuntime.log(
+            `Cron cost stats (last ${limit} runs/job; max ${CRON_STATS_MAX_JOBS} jobs without --id):`,
+          );
+          defaultRuntime.log(`  FLEET  ${formatCronRunCostRollup(fleet)}`);
+          for (const { jobId, rollup } of perJob
+            .slice()
+            .toSorted((a, b) => b.rollup.skipped - a.rollup.skipped)) {
+            defaultRuntime.log(`  ${jobId}  ${formatCronRunCostRollup(rollup)}`);
+          }
+        } catch (err) {
+          handleCronCliError(err);
+        }
+      }),
+  );
+
+  addGatewayClientOptions(
     createCronOutputCommand(cron, "run")
       .description("Run an automation now (debug)")
       .argument("<id>", "Job id")
@@ -255,7 +360,7 @@ export function registerCronSimpleCommands(cron: Command) {
             id,
             mode: opts.due ? "due" : "force",
           });
-          const result = res as CronRunCommandResult | undefined;
+          const result = readGatewayShape<CronRunCommandResult | undefined>(res);
           if (opts.wait && result?.ok && result.enqueued) {
             if (!result.runId) {
               throw new Error("cron run did not return a runId to wait for");
