@@ -1,4 +1,6 @@
 // Backup planning helpers for archive naming, payload paths, and deduplicated asset selection.
+import type { Dirent } from "node:fs";
+import { closeSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { listAgentIds, resolveAgentDir } from "../agents/agent-scope-config.js";
@@ -9,6 +11,7 @@ import {
   resolveStateDir,
 } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
   resolveActivatedPluginBackupInventory,
@@ -55,7 +58,7 @@ export function resolveRequiredBackupPath(
   return resolveUserPath(trimmed);
 }
 
-type BackupAssetKind = "state" | "config" | "credentials" | "workspace" | "agent";
+type BackupAssetKind = "state" | "config" | "credentials" | "workspace" | "agent" | "skill-link";
 type BackupSkipReason = "covered" | "missing" | "regenerable" | "unresolved";
 
 export type BackupAsset = {
@@ -102,6 +105,8 @@ function backupAssetPriority(kind: BackupAssetKind): number {
       return 3;
     case "agent":
       return 4;
+    case "skill-link":
+      return 5;
   }
   throw new Error("Unsupported backup asset kind");
 }
@@ -249,6 +254,10 @@ async function resolveBackupPlanFromPaths(params: {
       sourcePath: path.resolve(workspaceDir),
     })),
     ...agentRoots.map((root) => ({ kind: "agent" as const, sourcePath: root.sourcePath })),
+    ...(await resolveManagedSkillSymlinkTargetCandidates(stateDir)).map((sourcePath) => ({
+      kind: "skill-link" as const,
+      sourcePath,
+    })),
   ];
 
   const candidates: BackupAssetCandidate[] = await Promise.all(
@@ -375,6 +384,62 @@ function compareCandidates(left: BackupAssetCandidate, right: BackupAssetCandida
     return priorityDelta;
   }
   return left.canonicalPath.localeCompare(right.canonicalPath);
+}
+
+// Managed skill roots deliberately accept directory symlinks resolving outside
+// the root (the `skills` CLI symlink-mode layout), while the archive guard is
+// fail-closed on any link whose target is not a declared asset. Declare only
+// bounded skill targets: a link to a state ancestor or any broad directory
+// would otherwise promote that whole tree to an archive root.
+async function resolveManagedSkillSymlinkTargetCandidates(stateDir: string): Promise<string[]> {
+  const managedSkillsDir = path.join(stateDir, "skills");
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(managedSkillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const canonicalStateDir = await canonicalizePathForContainment(stateDir);
+  const targets: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isSymbolicLink()) {
+      continue;
+    }
+    const linkPath = path.join(managedSkillsDir, entry.name);
+    const targetPath = await canonicalizeExistingPath(linkPath);
+    // Neither side may contain the other: an external target that holds the
+    // state asset would swallow it (and everything else) via covered dedupe.
+    if (
+      isPathWithin(targetPath, canonicalStateDir) ||
+      isPathWithin(canonicalStateDir, targetPath)
+    ) {
+      continue;
+    }
+    try {
+      if (!(await fs.stat(linkPath)).isDirectory()) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    // Skill loaders admit a directory only when its metadata opens through the
+    // skill-root boundary; a final SKILL.md symlink that escapes the target
+    // would otherwise satisfy existence and declare a broad external target
+    // whose cross-asset link the archive guard accepts.
+    const opened = openRootFileSync({
+      absolutePath: path.join(targetPath, "SKILL.md"),
+      rootPath: targetPath,
+      rootRealPath: targetPath,
+      boundaryLabel: "skill target",
+      rejectSymlinks: false,
+    });
+    if (!opened.ok) {
+      continue;
+    }
+    closeSync(opened.fd);
+    targets.push(targetPath);
+  }
+  return targets;
 }
 
 async function canonicalizeExistingPath(targetPath: string): Promise<string> {
