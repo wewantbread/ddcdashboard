@@ -68,7 +68,7 @@ jobs:
           python-version: "3.12"
 
       - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@dd4528b6393e7d00063067a080ca7241b48ce475
+        uses: openclaw/openclaw/.github/actions/git-owner@f120ed72265478e7138efbfc5b9255342afa8bd6
 
       - name: Prepare trusted workflow audit configs
         if: github.event_name == 'pull_request'
